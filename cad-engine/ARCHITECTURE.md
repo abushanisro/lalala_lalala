@@ -49,6 +49,15 @@ cad-engine/
                                    depth, plan, projected and developed area, main surface, the drawn form, the blank (unfolded,
                                    drawn equal-area or flat), straight and curved flanges, holes (pierced in the flat or not,
                                    edge distance to the main surface)
+    features/roll_form.py        — what every single-body sheet part is measured for roll forming ("roll_form", rf_v1): the long
+                                   axis (the cross-section bends' common direction, or the axis a curved profile is swept round)
+                                   and length, whether it is one section along it (stock_fraction >= 0.8), the section, the strip
+                                   width (section area / t, checked against flats + bend arcs), the cross-section bends in order
+                                   across the strip (angle, inner radius, the flat before each, level counted out from the web),
+                                   the curve, the punched features (holes, cut-outs, lances, forms) at their stations, the end
+                                   cuts; null when the part is not a profile (decided from the face records in milliseconds).
+                                   Reads drawn_shell.analyse_sheet_faces, not the drawn-shell verdict: a curved profile's twinned
+                                   tori read as a drawn shell there and it is still measured here
     nesting.py                   — real-polygon 2D nesting (Nest View)
   injection_molding/
     feature_extractor.py         — InjectionMoldedFeatureExtractor
@@ -161,6 +170,15 @@ Only extract a symbol into `shared/` when it's genuinely cross-domain-owned —
 do not move `MachiningFeatureRecognizer` (or the rest of
 `machining_feature_recognizer.py`) into `shared/` merely because Sheet Metal
 happens to consume part of it today.
+
+## Sheet Metal -> Bar & Tube (2026-11-22)
+
+`sheet_metal/features/roll_form.py` measures a roll-formed profile as a section swept along a line or an arc, which is what
+`bar_tube/` already does for stock: it imports `bar_tube.centreline` (the centreline, `locate` / `to_section` for stations and the
+section frame) and `bar_tube.section` (`classify_section`, `min_area_rect`) at module level, and `bar_tube.feature_extractor`'s
+`cut_section`, `surface_samples`, `surface_info`, `_arc_from_group`, `_end_kind` and `STOCK_FRACTION` inside its functions (that
+module pulls in the forging and injection-molding recognition modules, so a sheet part that is not a profile never imports it).
+These are geometry primitives, not bar-and-tube costing; if a third domain needs them they belong in `shared/`.
 
 ## Verification performed (no OCC available in the refactor environment)
 

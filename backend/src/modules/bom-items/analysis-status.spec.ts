@@ -58,6 +58,21 @@ describe('deriveAnalysisStatus', () => {
     expect(deriveAnalysisStatus(part({ featureGraph: sheet({ bendCount: 6 }) }), 'none', CURRENT).cad).toBe('ready');
   });
 
+  it('a part set to Sheet Metal Roll Forming is stale until Refresh analysis measures it for roll forming (rf_v1)', () => {
+    const sheet = (summary: Record<string, unknown> | undefined) => ({ ...analysed('sheet_metal'), ...(summary ? { summary } : {}) });
+    const rolled = (summary: Record<string, unknown> | undefined) => part({ featureGraph: sheet(summary), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal Roll Forming' });
+    // Analysed as sheet metal before the roll-forming measurement existed (it has the hydroforming one, not this).
+    expect(deriveAnalysisStatus(rolled({ hydroformGeometry: { extractionVersion: 'hf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(rolled(undefined), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v0' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // The current engine found the part is not a profile: analysing again gives the same, so it is current (the quote says why).
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: null }), 'none', CURRENT).cad).toBe('ready');
+    // The hydroforming measurement does not stand in for it, nor it for the hydroforming one.
+    const hydro = part({ featureGraph: sheet({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal - Hydroforming' });
+    expect(deriveAnalysisStatus(hydro, 'none', CURRENT).cad).toBe('stale');
+  });
+
   it('a part with no 3D file is not blocked: there is nothing to extract', () => {
     expect(deriveAnalysisStatus({ file3dPath: null, featureGraph: null }, 'none', CURRENT)).toMatchObject({ cad: 'not_required', ready: true });
   });

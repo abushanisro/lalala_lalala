@@ -1,5 +1,6 @@
 import { castingProcessOfFamily } from './costing/casting/casting-cost-summary';
 import { HYDROFORM_EXTRACTION_VERSION } from './costing/hydroforming/hydroforming-part';
+import { ROLL_FORM_EXTRACTION_VERSION } from './costing/roll-forming/roll-forming-part';
 import { familiesAnalysedForHint } from './costing/shared/core/part-family-process-group';
 
 // The one place that says whether a BOM item has been analysed well enough to cost. It is derived from what is already stored
@@ -44,12 +45,13 @@ export function castingStatusOf(rowStatuses: readonly string[]): AnalysisKindSta
 }
 
 /**
- * Processes priced from a measurement made inside a CAD family other processes share: a hydroformed part is analysed as sheet metal, and its
- * measurement (feature_graph.summary.hydroformGeometry, hf_v1) came with a later engine. The feature-graph version and the family say nothing
- * about it, so an analysis of that family made before it is otherwise current.
+ * Processes priced from a measurement made inside a CAD family other processes share: a hydroformed or roll-formed part is analysed as sheet
+ * metal, and its measurement (feature_graph.summary.hydroformGeometry, hf_v1; rollFormGeometry, rf_v1) came with a later engine. The
+ * feature-graph version and the family say nothing about it, so an analysis of that family made before it is otherwise current.
  */
 const PROCESS_MEASUREMENT: Readonly<Record<string, { key: string; version: string }>> = {
   'Sheet Metal - Hydroforming': { key: 'hydroformGeometry', version: HYDROFORM_EXTRACTION_VERSION },
+  'Sheet Metal Roll Forming': { key: 'rollFormGeometry', version: ROLL_FORM_EXTRACTION_VERSION },
 };
 
 /**
