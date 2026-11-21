@@ -78,6 +78,17 @@ async function main(): Promise<void> {
       `USA press ${JSON.stringify(press('USA'))}`);
     must(Number(press('India')?.mhr_usd_per_hour) === 54.02 && Number(press('India')?.usd_labor_rate_per_hr) === 1.73, `India press ${JSON.stringify(press('India'))}`);
   });
+  await check('migration 1112 rated the Roll Forming machines (Netherlands overheads, 43.21 / 36.30 labour), twinned all 125 in India and linked its material group', async () => {
+    const q = encodeURIComponent('Sheet Metal Roll Forming');
+    const rows = await (await api(`/mhr_records?process_group=eq.${q}&select=location,machine_name,mhr_usd_per_hour,usd_labor_rate_per_hr`, minter.forService())).json() as
+      { location: string; machine_name: string; mhr_usd_per_hour: number | string | null; usd_labor_rate_per_hr: number | string | null }[];
+    const mill = (location: string) => rows.find((r) => r.location === location && r.machine_name === 'Bradbury 2.5" Shaft Diameter 12 stand');
+    must(rows.filter((r) => r.location === 'India').length === 125, `India rows ${rows.filter((r) => r.location === 'India').length}`);
+    must(Number(mill('USA')?.mhr_usd_per_hour) === 40.01 && Number(mill('USA')?.usd_labor_rate_per_hr) === 43.21, `USA mill ${JSON.stringify(mill('USA'))}`);
+    must(Number(mill('India')?.mhr_usd_per_hour) === 19.23 && Number(mill('India')?.usd_labor_rate_per_hr) === 2.3, `India mill ${JSON.stringify(mill('India'))}`);
+    const groups = await (await api(`/process_material_groups?process_group=eq.${q}&select=material_group`, minter.forService())).json() as { material_group: string }[];
+    must(groups.length === 1 && groups[0]?.material_group === 'Sheet Metal Roll Forming', `material groups ${JSON.stringify(groups)}`);
+  });
   await check('migration 1110 bound the Hydroform and Offline Blank catalog rows to their hydroforming calculators', async () => {
     const q = encodeURIComponent('Sheet Metal - Hydroforming');
     const rows = await (await api(`/process_calculator_mappings?process_group=eq.${q}&select=operation,calculator_name&order=operation`, minter.forService())).json() as { operation: string; calculator_name: string | null }[];

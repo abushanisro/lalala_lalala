@@ -178,6 +178,14 @@ ALTER TABLE public.mhr_records ADD COLUMN direct_overhead_rate numeric, ADD COLU
 INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location, specs)
 SELECT DISTINCT 'Sheet Metal - Hydroforming', m[1], m[2], 'USA', '{}'::jsonb FROM regexp_matches(pg_read_file('/migrations/1109_hydroforming_machines.sql'),
   '\$str\$IN\$str\$, \$str\$(hydroform[a-z_]*)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+-- the Sheet Metal Roll Forming machines migration 862 seeds for the USA at the memory files' World Average rates: migration 1112 rates the
+-- ones still at those rates, twins all 125 in India and fails unless every one is rated. Read from 1112's own list with the seeded rates.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location, specs, direct_overhead_rate, indirect_overhead_rate, usd_labor_rate_per_hr)
+SELECT 'Sheet Metal Roll Forming', m[1], m[2], 'USA', '{}'::jsonb, m[3]::numeric, m[4]::numeric, m[5]::numeric
+FROM regexp_matches(pg_read_file('/migrations/1112_roll_forming_machines.sql'),
+  '\(\$str\$(sheet_roll_forming_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+::numeric, [0-9.]+::numeric, [0-9.]+::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric', 'g') AS m;
+-- a material of its group (migration 855): migration 1112 links Sheet Metal Roll Forming to its own group and fails when the group holds none
+INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 1100', 'Sheet Metal Roll Forming');
 -- the machine envelope columns as the real database has them (migration 755 fills them for the lathes): migration 1093 fills them for the multi-spindle machines
 ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COLUMN max_length_mm numeric(10,2);
 -- the taxonomy columns as the real database has them (migration 609): migration 1094 adds the Multi-Spindle Machining > Simultaneous Turning row
