@@ -18,6 +18,7 @@ import { MultiShotCycle, MultiShotSection } from '@/components/costing/MultiShot
 import { MultiSpindleSection } from '@/components/costing/MultiSpindleSection';
 import { PartAssemblySection } from '@/components/costing/PartAssemblySection';
 import { PowderMetalSection, powderMetalUncostedReason } from '@/components/costing/PowderMetalSection';
+import { RollFormingSection } from '@/components/costing/RollFormingSection';
 import { RotoBlowSection } from '@/components/costing/RotoBlowSection';
 import { SandCalculatorRuns, SandLineTrace } from '@/components/costing/SandCalculatorRuns';
 import { SandCastingSection } from '@/components/costing/SandCastingSection';
@@ -166,6 +167,7 @@ import { useMachiningNeed } from '@/lib/api/hooks/useFeatureTolerances';
 import { useMHRPickerRows, useMHRRecord } from '@/lib/api/hooks/useMHR';
 import { routeMachineDrift } from '@/lib/costing/applied-route';
 import { isMultiSpindleItem } from '@/lib/costing/multi-spindle-view';
+import { isRollFormingItem } from '@/lib/costing/roll-forming-view';
 import { isTwoModelPart } from '@/lib/costing/two-model-view';
 import { hasDfmRiskFactor } from '@/lib/dfm/hasRiskFactor';
 import { splitNote } from '@/lib/text/concise-note';
@@ -2678,6 +2680,8 @@ function RouteSelectionDialog({
   const isPowderMetal = partFamily === 'powder_metal';
   // Hydroformed parts: Hydroform Deep Draw and Hydroform Fluid Cell, each the full quote (process-group.ts routingFamilyOf).
   const isHydroforming = partFamily === 'hydroforming';
+  // Roll formed parts: the coil line ending in a Scissor or a Blade cut-off, each the full quote (process-group.ts routingFamilyOf).
+  const isRollForming = partFamily === 'roll_forming';
   const isCompleteRouteFamily = isCompleteRouteFamilyOf(partFamily);
 
   // ── Universal real machine/rate resolution — ONE fetch each, no fixed
@@ -3324,6 +3328,9 @@ function RouteSelectionDialog({
               {...(isHydroforming ? { formingGroupMeta: {
                 title: 'Hydroforming',
                 description: 'Each route blanks and pierces the blank on the offline press, then forms it: Deep Draw on a round tool, draw by draw, or Fluid Cell on a tray of form blocks. The quoted one follows memory\'s depth / width rule unless the Cost Guide sets a route; a press that cannot take the part says why.',
+              } } : isRollForming ? { formingGroupMeta: {
+                title: 'Roll Forming',
+                description: 'Each route is the coil line: uncoiled, flattened when the stock needs it, punched in the flat strip, roll formed station by station, seam welded when the section is closed, then cut to length by a Scissor or a Blade cut-off. The quoted one follows memory\'s rule (a closed section by blade, an open one by scissor) unless the Cost Guide sets one.',
               } } : {})}
             />
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
@@ -4672,6 +4679,17 @@ function CostGuidePanel({
                 <HydroformingSection
                   hydroforming={cgpCostSummary?.hydroforming}
                   tooling={cgpCostSummary?.hydroformingTooling}
+                  overrides={item.scenarioOverrides}
+                  onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
+                />
+              </Section>
+            )}
+
+            {isRollFormingItem(item) && (
+              <Section title="Sheet Metal Roll Forming">
+                <RollFormingSection
+                  rollForming={cgpCostSummary?.rollForming}
+                  tooling={cgpCostSummary?.rollFormingTooling}
                   overrides={item.scenarioOverrides}
                   onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
                 />

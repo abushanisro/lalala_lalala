@@ -1307,6 +1307,37 @@ export interface CostSummaryDto {
   hydroformingTooling?: {
     key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null;
   }[];
+  /**
+   * Sheet Metal Roll Forming (backend cost-breakdown.dto.ts RollFormingBreakdown): the strip, the roll stations, the mill, the line speed and
+   * what limits it, the coil, the punching, the welding, the route quoted and both routes. Lengths mm, masses kg, speeds mm/s, money in the
+   * summary's currency.
+   */
+  rollForming?: {
+    route: string;
+    routeLabel: string;
+    rule: { route: string; closed: boolean; basis: string };
+    section: { heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null };
+    strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+    stations: {
+      forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean; levelSource: string;
+      levels: { level: number; bends: number; maxAngleDeg: number; passes: number }[];
+    };
+    mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;
+    lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[] } | null;
+    coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string } | null;
+    dieSharpeningPerPartS: number;
+    flattener: { needed: boolean; reason: string };
+    punching: { dieStations: string[]; punched: number; notPunched: { featureType: string; count: number; reason: string }[]; minHoleMm: number | null } | null;
+    welding: { process: string; machine: string | null; source: 'rule' | 'cost guide' } | null;
+    forcesKn: { punch: number | null; cutOff: number | null };
+    feasible: boolean;
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /** Sheet Metal Roll Forming: the mill's rolls and the press dies (USD), kept out of the piece cost, as hydroformingTooling. */
+  rollFormingTooling?: {
+    key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null;
+  }[];
   composites?: {
     route: string; routeLabel: string;
     /** The laminate at its thickest (core excluded) and the cured ply thickness it is divided by. */
