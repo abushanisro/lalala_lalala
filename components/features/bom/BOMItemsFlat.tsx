@@ -286,12 +286,11 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
   // UI actions
   // -------------------------------------------------------------------------
 
-  // Every item that has children, opened or closed at once.
-  const expandAll = () => {
-    const parents = new Set(items.map(i => i.parentItemId?.trim()).filter((id): id is string => !!id));
-    setExpandedItems(new Set(items.filter(i => parents.has(i.id)).map(i => i.id)));
-  };
-  const collapseAll = () => { setExpandedItems(new Set()); };
+  // Every item that has children, opened or closed at once: one button, "Collapse all" once every branch is open, else "Expand all".
+  const parentIds = new Set(items.map(i => i.parentItemId?.trim()).filter((id): id is string => !!id));
+  const branchIds = items.filter(i => parentIds.has(i.id)).map(i => i.id);
+  const allExpanded = branchIds.length > 0 && branchIds.every(id => expandedItems.has(id));
+  const toggleExpandAll = () => { setExpandedItems(allExpanded ? new Set() : new Set(branchIds)); };
 
   const toggleExpand = (itemId: string) => {
     setExpandedItems(prev => {
@@ -656,7 +655,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
 
   // Gmail's toolbar: one flat row on top of the list (no box of its own: it is part of the page), the page's add buttons and the list's own
   // tools at the left, the count and the total cost at the right, in line with the costs below (the same right padding, pr-4).
-  const toolbarClass = 'flex flex-wrap items-center gap-1 border-b py-1.5 pr-4';
+  const toolbarClass = 'mb-3 flex flex-wrap items-center gap-1 border-b pb-2.5 pt-1.5 pr-4';
   const actionsOnly  = toolbarActions
     ? <div className={toolbarClass}><div className="flex flex-wrap items-center gap-1">{toolbarActions}</div></div>
     : null;
@@ -707,18 +706,21 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
 
   return (
     <>
-      {/* Gmail's search box: a wide, soft pill, white with a shadow while typing. "/" puts the cursor in it. */}
-      <div className="flex flex-wrap items-center gap-3 pb-3">
-        <div className="relative w-full max-w-2xl">
+      {/*
+        One toolbar row: Gmail's search box (a soft pill, white with a shadow while typing; "/" puts the cursor in it), then the page's add
+        buttons, the whole tree opened or closed at once, and the count and total cost at the right (Gmail's "1–50 of 283").
+      */}
+      <div className={toolbarClass}>
+        <div className="relative w-full sm:w-auto sm:min-w-[14rem] sm:max-w-sm sm:flex-1">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input
             ref={searchRef}
             value={query}
             onChange={(e) => { setQuery(e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); } }}
-            placeholder="Search by name or part no."
+            placeholder="Search part"
             aria-label="Search the BOM by name or part number"
-            className="h-11 rounded-full border-transparent bg-muted pl-11 pr-14 text-sm shadow-none transition-shadow focus-visible:border-transparent focus-visible:bg-card focus-visible:shadow-md focus-visible:ring-0"
+            className="h-9 rounded-full border-transparent bg-muted pl-11 pr-14 text-sm shadow-none transition-shadow focus-visible:border-transparent focus-visible:bg-card focus-visible:shadow-md focus-visible:ring-0"
           />
           {query ? (
             <button
@@ -734,20 +736,17 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
           )}
         </div>
         {filtered && (
-          <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
+          <span className="px-1 text-xs tabular-nums text-muted-foreground" aria-live="polite">
             {filtered.matches.size} of {items.length} {items.length === 1 ? 'item' : 'items'}
           </span>
         )}
-      </div>
-      {/* The page's add buttons, the whole tree opened or closed at once; the count and total cost at the right (Gmail's "1–50 of 283"). */}
-      <div className={toolbarClass}>
+        <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
         {toolbarActions && <div className="flex flex-wrap items-center gap-1">{toolbarActions}</div>}
-        {toolbarActions && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
-        <Button variant="ghost" size="sm" className="h-9 gap-1 rounded-full px-3 text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={expandAll}>
-          <ChevronDown className="h-3.5 w-3.5" /> Expand all
-        </Button>
-        <Button variant="ghost" size="sm" className="h-9 gap-1 rounded-full px-3 text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={collapseAll}>
-          <ChevronRight className="h-3.5 w-3.5" /> Collapse all
+        {toolbarActions && <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />}
+        <Button variant="ghost" size="sm" className="h-9 gap-1 rounded-full px-3 text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={toggleExpandAll}>
+          {allExpanded
+            ? <><ChevronRight className="h-3.5 w-3.5" /> Collapse all</>
+            : <><ChevronDown className="h-3.5 w-3.5" /> Expand all</>}
         </Button>
         <Button
           variant="ghost"
