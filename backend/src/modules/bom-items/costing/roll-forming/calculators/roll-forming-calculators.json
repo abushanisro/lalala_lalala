@@ -1,0 +1,318 @@
+{
+  "domain": "sheet_roll_forming",
+  "processGroup": "Sheet Metal Roll Forming",
+  "calculators": [
+    {
+      "key": "roll_forming.coil_material_stock",
+      "name": "Roll Forming - Coil Material Stock",
+      "operations": ["Coil Material Stock"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Coil Material Stock, per part: the coil as supplied (memory operation As Supplied), on the line for the part's run. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.uncoiler",
+      "name": "Roll Forming - Uncoiler",
+      "operations": ["Uncoiler"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Uncoiler, per part: paying the strip off the coil into the line. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.coil_flattener",
+      "name": "Roll Forming - Coil Flattener",
+      "operations": ["Coil Flattener"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Coil Flattener, per part: flattening the strip of a coil at or above coilFlatteningThickness, or of a yield at or above coilFlatteningYieldStrength. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.punch_press",
+      "name": "Roll Forming - Punch Press",
+      "operations": ["Punch Press"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Punch Press, per part: one progressive die punching the strip's holes, notches, lances and forms before the mill (memory operations Pre Punching, Notching, Pre Lancing, Pre Forming; a die station per kind of feature), one stroke a part. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.mill",
+      "name": "Roll Forming - Roll Forming Mill",
+      "operations": ["Roll Forming Mill"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Roll Forming Mill, per part: the strip formed through the mill's roll stations (memory operation Bending//StraightBend), and curved on its curving unit when the profile is curved. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.welding",
+      "name": "Roll Forming - Integrated Welding",
+      "operations": ["Integrated HFI Welding", "Integrated Laser Welding", "Integrated Rotary Spot Welding", "Integrated TIG Welding"],
+      "results": ["Run Time", "Stoppage per Part"],
+      "description": "Integrated welding, per part: the seam of a closed section welded along the part as the line runs (autoIncludeIntegratedWeldingProcess, or the process the Cost Guide sets). The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.cut_off",
+      "name": "Roll Forming - Cut-Off Press",
+      "operations": ["Cut-Off Press"],
+      "results": ["Run Time", "Stoppage per Part", "Banding per Part"],
+      "description": "Cut-Off Press, per part: the part cut off the profile by scissor (no slug) or by blade (a slugDieCutOffLength slug between parts; memory operations Scissor Cut-Off//End, Blade Cut-Off//End), one stroke a part, and the parts banded into packs (packBandingTime per partBandedPackSize). The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
+        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
+        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
+        { "name": "Pack Banding Time", "unit": "s", "source": { "variable": "packBandingTime" } },
+        { "name": "Banded Pack Size", "unit": null, "source": { "variable": "partBandedPackSize" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
+        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
+        { "name": "Banding per Part", "unit": "s", "formula": "{Pack Banding Time} / {Banded Pack Size}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part} + {Banding per Part}) * {Cycle Time Factor}" }
+      ]
+    },
+    {
+      "key": "roll_forming.stations",
+      "name": "Roll Forming - Stations",
+      "operations": [],
+      "helper": true,
+      "output": "Roll Stations",
+      "results": ["Lead-in Passes"],
+      "description": "The roll stations a profile needs: the forming passes of its bends (grouped by precedence level, level k being k bends out from the web, the widest flat; each level ceil(its largest angle / rollFormingLiftAngle) passes), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The level rule is the engine's own (the data gives the lift per pass, no formula), agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Forming Passes", "unit": null, "source": { "engine": "forming_passes (each bend level: ceil(its largest angle / rollFormingLiftAngle))" } },
+        { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
+        { "name": "Lead-in Thickness Threshold", "unit": "mm", "source": { "variable": "leadInRollStationThicknessThreshold" } },
+        { "name": "Finishing Passes", "unit": null, "source": { "engine": "finishing_passes (toleranceThresholds: the crossSectionTolerance row's Number of Finishing Passes)" } },
+        { "name": "Lead-in Passes", "unit": null, "formula": "IF({Sheet Thickness} > {Lead-in Thickness Threshold}, 1, 0)" },
+        { "name": "Roll Stations", "unit": null, "formula": "{Forming Passes} + {Lead-in Passes} + {Finishing Passes}" }
+      ]
+    },
+    {
+      "key": "roll_forming.line_speed",
+      "name": "Roll Forming - Line Speed",
+      "operations": [],
+      "helper": true,
+      "output": "Line Speed",
+      "results": ["Press Line Speed"],
+      "description": "The speed the line runs at: the slowest of the line's machines (each one's max line speed: the mill, the uncoiler, the flattener, the welder), the part-length tolerance's (partLengthToleranceThresholds for cutOffMeasurementSystem and partLengthTolerance), profileRollBendingSpeed on a curved profile, and the slowest stationary-die press (its strokes a minute x stationaryDieLineSpeedFactor, one stroke a part of the feed length), times the cross-section tolerance's Line Speed Multiplier. The rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Machine Line Speed", "unit": "mm/s", "source": { "engine": "machine_line_speed_mm_s (the slowest max line speed of the line's machines)" } },
+        { "name": "Part Length Tolerance Speed", "unit": "mm/s", "source": { "engine": "part_length_tolerance_speed (partLengthToleranceThresholds: the measurement system and tolerance's Maximum Line Speed)" } },
+        { "name": "Curved", "unit": null, "source": { "engine": "curved (1 when the profile is curved, else 0)" } },
+        { "name": "Profile Bending Speed", "unit": "mm/s", "source": { "variable": "profileRollBendingSpeed" } },
+        { "name": "Press Count", "unit": null, "source": { "engine": "press_count (1 when a stationary-die press is on the line, else 0)" } },
+        { "name": "Press Strokes per Minute", "unit": "1/min", "source": { "engine": "press_strokes_per_minute (the slowest stationary-die press on the line)" } },
+        { "name": "Stationary Die Speed Factor", "unit": null, "source": { "variable": "stationaryDieLineSpeedFactor" } },
+        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug)" } },
+        { "name": "Line Speed Multiplier", "unit": null, "source": { "engine": "line_speed_multiplier (toleranceThresholds: the crossSectionTolerance row's Line Speed Multiplier)" } },
+        { "name": "Press Line Speed", "unit": "mm/s", "formula": "{Press Strokes per Minute} * {Stationary Die Speed Factor} * {Feed Length} / 60" },
+        { "name": "Uncapped Speed", "unit": "mm/s", "formula": "min({Machine Line Speed}, {Part Length Tolerance Speed})" },
+        { "name": "Curve Capped Speed", "unit": "mm/s", "formula": "IF({Curved} > 0, min({Uncapped Speed}, {Profile Bending Speed}), {Uncapped Speed})" },
+        { "name": "Press Capped Speed", "unit": "mm/s", "formula": "IF({Press Count} > 0, min({Curve Capped Speed}, {Press Line Speed}), {Curve Capped Speed})" },
+        { "name": "Line Speed", "unit": "mm/s", "formula": "{Press Capped Speed} * {Line Speed Multiplier}" }
+      ]
+    },
+    {
+      "key": "roll_forming.coil_change",
+      "name": "Roll Forming - Coil Change",
+      "operations": [],
+      "helper": true,
+      "output": "Coil Change per Part",
+      "results": ["Full Coil Mass", "Coil Mass", "Parts per Coil", "Coil Change Time"],
+      "description": "The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses; each change threads the new coil (coilThreadingTime) or, for a strip thicker than coilEndWeldingThicknessThreshold, welds it to the last (coilEndWeldTime), plus the uncoiler's coil load time. The rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Coil Inner Diameter", "unit": "mm", "source": { "variable": "stockCoilInnerDiameter" } },
+        { "name": "Coil Outer Diameter", "unit": "mm", "source": { "variable": "stockCoilOuterDiameter" } },
+        { "name": "Strip Width", "unit": "mm", "source": { "cad": "strip_width_mm (the section's stretch-out)" } },
+        { "name": "Density", "unit": "kg/m³", "source": { "material": "density_kg_m3" } },
+        { "name": "Uncoiler Capacity", "unit": "kg", "source": { "machine": "max_coil_capacity_kg" } },
+        { "name": "Strip Mass per Part", "unit": "kg", "source": { "engine": "strip_mass_kg (Roll Forming - Strip)" } },
+        { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
+        { "name": "End Weld Thickness Threshold", "unit": "mm", "source": { "variable": "coilEndWeldingThicknessThreshold" } },
+        { "name": "Coil Threading Time", "unit": "s", "source": { "variable": "coilThreadingTime" } },
+        { "name": "Coil End Weld Time", "unit": "s", "source": { "variable": "coilEndWeldTime" } },
+        { "name": "Coil Load Time", "unit": "s", "source": { "machine": "coil_load_time_s" } },
+        { "name": "Full Coil Mass", "unit": "kg", "formula": "pi / 4 * ({Coil Outer Diameter} ^ 2 - {Coil Inner Diameter} ^ 2) * {Strip Width} * {Density} / 1000000000" },
+        { "name": "Coil Mass", "unit": "kg", "formula": "min({Full Coil Mass}, {Uncoiler Capacity})" },
+        { "name": "Parts per Coil", "unit": null, "formula": "max(floor({Coil Mass} / {Strip Mass per Part}), 1)" },
+        { "name": "Coil Change Time", "unit": "s", "formula": "IF({Sheet Thickness} > {End Weld Thickness Threshold}, {Coil End Weld Time}, {Coil Threading Time}) + {Coil Load Time}" },
+        { "name": "Coil Change per Part", "unit": "s", "formula": "{Coil Change Time} / {Parts per Coil}" }
+      ]
+    },
+    {
+      "key": "roll_forming.die_sharpening",
+      "name": "Roll Forming - Die Sharpening",
+      "operations": [],
+      "helper": true,
+      "output": "Die Sharpening per Part",
+      "description": "The line stopped to re-sharpen the stationary press dies, shared by the parts between: stationaryDieChangeoverTime every numHitsPerDieChangePunchPress hits of the punch press's die and every numHitsPerDieChangeCutOffPress hits of the cut-off die, one hit a part each.",
+      "fields": [
+        { "name": "Punch Dies", "unit": null, "source": { "engine": "punch_dies (1 when the strip is punched, else 0)" } },
+        { "name": "Punch Hits per Die Change", "unit": null, "source": { "variable": "numHitsPerDieChangePunchPress" } },
+        { "name": "Cut-Off Dies", "unit": null, "source": { "engine": "cut_off_dies (the cut-off die: 1)" } },
+        { "name": "Cut-Off Hits per Die Change", "unit": null, "source": { "variable": "numHitsPerDieChangeCutOffPress" } },
+        { "name": "Die Changeover Time", "unit": "s", "source": { "variable": "stationaryDieChangeoverTime" } },
+        { "name": "Die Sharpening per Part", "unit": "s", "formula": "{Die Changeover Time} * ({Punch Dies} / {Punch Hits per Die Change} + {Cut-Off Dies} / {Cut-Off Hits per Die Change})" }
+      ]
+    },
+    {
+      "key": "roll_forming.strip",
+      "name": "Roll Forming - Strip",
+      "operations": [],
+      "helper": true,
+      "output": "Strip Mass",
+      "results": ["Feed Length", "Strip Area"],
+      "description": "The strip one part uses: as wide as the section's stretch-out, as long as the part plus the slug a blade cut-off cuts out between parts (slugDieCutOffLength; none by scissor), at the sheet's thickness and the material's density.",
+      "fields": [
+        { "name": "Strip Width", "unit": "mm", "source": { "cad": "strip_width_mm (the section's stretch-out)" } },
+        { "name": "Part Length", "unit": "mm", "source": { "cad": "length_mm (along the profile)" } },
+        { "name": "Slug Length", "unit": "mm", "source": { "engine": "slug_mm (slugDieCutOffLength by blade, 0 by scissor)" } },
+        { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
+        { "name": "Density", "unit": "kg/m³", "source": { "material": "density_kg_m3" } },
+        { "name": "Feed Length", "unit": "mm", "formula": "{Part Length} + {Slug Length}" },
+        { "name": "Strip Area", "unit": "mm²", "formula": "{Strip Width} * {Feed Length}" },
+        { "name": "Strip Mass", "unit": "kg", "formula": "{Strip Area} * {Sheet Thickness} * {Density} / 1000000000" }
+      ]
+    },
+    {
+      "key": "roll_forming.material",
+      "name": "Roll Forming - Material",
+      "operations": [],
+      "helper": true,
+      "output": "Material Cost",
+      "description": "The material of one part: the strip it uses off the coil (Roll Forming - Strip; the slug and the punched area are its scrap), at the material's price.",
+      "fields": [
+        { "name": "Strip Mass", "unit": "kg", "source": { "engine": "strip_mass_kg (Roll Forming - Strip)" } },
+        { "name": "Material Price", "unit": "USD/kg", "source": { "material": "cost" } },
+        { "name": "Material Cost", "unit": "USD", "formula": "{Strip Mass} * {Material Price}" }
+      ]
+    },
+    {
+      "key": "roll_forming.press_force",
+      "name": "Roll Forming - Press Force",
+      "operations": [],
+      "helper": true,
+      "output": "Press Force",
+      "description": "The force of a press stroke on the line: the length it cuts (the punched features' perimeters in one stroke of the progressive die; the strip width once by scissor, twice by blade), sheared through the sheet at the material's shear strength.",
+      "fields": [
+        { "name": "Cut Length", "unit": "mm", "source": { "engine": "cut_length_mm (the length one stroke cuts)" } },
+        { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
+        { "name": "Shear Strength", "unit": "MPa", "source": { "material": "shear_strength_mpa" } },
+        { "name": "Press Force", "unit": "kN", "formula": "{Cut Length} * {Sheet Thickness} * {Shear Strength} / 1000" }
+      ]
+    },
+    {
+      "key": "roll_forming.roll_tooling",
+      "name": "Roll Forming - Roll Tooling",
+      "operations": [],
+      "helper": true,
+      "output": "Tool Cost",
+      "results": ["Tool Subtotal"],
+      "description": "One set of the mill's rolls: the tooling multiplier (toolingMultiplier_Standard, or toolingMultiplier_Panel for a panel profile; the Cost Guide's rollFormToolingMultiplier when set) x the strip width x the roll stations, with profit and SG&A. The data gives the multipliers (design, material and machining) and no formula: this rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Tooling Multiplier", "unit": "USD/mm", "source": { "engine": "tooling_multiplier (toolingMultiplier_Standard or toolingMultiplier_Panel; the Cost Guide's rollFormToolingMultiplier)" } },
+        { "name": "Strip Width", "unit": "mm", "source": { "cad": "strip_width_mm (the section's stretch-out)" } },
+        { "name": "Roll Stations", "unit": null, "source": { "engine": "roll_stations (Roll Forming - Stations, or the Cost Guide's rollFormStations)" } },
+        { "name": "Profit", "unit": null, "source": { "variable": "percentProfit" } },
+        { "name": "SG and A", "unit": null, "source": { "variable": "percentSGandA" } },
+        { "name": "Tool Subtotal", "unit": "USD", "formula": "{Tooling Multiplier} * {Strip Width} * {Roll Stations}" },
+        { "name": "Tool Cost", "unit": "USD", "formula": "{Tool Subtotal} * (1 + {Profit} + {SG and A})" }
+      ]
+    },
+    {
+      "key": "roll_forming.press_die",
+      "name": "Roll Forming - Press Die",
+      "operations": [],
+      "helper": true,
+      "output": "Die Cost",
+      "results": ["Design Cost", "Assembly Cost", "Shoe Cost", "Component Cost", "Insert Cost", "Heat Treat Cost", "Die Subtotal"],
+      "description": "One die of a press on the line (the punch press's progressive die, or the cut-off die), by a compact die model: its design (punchPressDesignPreparationHrs + punchPressDieBaseDesignHrs) and assembly (punchPressToolingAssemblyHrs) at the tool shop's rates; its upper and lower die shoes (dieShoeSizes for the die's plan) in tool steel and their machining (cncMillingRates profiling); the standard components of each punched feature (componentStandardCosts: pierce punch, die button, punch retainer, stripper pin); the cut-off's blade or scissor inserts (toolingComponentAttributes); the die's carrying, freight, gage and welding costs; heat treatment when cutOffToolingHeatTreat / punchToolingHeatTreat says so; tuning on the cut-off die (percentTuning); with profit and SG&A. Shop rates and tool steel: the Digital Factory USA Default tool shop. The model is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        { "name": "Design Prep Hours", "unit": "hr", "source": { "variable": "punchPressDesignPreparationHrs" } },
+        { "name": "Base Design Hours", "unit": "hr", "source": { "variable": "punchPressDieBaseDesignHrs" } },
+        { "name": "Design Rate", "unit": "USD/hr", "source": { "engine": "design_rate (the tool shop's designRateUsdPerHr)" } },
+        { "name": "Assembly Hours", "unit": "hr", "source": { "variable": "punchPressToolingAssemblyHrs" } },
+        { "name": "Assembly Rate", "unit": "USD/hr", "source": { "engine": "assembly_rate (the tool shop's assemblyRateUsdPerHr)" } },
+        { "name": "Shoe Steel Mass", "unit": "kg", "source": { "engine": "shoe_steel_kg (dieShoeSizes for the die's plan: upper and lower shoe at the tool steel's density)" } },
+        { "name": "Shoe Machined Area", "unit": "mm²", "source": { "engine": "shoe_area_mm2 (the two shoes' faces)" } },
+        { "name": "Profiling Rate", "unit": "mm²/hr", "source": { "engine": "profiling_rate (cncMillingRates at the shoe area)" } },
+        { "name": "Machining Rate", "unit": "USD/hr", "source": { "engine": "machining_rate (the tool shop's machiningRateUsdPerHr)" } },
+        { "name": "Steel Price", "unit": "USD/kg", "source": { "engine": "steel_price (the tool shop's default tool material)" } },
+        { "name": "Punched Features", "unit": null, "source": { "engine": "punched_features (the features the die punches; 0 for the cut-off die)" } },
+        { "name": "Punch Cost", "unit": "USD", "source": { "engine": "punch_cost (componentStandardCosts piercePunchStandard)" } },
+        { "name": "Button Cost", "unit": "USD", "source": { "engine": "button_cost (componentStandardCosts dieButton)" } },
+        { "name": "Retainer Cost", "unit": "USD", "source": { "engine": "retainer_cost (componentStandardCosts piercePunchRetainerStandard)" } },
+        { "name": "Stripper Pin Cost", "unit": "USD", "source": { "engine": "stripper_pin_cost (componentStandardCosts stripperPinAssy)" } },
+        { "name": "Insert Steel Mass", "unit": "kg", "source": { "engine": "insert_steel_kg (the cut-off's blade or scissor inserts, toolingComponentAttributes; 0 for the punch die)" } },
+        { "name": "Heat Treat", "unit": null, "source": { "engine": "heat_treat (cutOffToolingHeatTreat or punchToolingHeatTreat: 1 or 0)" } },
+        { "name": "Heat Treat Rate", "unit": "USD/kg", "source": { "variable": "stdHeatTreatCostPerKgCutOffPress" } },
+        { "name": "Other Die Costs", "unit": "USD", "source": { "engine": "other_costs (the die's carrying, freight, gage and welding cost variables)" } },
+        { "name": "Tuning", "unit": null, "source": { "engine": "tuning (percentTuning on the cut-off die, 0 on the punch die)" } },
+        { "name": "Profit", "unit": null, "source": { "variable": "percentProfit" } },
+        { "name": "SG and A", "unit": null, "source": { "variable": "percentSGandA" } },
+        { "name": "Design Cost", "unit": "USD", "formula": "({Design Prep Hours} + {Base Design Hours}) * {Design Rate}" },
+        { "name": "Assembly Cost", "unit": "USD", "formula": "{Assembly Hours} * {Assembly Rate}" },
+        { "name": "Shoe Cost", "unit": "USD", "formula": "{Shoe Steel Mass} * {Steel Price} + {Shoe Machined Area} / {Profiling Rate} * {Machining Rate}" },
+        { "name": "Component Cost", "unit": "USD", "formula": "{Punched Features} * ({Punch Cost} + {Button Cost} + {Retainer Cost} + {Stripper Pin Cost})" },
+        { "name": "Insert Cost", "unit": "USD", "formula": "{Insert Steel Mass} * {Steel Price}" },
+        { "name": "Heat Treat Cost", "unit": "USD", "formula": "{Heat Treat} * {Heat Treat Rate} * ({Shoe Steel Mass} + {Insert Steel Mass})" },
+        { "name": "Die Subtotal", "unit": "USD", "formula": "{Design Cost} + {Assembly Cost} + {Shoe Cost} + {Component Cost} + {Insert Cost} + {Heat Treat Cost} + {Other Die Costs}" },
+        { "name": "Die Cost", "unit": "USD", "formula": "{Die Subtotal} * (1 + {Tuning}) * (1 + {Profit} + {SG and A})" }
+      ]
+    }
+  ]
+}

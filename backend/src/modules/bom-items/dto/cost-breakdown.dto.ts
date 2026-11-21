@@ -730,6 +730,14 @@ export interface CostSummaryDto {
    * (costUsd and amortizationParts also with no volume).
    */
   hydroformingTooling?: { key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }[];
+  /** Sheet Metal Roll Forming: the strip, the roll stations, the mill, the line speed and what limits it, the coil, the punching, the route quoted and every route. */
+  rollForming?: RollFormingBreakdown;
+  /**
+   * Sheet Metal Roll Forming: the mill's rolls and the press dies, USD, kept out of the piece cost. costUsd is the tools the job wears out (one
+   * tool x copies), what Apply writes, spread over amortizationParts; toolCostUsd one tool. Both null when not costed (costUsd and
+   * amortizationParts also with no volume).
+   */
+  rollFormingTooling?: { key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }[];
   /** Bar and tube: the tools the quoted route needs for this part (extrusion die, bend die sets), USD, kept out of the piece cost; costUsd null when no source prices one. */
   barTubeTooling?: Array<{ key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }>;
   /** Assembly: its components and joints, the route quoted and every route. The components' own costs are not in the summary (the BOM roll-up adds them). */
@@ -961,6 +969,38 @@ export interface HydroformingBreakdown {
   holes: { pierced: number; inFormedWalls: number };
   intensifier: boolean;
   complete: boolean;
+  options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+}
+
+/** A roll formed part's Cost Summary section (costing/roll-forming). Lengths in mm, masses in kg, speeds in mm/s, money in the summary's currency. */
+export interface RollFormingBreakdown {
+  /** The quoted route (roll-forming-route.ts ROLL_FORMING_ROUTES key: scissor, blade) and its name. */
+  route: string;
+  routeLabel: string;
+  /** Memory's cut-off rule: a closed section by blade, an open one by scissor (or cutOffOperationType when the data sets one). */
+  rule: { route: string; closed: boolean; basis: string };
+  section: { heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null };
+  /** The strip a part uses: its width (the section's stretch-out), the part and the feed (the part plus the slug), and their masses. */
+  strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+  /** The roll stations: the bends' passes by level, the lead-in and finishing passes, the rule's total and the Cost Guide's (override). */
+  stations: {
+    forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean; levelSource: string;
+    levels: { level: number; bends: number; maxAngleDeg: number; passes: number }[];
+  };
+  mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;
+  /** The line's speed, the limit that sets it, and every limit. */
+  lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[] } | null;
+  /** The coil: its mass, the parts it makes, the change (threading or end weld plus the uncoiler's load) and its share of a part (s). */
+  coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string } | null;
+  dieSharpeningPerPartS: number;
+  flattener: { needed: boolean; reason: string };
+  /** The features punched in the flat strip (a die station per kind) and those that are No Cost Features, with why. */
+  punching: { dieStations: string[]; punched: number; notPunched: { featureType: string; count: number; reason: string }[]; minHoleMm: number | null } | null;
+  welding: { process: string; machine: string | null; source: 'rule' | 'cost guide' } | null;
+  forcesKn: { punch: number | null; cutOff: number | null };
+  feasible: boolean;
+  complete: boolean;
+  /** Both routes: the total per part (summary currency) when complete, or why not. */
   options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
 }
 

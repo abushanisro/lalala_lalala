@@ -8,8 +8,8 @@ export interface ToolShop {
   machiningUsdPerHr: number;
   assemblyUsdPerHr: number;
   tryoutUsdPerHr: number;
-  /** Its default tool material (defaultToolMaterialName), priced from the tool materials table. */
-  toolSteel: { name: string; usdPerKg: number };
+  /** Its default tool material (defaultToolMaterialName), priced from the tool materials table, with its density (kg/m³) when the table gives one. */
+  toolSteel: { name: string; usdPerKg: number; densityKgM3?: number | null };
 }
 
 type Rows = Readonly<Record<string, readonly Record<string, unknown>[] | undefined>>;
@@ -32,7 +32,7 @@ export function resolveToolShop(rows: Rows, name = 'Default'): { shop: ToolShop 
   const shop: ToolShop = {
     name, designUsdPerHr: rate('designRateUsdPerHr'), machiningUsdPerHr: rate('machiningRateUsdPerHr'),
     assemblyUsdPerHr: rate('assemblyRateUsdPerHr'), tryoutUsdPerHr: rate('tryoutRateUsdPerHr'),
-    toolSteel: { name: steelName, usdPerKg: steelPrice ?? NaN },
+    toolSteel: { name: steelName, usdPerKg: steelPrice ?? NaN, densityKgM3: num(steel?.densityKgPerM3) },
   };
   return missing.length ? { shop: null, missing } : { shop, missing: [] };
 }

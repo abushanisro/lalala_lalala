@@ -10,6 +10,7 @@ import { INVESTMENT_PROCESS_GROUP } from '../../casting/investment/investment-re
 import { COMPOSITES_PROCESS_GROUP } from '../../composites/composites-route';
 import { FORGING_PROCESS_GROUP } from '../../forging/forging-route';
 import { POWDER_METAL_PROCESS_GROUP } from '../../powder-metal/powder-metal-route';
+import { ROLL_FORMING_PROCESS_GROUP } from './part-family-process-group';
 
 /**
  * The raw_materials group each part family's engine prices from, for the engines that price only their own materials. Machining and sheet
@@ -34,6 +35,8 @@ export const PROCESS_OWN_MATERIAL_GROUP: Readonly<Record<string, string>> = {
  */
 const PROCESS_GROUP_OWN_MATERIAL_GROUP: Readonly<Record<string, string>> = {
   [RAPID_PROTOTYPING.processGroup]: RAPID_PROTOTYPING.materialGroup,
+  // A roll formed part is analysed as sheet metal and priced from memory/Sheet metal roll forming's materials (their strengths are its feasibility).
+  [ROLL_FORMING_PROCESS_GROUP]: ROLL_FORMING_PROCESS_GROUP,
 };
 
 /** The raw_materials group a part's engine prices from (its Process's own, else its family's); undefined when it prices any grade. */
