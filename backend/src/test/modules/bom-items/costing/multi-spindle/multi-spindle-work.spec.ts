@@ -13,7 +13,7 @@ const hole = (h: Partial<HoleGroupWork>): HoleGroupWork => ({ diameterMm: 6, dep
 
 // A Ø14 x 32 mm part on 5/8" round bar.
 const bar = (Math.PI / 4) * 15.875 ** 2;
-const part = { threads: [], partLengthMm: 32, partVolumeMm3: (Math.PI / 4) * 14 ** 2 * 32, turnedDiameterMm: 14, turnedLengthMm: 32, barSectionAreaMm2: bar, stockLengthMm: 32.79375 };
+const part = { threads: [], partLengthMm: 32, partVolumeMm3: (Math.PI / 4) * 14 ** 2 * 32, turned: [{ diameterMm: 14, lengthMm: 32 }], barSectionAreaMm2: bar, stockLengthMm: 32.79375 };
 
 describe('multiSpindleWork', () => {
   it('turning and parting on the OD slides, reaming and rotary broaching on the end slides; the rest off the machine', () => {
@@ -38,6 +38,19 @@ describe('multiSpindleWork', () => {
     const removed = bar * 32.79375 - part.partVolumeMm3;
     expect(w.ops[0].splitBy).toEqual({ feature: 'Ring', operation: 'Rough Turning', ratio: expect.closeTo(ring / removed, 12), what: 'ring removed volume / total removed volume' });
     expect(ringRemovalRatio({ ...part, partVolumeMm3: bar * 40 })).toBe(0); // nothing removed: no ring share
+  });
+
+  it('a stepped shaft: the ring volume is each turned diameter\'s own, as the turning engine turns them', () => {
+    // Ø14 x 8 mm with a Ø12 step of 18 mm and one of 5 mm, 31 mm long, on the 5/8" bar (section 197.93 mm2, 31.79375 mm of it per part).
+    //   Ø14: (197.93 - 153.94) x 8  =  351.96 mm3
+    //   Ø12: (197.93 - 113.10) x 18 = 1527.04 mm3;  x 5 = 424.18 mm3
+    //   ring removed 2303.17 mm3; all removed 197.93 x 31.79375 - (153.94 x 8 + 113.10 x 23) = 2460.28 mm3 -> 0.936
+    // (the largest diameter over the whole length would be (197.93 - 153.94) x 31 = 1363.83 mm3 -> 0.554).
+    const turned = [{ diameterMm: 14, lengthMm: 8 }, { diameterMm: 12, lengthMm: 18 }, { diameterMm: 12, lengthMm: 5 }];
+    const shaft = { barSectionAreaMm2: bar, stockLengthMm: 31.79375, partVolumeMm3: (Math.PI / 4) * (14 ** 2 * 8 + 12 ** 2 * 23), turned };
+    expect(ringRemovalRatio(shaft)).toBeCloseTo(0.936, 3);
+    // A bar at the largest diameter leaves that diameter as supplied: it is not among the cylinders turned, and adds no ring volume.
+    expect(ringRemovalRatio({ ...shaft, turned: [] })).toBe(0);
   });
 
   it('holes by diameter group: those on the axis on an end slide with their depth ratio, those of a live tool on a live-tool slide', () => {

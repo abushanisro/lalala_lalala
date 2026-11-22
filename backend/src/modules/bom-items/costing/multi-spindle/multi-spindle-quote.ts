@@ -34,12 +34,10 @@ export interface MultiSpindleMaterial {
   priceSource: string;
 }
 
-/** The part as the turning engine measured it: its length along the turning axis and volume, its turned diameter and length. */
+/** The part as the turning engine measured it: its length along the turning axis and its volume. */
 export interface MultiSpindlePart {
   lengthMm: number;
   volumeMm3: number;
-  turnedDiameterMm: number;
-  turnedLengthMm: number;
 }
 
 /** What each part takes of the bar. The cost is in the location's currency, null when it cannot be priced (`missing` says why). */
@@ -121,8 +119,14 @@ export function quoteMultiSpindle(input: {
   bar: SelectedBar;
   part: MultiSpindlePart;
   material: MultiSpindleMaterial;
-  /** The turning engine's lines on the bar (in the location's currency), the holes timed by diameter group and the threads by size. */
-  engine: { lines: readonly ProcessLineCost[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[] };
+  /**
+   * The turning engine's lines on the bar (in the location's currency), the holes timed by diameter group, the threads by size, and the
+   * cylinders it turns down from the bar (each one's diameter and length).
+   */
+  engine: {
+    lines: readonly ProcessLineCost[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[];
+    turned: readonly { diameterMm: number; lengthMm: number }[];
+  };
   /** A route set by hand (Cost Guide) or priced on its own (the route comparison). */
   chosen: string | null;
   batchSize: number;
@@ -145,8 +149,7 @@ export function quoteMultiSpindle(input: {
 
   const work = multiSpindleWork({
     lines: input.engine.lines, holes: input.engine.holes, threads: input.engine.threads, partLengthMm: part.lengthMm, partVolumeMm3: part.volumeMm3,
-    turnedDiameterMm: part.turnedDiameterMm, turnedLengthMm: part.turnedLengthMm, barSectionAreaMm2: bar.sectionAreaMm2,
-    stockLengthMm: part.lengthMm + bar.facingStockMm,
+    turned: input.engine.turned, barSectionAreaMm2: bar.sectionAreaMm2, stockLengthMm: part.lengthMm + bar.facingStockMm,
   });
   const gapLines = work.gaps.map((g) => gap(g.process, MULTI_SPINDLE_PROCESS_GROUP, MULTI_SPINDLE_MACHINE_CLASS, g.reason));
   const built = buildMultiSpindleRoutes({
