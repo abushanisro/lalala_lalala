@@ -256,7 +256,8 @@ class MachiningFeatureRecognizer:
         cylinders = _deduplicate_cylinders(raw_cylinders)
         cones = self._collect_cones(shape)
         toroids = self._collect_toroids(shape)
-        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True)
+        hole_flats: List[Dict] = []
+        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True, hole_flats=hole_flats)
 
         # ── Teeth around the axis (gear / spline) → AxiGroove ────────────────
         # Off-axis convex faces with N-fold rotational symmetry (axigroove.py).
@@ -347,8 +348,12 @@ class MachiningFeatureRecognizer:
 
             elif kind in ("through_hole", "blind_hole"):
                 fid = f"bore_{bore_idx}"
+                # A bore whose wall does not go all the way round (a flat closes it, a keyway opens it) cannot be tapped,
+                # so no thread is read from its diameter. The milled path never asks either: there a cylinder that
+                # sweeps less than a bore is kept as a round before the hole is classified.
                 hole_variant, tap_spec, is_helicoil = _classify_hole(
                     diameter_mm, through=(kind == "through_hole"),
+                    full_turn=cyl.get("u_range", 2.0 * math.pi) >= HOLE_MIN_SWEEP_RAD,
                 )
 
                 params: Dict = {
@@ -359,6 +364,13 @@ class MachiningFeatureRecognizer:
                     "centroid": centroid,
                 }
                 _annotate_hole_depth(params, diameter_mm, cyl["length"])
+                # The flats that close the bore (one on a D bore, two on a double D), measured as floors: the widest
+                # flat, and the hole's size across a flat (how far its wall rises above it; between the two of a double D).
+                flats = [f for f in hole_flats if set(f["wall_faces"]) & set(face_ids)]
+                if flats:
+                    params["flat_count"] = len(flats)
+                    params["flat_mm"] = round(max(f["width_mm"] for f in flats), 3)
+                    params["across_flat_mm"] = round(min(f["across_mm"] for f in flats), 3)
                 if tap_spec:
                     params["spec"] = tap_spec
                     params["detection"] = "geometry_heuristic"
@@ -1040,6 +1052,7 @@ class MachiningFeatureRecognizer:
         bbox: Optional[Dict] = None,
         hole_bottoms: Optional[set] = None,
         radial: bool = False,
+        hole_flats: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         """
         The floors of the part's recesses, for slot / keyway / pocket classification: planar faces that
@@ -1056,6 +1069,8 @@ class MachiningFeatureRecognizer:
         deepest wall, the one cut into the larger diameter. A floor that faces the turning axis with walls
         reaching up to it is left out: it is one side of a hole the axis runs through (the flat of a
         D-shaped bore, a flat of a square or hexagon socket), not a recess cut into a turned surface.
+        Those flats are added to `hole_flats` when the caller passes a list: each with its width, the
+        hole's size across it (how far the hole's wall rises above the flat) and the faces standing on it.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1124,15 +1139,21 @@ class MachiningFeatureRecognizer:
                     if floor and floor["hole_bottom"] and hole_bottoms is not None:
                         hole_bottoms.add(face_idx)
                     recessed = bool(floor and floor["recessed"] and not floor["hole_bottom"])
+                    hole_side = False
                     if recessed and across_axis:
                         # How far the turning axis stands above the floor, on the side its walls rise on. Within
                         # the walls' height, the axis runs through the space they enclose: a side of an axial hole.
                         origin = plane.Location()
                         fnx, fny, fnz = floor["normal"]
                         axis_height = (on_axis[0] - origin.X()) * fnx + (on_axis[1] - origin.Y()) * fny + (on_axis[2] - origin.Z()) * fnz
-                        recessed = not 0.0 < axis_height <= floor["depth_mm"]
+                        hole_side = 0.0 < axis_height <= floor["depth_mm"]
                     sides = faces_box([topods.Face(face)]) if recessed else None
-                    if sides:
+                    if sides and hole_side:
+                        if hole_flats is not None:
+                            # The flat's width is its side across the axis; its other side runs the hole's length.
+                            width = min(sides[:2], key=lambda side: abs(side[1][0] * ax + side[1][1] * ay + side[1][2] * az))[0]
+                            hole_flats.append({"width_mm": width, "across_mm": floor["depth_mm"], "wall_faces": floor["wall_faces"]})
+                    elif sides:
                         (length, long_direction), (width, _across) = sides[0], sides[1]
                         pockets.append({
                             "normal": (nx, ny, nz),

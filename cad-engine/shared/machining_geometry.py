@@ -64,10 +64,15 @@ HELICOIL_DRILL_RANGES: List[Tuple[float, float, str]] = [
 MAX_COAXIAL_DIST_MM = 5.0
 
 
-def classify_hole(diameter_mm: float, through: bool) -> Tuple[str, Optional[str], bool]:
+def classify_hole(diameter_mm: float, through: bool, full_turn: bool = True) -> Tuple[str, Optional[str], bool]:
     """
     Returns (SimpleHole variant, thread_spec_or_None, is_helicoil) -- variant is
     one of "threaded" / "through" / "blind" (see machining/feature_models.VARIANTS).
+
+    full_turn: the hole's wall goes all the way round its axis. A tap needs a
+    round hole, so a hole whose wall is interrupted (closed by a flat: a D bore,
+    a double D; opened by a keyway) is never read as threaded: it is plain
+    "through" / "blind" whatever its diameter.
 
     Heuristic: holes whose diameter falls within a known tap pre-drill range are
     emitted as variant 'threaded' (confidence 0.55 — geometry only, no PMI to confirm).
@@ -83,12 +88,13 @@ def classify_hole(diameter_mm: float, through: bool) -> Tuple[str, Optional[str]
 
     Helicoil variant flagged separately for the process planner.
     """
-    for lo, hi, spec in TAP_DRILL_RANGES:
-        if lo <= diameter_mm <= hi:
-            return "threaded", spec, False
-    for lo, hi, spec in HELICOIL_DRILL_RANGES:
-        if lo <= diameter_mm <= hi:
-            return "threaded", spec, True
+    if full_turn:
+        for lo, hi, spec in TAP_DRILL_RANGES:
+            if lo <= diameter_mm <= hi:
+                return "threaded", spec, False
+        for lo, hi, spec in HELICOIL_DRILL_RANGES:
+            if lo <= diameter_mm <= hi:
+                return "threaded", spec, True
     return ("through" if through else "blind"), None, False
 
 
