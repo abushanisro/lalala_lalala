@@ -13,7 +13,7 @@ const hole = (h: Partial<HoleGroupWork>): HoleGroupWork => ({ diameterMm: 6, dep
 
 // A Ø14 x 32 mm part on 5/8" round bar.
 const bar = (Math.PI / 4) * 15.875 ** 2;
-const part = { threads: [], partLengthMm: 32, partVolumeMm3: (Math.PI / 4) * 14 ** 2 * 32, turned: [{ diameterMm: 14, lengthMm: 32 }], barSectionAreaMm2: bar, stockLengthMm: 32.79375 };
+const part = { liveMilling: [], threads: [], partLengthMm: 32, partVolumeMm3: (Math.PI / 4) * 14 ** 2 * 32, turned: [{ diameterMm: 14, lengthMm: 32 }], barSectionAreaMm2: bar, stockLengthMm: 32.79375 };
 
 describe('multiSpindleWork', () => {
   it('turning and parting on the OD slides, reaming and rotary broaching on the end slides; the rest off the machine', () => {
@@ -59,6 +59,17 @@ describe('multiSpindleWork', () => {
       { name: 'Drilling Ø6 mm x 2', seconds: 12, slide: 'end', splitBy: { feature: 'SimpleHole', operation: 'Drilling', ratio: 30 / 32, what: 'hole length 30 mm / part length 32 mm' } },
       { name: 'Live-tool drilling Ø6 mm x 1', seconds: 5, slide: 'live' },
     ]);
+  });
+
+  it('a keyway or slot the engine mills is milled on a live-tool slide, in the cycle; an untimed one is named, never sent off the machine', () => {
+    // The engine's milling lines are named for their operations; nothing else of that name is a line of the turning engine.
+    const w = multiSpindleWork({
+      ...part, holes: [], liveMilling: ['Rough Milling', 'Slot Milling'],
+      lines: [line('Rough Turning', 0.5), line('Rough Milling', 0.01), line('Slot Milling', 0, 'Not priced — missing real input: Slots.'), line('Deburring', 0.3)],
+    });
+    expect(w.ops.map((o) => [o.name, o.slide, Math.round(o.seconds * 1e6) / 1e6])).toEqual([['Rough Turning', 'od', 30], ['Rough Milling', 'live', 0.6]]);
+    expect(w.offMachine.map((l) => l.process)).toEqual(['Deburring']);
+    expect(w.gaps).toEqual([{ process: 'Slot Milling', reason: 'Not priced — missing real input: Slots.' }]);
   });
 
   it('threads by size: tapped from an end slide on the centreline, with a live tool off it; a size the calculator cannot time is named', () => {

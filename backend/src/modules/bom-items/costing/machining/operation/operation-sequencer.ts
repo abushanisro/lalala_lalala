@@ -60,7 +60,7 @@
 
 import { computeDrillCycle, computeTapCycle, computeRotaryCycleSec, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass } from '../process/cost-machining-engine';
 import type { DrillingTable } from '../lookup/drilling-table';
-import { runMachiningCalculator, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
+import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { nearestByDiameterThenHardness, MACHINING_MATERIAL } from '../lookup/machining-material-hardness';
@@ -174,14 +174,18 @@ function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketF
   return [...groups.values()].sort((a, b) => b.toolMm - a.toolMm);
 }
 
-/** One operation timed by its calculator: the time and its steps, or the missing inputs named (time 0). */
+/** One operation timed by its calculator: the time, its steps and the calculator that ran, or the missing inputs named (time 0). */
 function calcOp(
   calculators: MachiningCalculators | null,
   operation: string,
   seeds: Record<string, CalcSeed>,
-): Pick<OperationLine, 'timeSec' | 'missing' | 'trace'> {
+): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator'> {
   const run = runMachiningCalculator(calculators, operation, seeds);
-  return { timeSec: run.sec ?? 0, trace: run.trace, ...(run.missing.length > 0 ? { missing: run.missing.join('; ') } : {}) };
+  return {
+    timeSec: run.sec ?? 0, trace: run.trace,
+    ...(run.calculatorId ? { calculator: { id: run.calculatorId, version: run.calculatorVersion, lookups: run.lookups } } : {}),
+    ...(run.missing.length > 0 ? { missing: run.missing.join('; ') } : {}),
+  };
 }
 
 export interface OperationLine {
@@ -209,6 +213,8 @@ export interface OperationLine {
   missing?: string;
   /** The calculator steps the time came from. */
   trace?: CalculationTraceStep[];
+  /** The stored calculator that timed the operation, and the reference-table row each of its lookup inputs came from. */
+  calculator?: { id: string; version: number | null; lookups: CalcRun['lookups'] };
 }
 
 // Canonical manufacturing order for sorting. Names are the real

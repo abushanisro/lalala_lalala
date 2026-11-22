@@ -12,6 +12,7 @@ import { stockCutOffOf, type StockCutOff } from './costing/stock-machining/stock
 import { asSuppliedFaces } from './costing/stock/stock-part';
 import { withoutAsSuppliedFaces } from './costing/machining/operation/as-supplied-faces';
 import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock-price';
+import { latheMillingOps } from './costing/machining/process/lathe-milling';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
@@ -24,7 +25,7 @@ import {
 import { electricityUsd, loadLocationElectricity } from './costing/shared/location-electricity';
 import { castingSourcePath } from '../sand-casting/casting-source';
 import { isMachiningFamily, isTurnedFamily, type MachiningFamily } from '../../domain/part-family';
-import { liveToolHoles, liveToolingVerdict } from './costing/machining/capability/live-tooling';
+import { liveToolHoles, liveToolMilledFeatures, type LiveToolWork } from './costing/machining/capability/live-tooling';
 import { applySustainabilityFactors } from './costing/shared/physics/sustainability';
 import { gridCarbonFactor, materialCarbonFactor, stockOf } from './costing/shared/physics/carbon-factors';
 import { PlasticCatalogOperationsService, type PlasticFeatureGraph } from './costing/plastic-molding/operation/plastic-catalog-operations.service';
@@ -53,7 +54,7 @@ import { computeNesting, resolveNestingDimensions, EDGE_ALLOWANCE_MM, computePar
 import { resolveNetUsagePhysics } from './costing/sheet-metal/raw-material/sheet-metal-net-usage.physics';
 import {
   computeMillingCostSummary, computeTurningCostSummary,
-  checkMachiningCapability, computeRouteComplexityScore,
+  checkMachiningCapability, checkLatheCapability, computeRouteComplexityScore,
   meetsRequiredMilledClass, pickRecommendedRoute,
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
@@ -1518,7 +1519,9 @@ export class BomItemCostingService {
    * The part's CAD features as machining work: the features that go to their own machine (deep holes, broached
    * keyways, wire EDM slots, rotary-broached and etched pockets) split out, and the rest sequenced into the milling
    * operations with their times. ONE definition, used by the cost summary and by the route comparison, so the
-   * applied route is priced on the same operations the Cost tab lists.
+   * applied route is priced on the same operations the Cost tab lists. A lathe route reads of it what the turning
+   * engine times no other way: the milling of the part's keyways and slots (latheMilling) and what the part needs a
+   * live tool for (liveTool).
    */
   private async machiningFeaturePlan(
     item: any, fg: any, grade: string | null, accessToken: string,
@@ -1622,7 +1625,19 @@ export class BomItemCostingService {
     const featureOps = (allFeatureOps.length > 0 && featureMachiningTimeSec >= 30)
       ? allFeatureOps
       : undefined;
-    return { warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, heatTreatment, machinabilityRating };
+    // A lathe's milling: the sequencer's operations on the keyways and slots left to mill (lathe-milling.ts), each with the
+    // time its own calculator gave it (the drawing's adjustments above are the milled line's). Not under the safety net
+    // above, which guards the milled line's stock-removal fallback: a keyway is a few seconds, and on a lathe route
+    // nothing else prices it.
+    const latheMilling = latheMillingOps(rawFeatureOps);
+    // What a lathe makes only with a live tool (live-tooling.ts): the cross and off-axis holes, and those same keyways and slots.
+    const liveTool: LiveToolWork = {
+      holes: liveToolHoles(fg?.machining_features?.features), milled: liveToolMilledFeatures(chemSplit.filteredFeatures),
+    };
+    return {
+      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, latheMilling, liveTool,
+      heatTreatment, machinabilityRating,
+    };
   }
 
   /** Convert raw operation-sequencer output into grouped FeatureOp[] for the UI. */
@@ -2392,7 +2407,7 @@ export class BomItemCostingService {
       const machiningCalculators = await this.resolveMachiningCalculators(accessToken);
       const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock?.asSuppliedFaceIds);
       materialWarnings.push(...featurePlan.warnings);
-      const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, heatTreatment } = featurePlan;
+      const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
 
       // Stage 4 pipeline log — confirms what the cost engine receives
       this.logger.debug(
@@ -2462,6 +2477,7 @@ export class BomItemCostingService {
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(grade)),
         partSetup: await this.partSetupInput(await this.partSetupsFromToolAxes(fg)),
         featureOps: featureOps,
+        latheMilling,
         processIdentityByMachineClass: cncProcessIdentities,
         deburrLinearSpeedMmPerSec: deburrParams.dataFound ? deburrParams.linearSpeedMmPerSec : null,
         deburrMatch: deburrParams.dataFound ? deburrParams.match ?? null : null,
@@ -2526,7 +2542,7 @@ export class BomItemCostingService {
             turning: baseCncInput,
             turningRate: mhrRates.simultaneousTurning,
             tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, mhrRates.simultaneousTurning),
-            liveHoles: liveToolHoles(fg?.machining_features?.features),
+            liveHoles: liveTool.holes,
             form: barForm ?? 'round',
             material: {
               id: barMaterial.materialRecord?.id ?? null,
@@ -2607,7 +2623,14 @@ export class BomItemCostingService {
         // The route's quote with the stock on it: the Band Saw line before the machining, the stock bought per part as the material.
         const cost = stock ? stock.apply(engineCost, stockCutOffFor(cls)) : engineCost;
         const selectedCandidate = rate.selection?.balanced?.candidate;
-        const envelope = checkMachiningCapability(
+        // A mill is checked for its envelope (its class is gated below). A lathe is checked as the route comparison checks
+        // it (checkLatheCapability): its envelope, and the live tool the part's cross holes, keyways and slots need.
+        const lathe = family === 'milled' ? null : checkLatheCapability(
+          cls,
+          { maxLength: baseCncInput.maxLength, maxWidth: baseCncInput.maxWidth, maxHeight: baseCncInput.maxHeight, weightKg: baseCncInput.finishedWeightKg, liveTool },
+          { name: rate.machineName ?? this.humanizeMachineClass(cls), capability: selectedCandidate?.capability, capabilitySource: selectedCandidate?.capabilitySource },
+        );
+        const capability = lathe ?? checkMachiningCapability(
           cls, baseCncInput.maxLength, baseCncInput.maxWidth, baseCncInput.maxHeight,
           baseCncInput.finishedWeightKg,
           selectedCandidate?.capability, selectedCandidate?.capabilitySource,
@@ -2626,9 +2649,9 @@ export class BomItemCostingService {
         // a real rate.
         const hasRealRate = rate.source !== 'no_db_rate';
         const capable =
-          envelope.overallCapable && hasRealRate &&
+          capability.overallCapable && hasRealRate &&
           (family !== 'milled' || meetsRequiredMilledClass(cls, requiredClass));
-        return { cls, cost, capable, hasRealRate, totalCost: cost.totalCost, setupCount: cost.setupCount ?? 1 };
+        return { cls, cost, capable, hasRealRate, totalCost: cost.totalCost, setupCount: cost.setupCount ?? 1, liveToolWarnings: lathe?.liveToolWarnings ?? [] };
       });
 
       const recommended = pickRecommendedRoute(costedRoutes);
@@ -2645,6 +2668,8 @@ export class BomItemCostingService {
             : 'No costed route fully satisfies the part envelope/complexity — showing the closest option; review machine capability.',
         );
       }
+      // What the quoted lathe's live tool cannot make, or that its live tooling is not on file: said here as on its route in the comparison.
+      cncResult.warnings.push(...recommended.liveToolWarnings);
       cncResult.warnings.push(...materialWarnings, ...unpricedOpWarnings);
       if (family === 'milled' && !requiredClass) cncResult.warnings.push(axisRequirement.reason);
       cncResult.drawingCadConsistency = drawingCadConsistency;
@@ -9122,6 +9147,9 @@ export class BomItemCostingService {
     const blankResult = await this.selectBlank(item, fg, family, accessToken, location);
     // A Stock Machining part: its stock and band saw on every route; a bar-fed lathe parts the piece off the bar instead (stockCutOffOf).
     const stock = stockMaterial ? await this.stockMachiningRoutes(item, fg, family, { location, accessToken, batchSize, ...stockMaterial }) : null;
+    // The feature plan the cost summary prices (machiningFeaturePlan): the keyways broached, the slots wire cut, the keyways and slots a
+    // lathe mills, and what the part needs a live tool for.
+    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock?.asSuppliedFaceIds);
     // Fix 1: turned parts also use feature recognizer hole count
     const turnedCncSummary = machiningFeatureCounts(fg?.machining_features);
     const holeCount = turnedCncSummary !== null
@@ -9194,8 +9222,11 @@ export class BomItemCostingService {
       surfaceGrindingParams: await this.machiningLookup.getSurfaceGrindingParams(detectMaterialClass(grade)),
       surfaceGrindingRate: mhrRates.surfaceGrinder,
       ...(await this.polygonInputs(item, fg)),
+      latheMilling: featurePlan.latheMilling,
+      keywayCandidates: featurePlan.keywaySplit.keywayCandidates,
       keywayBroach: keywayBroach ?? null,
       broachRate: mhrRates.broach,
+      wireEdmCandidates: featurePlan.wireEdmSplit.wireEdmCandidates,
       wireEdmParams: wireEdmParams ?? null,
       wireEdmRate: mhrRates.wireEdm,
       turningParams: turningParams ?? null,
@@ -9229,8 +9260,6 @@ export class BomItemCostingService {
 
 
     const threadCount = baseInput.threads.reduce((s, t) => s + t.count, 0);
-    // Cross holes and axial holes off the turning centreline: a lathe drills them only with a live tool (live-tooling.ts).
-    const liveHoles = liveToolHoles(fg?.machining_features?.features);
 
     const routes: RouteResultDto[] = machineClasses.map((mc) => {
       const routeRate = primaryRateByClass.get(mc)!;
@@ -9241,15 +9270,12 @@ export class BomItemCostingService {
       );
       const cost = stock ? stock.apply(engineCost, cutOff) : engineCost;
       const routeCandidate = routeRate.selection?.balanced?.candidate;
-      const envelope = checkMachiningCapability(
-        mc, maxLength, maxWidth, maxHeight, finishedWeightKg,
-        routeCandidate?.capability, routeCandidate?.capabilitySource,
+      // The lathe's envelope, and the live tool the part's cross and off-axis holes, keyways and slots need: the check the cost summary makes.
+      const capability = checkLatheCapability(
+        mc,
+        { maxLength, maxWidth, maxHeight, weightKg: finishedWeightKg, liveTool: featurePlan.liveTool },
+        { name: routeRate.machineName ?? this.humanizeMachineClass(mc), capability: routeCandidate?.capability, capabilitySource: routeCandidate?.capabilitySource },
       );
-      const liveTooling = liveToolingVerdict(liveHoles, routeCandidate?.capability, routeRate.machineName ?? this.humanizeMachineClass(mc));
-      const capability = {
-        overallCapable: envelope.overallCapable && liveTooling.capable,
-        machineCapabilityWarnings: [...envelope.machineCapabilityWarnings, ...liveTooling.warnings],
-      };
       const routeSetups = cost.setupCount ?? 1;
       return {
         routeId: mc as unknown as RouteId,
