@@ -49,11 +49,12 @@ cad-engine/
                                    depth, plan, projected and developed area, main surface, the drawn form, the blank (unfolded,
                                    drawn equal-area or flat), straight and curved flanges, holes (pierced in the flat or not,
                                    edge distance to the main surface)
-    features/roll_form.py        — what every single-body sheet part is measured for roll forming ("roll_form", rf_v2): the long
+    features/roll_form.py        — what every single-body sheet part is measured for roll forming ("roll_form", rf_v3): the long
                                    axis (the cross-section bends' common direction, or the axis a curved profile is swept round)
                                    and length, whether it is one section along it (stock_fraction >= 0.8), the section, the strip
                                    width (section area / t, checked against flats + bend arcs), the cross-section bends in order
-                                   across the strip (angle, inner radius, the flat before each, level counted out from the web;
+                                   across the strip (angle, inner radius, the flat before each, fold direction, level counted out from
+                                   the web, the middle of an open strip;
                                    a sharp corner of a profile modelled without bend radii is a bend of radius 0, "sharp"), the
                                    tube (a closed section; a round tube is two half turns meeting at the seam, its wall read from
                                    its skins), the curve, the punched features (holes, cut-outs, lances, forms) at their stations,
