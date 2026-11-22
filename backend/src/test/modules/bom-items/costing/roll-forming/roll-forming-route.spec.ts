@@ -188,13 +188,17 @@ describe('the roll stations (bend levels, lift angle and flange length on the mi
     expect(r.sharpBends).toMatchObject({ count: 1, pricedRadiusMm: 1.5 });
     expect(r.warnings.join(' ')).toContain("1 bend(s) modelled sharp: priced at the material's minimum bend radius 1 x t = 1.5 mm");
     expect(r.warnings.join(' ')).not.toMatch(/tighter than/);
-    // The strip grows by the bend allowance at that radius, θ(r + K t), less the θ 0.33 t the measurement bends a sharp corner by: here θ r.
-    const added = (Math.PI / 2) * (1.5 + 0.33 * 1.5) - (Math.PI / 2) * 0.33 * 1.5;
-    expect(r.sharpBends!.stripAddedMm).toBeCloseTo(added, 9);
-    expect(r.material.stripWidthMm).toBeCloseTo(120 + added, 9);
-    expect(r.material.stripKg).toBeCloseTo(((120 + added) * 2000 * 1.5 * 7850) / 1e9, 9);
-    // At r = 2t and above the allowance takes K 0.41: a 1000 MPa-yield strip takes the 6 x t row.
-    expect(route(input(sharp, { material: { ...STEEL, yieldMpa: 1000 } }), 'scissor').sharpBends!.stripAddedMm).toBeCloseTo((Math.PI / 2) * (6 * 1.5 + 0.41 * 1.5) - (Math.PI / 2) * 0.33 * 1.5, 9);
+    // The drawing's corners stay put: the radius takes (r + t/2) tan(θ/2) off each flat and adds θ(r + K t); the measurement counted the sharp
+    // corner as θ 0.33 t less t tan(θ/2). So the strip changes by θ(r + K t) − θ 0.33 t − 2 r tan(θ/2): here θ r − 2 r = −0.64 mm, narrower.
+    const change = (Math.PI / 2) * (1.5 + 0.33 * 1.5) - (Math.PI / 2) * 0.33 * 1.5 - 2 * 1.5 * Math.tan(Math.PI / 4);
+    expect(change).toBeCloseTo(-0.6438, 4);
+    expect(r.sharpBends!.stripChangeMm).toBeCloseTo(change, 9);
+    expect(r.sharpBends!.basis).toContain('mm narrower for it');
+    expect(r.material.stripWidthMm).toBeCloseTo(120 + change, 9);
+    expect(r.material.stripKg).toBeCloseTo(((120 + change) * 2000 * 1.5 * 7850) / 1e9, 9);
+    // At r = 2t and above the allowance takes K 0.41: a 1000 MPa-yield strip takes the 6 x t row (r = 9 mm).
+    expect(route(input(sharp, { material: { ...STEEL, yieldMpa: 1000 } }), 'scissor').sharpBends!.stripChangeMm)
+      .toBeCloseTo((Math.PI / 2) * (9 + 0.41 * 1.5) - (Math.PI / 2) * 0.33 * 1.5 - 2 * 9 * Math.tan(Math.PI / 4), 9);
   });
 
   it('a profile of minNumBendsForPanelCrossSection (8) bends is a panel: a duplex mill and the panel tooling multiplier', () => {

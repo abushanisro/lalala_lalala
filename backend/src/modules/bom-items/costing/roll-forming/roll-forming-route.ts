@@ -133,7 +133,7 @@ export interface RollFormingRoute {
   lines: ProcessLineCost[];
   material: {
     costUsd: number; stripKg: number; partKg: number; scrapKg: number; feedLengthMm: number; slugMm: number;
-    /** The strip the coil is slit to (mm): the measured width, wider for bends modelled sharp (sharpBends). */
+    /** The strip the coil is slit to (mm): the measured width, adjusted for bends modelled sharp (sharpBends). */
     stripWidthMm: number;
     run: ReferenceCalcRun | null; stripRun: ReferenceCalcRun | null;
   };
@@ -147,7 +147,7 @@ export interface RollFormingRoute {
     run: ReferenceCalcRun | null;
   };
   /** Bends modelled sharp (no radius), priced at the material's minimum bend radius; null when none is. */
-  sharpBends: { count: number; pricedRadiusMm: number | null; stripAddedMm: number; basis: string } | null;
+  sharpBends: { count: number; pricedRadiusMm: number | null; stripChangeMm: number; basis: string } | null;
   mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean } | null;
   requiredShaftMm: number | null;
   lineSpeed: { mmPerS: number; limiting: string | null; caps: SpeedCap[]; multiplier: number; speedsTried: number; run: ReferenceCalcRun } | null;
@@ -272,24 +272,29 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   if (material.densityKgM3 == null || !(material.densityKgM3 > 0)) return none(`${material.name}: its density`);
   if (material.costPerKgUsd == null || !(material.costPerKgUsd > 0)) return none(`${material.name}: its price per kg`);
   const t = part.thicknessMm;
-  // A bend modelled sharp is priced at the material's minimum bend radius r, and the strip the coil is slit to grows by its bend allowance
-  // θ(r + K t) (K 0.33 below r = 2t, else 0.41: the extractor's rule) less the θ 0.33 t the measurement bends a sharp corner by.
+  // A bend modelled sharp is priced at the material's minimum bend radius r. The drawing's mid-surface corners stay where they are, so the
+  // radius cuts (r + t/2) tan(θ/2) off each flat and adds its allowance θ(r + K t) (K 0.33 below r = 2t, else 0.41: the extractor's rule).
+  // The measurement counted the sharp corner as θ 0.33 t less t tan(θ/2), so the strip changes by θ(r + K t) − θ 0.33 t − 2 r tan(θ/2): a
+  // little narrower (−0.64 mm for 90° at r = t = 1.5). A fold of 179° or more has no corner to run on to and keeps only the allowance
+  // (the extractor skips its tan term too).
   const minRadius = minBendRadius(ref, t, material.yieldMpa);
   const sharp = part.bends.filter((b) => b.sharp);
-  const sharpAddMm = minRadius.mm == null ? 0 : sharp.reduce((sum, b) => {
+  const sharpChangeMm = minRadius.mm == null ? 0 : sharp.reduce((sum, b) => {
     const theta = (b.angleDeg * Math.PI) / 180;
-    const k = minRadius.mm! < 2 * t ? 0.33 : 0.41;
-    return sum + theta * (minRadius.mm! + k * t) - theta * 0.33 * t;
+    const r = minRadius.mm!;
+    const k = r < 2 * t ? 0.33 : 0.41;
+    const flatsCut = b.angleDeg < 179 ? 2 * r * Math.tan(theta / 2) : 0;
+    return sum + theta * (r + k * t) - theta * 0.33 * t - flatsCut;
   }, 0);
-  const W = part.stripWidthMm + sharpAddMm;
-  const priced: RollFormPart = sharpAddMm > 0 ? { ...part, stripWidthMm: W } : part;
+  const W = part.stripWidthMm + sharpChangeMm;
+  const priced: RollFormPart = sharpChangeMm !== 0 ? { ...part, stripWidthMm: W } : part;
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
   const measuredStrip = part.stripWidthSource === 'neutral fibre'
     ? `the section's flats and bends at the neutral fibre (${r2(part.stripWidthMidMm)} mm at the mid-line)`
     : "the section's mid-line stretch-out, its area / t";
   const cad: Record<string, CalcSeed | undefined> = {
-    strip_width_mm: seed(W, sharpAddMm > 0
-      ? `the strip the coil is slit to (mm): ${r2(part.stripWidthMm)} mm measured (${measuredStrip}) + ${r2(sharpAddMm)} mm for ${sharp.length} sharp bend(s) at the ${r2(minRadius.mm!)} mm radius they are priced at`
+    strip_width_mm: seed(W, sharpChangeMm !== 0
+      ? `the strip the coil is slit to (mm): ${r2(part.stripWidthMm)} mm measured (${measuredStrip}) ${sharpChangeMm < 0 ? '−' : '+'} ${r2(Math.abs(sharpChangeMm))} mm for ${sharp.length} sharp bend(s) formed at the ${r2(minRadius.mm!)} mm radius they are priced at`
       : `the strip the coil is slit to: ${measuredStrip} (mm)`),
     length_mm: seed(part.lengthMm, 'the part length along the profile (mm)'),
     thickness_mm: seed(t, 'the sheet thickness (mm)'),
@@ -320,10 +325,10 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
 
   // ── What the part needs of the line, whatever the cut-off ─────────────────────────────────────────────────────────────────────────
   const sharpBends = sharp.length ? {
-    count: sharp.length, pricedRadiusMm: minRadius.mm, stripAddedMm: sharpAddMm,
+    count: sharp.length, pricedRadiusMm: minRadius.mm, stripChangeMm: sharpChangeMm,
     basis: minRadius.mm != null
-      ? `modelled sharp: priced at the material's minimum bend radius ${minRadius.k} x t = ${r2(minRadius.mm)} mm (${minRadius.basis}); the strip is ${r2(sharpAddMm)} mm wider for it `
-        + `(each bend's allowance θ(r + K t) less the θ 0.33 t the measurement bends a sharp corner by): ${r2(W)} mm, measured ${r2(part.stripWidthMm)} mm`
+      ? `modelled sharp: priced at the material's minimum bend radius ${minRadius.k} x t = ${r2(minRadius.mm)} mm (${minRadius.basis}); the strip is ${r2(Math.abs(sharpChangeMm))} mm ${sharpChangeMm < 0 ? 'narrower' : 'wider'} for it `
+        + `(each bend's allowance θ(r + K t) less the 2 r tan(θ/2) the radius takes off its flats and the θ 0.33 t the measurement bent the sharp corner by): ${r2(W)} mm, measured ${r2(part.stripWidthMm)} mm`
       : `modelled sharp: priced with no radius, as modelled (${minRadius.basis})`,
   } : null;
   const plan = stationPlan(ref, priced, minRadius.mm);

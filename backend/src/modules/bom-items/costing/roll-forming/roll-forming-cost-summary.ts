@@ -73,7 +73,7 @@ export function buildRollFormingCostSummary(input: {
         sizeLabel: `${r2(route.material.stripWidthMm)} mm x ${r2(route.material.feedLengthMm)} mm strip, ${r2(part.thicknessMm)} mm coil`,
         grossWeightKg: r3(grossKg), netWeightKg: r3(partKg), utilizationPct: grossKg > 0 ? r2((100 * partKg) / grossKg) : 0,
         wasteKg: r3(route.material.scrapKg), wasteCost: r2(route.material.scrapKg * perKg),
-        sheetSource: `coil strip ${r2(route.material.stripWidthMm)} mm wide (the section's stretch-out${route.sharpBends?.stripAddedMm ? ', wider for its sharp bends' : ''})${route.material.slugMm > 0 ? `, ${r2(route.material.slugMm)} mm slug a part (slugDieCutOffLength)` : ''}`,
+        sheetSource: `coil strip ${r2(route.material.stripWidthMm)} mm wide (the section's stretch-out${route.sharpBends?.stripChangeMm ? `, ${route.sharpBends.stripChangeMm < 0 ? 'narrower' : 'wider'} for its sharp bends formed at a radius` : ''})${route.material.slugMm > 0 ? `, ${r2(route.material.slugMm)} mm slug a part (slugDieCutOffLength)` : ''}`,
       },
     } : {}),
     // The mill's rolls and the press dies (USD): listed in the Cost Guide's tooling and written on Apply, not in the piece cost.
@@ -96,7 +96,7 @@ export function buildRollFormingCostSummary(input: {
           } : null,
           sharpBends: route.sharpBends ? {
             count: route.sharpBends.count, pricedRadiusMm: route.sharpBends.pricedRadiusMm != null ? r2(route.sharpBends.pricedRadiusMm) : null,
-            stripAddedMm: r2(route.sharpBends.stripAddedMm), basis: route.sharpBends.basis,
+            stripChangeMm: r2(route.sharpBends.stripChangeMm), basis: route.sharpBends.basis,
           } : null,
         },
         materialPriceSource: input.rollForming.material?.priceSource ?? null,

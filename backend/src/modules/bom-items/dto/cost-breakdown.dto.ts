@@ -983,8 +983,8 @@ export interface RollFormingBreakdown {
     heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
     /** A closed section's outside sizes (a round tube's diameter) and wall; null for an open section. */
     tube: { outerDiameterMm: number | null; outerWidthMm: number | null; outerHeightMm: number | null; wallMm: number | null } | null;
-    /** Bends modelled with no radius, priced at the material's minimum bend radius (minBendRadii x t), and how much wider that makes the strip; null when none is. */
-    sharpBends: { count: number; pricedRadiusMm: number | null; stripAddedMm: number; basis: string } | null;
+    /** Bends modelled with no radius, priced at the material's minimum bend radius (minBendRadii x t), and how much that changes the strip (mm, negative when narrower); null when none is. */
+    sharpBends: { count: number; pricedRadiusMm: number | null; stripChangeMm: number; basis: string } | null;
   };
   /** Where the material's price per kg was read (the group's cost_usa, or in India another group's cost_india of the same material). */
   materialPriceSource: string | null;
