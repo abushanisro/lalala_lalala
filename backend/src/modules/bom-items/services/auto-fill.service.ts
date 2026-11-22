@@ -194,6 +194,56 @@ interface HydroformMeasurement {
   holes?: unknown;
 }
 
+/**
+ * What a sheet-metal part is measured for roll forming (cad-engine sheet_metal/features/roll_form.py, its "roll_form" result), as
+ * feature_graph.summary.rollFormGeometry: the top-level keys camelCase, the objects inside (section, stripWidthCheck, bends, curve, features,
+ * ends) as the engine writes them, snake_case -- as hydroformGeometry(). null when the engine found the part is not a profile (no cross-section
+ * bends running one way, or flat) or did not measure it (an analysis from before rf_v1).
+ */
+export function rollFormGeometry(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rf = raw as RollFormMeasurement;
+  if (typeof rf.version !== 'string') return null;
+  return {
+    extractionVersion: rf.version,
+    axis: rf.axis ?? null,
+    axisSource: rf.axis_source ?? null,
+    lengthMm: rf.length_mm ?? null,
+    constantSection: rf.constant_section ?? null,
+    stockFraction: rf.stock_fraction ?? null,
+    section: rf.section ?? null,
+    stripWidthMm: rf.strip_width_mm ?? null,
+    stripWidthNeutralMm: rf.strip_width_neutral_mm ?? null,
+    stripWidthCheck: rf.strip_width_check ?? null,
+    thicknessMm: rf.thickness_mm ?? null,
+    bends: rf.bends ?? null,
+    lastFlangeMm: rf.last_flange_mm ?? null,
+    curve: rf.curve ?? null,
+    features: rf.features ?? null,
+    ends: rf.ends ?? null,
+  };
+}
+
+/** The engine's "roll_form" result as it arrives (its values are passed on as measured). */
+interface RollFormMeasurement {
+  version?: unknown;
+  axis?: unknown;
+  axis_source?: unknown;
+  length_mm?: unknown;
+  constant_section?: unknown;
+  stock_fraction?: unknown;
+  section?: unknown;
+  strip_width_mm?: unknown;
+  strip_width_neutral_mm?: unknown;
+  strip_width_check?: unknown;
+  thickness_mm?: unknown;
+  bends?: unknown;
+  last_flange_mm?: unknown;
+  curve?: unknown;
+  features?: unknown;
+  ends?: unknown;
+}
+
 @Injectable()
 export class AutoFillService {
   private readonly logger = new Logger(AutoFillService.name);
@@ -675,8 +725,15 @@ export class AutoFillService {
         // depth, plan, projected and developed area, the main surface, the drawn form, the blank, the straight and curved flanges and the
         // holes. The Sheet Metal - Hydroforming cost routes and prices from it; null until the part is analysed by an engine that measures
         // it (press Refresh analysis). See hydroformGeometry().
+        //
+        // What every sheet-metal part is measured for roll forming (cad-engine sheet_metal/features/roll_form.py): the long axis and length,
+        // whether it is one section along it, the section, the strip width, the cross-section bends in order across the strip with the flat
+        // before each and their level, the curve along the length, the punched features at their stations and the end cuts. The Sheet Metal
+        // Roll Forming cost prices from it; null when the part is not a profile, or until it is analysed by an engine that measures it (press
+        // Refresh analysis). See rollFormGeometry().
         ...(isSheetMetal ? {
           hydroformGeometry: hydroformGeometry((cadMI as { features?: { hydroform?: unknown } } | undefined)?.features?.hydroform),
+          rollFormGeometry: rollFormGeometry((cadMI as { features?: { roll_form?: unknown } } | undefined)?.features?.roll_form),
         } : {}),
         // A bar, tube or profile (cad-engine bar_tube/feature_extractor.py): its stock form and section, the centreline's developed length, the
         // bends, the holes and openings through the wall, the end cuts and the end forms. The bar and tube cost prices its stock and routes from it.

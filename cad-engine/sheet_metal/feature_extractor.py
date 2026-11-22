@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from sheet_metal.features.perforation import detect_perforation_patterns
 from sheet_metal.features.drawn_shell import analyse_sheet_faces, detect_drawn_shell, is_drawn_cylinder
 from sheet_metal.features.hydroform import measure_hydroform
+from sheet_metal.features.roll_form import measure_roll_form
 from sheet_metal.features.rolled_form import detect_rolled_forms, count_recognized as count_recognized_rolled_forms
 from sheet_metal.features.formed_feature import detect_formed_features, count_recognized as count_recognized_formed_features
 from sheet_metal.features.lance import detect_lances, count_recognized as count_recognized_lances
@@ -475,6 +476,16 @@ class SheetMetalFeatureExtractor:
             )
         except Exception as e:
             logger.warning(f"[SheetMetal] hydroform measurement failed: {e}")
+        # What roll forming the part rests on (sheet_metal/features/roll_form.py): the long axis, the section, the strip, the
+        # cross-section bends in order across it, the curve along the length, the punched features and the end cuts. Measured
+        # for every single-body sheet part that is not flat; None when the part is not a profile, and a failure here never fails
+        # the extraction.
+        roll_form: Optional[Dict[str, Any]] = None
+        if len(bodies) <= 1 and not flat_part:
+            try:
+                roll_form = measure_roll_form(shape, sheet_thickness, sheet_faces, lances, formed_features)
+            except Exception as e:
+                logger.warning(f"[SheetMetal] roll-form measurement failed: {e}")
         # A drawn part's blank cannot be unfolded: its flat pattern is the developed sheet (_flat_pattern_of_body), laid out
         # as the hydroforming measurement's equal-area blank. Its holes are not placed in that layout (counted, never guessed).
         if drawn_shell and len(blanks) == 1 and blanks[0]["method"] == "drawn_developed":
@@ -900,6 +911,9 @@ class SheetMetalFeatureExtractor:
             # The hydroforming measurements (sheet_metal/features/hydroform.py, "hf_v1"): measured for every sheet part,
             # None when the part has no sheet frame or the measurement failed.
             "hydroform": hydroform,
+            # The roll-forming measurements (sheet_metal/features/roll_form.py, "rf_v1"): measured for every single-body sheet
+            # part, None when the part is not a profile (or flat, or the measurement failed).
+            "roll_form": roll_form,
             "sheet_geometry_debug": {**geom_debug, **validation_debug},
             "feature_graph_v2": feature_graph_v2,
         }
