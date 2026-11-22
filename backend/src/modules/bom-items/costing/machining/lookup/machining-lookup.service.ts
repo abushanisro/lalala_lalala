@@ -807,8 +807,11 @@ export class MachiningLookupService {
   }
 
   // ── Multi-spindle op-splitting (tblMultiSpindleOpSplitting /
-  // tblMultiSpindleOpSplittingThresholds, migration 785, source:
-  // memory/machining/lookup/) — real spindle-count-driven station-split
+  // tblMultiSpindleOpSplittingThresholds, staged by migration 748 under the
+  // reference export's own column names: Feature, Operation, MachineSpindles,
+  // NumberOfOperations, EnableOperationSplitting, Threshold. Migration 785's
+  // snake_case copy never replaced those rows, so these are the names read.
+  // Source: memory/machining/lookup/) — real spindle-count-driven station-split
   // rules for a Simultaneous Turning machine. Exact match on real spindle
   // count (the real table only has entries for 2/6/8, and every real
   // machine in simultaneous_turning_usa.csv reports a spindle count in
@@ -827,17 +830,17 @@ export class MachiningLookupService {
       this.loadTable('tblMultiSpindleOpSplittingThresholds'),
     ]);
     const thresholdRow = thresholdRows?.find(
-      (r: any) => r.feature === feature && r.operation === operation,
+      (r: any) => r.Feature === feature && r.Operation === operation,
     );
-    if (!thresholdRow || thresholdRow.enable_operation_splitting !== true) return noData;
+    if (!thresholdRow || thresholdRow.EnableOperationSplitting !== true) return noData;
     const splitRow = splitRows?.find(
-      (r: any) => r.feature === feature && r.operation === operation && Number(r.machine_spindles) === spindleCount,
+      (r: any) => r.Feature === feature && r.Operation === operation && Number(r.MachineSpindles) === spindleCount,
     );
     if (!splitRow) return noData;
     return {
       shouldSplit: true,
-      numberOfOperations: Number(splitRow.number_of_operations) || 1,
-      thresholdRatio: Number(thresholdRow.threshold),
+      numberOfOperations: Number(splitRow.NumberOfOperations) || 1,
+      thresholdRatio: Number(thresholdRow.Threshold),
       dataFound: true,
     };
   }
