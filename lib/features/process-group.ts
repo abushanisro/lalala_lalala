@@ -9,8 +9,8 @@
  * Only families with a real process_taxonomy group are mapped. 'Machining'
  * collapses milled/turned/mill_turn into one label — a group-level display
  * has no finer signal to pick between the three real families underneath it
- * (see BOMItemDialog.tsx's PROCESS_GROUP_TO_FAMILY_HINT, the forward
- * direction of this same mapping, for the full rationale). A family with no
+ * (see processGroupToFamilyHint below, the forward direction of this same
+ * mapping: Machining is analysed with the hint "machined"). A family with no
  * entry here (every family outside sheet_metal/plastic_molded/milled/
  * turned/mill_turn/die_cast) has no real process_group counterpart yet —
  * callers fall back to their own generic family label, never a fabricated
@@ -67,15 +67,30 @@ export function routingFamilyOf(cadFamily: string | null | undefined, costedFami
   return costedFamily && NO_CAD_EXTRACTOR.has(costedFamily) ? costedFamily : cadFamily ?? null;
 }
 
+/** The families made by machining (cad-engine shared/part_family.py MACHINING_FAMILIES). */
+const MACHINING_FAMILIES: ReadonlySet<string> = new Set(['milled', 'turned', 'mill_turn'])
+
+/**
+ * The cad-engine family_hint for a machining process that is not one family (the backend's MACHINED_FAMILY_HINT, part-family-process-group.ts):
+ * the part is analysed as a machined part and the geometry picks milled, turned or mill-turn. Not a family: no part is classified as it.
+ */
+export const MACHINED_FAMILY_HINT = 'machined'
+
 /**
  * The forward direction: a chosen process group -> the cad-engine family_hint
- * that runs its extractor. Derived from FAMILY_HINT_TO_PROCESS_GROUP (first
- * family per group, so Machining -> milled, the general machining family), so
- * the two directions cannot drift. Undefined = no extractor for that group.
+ * that runs its extractor, by the backend's rule (familyHintOfProcessGroup) so
+ * an upload and Refresh analysis analyse the part the same way. Derived from
+ * FAMILY_HINT_TO_PROCESS_GROUP, so the two directions cannot drift: a group of
+ * one family names it; a group of several families that are all machining
+ * families (Machining) is "machined", so a shaft is analysed as the turned
+ * part it is, not forced to milled; any other group names its first family.
+ * Undefined = no extractor for that group.
  */
 export function processGroupToFamilyHint(group: string | null | undefined): string | undefined {
   if (!group) return undefined;
-  return Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).find(([f, g]) => g === group && !NO_CAD_EXTRACTOR.has(f))?.[0] ?? COSTED_AS_FAMILY[group];
+  const families = Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).filter(([f, g]) => g === group && !NO_CAD_EXTRACTOR.has(f)).map(([f]) => f);
+  if (families.length > 1 && families.every((f) => MACHINING_FAMILIES.has(f))) return MACHINED_FAMILY_HINT;
+  return families[0] ?? COSTED_AS_FAMILY[group];
 }
 
 /**

@@ -47,6 +47,14 @@ describe('the family hint a chosen Process sends the cad-engine', () => {
     expect(hint('Sheet Plastic')).toBeUndefined();
   });
 
+  it('is "machined" for Machining, so the geometry picks the machining family; a process costed as one family still names it', () => {
+    expect(hint('Machining')).toBe('machined');
+    expect(hint('Multi-Spindle Machining')).toBe('turned');
+    expect(hint('2-Model Machining')).toBe('two_model');
+    // A shaft analysed under it is stored as turned or mill-turn, and that is the Machining part's own analysis.
+    expect(deriveAnalysisStatus({ file3dPath: 'p.step', featureGraph: graph('mill_turn'), chosenFamilyHint: hint('Machining') }, 'none', V).cad).toBe('ready');
+  });
+
   it('is none for Assembly and Part Assembly: each is costed from its BOM and the Cost Guide, and the cad-engine has no extractor to force for it', () => {
     expect(familiesOfProcessGroup('Assembly')).toEqual(['assembly']);
     expect(hint('Assembly')).toBeUndefined();

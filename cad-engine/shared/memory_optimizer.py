@@ -39,7 +39,7 @@ from OCC.Core.Standard import Standard_Failure  # type: ignore
 
 from shared.component_feature_analyzer import SHEET_SHELL_MAX_FILL
 from shared.error_reporting import report_failure
-from shared.part_family import ADDITIVE, ALL_FAMILIES, BAR_TUBE, ROTO_BLOW, CASTING_FAMILY_DOMAIN, COMPOSITE, MACHINING_FAMILIES, TWO_MODEL_HINT, DIE_DIRECTION_FAMILIES, MILLED, PLASTIC_MOLDED, SHEET_METAL
+from shared.part_family import ADDITIVE, ALL_FAMILIES, BAR_TUBE, ROTO_BLOW, CASTING_FAMILY_DOMAIN, COMPOSITE, MACHINING_FAMILIES, MACHINED_HINT, MACHINED_HINTS, DIE_DIRECTION_FAMILIES, MILLED, PLASTIC_MOLDED, SHEET_METAL
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +378,10 @@ class AdvancedCADMemoryOptimizer:
                 only path that ever reaches 'die_cast' today, since no
                 automatic geometric die-cast classifier exists yet (building
                 one is itself a routing-adjacent inference, deliberately
-                deferred). Any other/unrecognized value is ignored and the
+                deferred). "machined" and "two_model" (shared.part_family
+                MACHINED_HINTS) are not families: the part is analysed as a
+                machined part, the geometry picking milled, turned or
+                mill-turn. Any other/unrecognized value is ignored and the
                 real classifier chain runs unchanged.
 
         Returns:
@@ -737,11 +740,16 @@ class AdvancedCADMemoryOptimizer:
             # no veto silently overrules the user; the geometry's own verdict is reported beside it. Only a
             # real platform family is honored; any other string (typo, stale client, unrecognized value) is
             # ignored rather than faked into a family that doesn't exist.
-            # 2-Model Machining: the part is machined, whatever else the geometry alone would read. A geometric machining family stands
-            # (milled, turned, mill-turn); any other is milled, the general machining family, and said so.
-            if family_hint == TWO_MODEL_HINT and detected_family not in MACHINING_FAMILIES:
+            # A machining process (hint machined: Machining, or any process costed as every machining family) and 2-Model Machining: the
+            # part is machined, whatever else the geometry alone would read. A geometric machining family stands (milled, turned,
+            # mill-turn: the geometry picks among them); any other is milled, the general machining family, and said so.
+            if family_hint in MACHINED_HINTS and detected_family not in MACHINING_FAMILIES:
+                _machined_because = (
+                    "the part's Process is a machining process" if family_hint == MACHINED_HINT
+                    else "a 2-Model Machining part is machined"
+                )
                 classification_reasons = [
-                    f"family_hint={TWO_MODEL_HINT}: a 2-Model Machining part is machined, analysed as {MILLED}",
+                    f"family_hint={family_hint}: {_machined_because}, analysed as {MILLED}",
                     f"geometry alone reads {geometric_family}" + (f": {'; '.join(classification_reasons)}" if classification_reasons else ""),
                 ]
                 detected_family = MILLED

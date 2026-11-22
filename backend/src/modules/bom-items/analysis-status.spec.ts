@@ -42,6 +42,18 @@ describe('deriveAnalysisStatus', () => {
     expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'two_model', featureGraph: analysed('sand_cast') }), 'none', CURRENT).cad).toBe('stale');
   });
 
+  it('a Machining part (hint machined) analysed as any machining family is its own analysis; analysed as another process it is stale', () => {
+    // Lead Screw side shaft: Process Machining, analysed as the mill-turn part it is. With the hint "milled" it read as another extractor's
+    // analysis and was analysed again, forced to milled.
+    for (const family of ['milled', 'turned', 'mill_turn']) {
+      expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed(family) }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    }
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed('sheet_metal') }), 'none', CURRENT)).toMatchObject({ cad: 'stale', missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed('die_cast') }), 'none', CURRENT).cad).toBe('stale');
+    // A process costed as one machining family still needs that family (Multi-Spindle Machining: turned).
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'turned', featureGraph: analysed('milled') }), 'none', CURRENT).cad).toBe('stale');
+  });
+
   it('a part set to a process priced from a measurement its analysis predates is stale until Refresh analysis measures it', () => {
     // Cannula Holder bottom: Process Sheet Metal - Hydroforming, analysed as sheet metal (feature graph v4) before the hydroform measurement
     // existed. It was taken as analysed: Apply wrote $0 "press Refresh analysis" lines and the page never asked for the refresh.
@@ -93,6 +105,8 @@ describe('deriveAnalysisStatus', () => {
     // An analysis as another family carries no stock envelope, and analysing it again as that family would not measure one: it does not
     // predate the measurement (it was stale for ever otherwise). Whether to analyse it as a machined part is the family hint's question.
     expect(deriveAnalysisStatus(stock({ bendCount: 2 }, 'sheet_metal'), 'none', CURRENT).cad).toBe('ready');
+    // With the hint a machining process is analysed with, it is: stale by the family, then measured as the machined part it becomes.
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('sheet_metal', { bendCount: 2 }), chosenProcessGroup: 'Stock Machining', chosenFamilyHint: 'machined' }), 'none', CURRENT).cad).toBe('stale');
     // A plain Machining part (or no Process) needs no stock envelope, and the sheet-metal measurements do not stand in for it.
     expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }), chosenProcessGroup: 'Machining' }), 'none', CURRENT).cad).toBe('ready');
     expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }) }), 'none', CURRENT).cad).toBe('ready');

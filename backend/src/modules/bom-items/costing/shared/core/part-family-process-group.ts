@@ -1,3 +1,5 @@
+import { MACHINING_FAMILIES, isMachiningFamily } from '../../../../../domain/part-family';
+
 // A CAD-detected family (detect_part_family()'s literal output) is not a
 // process/route id anywhere else in this platform — it maps to the real
 // process_taxonomy.process_group it belongs to. One map for every consumer:
@@ -60,16 +62,23 @@ export const MULTI_SPINDLE_PROCESS_GROUP = 'Multi-Spindle Machining';
 /** Rapid prototyping (memory/Rapid prototyping): a part built layer by layer (laser sintering, 3D printing, stereolithography), priced by the additive engine in its own domain. */
 export const RAPID_PROTOTYPING_PROCESS_GROUP = 'Rapid Prototyping';
 
-/** The generic casting process: the part is analysed as a casting and priced by every casting process, the cheapest feasible one quoted. */
 /**
- * The families a CAD analysis run with a family hint may store. A hint names an extractor, and the analysis stores that family, except a
- * 2-Model Machining part: the cad-engine analyses it as the machined part it is (milled, turned or mill-turn; memory_optimizer.py), so
+ * The cad-engine family_hint for a machining process that is not one family (cad-engine shared/part_family.py MACHINED_HINT): the part is
+ * analysed as a machined part and the geometry picks milled, turned or mill-turn. Not a family: no analysis is stored as it.
+ */
+export const MACHINED_FAMILY_HINT = 'machined';
+
+/**
+ * The families a CAD analysis run with a family hint may store. A hint names an extractor, and the analysis stores that family, except the
+ * two hints that say only "machined": a 2-Model Machining part (two_model) and a part whose Process is a machining process of several
+ * families (machined). The cad-engine analyses either as the machined part it is (milled, turned or mill-turn; memory_optimizer.py), so
  * its features are machining features under a machining family.
  */
 export function familiesAnalysedForHint(hint: string): readonly string[] {
-  return hint === 'two_model' ? ['milled', 'turned', 'mill_turn'] : [hint];
+  return hint === 'two_model' || hint === MACHINED_FAMILY_HINT ? MACHINING_FAMILIES : [hint];
 }
 
+/** The generic casting process: the part is analysed as a casting and priced by every casting process, the cheapest feasible one quoted. */
 export const CASTING_PROCESS_GROUP = 'Casting';
 /** A hydroformed part: a sheet-metal part (its CAD analysis is sheet metal's), priced by costing/hydroforming. */
 export const HYDROFORMING_PROCESS_GROUP = 'Sheet Metal - Hydroforming';
@@ -104,6 +113,21 @@ const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
 export function familiesOfProcessGroup(processGroup: string): string[] {
   const own = Object.keys(CAD_FAMILY_TO_PROCESS_GROUP).filter((family) => CAD_FAMILY_TO_PROCESS_GROUP[family] === processGroup);
   return own.length > 0 ? own : [...(COSTED_AS_FAMILIES[processGroup] ?? [])];
+}
+
+/**
+ * The cad-engine family_hint a chosen process group is analysed with, so the analysis and the costing can never disagree; undefined when
+ * the group has no cost model, or none of its families has a CAD extractor (Assembly, Part Assembly): the real classifier chain runs.
+ *   - a group costed as one family names it (Multi-Spindle Machining: turned; Sand Casting: sand_cast): that family's extractor is forced;
+ *   - a group costed as several families, all of them machining families (Machining), is "machined": the geometry picks the family, as the
+ *     costing does (material-resolution resolveEffectiveFamily). Naming the first one forced every such part, a shaft too, to milled;
+ *   - any other group costed as several families names the first, the one its CAD analysis runs as (Casting: die_cast).
+ */
+export function familyHintOfProcessGroup(processGroup: string | null | undefined): string | undefined {
+  if (!processGroup) return undefined;
+  const families = familiesOfProcessGroup(processGroup).filter((family) => !NO_CAD_EXTRACTOR_FAMILIES.has(family));
+  if (families.length > 1 && families.every((family) => isMachiningFamily(family))) return MACHINED_FAMILY_HINT;
+  return families[0];
 }
 
 /**

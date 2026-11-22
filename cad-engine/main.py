@@ -556,9 +556,11 @@ def analyze_geometry_advanced(
     "plastic_molded", "die_cast") to force that family's extractor instead of
     the real geometric classifier chain -- this is the only way to reach
     "die_cast" today, since no automatic die-cast classifier exists yet
-    (routing-adjacent inference, deliberately deferred). Any other value
-    (including the default "") is ignored and the real classifier chain
-    runs unchanged.
+    (routing-adjacent inference, deliberately deferred). "machined" (the
+    part's Process is a machining process) and "two_model" are not families:
+    the part is analysed as a machined part and the geometry picks milled,
+    turned or mill-turn. Any other value (including the default "") is
+    ignored and the real classifier chain runs unchanged.
     """
     import json as _json
 

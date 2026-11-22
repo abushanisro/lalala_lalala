@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { isCostedProcessGroup, processGroupOptionLabel, processGroupToFamilyHint, routingFamilyOf } from '@/lib/features/process-group';
+import { MACHINED_FAMILY_HINT, familyToProcessGroupLabel, isCostedProcessGroup, processGroupOptionLabel, processGroupToFamilyHint, routingFamilyOf } from '@/lib/features/process-group';
 
 // A Process with no cost model is not costed (the backend's familiesOfProcessGroup), so the Process fields mark it instead of offering it blind:
 // a part whose Process had none was priced as whatever it was last analysed as.
@@ -40,6 +43,26 @@ describe('process groups with a cost model', () => {
     expect(processGroupToFamilyHint('Part Assembly')).toBeUndefined();
     // Insert molding is analysed as the molded plastic part it is.
     expect(processGroupToFamilyHint('Assembly Molding')).toBe('plastic_molded');
+  });
+
+  // Lead Screw side shaft: uploaded with Process Machining it was analysed with the hint "milled" (the group's first family) and forced
+  // to a milled part, while the backend's Refresh analysis knows the geometry picks the machining family.
+  it('a Machining part is analysed as a machined part, the geometry picking the family; a process of one family still names it', () => {
+    expect(processGroupToFamilyHint('Machining')).toBe('machined');
+    expect(processGroupToFamilyHint('2-Model Machining')).toBe('two_model');
+    expect(processGroupToFamilyHint('Multi-Spindle Machining')).toBe('turned');
+    expect(processGroupToFamilyHint('Sheet Metal')).toBe('sheet_metal');
+    // The hint is no family: nothing is classified as it, and it has no process group of its own.
+    expect(familyToProcessGroupLabel(MACHINED_FAMILY_HINT)).toBeNull();
+  });
+
+  it('the hint is the one the backend sends on Refresh analysis (no drift between upload and refresh)', () => {
+    const backend = readFileSync(
+      resolve(__dirname, '../../backend/src/modules/bom-items/costing/shared/core/part-family-process-group.ts'), 'utf-8',
+    );
+    expect(backend).toContain(`export const MACHINED_FAMILY_HINT = '${MACHINED_FAMILY_HINT}';`);
+    const engine = readFileSync(resolve(__dirname, '../../cad-engine/shared/part_family.py'), 'utf-8');
+    expect(engine).toContain(`MACHINED_HINT = "${MACHINED_FAMILY_HINT}"`);
   });
 
   it('the Workflow Builder lists an assembly\'s or a weldment\'s routes by the family it is costed as, any other part\'s by its CAD family', () => {
