@@ -194,3 +194,32 @@ export function resolveScenarioStockForm(
   const raw = scenarioOverrides?.['stockForm'];
   return typeof raw === 'string' && VALID_SCENARIO_STOCK_FORMS.has(raw) ? (raw as ScenarioStockForm) : null;
 }
+
+// ── Stock settings of a part machined from stock (costing/stock, memory/Stock Maching) ──
+//
+// The Cost Guide's replacements for the stock rules, beside the Stock Form above. Readers only, as the rest of this file: each is null when
+// the key is unset or not a value of its kind, and the stock model then applies the reference data's own rule (stock-reference.ts) or the
+// engine's stated value (stock-research.ts).
+
+const nonNegative = (raw: unknown): number | null => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : null);
+const flag = (raw: unknown): boolean | null => (typeof raw === 'boolean' ? raw : null);
+
+/** The stock left on each side of the part (mm), replacing the allowance rule; 0 is a choice (the stock's surface as supplied). */
+export function resolveScenarioStockAllowanceMm(scenarioOverrides: Record<string, unknown> | null | undefined): number | null {
+  return nonNegative(scenarioOverrides?.['stockAllowanceMm']);
+}
+
+/** Whether the stock's size snaps up to the next preferred size, replacing snapStockSize / hexSnapStockSize. */
+export function resolveScenarioStockSnap(scenarioOverrides: Record<string, unknown> | null | undefined): boolean | null {
+  return flag(scenarioOverrides?.['stockSnap']);
+}
+
+/** The end of a bar that makes no part (mm), replacing the engine's bar end. */
+export function resolveScenarioStockRemnantMm(scenarioOverrides: Record<string, unknown> | null | undefined): number | null {
+  return nonNegative(scenarioOverrides?.['stockRemnantMm']);
+}
+
+/** Whether the chips are sold back, replacing enableScrapMaterialCredit. */
+export function resolveScenarioStockScrapCredit(scenarioOverrides: Record<string, unknown> | null | undefined): boolean | null {
+  return flag(scenarioOverrides?.['stockScrapCredit']);
+}
