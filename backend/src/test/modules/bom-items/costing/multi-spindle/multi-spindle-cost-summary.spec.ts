@@ -18,7 +18,7 @@ const deburr: ProcessLineCost = {
   cycleTimeMin: 0.3, hourlyRate: 50, rateSource: 'mhr_database', machineClass: 'manual_deburr', machineName: 'Manual Deburr', commodityCode: null, labourRate: null,
 };
 const turning = (process: string, minutes: number): ProcessLineCost => ({ ...deburr, process, processRoute: process, operation: process, cycleTimeMin: minutes });
-const part = { lengthMm: 32, volumeMm3: (Math.PI / 4) * 14 ** 2 * 32, turnedDiameterMm: 14, turnedLengthMm: 32 };
+const part = { lengthMm: 32, volumeMm3: (Math.PI / 4) * 14 ** 2 * 32 };
 const bar = (): SelectedBar => selectBar({ outsideMm: 14, form: 'round', lengthMm: 32 }, multiSpindleStockReference(stockReferenceFromMemory()).reference!, 'US') as SelectedBar;
 
 /** The result MultiSpindleCostService returns for the Ø14 x 32 mm part, priced on `chosen` (the cheapest when null). */
@@ -27,7 +27,7 @@ function priced(chosen: string | null): MultiSpindleCostResult {
     ref: stockReferenceFromMemory(), spec: loadMultiSpindleCalculatorSpec(), calculators: multiSpindleCalculatorsByName(),
     machines: multiSpindleMachinesFromMemory(), rules: splitRulesFromMemory(), bar: bar(), part,
     material: { id: 'm1', name: 'AISI 1006', densityKgM3: 7850, pricePerKgUsd: 1.473, priceSource: 'test' },
-    engine: { lines: [turning('Rough Turning', 0.5), turning('Finish Turning', 0.2), turning('Parting', 0.1), deburr], holes: [], threads: [] },
+    engine: { lines: [turning('Rough Turning', 0.5), turning('Finish Turning', 0.2), turning('Parting', 0.1), deburr], holes: [], threads: [], turned: [{ diameterMm: 14, lengthMm: 32 }] },
     chosen, batchSize: 1000, costContext: ZERO_CONTEXT, usdToLocal: 1,
   });
   return { quote, bar: bar(), part, missing: [], warnings: quote.warnings };

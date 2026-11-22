@@ -15,6 +15,7 @@ import { MachiningLookupService } from '../machining/lookup/machining-lookup.ser
 import {
   computeDrillCycle, computeTapCycle, computeTurningCostSummary, detectMaterialClass, type MachineClassId, type MachiningCostInput,
 } from '../machining/process/cost-machining-engine';
+import { cylindersToTurn } from '../machining/process/turned-diameters';
 
 
 import type { HoleGroupWork, ThreadGroupWork } from './multi-spindle-work';
@@ -167,9 +168,7 @@ export class MultiSpindleCostService {
     const none = (bar: SelectedBar | null, part: MultiSpindlePart | null, ...missing: string[]): MultiSpindleCostResult => ({ quote: null, bar, part, missing, warnings: [] });
     const turned = req.turning.turnedGeometry;
     if (!turned) return none(null, null, 'the part\'s turned diameter and length (press Refresh analysis so the part is measured)');
-    const part: MultiSpindlePart = {
-      lengthMm: turned.lengthMm, volumeMm3: req.turning.volume, turnedDiameterMm: turned.diameterMm, turnedLengthMm: turned.lengthMm,
-    };
+    const part: MultiSpindlePart = { lengthMm: turned.lengthMm, volumeMm3: req.turning.volume };
     const [{ reference, missing: refMissing }, calculators, byClass, rules] = await Promise.all([
       this.reference(),
       this.catalog.loadMultiSpindleCalculators(req.accessToken),
@@ -213,7 +212,9 @@ export class MultiSpindleCostService {
     const keyOf = (v: unknown): MultiSpindleRouteKey | null => MULTI_SPINDLE_ROUTES.find((r) => r.key === v)?.key ?? null;
     const quote = quoteMultiSpindle({
       ref: reference, spec, calculators, machines, rules, bar, part, material: req.material,
-      engine: { lines: engine.processLines, holes, threads }, chosen: keyOf(req.forceRoute) ?? keyOf(req.overrides?.[MULTI_SPINDLE_ROUTE_KEY]),
+      // The cylinders the engine turned from this bar: the same rule on the same bar (turned-diameters.ts).
+      engine: { lines: engine.processLines, holes, threads, turned: cylindersToTurn(turned, bar.circumscribedMm) },
+      chosen: keyOf(req.forceRoute) ?? keyOf(req.overrides?.[MULTI_SPINDLE_ROUTE_KEY]),
       batchSize: req.batchSize, costContext: req.costContext, usdToLocal: req.usdToLocal,
     });
     return { quote, bar, part, missing: [], warnings: [...new Set([...engine.warnings, ...quote.warnings])] };

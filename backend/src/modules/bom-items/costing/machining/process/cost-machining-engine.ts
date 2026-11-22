@@ -1,4 +1,5 @@
 import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
+import { cylindersToTurn, type TurnedCylinder, type TurnedRing } from './turned-diameters';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
 import { resolveSetupMinutes, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
@@ -112,13 +113,17 @@ export interface MachiningCostInput {
   // Blank optimizer result — when provided, overrides the bounding-box billet volume.
   // Improves material utilization from ~17% (raw bbox) to 55–65% (near-net stock).
   // Turned part geometry from CAD (BOMItemsService.resolveTurnedGeometry):
-  // the turned outer diameter and the length along the turning axis, each
-  // with the CAD source it came from. Absent for non-turned families.
+  // the largest turned outer diameter and the length along the turning axis,
+  // each with the CAD source it came from, and every turned outer diameter the
+  // analysis recognised (rings: each is turned from the bar on its own diameter
+  // and length; none = an analysis without them, turned as that one cylinder).
+  // Absent for non-turned families.
   turnedGeometry?: {
     diameterMm: number;
     lengthMm: number;
     diameterSource: string;
     lengthSource: string;
+    rings?: TurnedRing[];
   } | null;
   // Real tblVirtualPartoffInsertCutData rows (MachiningLookupService.getPartoffTable()).
   partoffTable?: any[] | null;
@@ -1078,10 +1083,13 @@ function computeDeburringLine(
 
 const EMPTY_RUN: CalcRun = { sec: null, trace: [], missing: [], calculatorId: null, calculatorVersion: null, lookups: {} };
 
+/** What a line keeps of the calculation that timed it: one calculator run, or several summed (drillHoleGroups, tapThreadGroups). */
+type LineRun = Pick<CalcRun, 'trace' | 'missing' | 'calculatorId' | 'calculatorVersion'> & { lookups?: CalcRun['lookups'] };
+
 /** Attaches a calculator run (trace, gap, calculator identity) to a line. */
 function withRun(
   line: ProcessLineCost,
-  run: Pick<CalcRun, 'trace' | 'missing' | 'calculatorId' | 'calculatorVersion'> & { lookups?: CalcRun['lookups'] },
+  run: LineRun,
   extraTrace: CalculationTraceStep[] = [],
   extraMissing: string[] = [],
 ): ProcessLineCost {
@@ -1102,6 +1110,33 @@ function machineRecordId(rate: MHRRateInput): string | null {
 /** A line with the features it acts on (FeatureOp rows the Process tree lists and lights); unchanged when there are none. */
 function withFeatureGroups(line: ProcessLineCost, groups: readonly FeatureOp[]): ProcessLineCost {
   return groups.length > 0 ? { ...line, featureBreakdown: [...(line.featureBreakdown ?? []), ...groups] } : line;
+}
+
+/** A turned cylinder's diameter and length as calculator seeds; a Ring's open its faces on the model. */
+function turnedCylinderSeeds(cylinder: TurnedCylinder): Record<string, CalcSeed> {
+  const faceIds = cylinder.ring?.faceIds ?? [];
+  const ref = faceIds.length > 0 ? { ref: { kind: 'faces' as const, label: cylinder.label, faceIds: [...faceIds] } } : {};
+  return {
+    'Turned Diameter': { value: cylinder.diameterMm, source: cylinder.diameterSource, ...ref },
+    'Turned Length': { value: cylinder.lengthMm, source: cylinder.lengthSource, ...ref },
+  };
+}
+
+/**
+ * One turning line's work, from the calculator run of each cylinder the bar leaves to turn: the cylinders the operation cuts (a run with a
+ * time) or cannot time (a run lacking an input), summed into the line's run, and each Ring cut as a row the Process tree lists and lights.
+ * A cylinder the operation has nothing to do on (no rough pass on 0.2 mm of stock) is not part of the line.
+ */
+function turningWork(operation: string, runs: readonly { cylinder: TurnedCylinder; run: CalcRun }[]): { run: CalcRun; rings: FeatureOp[] } {
+  const hasTime = (run: CalcRun): run is CalcRun & { sec: number } => run.sec != null && run.sec > 0;
+  const worked = runs.filter(({ run }) => hasTime(run) || run.missing.length > 0);
+  return {
+    run: worked.length > 0 ? sumRuns(worked.map(({ cylinder, run }) => ({ label: cylinder.label, run })), `${operation} cycle time`) : EMPTY_RUN,
+    rings: worked.flatMap(({ cylinder: { ring, label }, run }) => (ring && hasTime(run) ? [{
+      name: `${operation} // ${label}`, timeSec: run.sec, featureType: 'Ring', count: 1,
+      ...(ring.faceIds.length > 0 ? { faceIds: [...ring.faceIds] } : {}),
+    }] : [])),
+  };
 }
 
 /**
@@ -1879,11 +1914,14 @@ export function computeTurningCostSummary(
   const setupTrace = setupTraceSteps(setupResolution, mhrRate.machineName, batchSize);
 
   // ── OD Turning ───────────────────────────────────────────────────────────
-  // Real per-pass physics only (computeTurningCycleSec): the turned diameter
-  // and axial length come from CAD (input.turnedGeometry), the bar diameter
-  // from the real stock size the blank optimizer chose, and depth of cut /
-  // speed / feed from tblGeneralTurning. With no real turning data there is
-  // no estimate: the line reports the gap.
+  // Real per-pass physics only (the Rough Turning and Finish Turning
+  // calculators), run once per turned diameter: each Ring the CAD analysis
+  // recognised (input.turnedGeometry.rings) is turned from the bar on its own
+  // diameter and length, so a step below the part's largest diameter is
+  // roughed for its own radial stock. The bar diameter is the real stock size
+  // chosen for the part; depth of cut / speed / feed come from
+  // tblGeneralTurning. With no real turning data there is no estimate: the
+  // line reports the gap.
   const materialRemovalMm3 = Math.max(0, barVolMm3 - volume);
   const turned = input.turnedGeometry;
   const partDiameterMm = turned?.diameterMm ?? Math.max(maxWidth, maxHeight);
@@ -1903,36 +1941,43 @@ export function computeTurningCostSummary(
     : stockSource
       ? `bar stock for this part (the stock chosen is ${input.blankResult?.sizeLabel ?? 'none'}, which a lathe does not turn from)`
       : `round-bar stock for this part (blank optimizer chose ${input.blankResult?.sizeLabel ?? 'no blank'}, not a round bar)`;
-  const radialStockMm = Math.max(0, (barDiameterMm - partDiameterMm) / 2);
+  // What the bar leaves to turn: every Ring smaller than the bar, or the one
+  // fallback cylinder of a part analysed without Rings. A Ring at the bar's
+  // own diameter is left as supplied (turned-diameters.ts).
+  const cylinders = barMissing ? [] : cylindersToTurn(
+    { diameterMm: partDiameterMm, lengthMm: partLengthMm, diameterSource: partDiameterSource, lengthSource: partLengthSource, rings: turned?.rings },
+    barDiameterMm,
+  );
 
-  let roughTurningMin = 0;
-  let finishTurningMin = 0;
-  let roughRun: CalcRun = EMPTY_RUN;
-  let finishRun: CalcRun = EMPTY_RUN;
   const roughExtraTrace: CalculationTraceStep[] = [];
   const turningMissing: string[] = [];
   const tp = input.turningParams?.dataFound ? input.turningParams : null;
   if (barMissing) {
     turningMissing.push(barMissing);
-  } else if (radialStockMm > 0 && !tp) {
+  } else if (cylinders.length > 0 && !tp) {
     turningMissing.push(`tblGeneralTurning cutting data for ${matClass}`);
-  } else if (radialStockMm > 0 && tp) {
-    const geometry: Record<string, CalcSeed> = {
-      'Turned Diameter': { value: partDiameterMm, source: partDiameterSource },
-      'Turned Length': { value: partLengthMm, source: partLengthSource },
-    };
-    roughRun = runMachiningCalculator(input.machiningCalculators, 'Rough Turning', {
-      ...geometry,
-      'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-      ...roughTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-    });
-    finishRun = runMachiningCalculator(input.machiningCalculators, 'Finish Turning', {
-      ...geometry,
-      ...finishTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-    });
-    roughTurningMin = (roughRun.sec ?? 0) / 60;
-    finishTurningMin = (finishRun.sec ?? 0) / 60;
   }
+  const turnedRuns = (tp ? cylinders : []).map((cylinder) => {
+    const geometry = turnedCylinderSeeds(cylinder);
+    return {
+      cylinder,
+      rough: runMachiningCalculator(input.machiningCalculators, 'Rough Turning', {
+        ...geometry,
+        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
+        ...roughTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
+      }),
+      finish: runMachiningCalculator(input.machiningCalculators, 'Finish Turning', {
+        ...geometry,
+        ...finishTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
+      }),
+    };
+  });
+  const rough = turningWork('Rough Turning', turnedRuns.map((r) => ({ cylinder: r.cylinder, run: r.rough })));
+  const finish = turningWork('Finish Turning', turnedRuns.map((r) => ({ cylinder: r.cylinder, run: r.finish })));
+  let roughTurningMin = (rough.run.sec ?? 0) / 60;
+  const finishTurningMin = (finish.run.sec ?? 0) / 60;
+  // The stations a multi-spindle shares the rough turning over (1 = not split).
+  let roughStations = 1;
 
   // ── Multi-spindle station split (Simultaneous Turning only) ───────────────
   // Real, gated on the resolved machine's own real capability
@@ -1958,6 +2003,7 @@ export function computeTurningCostSummary(
     if (input.roughTurningOpSplit.thresholdRatio != null && removalRatio >= input.roughTurningOpSplit.thresholdRatio) {
       const n = input.roughTurningOpSplit.numberOfOperations;
       if (n > 1) {
+        roughStations = n;
         roughTurningMin = roughTurningMin / n;
         roughExtraTrace.push(
           traceInput('Stations sharing the rough turning', n, null,
@@ -1999,22 +2045,34 @@ export function computeTurningCostSummary(
       ), run));
     }
   }
-  // Setup always folds into the first real turning line (even when its own
-  // run time is 0) so the real setup cost is never silently dropped.
+  // The lathe's setup is charged once, on the first of its operations that
+  // has a cycle time: rough turning, else finish turning, else drilling or
+  // parting (a bar that needs no roughing is still set up). A turning line is
+  // emitted only when it has a time or names what it lacks: no roughing to do
+  // is not missing data. Turning that cannot be priced keeps its Rough
+  // Turning gap line, which carries the setup.
+  let setupCharged = false;
+  const latheLine = (
+    operation: string, min: number, run: LineRun,
+    extraTrace: CalculationTraceStep[] = [], extraMissing: string[] = [], setupEvenWithoutTime = false,
+  ): ProcessLineCost => {
+    const carriesSetup = !setupCharged && (min > 0 || setupEvenWithoutTime);
+    if (carriesSetup) setupCharged = true;
+    return withRun(makeLine(
+      resolveOperationName(machineClass, operation, input.realOperationCategories, warnings),
+      carriesSetup ? setupCostVal : 0, r2((min / 60) * mhrRate.rate), min, mhrRate,
+      input.processIdentityByMachineClass, carriesSetup ? setupDisclosure : undefined,
+    ), run, carriesSetup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
+  };
   if (turningMissing.length > 0) warnings.push(`Turning not priced — missing real input: ${turningMissing.join('; ')}.`);
-  if (roughTurningMin > 0 || setupCostVal > 0 || turningMissing.length > 0) {
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Rough Turning', input.realOperationCategories, warnings),
-      setupCostVal, r2((roughTurningMin / 60) * mhrRate.rate), roughTurningMin, mhrRate,
-      input.processIdentityByMachineClass, setupDisclosure,
-    ), roughRun, [...roughExtraTrace, ...setupTrace], turningMissing));
+  if (roughTurningMin > 0 || turningMissing.length > 0 || rough.run.missing.length > 0) {
+    processLines.push(withFeatureGroups(
+      latheLine('Rough Turning', roughTurningMin, rough.run, roughExtraTrace, turningMissing, true),
+      rough.rings.map((ring) => ({ ...ring, timeSec: ring.timeSec / roughStations })),
+    ));
   }
-  if (finishTurningMin > 0) {
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Finish Turning', input.realOperationCategories, warnings),
-      0, r2((finishTurningMin / 60) * mhrRate.rate), finishTurningMin, mhrRate,
-      input.processIdentityByMachineClass,
-    ), finishRun));
+  if (finishTurningMin > 0 || finish.run.missing.length > 0) {
+    processLines.push(withFeatureGroups(latheLine('Finish Turning', finishTurningMin, finish.run), finish.rings));
   }
 
   // ── Drilling ──────────────────────────────────────────────────────────────
@@ -2029,10 +2087,7 @@ export function computeTurningCostSummary(
   const boringMin = drilling.min;
   if (boringMin > 0 || drilling.missing.length > 0) {
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Drilling', input.realOperationCategories, warnings),
-      0, r2((boringMin / 60) * mhrRate.rate), boringMin, mhrRate, input.processIdentityByMachineClass,
-    ), drilling));
+    processLines.push(latheLine('Drilling', boringMin, drilling));
   }
 
   // ── Tapping ───────────────────────────────────────────────────────────────
@@ -2104,10 +2159,13 @@ export function computeTurningCostSummary(
     }
     const partingGap = [...partingMissing, ...partingRun.missing];
     if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Parting', input.realOperationCategories, warnings),
-      0, r2((partingMin / 60) * mhrRate.rate), partingMin, mhrRate, input.processIdentityByMachineClass,
-    ), partingRun, [], partingMissing));
+    processLines.push(latheLine('Parting', partingMin, partingRun, [], partingMissing));
+  }
+  // Nothing is turned, drilled or parted on the machine (a bar at the part's
+  // own diameter, cut off by a saw): no line of these carries the setup, so
+  // it is not charged, and the quote says so.
+  if (!setupCharged && setupCostVal > 0) {
+    warnings.push(`${realProcessName(machineClass)}: setup not charged — no turning, drilling or parting on the machine has a cycle time for this part.`);
   }
 
   // ── Gear/spline teeth (AxiGroove → Hobbing) ────────────────────────────

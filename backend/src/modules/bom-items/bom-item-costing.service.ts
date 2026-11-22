@@ -13,6 +13,7 @@ import { asSuppliedFaces } from './costing/stock/stock-part';
 import { withoutAsSuppliedFaces } from './costing/machining/operation/as-supplied-faces';
 import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock-price';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
+import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type ThreadEntry } from './costing/machining/feature-holes';
@@ -8053,33 +8054,39 @@ export class BomItemCostingService {
    *              (machining_features Ring:outer_diameter);
    *   length   — the bounding-box extent along the turning axis: the box
    *              dimension furthest from that diameter (the other two span
-   *              the diameter), e.g. 3.0 mm for a 17.6 × 17.6 × 3.0 mm disc.
+   *              the diameter), e.g. 3.0 mm for a 17.6 × 17.6 × 3.0 mm disc;
+   *   rings    — every turned outer diameter recognised, each with its own
+   *              diameter, length and faces: the turning engine turns each
+   *              from the bar (turned-diameters.ts). The diameter and length
+   *              above size the bar and the lathe.
    * Without a recognised turned diameter both fall back to the CAD bounding
-   * box (largest cross-section / longest side), and the source says so.
+   * box (largest cross-section / longest side), the source says so, and
+   * there are no rings.
    */
   private resolveTurnedGeometry(
     fg: any,
     bbox: { length: number; width: number; height: number },
-  ): { diameterMm: number; lengthMm: number; diameterSource: string; lengthSource: string } | null {
+  ): { diameterMm: number; lengthMm: number; diameterSource: string; lengthSource: string; rings: TurnedRing[] } | null {
     const dims = [bbox.length, bbox.width, bbox.height].filter((d) => d > 0);
     if (dims.length < 3) return null;
-    const rings = (Array.isArray(fg?.machining_features?.features) ? fg.machining_features.features : [])
-      .filter((f: any) => f?.type === 'Ring' && f.variant === 'outer_diameter' && Number(f.params?.diameter_mm) > 0);
+    const rings = turnedRings(fg?.machining_features?.features);
     if (rings.length === 0) {
       return {
         diameterMm: Math.max(bbox.width, bbox.height),
         lengthMm: bbox.length,
         diameterSource: 'CAD: bounding-box cross-section (no turned-diameter feature recognised)',
         lengthSource: 'CAD: bounding-box length (no turned-diameter feature recognised)',
+        rings,
       };
     }
-    const diameter = Math.max(...rings.map((f: any) => Number(f.params.diameter_mm)));
+    const diameter = Math.max(...rings.map((ring) => ring.diameterMm));
     const length = dims.reduce((best, d) => (Math.abs(d - diameter) > Math.abs(best - diameter) ? d : best), dims[0]!);
     return {
       diameterMm: diameter,
       lengthMm: length,
       diameterSource: 'CAD: largest turned outer diameter (Ring feature)',
       lengthSource: 'CAD: bounding-box extent along the turning axis',
+      rings,
     };
   }
 

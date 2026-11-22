@@ -8,7 +8,8 @@
 // end slide.
 //
 // Rough turning and the end-slide drilling carry the ratio their tblMultiSpindleOpSplittingThresholds row is read against: ring removed
-// volume to total removed volume (Ring, Rough Turning), and hole length to part length (SimpleHole, Drilling).
+// volume to total removed volume (Ring, Rough Turning), and hole length to part length (SimpleHole, Drilling). The ring removed volume is
+// that of the cylinders the turning engine turns from the bar (turned-diameters.ts): each turned diameter over its own length.
 import type { Slide, StationOp } from './multi-spindle-stations';
 import type { PhysicsGap, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 
@@ -57,8 +58,8 @@ export interface MultiSpindleWorkInput {
   threads: readonly ThreadGroupWork[];
   partLengthMm: number;
   partVolumeMm3: number;
-  turnedDiameterMm: number;
-  turnedLengthMm: number;
+  /** The cylinders the turning engine turns down from the bar (turned-diameters.ts cylindersToTurn): each one's diameter and length. */
+  turned: readonly { diameterMm: number; lengthMm: number }[];
   /** The bar's section and the length of it the part's machining works on (the part and its facing stock). */
   barSectionAreaMm2: number;
   stockLengthMm: number;
@@ -75,10 +76,10 @@ export interface MultiSpindleWorkResult {
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const reasonOf = (g: PhysicsGap): string => ('reason' in g ? g.reason : g.requiredAction);
 
-/** Ring removed volume (the bar down to the turned diameter, over the turned length) to all the volume removed from the part's stock. */
-export function ringRemovalRatio(input: Pick<MultiSpindleWorkInput, 'barSectionAreaMm2' | 'stockLengthMm' | 'partVolumeMm3' | 'turnedDiameterMm' | 'turnedLengthMm'>): number {
+/** Ring removed volume (the bar down to each turned diameter, over that diameter's own length) to all the volume removed from the part's stock. */
+export function ringRemovalRatio(input: Pick<MultiSpindleWorkInput, 'barSectionAreaMm2' | 'stockLengthMm' | 'partVolumeMm3' | 'turned'>): number {
   const removed = input.barSectionAreaMm2 * input.stockLengthMm - input.partVolumeMm3;
-  const ring = Math.max(0, input.barSectionAreaMm2 - (Math.PI / 4) * input.turnedDiameterMm ** 2) * input.turnedLengthMm;
+  const ring = input.turned.reduce((sum, c) => sum + Math.max(0, input.barSectionAreaMm2 - (Math.PI / 4) * c.diameterMm ** 2) * c.lengthMm, 0);
   return removed > 0 ? Math.min(1, ring / removed) : 0;
 }
 
