@@ -46,7 +46,7 @@ export function castingStatusOf(rowStatuses: readonly string[]): AnalysisKindSta
 
 /**
  * Processes priced from a measurement made inside a CAD family other processes share: a hydroformed or roll-formed part is analysed as sheet
- * metal, and its measurement (feature_graph.summary.hydroformGeometry, hf_v1; rollFormGeometry, rf_v1) came with a later engine. The
+ * metal, and its measurement (feature_graph.summary.hydroformGeometry, hf_v1; rollFormGeometry, rf_v2) came with a later engine. The
  * feature-graph version and the family say nothing about it, so an analysis of that family made before it is otherwise current.
  */
 const PROCESS_MEASUREMENT: Readonly<Record<string, { key: string; version: string }>> = {

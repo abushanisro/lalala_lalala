@@ -17,16 +17,26 @@ section swept along a line or an arc:
                       stock form.
   strip_width_mm      the strip the profile is rolled from: the section's mid-line length, section area / thickness (exact for a sheet of
                       constant thickness). strip_width_neutral_mm is the same strip read off the flats and the bends at the neutral
-                      fibre (K = 0.33 below an inner radius of 2 t, else 0.41: the extractor's own flat-pattern rule), and
-                      strip_width_check sets the flats and the mid-line bend arcs beside it (they add up to strip_width_mm when the
-                      strip is read right).
+                      fibre (K = 0.33 below an inner radius of 2 t, else 0.41: the extractor's own flat-pattern rule; a sharp corner
+                      bends about its inner corner, K 0.33, less the t tan(angle/2) its two flats run on past that corner at the
+                      mid-surface), and strip_width_check sets the flats and the mid-line bend arcs beside it (they add up to
+                      strip_width_mm when the strip is read right).
+  thickness_mm        the sheet's thickness; for a sheet with no flat (a round tube), whose thickness the extractor cannot read between
+                      flats, the wall between its concentric skins.
   bends               the cross-section bends (folds whose line runs along the length), in order across the strip from one edge to the
-                      other: angle, inner radius, the flat just before the bend (0 when two bends meet), the bend's level and its faces.
+                      other: angle, inner radius, sharp, the flat just before the bend (0 when two bends meet), the bend's level and its
+                      faces. A profile modelled without bend radii has sharp corners, two flats meeting at an edge: a bend with inner
+                      radius 0, sharp true, its angle 180 deg less the angle between the flats, and no face of its own. Each flat is
+                      read at the sheet's mid-surface (the mean of its two skins, which differ at a sharp corner), so the flats and the
+                      bend arcs add up to the strip. A round tube is formed as two half turns meeting at the welded seam: two 180 deg
+                      bends of the tube's inner radius, level 1, with no flat between them.
                       last_flange_mm is the flat after the last bend (0 for a closed section, whose strip closes on its first flat).
                       Level is the bend's precedence in the mill: 1 for the bends on the web (the widest flat), 2 for the bends one bend
                       further out, and so on; on a closed section it is counted the shorter way round from the web.
                       An open strip is listed from the edge whose first flat is narrower (ties: the side with the lower face id); a
                       closed one from its web, towards the neighbour with the lower face id.
+  tube                a closed section (a tube rolled from the strip and welded along its seam): its outer diameter (a round tube;
+                      null otherwise), outer width and height and wall; null for an open section.
   curve               a curved profile's radius (the section centroid's distance from the axis it is curved about), its angle and that
                       axis; null when the profile is straight.
   features            what is punched or formed along the length (the faces off the swept section, joined where they touch, away from
@@ -40,12 +50,19 @@ section swept along a line or an arc:
                       strip width for a square cut) and its faces.
 
 The part is a profile when its sheet (the faces with an offset twin one thickness away: drawn_shell.analyse_sheet_faces) is a section
-swept along one axis: straight, when its cross-section bends (cylinders folding the sheet) all run one way (bends any other way carry at
-most OTHER_BEND_SHARE of their area) and PROFILE_SHARE of the sheet runs along it; curved, when its cross-section bends are tori about one
-axis, PROFILE_SHARE of the sheet is revolved about it, the part stays clear of that axis (no sheet across it, its nearest point
-OFF_AXIS_RATIO of its depth away: a drawn cup or a flange round a half disc reaches it) and does not close on itself (a ring is drawn or
-rolled round, not cut to length). These are read from the face records the extractor already has, so an ordinary sheet part is turned
-away in a few milliseconds; null then. A part whose bends have no radius (sharp corners) or are not cylinders and tori is not recognised.
+swept along one axis:
+  straight            its cross-section bends (cylinders folding the sheet, or sharp corners where two of its flats meet) all run one
+                      way (bends any other way carry at most OTHER_BEND_SHARE of their length) and PROFILE_SHARE of the sheet runs along
+                      it. A part found by sharp corners alone (which a machined or welded part has too) is a profile only when it is
+                      one section along its length and that section is a strip of the sheet (its flats add up to area / t).
+  curved              its cross-section bends are tori about one axis (or, with no bend radii, cylinders about it meeting flats across
+                      it), PROFILE_SHARE of the sheet is revolved about it, the part stays clear of that axis (no sheet across it, its
+                      nearest point OFF_AXIS_RATIO of its depth away: a drawn cup or a flange round a half disc reaches it) and does not
+                      close on itself (a ring is drawn or rolled round, not cut to length).
+  no flat             a round tube or a ring or trough of arcs: concentric cylinders along one axis, one wall apart, are PROFILE_SHARE of
+                      the surface and no sheet lies across the axis (a can's bottom).
+These are read from the face records the extractor already has, so an ordinary sheet part is turned away in a few milliseconds; null
+then.
 A curved profile is also a drawn shell to drawn_shell.py (its bends are twinned tori); this measurement does not read that verdict, so a
 curved profile is measured whatever it says, and drawn parts are not touched.
 
@@ -64,7 +81,9 @@ from sheet_metal.features.hydroform import _across, _edge_face_map, _edge_points
 
 logger = logging.getLogger(__name__)
 
-VERSION = "rf_v1"
+# rf_v2 (2026-11-22): profiles modelled without bend radii (sharp corners, "sharp" on each bend) and tubes with no flat (a round tube:
+# two half turns at the seam, its wall read from its skins) are measured, and a closed section carries "tube". rf_v1: the first.
+VERSION = "rf_v2"
 
 # Two directions are parallel within this of |cos| = 1, perpendicular within this of cos = 0 (the drawn-shell module's angle tolerance).
 DIR_TOL = 1e-3
@@ -129,12 +148,53 @@ def _edge_cloud(face: Any) -> List[Vec]:
     return [p for e in _edges(face) for p in _edge_points(e, EDGE_DEFLECTION_MM)]
 
 
+def _arcs_info(faces: Sequence[Any]) -> List[Dict[str, Any]]:
+    """bar_tube.feature_extractor.surface_info for faces whose angle ranges are joined (_arc_from_group), with each axis turned to the way
+    its angles run: a surface on a left-handed frame (an exporter's, or the inner skin of a swept sheet) measures them about the reverse
+    of its stored axis, and read as stored its arc lands on the other side of the axis."""
+    from bar_tube.feature_extractor import surface_info
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder, GeomAbs_Torus  # type: ignore
+
+    info = surface_info(faces)
+    for face, rec in zip(faces, info):
+        a = BRepAdaptor_Surface(face)
+        kind = a.GetType()
+        pos = a.Cylinder().Position() if kind == GeomAbs_Cylinder else a.Torus().Position() if kind == GeomAbs_Torus else None
+        if pos is not None and "axis" in rec and not pos.Direct():
+            rec["axis"] = tuple(-c for c in rec["axis"])
+    return info
+
+
 # ── the long axis ───────────────────────────────────────────────────────────
 
-def _straight_axis(by_index: Dict[int, Dict[str, Any]], twinned: Set[int], adjacency: Dict[int, set],
+def _axial_length(rec: Dict[str, Any]) -> float:
+    """A cylinder face's length along its axis."""
+    return abs(rec["adaptor"].LastVParameter() - rec["adaptor"].FirstVParameter())
+
+
+def _sharp_corners(shape: Any, by_index: Dict[int, Dict[str, Any]], twinned: Set[int], adjacency: Dict[int, set]) -> List[Tuple[Vec, float]]:
+    """Where two skin planes of the sheet meet at an edge with no bend radius between them (a sharp corner): the corner line's direction and
+    length, on each skin."""
+    pairs = [(i, j) for i in sorted(twinned) if by_index[i]["kind"] == "plane"
+             for j in sorted(adjacency.get(i, ())) if j > i and j in twinned and by_index[j]["kind"] == "plane"
+             and not _parallel(by_index[i]["dir"], by_index[j]["dir"])]
+    if not pairs:
+        return []
+    emap, fmap = _edge_face_map(shape), _face_index_map(shape)
+    out = []
+    for i, j in pairs:
+        length = sum(_length(e) for e in _edges(by_index[i]["face"]) if j in _across(e, emap, fmap))
+        if length > 0:
+            out.append((_canonical(_unit(_cross(by_index[i]["dir"], by_index[j]["dir"]))), length))
+    return out
+
+
+def _straight_axis(shape: Any, by_index: Dict[int, Dict[str, Any]], twinned: Set[int], adjacency: Dict[int, set],
                    skin_area: float) -> Optional[Dict[str, Any]]:
-    """The common direction of the cross-section bends, when the part is folded one way only."""
-    folds = []
+    """The common direction of the cross-section bends, when the part is folded one way only. A bend is a cylinder folding the sheet, or a
+    sharp corner where two of its flats meet with no radius (a profile modelled without bend radii); each counts by its length."""
+    lines: List[Tuple[Vec, float, bool]] = []  # direction, length, sharp
     for i in twinned:
         r = by_index[i]
         if r["kind"] != "cylinder":
@@ -154,27 +214,70 @@ def _straight_axis(by_index: Dict[int, Dict[str, Any]], twinned: Set[int], adjac
             elif q["kind"] == "cylinder" and _parallel(q["dir"], d):
                 along = True  # bend meeting bend
         if along and not across:
-            folds.append(i)
-    if not folds:
+            lines.append((_canonical(d), _axial_length(r), False))
+    lines += [(d, length, True) for d, length in _sharp_corners(shape, by_index, twinned, adjacency)]
+    if not lines:
         return None
-    clusters: List[List[Any]] = []  # [direction, area, ids]
-    for i in folds:
-        d = _canonical(by_index[i]["dir"])
+    clusters: List[List[Any]] = []  # [direction, length, length of the folds with a radius]
+    for d, length, sharp in lines:
         for c in clusters:
             if _parallel(c[0], d):
-                c[1] += by_index[i]["area"]
-                c[2].append(i)
+                c[1] += length
+                c[2] += 0.0 if sharp else length
                 break
         else:
-            clusters.append([d, by_index[i]["area"], [i]])
+            clusters.append([d, length, 0.0 if sharp else length])
     clusters.sort(key=lambda c: -c[1])
-    axis, area, _ids = clusters[0]
-    if sum(c[1] for c in clusters[1:]) > OTHER_BEND_SHARE * area:
+    axis, length, radiused = clusters[0]
+    if sum(c[1] for c in clusters[1:]) > OTHER_BEND_SHARE * length:
         return None
     along_area = sum(by_index[i]["area"] for i in twinned if _prismatic(by_index[i], axis))
     if along_area < PROFILE_SHARE * skin_area:
         return None
-    return {"kind": "straight", "axis": axis}
+    return {"kind": "straight", "axis": axis, "sharp_only": radiused <= 0.0}
+
+
+def _tube_axis(by_index: Dict[int, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """A sheet with no flat at all (a round tube, a ring or trough of arcs), whose thickness the extractor reads from flats and so cannot
+    have: concentric cylinders along one axis, one wall apart (the commonest radius difference), holding PROFILE_SHARE of the surface, and
+    no sheet across the axis (a can's bottom)."""
+    cyls = [r for r in by_index.values() if r["kind"] == "cylinder"]
+    if len(cyls) < 2:
+        return None
+    axis = _canonical(max(cyls, key=lambda r: r["area"])["dir"])
+    lines: List[List[Dict[str, Any]]] = []
+    for r in cyls:
+        if not _parallel(r["dir"], axis):
+            continue
+        for g in lines:
+            if _same_axis(g[0]["dir"], g[0]["point"], r["dir"], r["point"]):
+                g.append(r)
+                break
+        else:
+            lines.append([r])
+    walls: Dict[float, float] = {}
+    for g in lines:
+        for k, a in enumerate(g):
+            for b in g[k + 1:]:
+                gap = abs(a["radius"] - b["radius"])
+                if gap > _POS_TOL:
+                    walls[round(gap, 2)] = walls.get(round(gap, 2), 0.0) + min(a["area"], b["area"])
+    if not walls:
+        return None
+    wall = max(walls, key=lambda w: walls[w])
+    tol = max(0.1 * wall, 0.02)
+    paired: Set[int] = set()
+    for g in lines:
+        for k, a in enumerate(g):
+            for b in g[k + 1:]:
+                if abs(abs(a["radius"] - b["radius"]) - wall) <= tol:
+                    paired |= {a["index"], b["index"]}
+    if sum(by_index[i]["area"] for i in paired) < PROFILE_SHARE * sum(r["area"] for r in by_index.values()):
+        return None
+    across = sorted(_dot(r["point"], axis) for r in by_index.values() if r["kind"] == "plane" and _parallel(r["dir"], axis))
+    if any(abs(abs(b - a) - wall) <= tol for k, a in enumerate(across) for b in across[k + 1:]):
+        return None
+    return {"kind": "straight", "axis": axis, "wall": wall}
 
 
 def _prismatic(rec: Dict[str, Any], axis: Vec) -> bool:
@@ -208,9 +311,16 @@ def _crosses_axis(rec: Dict[str, Any], axis: Vec, point: Vec) -> bool:
     return BRepClass_FaceClassifier(rec["face"], q, _POS_TOL).State() != TopAbs_OUT
 
 
-def _curved_axis(by_index: Dict[int, Dict[str, Any]], twinned: Set[int], skin_area: float) -> Optional[Dict[str, Any]]:
-    """The axis the cross-section bends (tori) are revolved about, when the sheet is a section swept round it."""
+def _curved_axis(by_index: Dict[int, Dict[str, Any]], twinned: Set[int], adjacency: Dict[int, set],
+                 skin_area: float) -> Optional[Dict[str, Any]]:
+    """The axis the cross-section bends are revolved about, when the sheet is a section swept round it. The bends are tori; in a profile
+    modelled without bend radii they are sharp corners, where a cylinder or cone about the axis meets a flat across it."""
     tori = [i for i in twinned if by_index[i]["kind"] == "torus" and by_index[i]["major"] > by_index[i]["minor"]]
+    sharp_only = not tori
+    if not tori:
+        tori = [i for i in twinned if by_index[i]["kind"] in ("cylinder", "cone")
+                and any(j in twinned and by_index[j]["kind"] == "plane" and _parallel(by_index[j]["dir"], by_index[i]["dir"])
+                        for j in adjacency.get(i, ()))]
     if not tori:
         return None
     groups: List[List[int]] = []
@@ -244,14 +354,14 @@ def _curved_axis(by_index: Dict[int, Dict[str, Any]], twinned: Set[int], skin_ar
     r_min, r_max = min(radial), max(radial)
     if r_min <= OFF_AXIS_RATIO * (r_max - r_min):
         return None
-    from bar_tube.feature_extractor import _arc_from_group, surface_info
+    from bar_tube.feature_extractor import _arc_from_group
 
-    info = surface_info([by_index[i]["face"] for i in main])
+    info = _arcs_info([by_index[i]["face"] for i in main])
     arc = _arc_from_group(info, "torus", _POS_TOL)
     if arc is None or arc.sweep <= 0 or arc.closed():
         return None  # a closed ring is drawn or rolled round, not cut to length from a profile
     return {"kind": "curved", "axis": arc.axis, "point": point, "arc": arc, "r_min": r_min, "r_max": r_max,
-            "z_min": min(axial), "z_max": max(axial)}
+            "z_min": min(axial), "z_max": max(axial), "sharp_only": sharp_only}
 
 
 def _arc_centreline(arc: Bend, point: Vec, radius: float, z: float) -> Centreline:
@@ -473,25 +583,54 @@ def _elements(skin: List[int], by_index: Dict[int, Dict[str, Any]], partners: Di
     return out
 
 
-def _flat_width(el: Dict[str, Any], by_index: Dict[int, Dict[str, Any]], xy: Dict[int, Any]) -> Tuple[float, Tuple[float, float]]:
-    """A flat's width across the strip: the length of one skin's trace on the section (every face of that skin's surface)."""
-    big = max(el["face_ids"], key=lambda i: by_index[i]["area"])
-    ids = [i for i in el["face_ids"] if _same_surface(by_index[i], by_index[big])]
-    pts = [tuple(p) for i in ids for p in xy[i].tolist()]
-    return _farthest(pts)
+def _flat_trace(el: Dict[str, Any], by_index: Dict[int, Dict[str, Any]], xy: Dict[int, Any]) -> Dict[str, Any]:
+    """A flat across the strip: its width at the sheet's mid-surface (the mean of its two skins' traces on the section, which differ at a
+    sharp corner, where the outer skin runs on past the inner one), its direction and its two mid-surface ends on the section."""
+    skins: List[List[int]] = []
+    for i in sorted(el["face_ids"], key=lambda i: -by_index[i]["area"]):
+        for c in skins:
+            if _same_surface(by_index[c[0]], by_index[i]):
+                c.append(i)
+                break
+        else:
+            skins.append([i])
+    skins = skins[:2]
+    _len, w = _farthest([tuple(p) for i in skins[0] for p in xy[i].tolist()])
+    lows, highs = [], []
+    for c in skins:
+        pts = [tuple(p) for i in c for p in xy[i].tolist()]
+        along = [p[0] * w[0] + p[1] * w[1] for p in pts]
+        lows.append(pts[along.index(min(along))])
+        highs.append(pts[along.index(max(along))])
+    e0 = (sum(p[0] for p in lows) / len(lows), sum(p[1] for p in lows) / len(lows))
+    e1 = (sum(p[0] for p in highs) / len(highs), sum(p[1] for p in highs) / len(highs))
+    return {"width": (e1[0] - e0[0]) * w[0] + (e1[1] - e0[1]) * w[1], "dir": w, "ends": (e0, e1)}
+
+
+def _corner_angle(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+    """The angle the strip turns through (radians) at a sharp corner from flat a to flat b: 180 deg less the angle between them."""
+    i, j = min(((i, j) for i in (0, 1) for j in (0, 1)), key=lambda ij: math.dist(a["ends"][ij[0]], b["ends"][ij[1]]))
+    near_a, far_a = a["ends"][i], a["ends"][1 - i]
+    near_b, far_b = b["ends"][j], b["ends"][1 - j]
+    da = (near_a[0] - far_a[0], near_a[1] - far_a[1])
+    db = (far_b[0] - near_b[0], far_b[1] - near_b[1])
+    la, lb = math.hypot(*da), math.hypot(*db)
+    if la <= 0 or lb <= 0:
+        return 0.0
+    return math.acos(max(-1.0, min(1.0, (da[0] * db[0] + da[1] * db[1]) / (la * lb))))
 
 
 def _bend_measures(el: Dict[str, Any], by_index: Dict[int, Dict[str, Any]]) -> Tuple[float, float]:
     """(inner radius, angle in radians) of a bend: its inner skin's radius, and the arc it turns through (a cylinder's angle about its
     axis, joined over the faces of that skin; a torus's sweep about its own tube)."""
-    from bar_tube.feature_extractor import _arc_from_group, surface_info
+    from bar_tube.feature_extractor import _arc_from_group
 
     recs = [by_index[i] for i in el["face_ids"]]
     field = "radius" if recs[0]["kind"] == "cylinder" else "minor"
     inner_r = min(r[field] for r in recs)
     inner = [r for r in recs if abs(r[field] - inner_r) <= _POS_TOL]
     if recs[0]["kind"] == "cylinder":
-        arc = _arc_from_group(surface_info([r["face"] for r in inner]), "cylinder", _POS_TOL)
+        arc = _arc_from_group(_arcs_info([r["face"] for r in inner]), "cylinder", _POS_TOL)
         angle = arc.sweep if arc is not None else max(abs(r["adaptor"].LastUParameter() - r["adaptor"].FirstUParameter()) for r in inner)
     else:
         angle = max(abs(r["adaptor"].LastVParameter() - r["adaptor"].FirstVParameter()) for r in inner)
@@ -549,20 +688,28 @@ def _chain(elements: List[Dict[str, Any]], elem_of: Dict[int, int], adjacency: D
     return order, closed
 
 
-def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: bool, widths: Dict[int, float],
-           bend_data: Dict[int, Tuple[float, float]]) -> Tuple[List[Dict[str, Any]], Optional[float], Optional[int]]:
-    """The bends in strip order with the flat before each and their levels, the flat after the last bend, and the web element."""
+def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: bool, traces: Dict[int, Dict[str, Any]],
+           bend_data: Dict[int, Tuple[float, float]]) -> Tuple[List[Dict[str, Any]], List[Tuple[bool, float, float]], Optional[float],
+                                                              Optional[int]]:
+    """The bends in strip order with the flat before each and their levels; each as (sharp, inner radius, angle in radians) for the strip
+    width; the flat after the last bend; and the web element. Two flats that meet with no bend element between them meet at a sharp corner,
+    a bend of inner radius 0. A closed strip that is one full-turn bend (a round tube) is two half-turn bends meeting at the seam."""
     def flat_w(k: int) -> float:
-        return widths.get(k, 0.0)
+        return traces[k]["width"] if k in traces else 0.0
 
-    def bend_entry(k: int, before: Optional[float], level: Optional[int]) -> Dict[str, Any]:
-        r, a = bend_data[k]
-        return {"angle_deg": _r(math.degrees(a), 2), "inner_radius_mm": _r(r, 3), "flange_before_mm": _r(before, 3), "level": level,
-                "face_ids": elements[k]["face_ids"]}
+    def entry(kind: str, ref: Any, before: Optional[float], level: Optional[int]) -> Tuple[Dict[str, Any], Tuple[bool, float, float]]:
+        if kind == "bend":
+            r, a = bend_data[ref]
+            face_ids = elements[ref]["face_ids"]
+        else:  # a sharp corner has no face of its own
+            r, a = 0.0, _corner_angle(traces[ref[0]], traces[ref[1]])
+            face_ids = []
+        return ({"angle_deg": _r(math.degrees(a), 2), "inner_radius_mm": _r(r, 3), "sharp": kind == "sharp", "flange_before_mm": _r(before, 3),
+                 "level": level, "face_ids": face_ids}, (kind == "sharp", r, a))
 
     if order is None:
-        bends = [bend_entry(k, None, None) for k in sorted(bend_data, key=lambda k: elements[k]["face_ids"][0])]
-        return bends, None, None
+        made = [entry("bend", k, None, None) for k in sorted(bend_data, key=lambda k: elements[k]["face_ids"][0])]
+        return [m[0] for m in made], [m[1] for m in made], None, None
 
     flats = [k for k in order if elements[k]["kind"] == "flat"]
     if closed:
@@ -582,30 +729,41 @@ def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: b
             order = order[::-1]
         web = max(flats, key=lambda k: (round(flat_w(k), 3), -order.index(k))) if flats else None
 
-    n = len(order)
-    pos = {k: p for p, k in enumerate(order)}
+    # The strip as items in order: flats, bends, and a sharp corner wherever two flats meet.
+    items: List[Tuple[str, Any]] = []
+    for p, k in enumerate(order):
+        items.append((elements[k]["kind"], k))
+        nxt = order[p + 1] if p + 1 < len(order) else (order[0] if closed and len(order) > 1 else None)
+        if nxt is not None and elements[k]["kind"] == "flat" and elements[nxt]["kind"] == "flat":
+            items.append(("sharp", (k, nxt)))
+    n = len(items)
+    web_pos = next((p for p, it in enumerate(items) if it == ("flat", web)), None)
 
-    def level(k: int) -> int:
-        if web is None:
+    def level(p: int) -> int:
+        if web_pos is None:
             return 1
-        p, w = pos[k], pos[web]
-        lo, hi = min(p, w), max(p, w)
-        between = sum(1 for q in range(lo + 1, hi) if elements[order[q]]["kind"] == "bend")
+        lo, hi = min(p, web_pos), max(p, web_pos)
+        between = sum(1 for q in range(lo + 1, hi) if items[q][0] != "flat")
         if closed:
-            other = sum(1 for q in list(range(hi + 1, n)) + list(range(0, lo)) if elements[order[q]]["kind"] == "bend")
+            other = sum(1 for q in list(range(hi + 1, n)) + list(range(0, lo)) if items[q][0] != "flat")
             between = min(between, other)
         return between + 1
 
-    bends = []
-    for p, k in enumerate(order):
-        if elements[k]["kind"] != "bend":
+    made = []
+    for p, (kind, ref) in enumerate(items):
+        if kind == "flat":
             continue
-        prev = order[p - 1] if p > 0 else (order[-1] if closed else None)
-        before = flat_w(prev) if prev is not None and elements[prev]["kind"] == "flat" else 0.0
-        bends.append(bend_entry(k, before, level(k)))
-    last = order[-1]
-    last_flange = 0.0 if closed else (flat_w(last) if elements[last]["kind"] == "flat" else 0.0)
-    return bends, last_flange, web
+        prev = items[p - 1] if p > 0 else (items[-1] if closed else None)
+        before = flat_w(prev[1]) if prev is not None and prev[0] == "flat" else 0.0
+        made.append(entry(kind, ref, before, level(p)))
+    if closed and len(items) == 1 and items[0][0] == "bend" and bend_data[items[0][1]][1] >= 2.0 * math.pi - FULL_TURN_TOL_RAD:
+        # A round tube: formed from the strip as two half turns that meet at the welded seam.
+        r = bend_data[items[0][1]][0]
+        half = dict(made[0][0], angle_deg=180.0)
+        made = [(dict(half), (False, r, math.pi)), (dict(half), (False, r, math.pi))]
+    last = items[-1]
+    last_flange = 0.0 if closed else (flat_w(last[1]) if last[0] == "flat" else 0.0)
+    return [m[0] for m in made], [m[1] for m in made], last_flange, web
 
 
 # ── features and ends ───────────────────────────────────────────────────────
@@ -678,9 +836,9 @@ def _round_hole(group: Sequence[int], by_index: Dict[int, Dict[str, Any]]) -> Op
     h = recs[0]
     if not all(_same_axis(h["dir"], h["point"], r["dir"], r["point"]) and abs(r["radius"] - h["radius"]) <= _POS_TOL for r in recs):
         return None
-    from bar_tube.feature_extractor import _arc_from_group, surface_info
+    from bar_tube.feature_extractor import _arc_from_group
 
-    arc = _arc_from_group(surface_info([r["face"] for r in recs]), "cylinder", _POS_TOL)
+    arc = _arc_from_group(_arcs_info([r["face"] for r in recs]), "cylinder", _POS_TOL)
     sweep = arc.sweep if arc is not None else sum(abs(r["adaptor"].LastUParameter() - r["adaptor"].FirstUParameter()) for r in recs)
     return 2.0 * h["radius"] if sweep >= 2.0 * math.pi - FULL_TURN_TOL_RAD else None
 
@@ -909,17 +1067,28 @@ def measure_roll_form(
     sheet_faces       drawn_shell.analyse_sheet_faces(shape, thickness)
     lances, formed_features   the extractor's lance and formed-feature candidates: a feature group holding a recognised one's faces is a
                       Lance or a Form
+    A sheet with no flat (a round tube) has no thickness the extractor can read (it reads it between flats); its wall is read from its
+    concentric cylinders here, and its faces analysed again at that thickness.
     """
     if thickness <= 0 or not sheet_faces:
         return None
     by_index, partners, twinned, adjacency = (sheet_faces["by_index"], sheet_faces["partners"], sheet_faces["twinned"],
                                               sheet_faces["adjacency"])
     skin_area = sum(by_index[i]["area"] for i in twinned)
-    if skin_area <= 0:
-        return None
-    frame = _curved_axis(by_index, twinned, skin_area) or _straight_axis(by_index, twinned, adjacency, skin_area)
+    frame = None
+    if skin_area > 0:
+        frame = _curved_axis(by_index, twinned, adjacency, skin_area) or _straight_axis(shape, by_index, twinned, adjacency, skin_area)
     if frame is None:
-        return None
+        frame = _tube_axis(by_index)
+        if frame is None:
+            return None
+        if abs(frame["wall"] - thickness) > max(0.1 * frame["wall"], 0.02):
+            from sheet_metal.features.drawn_shell import analyse_sheet_faces
+
+            thickness = frame["wall"]
+            sheet_faces = analyse_sheet_faces(shape, thickness)
+            by_index, partners, twinned, adjacency = (sheet_faces["by_index"], sheet_faces["partners"], sheet_faces["twinned"],
+                                                      sheet_faces["adjacency"])
 
     from bar_tube.feature_extractor import STOCK_FRACTION
     from OCC.Core.BRepGProp import brepgprop  # type: ignore
@@ -974,33 +1143,46 @@ def measure_roll_form(
     skin = sorted(stock & twinned)
     elements = _elements(skin, by_index, partners, xy, thickness + on_tol, "cylinder" if frame["kind"] == "straight" else "torus")
     elem_of = {f: k for k, el in enumerate(elements) for f in el["face_ids"]}
-    widths: Dict[int, float] = {}
-    directions: Dict[int, Tuple[float, float]] = {}
+    traces: Dict[int, Dict[str, Any]] = {}
     bend_data: Dict[int, Tuple[float, float]] = {}
     for k, el in enumerate(elements):
         if el["kind"] == "flat":
-            widths[k], directions[k] = _flat_width(el, by_index, xy)
+            traces[k] = _flat_trace(el, by_index, xy)
         else:
             bend_data[k] = _bend_measures(el, by_index)
     order, closed_strip = _chain(elements, elem_of, adjacency)
     if order is not None:
         bend_data = {k: b for k, b in bend_data.items() if k in set(order)}
-    bends, last_flange, web = _strip(elements, order, closed_strip, widths, bend_data)
+        if len(order) == 1 and order[0] in bend_data and bend_data[order[0]][1] >= 2.0 * math.pi - FULL_TURN_TOL_RAD:
+            closed_strip = True  # one bend all the way round: a round tube
+    bends, turns, last_flange, web = _strip(elements, order, closed_strip, traces, bend_data)
 
     strip_width = section["area_mm2"] / thickness
     strip_neutral = None
     strip_check = None
     if order is not None:
-        flats_sum = sum(widths.get(k, 0.0) for k in order)
-        arcs_mid = sum(a * (r + thickness / 2.0) for r, a in bend_data.values())
-        strip_neutral = flats_sum + sum(a * (r + (0.33 if r < 2.0 * thickness else 0.41) * thickness) for r, a in bend_data.values())
+        # The flats are read at the mid-surface: at a sharp corner each runs on to the corner of the mid-surface, t/2 tan(angle/2) past
+        # the inner corner, which the neutral fibre (bending about the inner corner, K 0.33) does not.
+        flats_sum = sum(traces[k]["width"] for k in order if k in traces)
+        arcs_mid = sum(a * (r + thickness / 2.0) for sharp, r, a in turns if not sharp)
+        strip_neutral = flats_sum
+        for sharp, r, a in turns:
+            k_factor = 0.33 if r < 2.0 * thickness else 0.41
+            strip_neutral += a * (r + k_factor * thickness)
+            if sharp and a < math.radians(179.0):
+                strip_neutral -= thickness * math.tan(a / 2.0)
         strip_check = {"flats_mm": _r(flats_sum, 3), "bend_arcs_mm": _r(arcs_mid, 3),
                        "agrees": abs(flats_sum + arcs_mid - strip_width) <= STRIP_AGREE * strip_width}
+
+    if frame.get("sharp_only") and not (stock_fraction >= STOCK_FRACTION and bends and strip_check and strip_check["agrees"]):
+        # Found by sharp corners alone (flats meeting with no bend radius), which a machined or welded part has too: it is a profile only
+        # when it is one section along its length and that section is a strip of the sheet bent at its corners.
+        return None
 
     # The section's width along the web and height across it.
     width, height = section["width_mm"], section["height_mm"]
     if web is not None:
-        wx, wy = directions[web]
+        wx, wy = traces[web]["dir"]
         along_w = [x * wx + y * wy for x, y in cut["outer"]]
         across_w = [-x * wy + y * wx for x, y in cut["outer"]]
         width, height = max(along_w) - min(along_w), max(across_w) - min(across_w)
@@ -1013,6 +1195,11 @@ def measure_roll_form(
     }
     features, ends = _features_and_ends(ctx, section, on_tol)
 
+    tube = None
+    if section["hollows"] > 0:
+        # A closed section: a tube rolled from the strip and welded along its seam.
+        tube = {"outer_diameter_mm": _r(section.get("od_mm"), 2) if section["stock_form"] == "ROUND_TUBE" else None,
+                "outer_width_mm": _r(width, 2), "outer_height_mm": _r(height, 2), "wall_mm": _r(section.get("wall_mm") or thickness, 3)}
     curve = None
     axis_out = frame["axis"]
     if frame["kind"] == "curved":
@@ -1041,6 +1228,7 @@ def measure_roll_form(
         "thickness_mm": _r(thickness, 3),
         "bends": bends,
         "last_flange_mm": _r(last_flange, 3),
+        "tube": tube,
         "curve": curve,
         "features": features,
         "ends": ends,
