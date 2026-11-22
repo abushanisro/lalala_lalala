@@ -12,8 +12,8 @@ section swept along a line or an arc:
   constant_section    whether the part is one section along its length: stock_fraction, the share of the surface on the swept
                       section (bar_tube's measure), is at least bar_tube.feature_extractor.STOCK_FRACTION (0.8).
   section             the cross-section cut across the axis clear of every feature (bar_tube.feature_extractor.cut_section's cut, its
-                      pieces merged; classified by bar_tube.section.classify_section): width along the web (the widest flat of the strip)
-                      and height across it, area, perimeter (outer and inner outlines), closed (the section has a hollow: a tube) and the
+                      pieces merged; classified by bar_tube.section.classify_section): width along the web (see bends) and height across
+                      it, area, perimeter (outer and inner outlines), closed (the section has a hollow: a tube) and the
                       stock form.
   strip_width_mm      the strip the profile is rolled from: the section's mid-line length, section area / thickness (exact for a sheet of
                       constant thickness). strip_width_neutral_mm is the same strip read off the flats and the bends at the neutral
@@ -24,15 +24,21 @@ section swept along a line or an arc:
   thickness_mm        the sheet's thickness; for a sheet with no flat (a round tube), whose thickness the extractor cannot read between
                       flats, the wall between its concentric skins.
   bends               the cross-section bends (folds whose line runs along the length), in order across the strip from one edge to the
-                      other: angle, inner radius, sharp, the flat just before the bend (0 when two bends meet), the bend's level and its
-                      faces. A profile modelled without bend radii has sharp corners, two flats meeting at an edge: a bend with inner
+                      other: angle, inner radius, sharp, direction, the flat just before the bend (0 when two bends meet), the bend's
+                      level and its faces. A profile modelled without bend radii has sharp corners, two flats meeting at an edge: a bend with inner
                       radius 0, sharp true, its angle 180 deg less the angle between the flats, and no face of its own. Each flat is
                       read at the sheet's mid-surface (the mean of its two skins, which differ at a sharp corner), so the flats and the
                       bend arcs add up to the strip. A round tube is formed as two half turns meeting at the welded seam: two 180 deg
                       bends of the tube's inner radius, level 1, with no flat between them.
                       last_flange_mm is the flat after the last bend (0 for a closed section, whose strip closes on its first flat).
-                      Level is the bend's precedence in the mill: 1 for the bends on the web (the widest flat), 2 for the bends one bend
-                      further out, and so on; on a closed section it is counted the shorter way round from the web.
+                      Level is the bend's precedence in the mill, which forms from the middle of the section outward: 1 for the bends on
+                      the web, 2 for the bends one bend further out, and so on. The web of an open strip is its middle: the flat with the
+                      fewest bends between it and its farther edge (ties: the widest, then the one whose middle is nearer the middle of
+                      the strip's length), so a channel deeper than its web still has both bends at level 1. The web of a closed section
+                      is its widest flat, and levels are counted the shorter way round from it.
+                      Direction is +1 when the bend, walking the strip in the order listed, turns the same way as the first bend listed,
+                      -1 when it turns the other way: a C is [1, 1], a Z [1, -1], a rib pressed in a panel [1, -1, -1, 1] (two opposite
+                      bends close together whose far flat returns to the plane, as the backend groups them).
                       An open strip is listed from the edge whose first flat is narrower (ties: the side with the lower face id); a
                       closed one from its web, towards the neighbour with the lower face id.
   tube                a closed section (a tube rolled from the strip and welded along its seam): its outer diameter (a round tube;
@@ -81,9 +87,10 @@ from sheet_metal.features.hydroform import _across, _edge_face_map, _edge_points
 
 logger = logging.getLogger(__name__)
 
+# rf_v3 (2026-11-22): the web is the middle of the strip (was its widest flat; levels change), and each bend has its fold direction.
 # rf_v2 (2026-11-22): profiles modelled without bend radii (sharp corners, "sharp" on each bend) and tubes with no flat (a round tube:
 # two half turns at the seam, its wall read from its skins) are measured, and a closed section carries "tube". rf_v1: the first.
-VERSION = "rf_v2"
+VERSION = "rf_v3"
 
 # Two directions are parallel within this of |cos| = 1, perpendicular within this of cos = 0 (the drawn-shell module's angle tolerance).
 DIR_TOL = 1e-3
@@ -689,13 +696,24 @@ def _chain(elements: List[Dict[str, Any]], elem_of: Dict[int, int], adjacency: D
 
 
 def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: bool, traces: Dict[int, Dict[str, Any]],
-           bend_data: Dict[int, Tuple[float, float]]) -> Tuple[List[Dict[str, Any]], List[Tuple[bool, float, float]], Optional[float],
-                                                              Optional[int]]:
-    """The bends in strip order with the flat before each and their levels; each as (sharp, inner radius, angle in radians) for the strip
-    width; the flat after the last bend; and the web element. Two flats that meet with no bend element between them meet at a sharp corner,
-    a bend of inner radius 0. A closed strip that is one full-turn bend (a round tube) is two half-turn bends meeting at the seam."""
+           bend_data: Dict[int, Tuple[float, float]], bend_points: Dict[int, List[Tuple[float, float]]],
+           thickness: float) -> Tuple[List[Dict[str, Any]], List[Tuple[bool, float, float]], Optional[float], Optional[int]]:
+    """The bends in strip order with the flat before each, their levels and fold directions; each as (sharp, inner radius, angle in
+    radians) for the strip width; the flat after the last bend; and the web element. Two flats that meet with no bend element between them
+    meet at a sharp corner, a bend of inner radius 0. A closed strip that is one full-turn bend (a round tube) is two half-turn bends meeting
+    at the seam.
+
+    The web is where the mill starts forming: the middle of the strip. On an open strip it is the flat with the fewest bends between it and
+    its farther edge (ties: the widest, then the one whose middle is nearer the middle of the strip's length); on a closed section, the
+    widest flat. A bend's level counts the bends from the web out to it (the shorter way round a closed section). A bend's direction is +1
+    when, walking the strip in the order listed, it turns the same way as the first bend listed, -1 when it turns the other way."""
     def flat_w(k: int) -> float:
         return traces[k]["width"] if k in traces else 0.0
+
+    def corner(a: int, b: int) -> Tuple[float, float]:
+        ea, eb = traces[a]["ends"], traces[b]["ends"]
+        i, j = min(((i, j) for i in (0, 1) for j in (0, 1)), key=lambda ij: math.dist(ea[ij[0]], eb[ij[1]]))
+        return ((ea[i][0] + eb[j][0]) / 2.0, (ea[i][1] + eb[j][1]) / 2.0)
 
     def entry(kind: str, ref: Any, before: Optional[float], level: Optional[int]) -> Tuple[Dict[str, Any], Tuple[bool, float, float]]:
         if kind == "bend":
@@ -704,14 +722,15 @@ def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: b
         else:  # a sharp corner has no face of its own
             r, a = 0.0, _corner_angle(traces[ref[0]], traces[ref[1]])
             face_ids = []
-        return ({"angle_deg": _r(math.degrees(a), 2), "inner_radius_mm": _r(r, 3), "sharp": kind == "sharp", "flange_before_mm": _r(before, 3),
-                 "level": level, "face_ids": face_ids}, (kind == "sharp", r, a))
+        return ({"angle_deg": _r(math.degrees(a), 2), "inner_radius_mm": _r(r, 3), "sharp": kind == "sharp", "direction": None,
+                 "flange_before_mm": _r(before, 3), "level": level, "face_ids": face_ids}, (kind == "sharp", r, a))
 
     if order is None:
         made = [entry("bend", k, None, None) for k in sorted(bend_data, key=lambda k: elements[k]["face_ids"][0])]
         return [m[0] for m in made], [m[1] for m in made], None, None
 
     flats = [k for k in order if elements[k]["kind"] == "flat"]
+    web: Optional[int] = None
     if closed:
         web = max(flats, key=lambda k: (round(flat_w(k), 3), -elements[k]["face_ids"][0])) if flats else None
         if web is not None:
@@ -727,7 +746,6 @@ def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: b
             return (round(flat_w(first), 3) if elements[first]["kind"] == "flat" else 0.0, elements[first]["face_ids"][0])
         if head(order[::-1]) < head(order):
             order = order[::-1]
-        web = max(flats, key=lambda k: (round(flat_w(k), 3), -order.index(k))) if flats else None
 
     # The strip as items in order: flats, bends, and a sharp corner wherever two flats meet.
     items: List[Tuple[str, Any]] = []
@@ -737,6 +755,25 @@ def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: b
         if nxt is not None and elements[k]["kind"] == "flat" and elements[nxt]["kind"] == "flat":
             items.append(("sharp", (k, nxt)))
     n = len(items)
+
+    if not closed and flats:
+        # The middle of the strip: the flat with the fewest bends to its farther edge, then the widest, then the nearest the middle of the
+        # strip's length (each item's length along the mid-surface: a flat its width, a bend its arc).
+        spans = [flat_w(ref) if kind == "flat" else (bend_data[ref][1] * (bend_data[ref][0] + thickness / 2.0) if kind == "bend" else 0.0)
+                 for kind, ref in items]
+        total = sum(spans)
+        bends_total = sum(1 for kind, _ref in items if kind != "flat")
+        best = None
+        run = done = 0
+        for p, (kind, ref) in enumerate(items):
+            if kind == "flat":
+                key = (max(done, bends_total - done), -round(flat_w(ref), 3), round(abs(run + spans[p] / 2.0 - total / 2.0), 3))
+                if best is None or key < best[0]:
+                    best = (key, ref)
+            else:
+                done += 1
+            run += spans[p]
+        web = best[1] if best else None
     web_pos = next((p for p, it in enumerate(items) if it == ("flat", web)), None)
 
     def level(p: int) -> int:
@@ -749,17 +786,53 @@ def _strip(elements: List[Dict[str, Any]], order: Optional[List[int]], closed: b
             between = min(between, other)
         return between + 1
 
+    def point(it: Tuple[str, Any]) -> Tuple[float, float]:
+        """Where an item lies on the section: a flat's middle, a sharp corner's point, a bend's points' mean (inside its arc's segment)."""
+        kind, ref = it
+        if kind == "flat":
+            (x0, y0), (x1, y1) = traces[ref]["ends"]
+            return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+        if kind == "sharp":
+            return corner(*ref)
+        pts = bend_points[ref]
+        return (sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts))
+
+    def turn(p: int) -> int:
+        """+1 turning left walking the strip in order, -1 right (the sign of the turn from the item before to the item after)."""
+        here = point(items[p])
+        before = items[p - 1] if p > 0 else (items[-1] if closed and n > 1 else None)
+        after = items[p + 1] if p + 1 < n else (items[0] if closed and n > 1 else None)
+        a = point(before) if before is not None else None
+        b = point(after) if after is not None else None
+        if items[p][0] == "bend" and (a is None or b is None):
+            # At a free end of the strip: the far end of the bend's own arc stands in for the missing neighbour.
+            pts = bend_points[items[p][1]]
+            if a is None and b is None:
+                return 1
+            if a is None:
+                a = max(pts, key=lambda q: math.dist(q, b))  # type: ignore[arg-type]
+            else:
+                b = max(pts, key=lambda q: math.dist(q, a))
+        if a is None or b is None:
+            return 1
+        cross = (here[0] - a[0]) * (b[1] - here[1]) - (here[1] - a[1]) * (b[0] - here[0])
+        return 1 if cross >= 0 else -1
+
     made = []
+    turns: List[int] = []
     for p, (kind, ref) in enumerate(items):
         if kind == "flat":
             continue
         prev = items[p - 1] if p > 0 else (items[-1] if closed else None)
         before = flat_w(prev[1]) if prev is not None and prev[0] == "flat" else 0.0
         made.append(entry(kind, ref, before, level(p)))
+        turns.append(turn(p))
+    for (bend, _measure), sign in zip(made, turns):
+        bend["direction"] = sign * turns[0]
     if closed and len(items) == 1 and items[0][0] == "bend" and bend_data[items[0][1]][1] >= 2.0 * math.pi - FULL_TURN_TOL_RAD:
         # A round tube: formed from the strip as two half turns that meet at the welded seam.
         r = bend_data[items[0][1]][0]
-        half = dict(made[0][0], angle_deg=180.0)
+        half = dict(made[0][0], angle_deg=180.0, direction=1)
         made = [(dict(half), (False, r, math.pi)), (dict(half), (False, r, math.pi))]
     last = items[-1]
     last_flange = 0.0 if closed else (flat_w(last[1]) if last[0] == "flat" else 0.0)
@@ -1155,7 +1228,8 @@ def measure_roll_form(
         bend_data = {k: b for k, b in bend_data.items() if k in set(order)}
         if len(order) == 1 and order[0] in bend_data and bend_data[order[0]][1] >= 2.0 * math.pi - FULL_TURN_TOL_RAD:
             closed_strip = True  # one bend all the way round: a round tube
-    bends, turns, last_flange, web = _strip(elements, order, closed_strip, traces, bend_data)
+    bend_points = {k: [tuple(q) for i in elements[k]["face_ids"] for q in xy[i].tolist()] for k in bend_data}
+    bends, turns, last_flange, web = _strip(elements, order, closed_strip, traces, bend_data, bend_points, thickness)
 
     strip_width = section["area_mm2"] / thickness
     strip_neutral = None

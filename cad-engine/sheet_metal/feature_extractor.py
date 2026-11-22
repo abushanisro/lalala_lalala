@@ -912,7 +912,7 @@ class SheetMetalFeatureExtractor:
             # The hydroforming measurements (sheet_metal/features/hydroform.py, "hf_v1"): measured for every sheet part,
             # None when the part has no sheet frame or the measurement failed.
             "hydroform": hydroform,
-            # The roll-forming measurements (sheet_metal/features/roll_form.py, "rf_v2"): measured for every single-body sheet
+            # The roll-forming measurements (sheet_metal/features/roll_form.py, "rf_v3"): measured for every single-body sheet
             # part, None when the part is not a profile (or the measurement failed).
             "roll_form": roll_form,
             "sheet_geometry_debug": {**geom_debug, **validation_debug},

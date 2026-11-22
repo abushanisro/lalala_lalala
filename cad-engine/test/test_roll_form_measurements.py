@@ -7,7 +7,9 @@ so its numbers follow by hand: a straight of the mid-line between two bends is t
 mid-line arc is 2 pi, and the strip width is the mid-line's length (= section area / T).
 
   - a C channel (web 100, flanges 40, 1000 long): strip 172.57, two 90 deg bends on the web (level 1), the flats in order 35 | 90 | 35
-  - a hat (feet 30, walls 40, crown 60): four bends, the crown's two at level 1 and the feet's two at level 2
+  - a hat (feet 30, walls 40, crown 60): four bends, the crown's two at level 1 and the feet's two at level 2, turning [1, -1, -1, 1]
+  - a channel deeper than its web (flanges 100, web 50): both bends at level 1 (the web is the middle of the strip, not its widest flat)
+  - a Z section (directions [1, -1]) and a panel with a trapezoidal rib (four bends, [1, -1, -1, 1], the crown the web)
   - a 50 x 30 angle with 8 mm holes at z = 100, 250, 400, a 10 x 30 rectangular hole and a notch in the edge: each at its station
   - the C channel perforated along its web and flanges: the section is cut between the holes, every hole at its station
   - a closed 40 x 40 square tube: closed, four bends, the web's two at level 1 and the far two at level 2
@@ -352,7 +354,7 @@ def _seq(rf):
 def test_c_channel_strip_bends_and_levels():
     shape = c_channel()
     result, rf = _rf(shape)
-    assert rf["version"] == VERSION == "rf_v2"
+    assert rf["version"] == VERSION == "rf_v3"
     assert [abs(c) for c in rf["axis"]] == [0.0, 0.0, 1.0] and rf["axis_source"] == "bends"
     assert rf["length_mm"] == pytest.approx(1000.0, abs=0.01)
     assert rf["constant_section"] is True and rf["stock_fraction"] > 0.99
@@ -379,6 +381,7 @@ def test_c_channel_strip_bends_and_levels():
     assert [b["inner_radius_mm"] for b in rf["bends"]] == [R, R]
     assert [b["sharp"] for b in rf["bends"]] == [False, False]
     assert [b["level"] for b in rf["bends"]] == [1, 1]
+    assert [b["direction"] for b in rf["bends"]] == [1, 1]  # both turn the same way
     assert _seq(rf) == ([pytest.approx(35.0, abs=0.01), pytest.approx(90.0, abs=0.01)], pytest.approx(35.0, abs=0.01))
     assert all(len(b["face_ids"]) == 2 for b in rf["bends"])  # inner and outer skin
     assert rf["tube"] is None
@@ -394,17 +397,49 @@ def test_hat_section_levels_one_and_two():
     # Feet 30 - 4 = 26, walls 40 - 8 = 32, crown 60 - 8 = 52; four 90 deg arcs.
     assert rf["strip_width_mm"] == pytest.approx(2 * 26 + 2 * 32 + 52 + 4 * ARC90, abs=0.02)
     assert len(rf["bends"]) == 4
-    assert [b["level"] for b in rf["bends"]] == [2, 1, 1, 2]  # the crown (widest flat) is the web
+    assert [b["level"] for b in rf["bends"]] == [2, 1, 1, 2]  # the crown (the middle of the strip) is the web
+    assert [b["direction"] for b in rf["bends"]] == [1, -1, -1, 1]
     flats, last = _seq(rf)
     assert flats == [pytest.approx(x, abs=0.01) for x in (26, 32, 52, 32)] and last == pytest.approx(26, abs=0.01)
     assert rf["section"]["width_mm"] == pytest.approx(120.0, abs=0.01) and rf["section"]["height_mm"] == pytest.approx(42.0, abs=0.01)
     assert rf["constant_section"] is True
 
 
+def test_a_channel_deeper_than_its_web_is_formed_from_its_web():
+    # Flanges 100, web 50: the web (40 between the bends) is narrower than the flanges (95), but it is the middle of the strip.
+    h = T / 2.0
+    _result, rf = _rf(straight(strip_section([(h, 100.0), (h, h), (50.0 - h, h), (50.0 - h, 100.0)]), 600.0))
+    assert [b["level"] for b in rf["bends"]] == [1, 1] and [b["direction"] for b in rf["bends"]] == [1, 1]
+    assert _seq(rf) == ([pytest.approx(95.0, abs=0.01), pytest.approx(40.0, abs=0.01)], pytest.approx(95.0, abs=0.01))
+    # Width along the web, height across it: the section as it runs through the mill, web down.
+    assert rf["section"]["width_mm"] == pytest.approx(50.0, abs=0.01) and rf["section"]["height_mm"] == pytest.approx(100.0, abs=0.01)
+
+
+def test_z_section_bends_turn_opposite_ways():
+    _result, rf = _rf(straight(strip_section([(0, 40), (0, 0), (60, 0), (60, -40)]), 700.0))
+    assert [b["level"] for b in rf["bends"]] == [1, 1]
+    assert [b["direction"] for b in rf["bends"]] == [1, -1]
+    assert _seq(rf) == ([pytest.approx(36.0, abs=0.01), pytest.approx(52.0, abs=0.01)], pytest.approx(36.0, abs=0.01))
+
+
+def test_a_rib_pressed_in_a_panel():
+    # A 160 mm panel with a trapezoidal rib 15 high in its middle (walls rising 15 over 10): four bends of atan(15/10), the two at the rib's
+    # foot turning one way and the two at its crown the other; the crown is the middle of the strip.
+    _result, rf = _rf(straight(strip_section([(0, 0), (60, 0), (70, 15), (90, 15), (100, 0), (160, 0)]), 600.0))
+    assert [b["direction"] for b in rf["bends"]] == [1, -1, -1, 1]
+    assert [b["level"] for b in rf["bends"]] == [2, 1, 1, 2]
+    turn = math.atan2(15.0, 10.0)
+    assert [b["angle_deg"] for b in rf["bends"]] == [pytest.approx(math.degrees(turn), abs=0.01)] * 4
+    run = RM * math.tan(turn / 2.0)  # each bend's tangent run along its flats
+    flats, last = _seq(rf)
+    assert flats == [pytest.approx(x, abs=0.01) for x in (60 - run, math.hypot(10, 15) - 2 * run, 20 - 2 * run, math.hypot(10, 15) - 2 * run)]
+    assert last == pytest.approx(60 - run, abs=0.01)
+
+
 def test_angle_with_holes_at_known_stations():
     _result, rf = _rf(angle_with_holes())
     assert rf["constant_section"] is True and rf["length_mm"] == pytest.approx(500.0, abs=0.01)
-    assert len(rf["bends"]) == 1 and rf["bends"][0]["level"] == 1
+    assert len(rf["bends"]) == 1 and rf["bends"][0]["level"] == 1 and rf["bends"][0]["direction"] == 1
     # Listed from the narrower leg: 30 - 4 = 26, then 50 - 4 = 46.
     assert _seq(rf) == ([pytest.approx(26.0, abs=0.01)], pytest.approx(46.0, abs=0.01))
     assert rf["strip_width_mm"] == pytest.approx(26 + 46 + ARC90, abs=0.02)
@@ -514,6 +549,7 @@ def test_sharp_cornered_hat():
     _result, rf = _rf(straight(sharp_section([(0, 0), (30, 0), (30, 40), (90, 40), (90, 0), (120, 0)]), 800.0))
     assert rf["strip_width_mm"] == pytest.approx(30 + 40 + 60 + 40 + 30, abs=0.01)
     assert [b["level"] for b in rf["bends"]] == [2, 1, 1, 2] and all(b["sharp"] for b in rf["bends"])
+    assert [b["direction"] for b in rf["bends"]] == [1, -1, -1, 1]
     assert [b["angle_deg"] for b in rf["bends"]] == [90.0] * 4
     flats, last = _seq(rf)
     assert flats == [pytest.approx(x, abs=0.01) for x in (30, 40, 60, 40)] and last == pytest.approx(30.0, abs=0.01)

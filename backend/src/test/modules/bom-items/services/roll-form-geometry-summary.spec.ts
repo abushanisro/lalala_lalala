@@ -1,6 +1,6 @@
 import { AutoFillService, rollFormGeometry } from '../../../../modules/bom-items/services/auto-fill.service';
 
-// A sheet-metal part's analysis carries what it is measured for roll forming (cad-engine sheet_metal/features/roll_form.py, "rf_v2") into
+// A sheet-metal part's analysis carries what it is measured for roll forming (cad-engine sheet_metal/features/roll_form.py, "rf_v3") into
 // feature_graph.summary.rollFormGeometry, which the Sheet Metal Roll Forming cost reads: top-level keys camelCase, the objects inside as the
 // engine writes them (snake_case), as hydroformGeometry does.
 
@@ -18,13 +18,13 @@ const svc = new AutoFillService({} as never, {} as never, {} as never) as unknow
 
 // The engine's measurement of a 100 x 40 C channel, 1000 long, t 2, inner radii 3 (cad-engine/test/test_roll_form_measurements.py).
 const channel = {
-  version: 'rf_v2', axis: [0, 0, 1], axis_source: 'bends', length_mm: 1000, constant_section: true, stock_fraction: 0.998,
+  version: 'rf_v3', axis: [0, 0, 1], axis_source: 'bends', length_mm: 1000, constant_section: true, stock_fraction: 0.998,
   section: { height_mm: 40, width_mm: 100, area_mm2: 345.12, perimeter_mm: 349.13, closed: false, stock_form: 'GENERIC_EXTRUSION' },
   strip_width_mm: 172.56, strip_width_neutral_mm: 171.5, strip_width_check: { flats_mm: 160, bend_arcs_mm: 12.566, agrees: true },
   thickness_mm: 2,
   bends: [
-    { angle_deg: 90, inner_radius_mm: 3, sharp: false, flange_before_mm: 35, level: 1, face_ids: [1, 9] },
-    { angle_deg: 90, inner_radius_mm: 3, sharp: false, flange_before_mm: 90, level: 1, face_ids: [3, 7] },
+    { angle_deg: 90, inner_radius_mm: 3, sharp: false, direction: 1, flange_before_mm: 35, level: 1, face_ids: [1, 9] },
+    { angle_deg: 90, inner_radius_mm: 3, sharp: false, direction: 1, flange_before_mm: 90, level: 1, face_ids: [3, 7] },
   ],
   last_flange_mm: 35, tube: null, curve: null, features: [],
   ends: [
@@ -43,8 +43,8 @@ const tube = {
   ...channel, section: { height_mm: 50, width_mm: 50, area_mm2: 301.59, perimeter_mm: 301.59, closed: true, stock_form: 'ROUND_TUBE' },
   strip_width_mm: 150.8, strip_width_neutral_mm: 149.67, strip_width_check: { flats_mm: 0, bend_arcs_mm: 150.796, agrees: true },
   bends: [
-    { angle_deg: 180, inner_radius_mm: 23, sharp: false, flange_before_mm: 0, level: 1, face_ids: [0, 1] },
-    { angle_deg: 180, inner_radius_mm: 23, sharp: false, flange_before_mm: 0, level: 1, face_ids: [0, 1] },
+    { angle_deg: 180, inner_radius_mm: 23, sharp: false, direction: 1, flange_before_mm: 0, level: 1, face_ids: [0, 1] },
+    { angle_deg: 180, inner_radius_mm: 23, sharp: false, direction: 1, flange_before_mm: 0, level: 1, face_ids: [0, 1] },
   ],
   last_flange_mm: 0, tube: { outer_diameter_mm: 50, outer_width_mm: 50, outer_height_mm: 50, wall_mm: 2 },
 };
@@ -61,7 +61,7 @@ const summaryOf = (family: string, features: Record<string, unknown>) => {
 describe('feature_graph.summary.rollFormGeometry', () => {
   it('carries the channel as measured: camelCase top-level keys, the engine objects unchanged', () => {
     expect(summaryOf('sheet_metal', { roll_form: channel }).rollFormGeometry).toEqual({
-      extractionVersion: 'rf_v2',
+      extractionVersion: 'rf_v3',
       axis: [0, 0, 1],
       axisSource: 'bends',
       lengthMm: 1000,
@@ -96,7 +96,7 @@ describe('feature_graph.summary.rollFormGeometry', () => {
     expect((summaryOf('sheet_metal', { roll_form: sharp }).rollFormGeometry as Stored).bends.every((b) => (b as { sharp?: boolean }).sharp)).toBe(true);
   });
 
-  it('is null when the part is not a profile, or the engine did not measure it (an analysis from before rf_v2)', () => {
+  it('is null when the part is not a profile, or the engine did not measure it (an analysis from before rf_v3)', () => {
     expect(summaryOf('sheet_metal', { roll_form: null }).rollFormGeometry).toBeNull();
     expect(summaryOf('sheet_metal', {}).rollFormGeometry).toBeNull();
   });
@@ -107,7 +107,7 @@ describe('feature_graph.summary.rollFormGeometry', () => {
 
   it('reads nothing that is not a measurement', () => {
     expect(rollFormGeometry(undefined)).toBeNull();
-    expect(rollFormGeometry('rf_v2')).toBeNull();
+    expect(rollFormGeometry('rf_v3')).toBeNull();
     expect(rollFormGeometry({ strip_width_mm: 172.56 })).toBeNull(); // no version: not the engine's measurement
   });
 });

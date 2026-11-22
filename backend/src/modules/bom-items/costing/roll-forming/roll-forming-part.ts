@@ -3,4 +3,4 @@
  * roll_form.py), stored as feature_graph.summary.rollFormGeometry (auto-fill.service rollFormGeometry()). An analysis carrying another
  * version (or none) is measured again by Refresh analysis.
  */
-export const ROLL_FORM_EXTRACTION_VERSION = 'rf_v2';
+export const ROLL_FORM_EXTRACTION_VERSION = 'rf_v3';
