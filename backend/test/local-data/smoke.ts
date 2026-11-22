@@ -102,6 +102,22 @@ async function main(): Promise<void> {
     must(rows.length === 10 && rows.every((r) => r.calculator_name === (welding(r.operation) ? 'Roll Forming - Integrated Welding' : `Roll Forming - ${r.operation}`)),
       `rows ${JSON.stringify(rows)}`);
   });
+  await check("migration 1114 staged the rest of Stock Machining's reference data, added its Material Stock machine in USA and India and classed its catalog rows", async () => {
+    const q = encodeURIComponent('Stock Machining');
+    const staged = await (await api('/machining_reference_data?source_version=eq.2026-Stock-Machining&select=category,key,value&order=category,key', minter.forService())).json() as
+      { category: string; key: string; value: string | null }[];
+    const tables = Object.fromEntries(staged.filter((r) => r.category === 'lookup_table').map((r) => [r.key, Number(r.value)]));
+    must(tables.tblPreferredSizes === 814 && tables.tblPartingRingWidth === 3 && tables.tblPartSpacing === 199 && tables.validationDisplayControls === 11, `lookup tables ${JSON.stringify(tables)}`);
+    must(staged.filter((r) => r.category === 'process').length === 3 && staged.filter((r) => r.category === 'operation').length === 3, `staged ${staged.length} rows`);
+    const stock = await (await api(`/mhr_records?process_group=eq.${q}&machine_class=eq.stock_machining_material_stock&select=location,machine_name,mhr_usd_per_hour,wage_grade,specs&order=location`, minter.forService())).json() as
+      { location: string; machine_name: string; mhr_usd_per_hour: number | string | null; wage_grade: string | null; specs: { standard_stock_length_mm?: number } | null }[];
+    must(JSON.stringify(stock.map((r) => r.location)) === JSON.stringify(['India', 'USA']), `Material Stock rows ${JSON.stringify(stock)}`);
+    must(stock.every((r) => r.machine_name === 'Default Material Stock' && Number(r.mhr_usd_per_hour) === 0 && r.wage_grade === '0 - Metal' && r.specs?.standard_stock_length_mm === 6096),
+      `Material Stock ${JSON.stringify(stock)}`);
+    const rows = await (await api(`/process_taxonomy?process_group=eq.${q}&select=process_name,machine_class&order=process_name`, minter.forService())).json() as { process_name: string; machine_class: string | null }[];
+    must(JSON.stringify(rows.map((r) => [r.process_name, r.machine_class])) === JSON.stringify([['Band Saw', 'band_saw'], ['Material Stock', 'stock_machining_material_stock'], ['User-Defined Process', null]]),
+      `catalog rows ${JSON.stringify(rows)}`);
+  });
   await check('the carried user directory is readable through migration 932 (same id as the source)', async () => {
     const res = await api('/rpc/directory_find_by_email', minter.forService(), { method: 'POST', body: JSON.stringify({ p_email: 'Alice@Example.com' }) });
     must(res.ok && (await res.json()) === '11111111-1111-4111-8111-111111111111', `HTTP ${res.status}`);

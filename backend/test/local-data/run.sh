@@ -194,6 +194,8 @@ INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 11
 ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COLUMN max_length_mm numeric(10,2);
 -- the taxonomy columns as the real database has them (migration 609): migration 1094 adds the Multi-Spindle Machining > Simultaneous Turning row
 ALTER TABLE public.process_taxonomy ADD COLUMN default_machine_name varchar(200), ADD COLUMN notes text;
+-- the Stock Machining catalog rows migration 790 seeds (no machine class): migration 1114 classes both and fails if one stays without
+INSERT INTO public.process_taxonomy (process_group, process_name, roadmap_status) VALUES ('Stock Machining', 'Band Saw', 'not_modeled'), ('Stock Machining', 'Material Stock', 'non_mfg');
 -- the material cost record table as the real database has it (migration 040): migration 1041 adds the stock label to it
 CREATE TABLE public.raw_material_cost_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid NOT NULL, user_id uuid NOT NULL, is_active boolean DEFAULT true);
 -- the machining reference table as the real database has it (migration 638): migration 1026 completes its tblTapping row from its tblReaming row
