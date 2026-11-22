@@ -78,6 +78,9 @@ describe("the rest of Stock Machining's reference data (migration 1114)", () => 
       expect(l).toContain('$str$Default Material Stock$str$, $str$USD$str$');
       expect(l).toContain('$str$Stock Machining$str$, 0, 0, 0, 0, 1, 0, $str$0 - Metal$str$, 0.78, 1,');
       expect(l).toContain('"standard_stock_length_mm":6096');
+      // The baseline the machine came from is written under one name, whichever copy of the file the generator reads: a copy naming the
+      // reference's vendor in that cell is read as "reference export baseline", and must regenerate this same migration (CI's copy does).
+      expect(l).toContain('"data_source":"eMithran Baseline"');
     }
     // No export lists a rate for it: the India row is the India export's, at none.
     const india = readCsv(join(MEMORY, 'Countries data/India_XML_Data_.csv')).rows
