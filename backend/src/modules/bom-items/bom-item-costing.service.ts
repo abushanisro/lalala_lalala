@@ -55,7 +55,7 @@ import { routeCompatibility, noCompatibleProcess, NO_COMPATIBLE_PROCESS_MESSAGE 
 import { buildMoldingCommonInput, cadFaceCount } from './costing/plastic-molding/molding-input';
 import { SecondaryProcessService } from './services/secondary-process.service';
 import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
-import { detectDrawingCadMismatches, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
+import { detectDrawingCadMismatches, drawingStatedBendCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
 import { loadMachiningCalculatorSpec } from './costing/machining/calculators/machining-calculator-spec';
 import { specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
@@ -1399,7 +1399,8 @@ export class BomItemCostingService {
   }): {
     bendCount: number;
     bendSource: 'cad' | 'drawing' | 'estimated';
-    drawingBendCount: number;
+    /** The count the drawing states; null when it states none (or there is no drawing). */
+    drawingBendCount: number | null;
     flatPatternAreaMm2: number;
     blankAreaSource: 'cad' | 'reconstructed';
     warnings: string[];
@@ -1414,11 +1415,10 @@ export class BomItemCostingService {
     // geoBendCount into and which now covers every disagreement (including
     // the CAD=0 case this function used to warn about by itself — retired
     // here, not duplicated, so a real mismatch is never reported twice).
-    const drawingBendCount =
-      Math.max(0, Math.round(Number((args.item.drawingIntelligence as any)?.bend_count ?? 0))) || 0;
+    const drawingBendCount = drawingStatedBendCount(args.item.drawingIntelligence as Record<string, unknown> | null | undefined);
     let bendCount = args.geoBendCount;
     let bendSource: 'cad' | 'drawing' | 'estimated' = 'cad';
-    if (drawingBendCount > bendCount) {
+    if (drawingBendCount != null && drawingBendCount > bendCount) {
       bendCount = drawingBendCount;
       bendSource = 'drawing';
     }

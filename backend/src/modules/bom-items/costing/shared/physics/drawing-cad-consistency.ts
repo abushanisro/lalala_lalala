@@ -76,6 +76,16 @@ function buildNumeric(args: {
   };
 }
 
+/**
+ * The bend count a drawing states: a positive count, else null (not stated). The drawing analyser writes bend_count 0 when it finds no
+ * "N BENDS" note, as it writes 0 for a dimension or a thickness it did not find, and a part with no drawing has no count at all; neither is
+ * a drawing that says the part has no bends, so neither is compared with the 3D model's bends.
+ */
+export function drawingStatedBendCount(drawingIntelligence: Record<string, unknown> | null | undefined): number | null {
+  const n = Math.round(Number(drawingIntelligence?.bend_count));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export interface DrawingFacts {
   bendCount: number | null;
   sheetThicknessMm: number | null;
