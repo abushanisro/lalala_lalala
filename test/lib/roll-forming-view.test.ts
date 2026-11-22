@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { coilLine, isRollFormingItem, lineSpeedLine, rollFormingOverridesOf, stationsLine } from '@/lib/costing/roll-forming-view';
+import { coilLine, isRollFormingItem, lineSpeedLine, rollFormingOverridesOf, stationsLine, tubeLine } from '@/lib/costing/roll-forming-view';
 import { rollFormingRouteKeyOf } from '@/lib/routing/roll-forming-route-id';
 
 describe('the Sheet Metal Roll Forming Cost Guide', () => {
@@ -23,6 +23,13 @@ describe('the Sheet Metal Roll Forming Cost Guide', () => {
       forming: 6, leadIn: 0, finishing: 1, rule: 7, total: 7, override: null, panel: false, levelSource: 'the cad-engine',
       levels: [{ level: 1, bends: 2, maxAngleDeg: 90, passes: 6 }],
     })).toBe('level 1: 2 bends to 90° → 6 · finishing 1 = 7');
+    // A long flange limits the angle a pass forms (the engine's breakdown names it).
+    expect(stationsLine({
+      forming: 11, leadIn: 0, finishing: 1, rule: 12, total: 12, override: null, panel: false, levelSource: 'the cad-engine', standSpacingMm: 508,
+      levels: [{ level: 1, bends: 2, maxAngleDeg: 90, passes: 11, flangeCarriedMm: 100, degreesPerPass: 8.32, governedBy: 'flange length' }],
+    })).toBe('level 1: 2 bends to 90° at 8.3°/pass (100 mm flange) → 11 · finishing 1 = 12');
+    expect(tubeLine({ outerDiameterMm: 50, wallMm: 2, majorMm: null, minorMm: null })).toBe('Ø50 x 2 mm wall');
+    expect(tubeLine({ outerDiameterMm: null, wallMm: 2, majorMm: 92, minorMm: 32 })).toBe('oval 92 x 32 x 2 mm wall');
     expect(lineSpeedLine({ mmPerS: 660.4, limiting: 'the part-length tolerance', multiplier: 1, caps: [] })).toBe('660 mm/s, set by the part-length tolerance');
     expect(coilLine({ massKg: 1234.4, partsPerCoil: 540, changeTimeS: 960, perPartS: 1.78, method: 'threading' }))
       .toBe('1,234 kg coil · 540 parts · change 960 s (threading) → 1.8 s a part');

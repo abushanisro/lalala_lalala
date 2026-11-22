@@ -53,9 +53,14 @@ export function rollFormingOverridesOf(overrides: Record<string, unknown> | null
 
 const n = (v: number) => (Math.round(v * 10) / 10).toLocaleString('en-US');
 
-/** The stations as an engineer reads them: "level 1: 2 bends to 90° → 6 · lead-in 1 · finishing 1 = 8". */
+/**
+ * The stations as an engineer reads them: "level 1: 2 bends to 90° at 15°/pass → 6 · finishing 1 = 7"; a level whose flange is long enough
+ * to limit the angle a pass forms (Bhattacharyya's deformation length over the mill's stand spacing) says so: "at 8.3°/pass (100 mm flange)".
+ */
 export function stationsLine(s: RollFormingSummary['stations']): string {
-  const levels = s.levels.map((l) => `level ${l.level}: ${l.bends} bend${l.bends === 1 ? '' : 's'} to ${n(l.maxAngleDeg)}° → ${l.passes}`);
+  const perPass = (l: RollFormingSummary['stations']['levels'][number]) => (l.degreesPerPass == null ? ''
+    : ` at ${n(l.degreesPerPass)}°/pass${l.governedBy === 'flange length' && l.flangeCarriedMm != null ? ` (${n(l.flangeCarriedMm)} mm flange)` : ''}`);
+  const levels = s.levels.map((l) => `level ${l.level}: ${l.bends} bend${l.bends === 1 ? '' : 's'} to ${n(l.maxAngleDeg)}°${perPass(l)} → ${l.passes}`);
   const parts = [...levels, ...(s.leadIn > 0 ? [`lead-in ${s.leadIn}`] : []), ...(s.finishing > 0 ? [`finishing ${s.finishing}`] : [])];
   return `${parts.join(' · ')} = ${s.rule}`;
 }
@@ -68,4 +73,11 @@ export function lineSpeedLine(l: NonNullable<RollFormingSummary['lineSpeed']>): 
 /** The coil: "1,234 kg coil · 540 parts · change 1,020 s (end weld) → 1.9 s a part". */
 export function coilLine(c: NonNullable<RollFormingSummary['coil']>): string {
   return `${Math.round(c.massKg).toLocaleString('en-US')} kg coil · ${c.partsPerCoil.toLocaleString('en-US')} parts · change ${Math.round(c.changeTimeS).toLocaleString('en-US')} s (${c.method}) → ${n(c.perPartS)} s a part`;
+}
+
+/** A tube's sizes: "Ø50 x 2 mm wall" or "oval 92 x 32 x 2 mm wall"; null for an open section. */
+export function tubeLine(t: NonNullable<RollFormingSummary['section']['tube']>): string {
+  const wall = t.wallMm != null ? ` x ${n(t.wallMm)} mm wall` : '';
+  if (t.outerDiameterMm != null) return `Ø${n(t.outerDiameterMm)}${wall}`;
+  return `oval${t.majorMm != null && t.minorMm != null ? ` ${n(t.majorMm)} x ${n(t.minorMm)}` : ''}${wall}`;
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  ROLL_FORMING_ROUTE_OPTIONS, ROLL_FORMING_SCENARIO_KEYS, ROLL_FORMING_WELDING_OPTIONS, coilLine, lineSpeedLine, rollFormingOverridesOf, stationsLine,
+  ROLL_FORMING_ROUTE_OPTIONS, ROLL_FORMING_SCENARIO_KEYS, ROLL_FORMING_WELDING_OPTIONS, coilLine, lineSpeedLine, rollFormingOverridesOf, stationsLine, tubeLine,
   type RollFormingSummary, type RollFormingTooling,
 } from '@/lib/costing/roll-forming-view';
 
@@ -93,15 +93,28 @@ export function RollFormingSection({ rollForming: r, tooling, overrides, onChang
             <span className="flex-1 tabular-nums">
               {n(r.section.heightMm)} x {n(r.section.widthMm)} mm · {r.section.closed ? 'closed' : 'open'} · {r.section.bends} bend{r.section.bends === 1 ? '' : 's'}
               {r.section.curveRadiusMm != null && ` · curved R${n(r.section.curveRadiusMm)}`}
+              {r.section.tube && <span className="block text-muted-foreground">tube {tubeLine(r.section.tube)}</span>}
+              {r.section.sharpBends && r.section.sharpBends.count > 0 && (
+                <span className="block text-muted-foreground" title={r.section.sharpBends.basis}>
+                  {r.section.sharpBends.count} bend{r.section.sharpBends.count === 1 ? '' : 's'} modelled sharp
+                  {r.section.sharpBends.pricedRadiusMm != null ? `, priced at R${n(r.section.sharpBends.pricedRadiusMm)}` : ''}
+                </span>
+              )}
             </span>
           </div>
           <div className={rowClass} title="The strip slit from the coil: the section's stretch-out, and the length fed a part (the part plus the blade's slug).">
             <span className={labelClass}>Strip</span>
             <span className="flex-1 tabular-nums">
               {n(r.strip.widthMm)} x {n(r.strip.thicknessMm)} mm · {n(r.strip.feedLengthMm)} mm a part{r.strip.slugMm > 0 ? ` (slug ${n(r.strip.slugMm)})` : ''} · {r.strip.massKg} kg
+              {r.materialPriceSource && <span className="block text-muted-foreground">price: {r.materialPriceSource}</span>}
             </span>
           </div>
-          <div className={rowClass} title={`Levels of bends from the web (${r.stations.levelSource}); 15° a pass (rollFormingLiftAngle).`}>
+          <div
+            className={rowClass}
+            title={`Levels of bends from the web (${r.stations.levelSource}). A pass forms up to 15° (rollFormingLiftAngle), less for a long flange: `
+              + `Bhattacharyya's deformation length √(8a³Δθ / 3t) must fit the mill's stand spacing${r.stations.standSpacingMm != null ? ` (${n(r.stations.standSpacingMm)} mm)` : ''}; `
+              + `flanges measured ${r.stations.flangeSource ?? 'from the CAD'}.`}
+          >
             <span className={labelClass}>Stations</span>
             <span className="flex-1 tabular-nums">
               {stationsLine(r.stations)}
@@ -122,7 +135,11 @@ export function RollFormingSection({ rollForming: r, tooling, overrides, onChang
             </div>
           )}
           {r.lineSpeed && (
-            <div className={rowClass} title={r.lineSpeed.caps.map((c) => `${c.name}: ${Math.round(c.mmPerS)} mm/s`).join('\n')}>
+            <div
+              className={rowClass}
+              title={[...r.lineSpeed.caps.map((c) => `${c.name}: ${Math.round(c.mmPerS)} mm/s`),
+                ...(r.lineSpeed.speedsTried != null ? [`the cheapest whole line of ${r.lineSpeed.speedsTried} speeds tried`] : [])].join('\n')}
+            >
               <span className={labelClass}>Line speed</span>
               <span className="flex-1 tabular-nums">{lineSpeedLine(r.lineSpeed)}</span>
             </div>
@@ -130,7 +147,10 @@ export function RollFormingSection({ rollForming: r, tooling, overrides, onChang
           {r.coil && (
             <div className={rowClass} title="The coil the strip comes from (the data's 508 / 1524 mm coil, up to the uncoiler's capacity), and its change spread over its parts.">
               <span className={labelClass}>Coil</span>
-              <span className="flex-1 tabular-nums">{coilLine(r.coil)}</span>
+              <span className="flex-1 tabular-nums">
+                {coilLine(r.coil)}
+                {r.coil.setupMethod && <span className="block text-muted-foreground">{r.coil.setupMethod}</span>}
+              </span>
             </div>
           )}
           <div className={rowClass} title="The line stops to change or sharpen a press die (stationaryDieChangeoverTime every numHitsPerDieChange hits).">

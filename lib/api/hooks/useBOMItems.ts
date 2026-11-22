@@ -1316,15 +1316,30 @@ export interface CostSummaryDto {
     route: string;
     routeLabel: string;
     rule: { route: string; closed: boolean; basis: string };
-    section: { heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null };
+    section: {
+      heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
+      /** A tube's sizes (round: outerDiameterMm; oval: major / minor); null for an open section. */
+      tube?: { outerDiameterMm: number | null; wallMm: number | null; majorMm: number | null; minorMm: number | null } | null;
+      /** Bends modelled sharp (no radius in the CAD), priced at the material's minimum bend radius. */
+      sharpBends?: { count: number; pricedRadiusMm: number | null; basis: string } | null;
+    };
     strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+    /** Where the material's price per kg comes from (the India price of a namesake in another group, or the USA price). */
+    materialPriceSource?: string | null;
     stations: {
       forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean; levelSource: string;
-      levels: { level: number; bends: number; maxAngleDeg: number; passes: number }[];
+      /** What the flange a level carries is measured from (open strip, closed section, tube), and the mill's stand spacing it is formed over. */
+      flangeSource?: string;
+      standSpacingMm?: number | null;
+      levels: {
+        level: number; bends: number; maxAngleDeg: number; passes: number;
+        /** The flange the level's bends carry, the degrees a pass forms, and what limits it (memory's lift angle or the flange's length). */
+        flangeCarriedMm?: number | null; degreesPerPass?: number; governedBy?: 'lift angle' | 'flange length';
+      }[];
     };
     mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;
-    lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[] } | null;
-    coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string } | null;
+    lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[]; speedsTried?: number } | null;
+    coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string; setupMethod?: string } | null;
     dieSharpeningPerPartS: number;
     flattener: { needed: boolean; reason: string };
     punching: { dieStations: string[]; punched: number; notPunched: { featureType: string; count: number; reason: string }[]; minHoleMm: number | null } | null;
