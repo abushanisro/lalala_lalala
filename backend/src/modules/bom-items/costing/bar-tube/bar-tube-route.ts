@@ -22,6 +22,7 @@ import { seedsFor, type SeedProvider, type SeedProviders } from '../casting/sand
 import { selectAndCost, type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
 import type { CadEvidenceKey } from '../shared/cad-evidence';
 import { noCostFeatureLine } from '../shared/core/engine-kernel';
+import { sawBundle } from '../stock/band-saw';
 import { LASER_SPEED_SOURCE, extrusionDieUsd, laserChartOf, laserMaterialFactor, rotaryDrawDieSetUsd } from './bar-tube-research';
 
 export const BAR_TUBE_DOMAIN = 'bar_tube';
@@ -510,7 +511,8 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
   const sawRates = ref.table('saw_cut_rate');
   const cutArea = sec.areaMm2 / Math.cos((maxCutAngle * Math.PI) / 180);
   const cutsPerPart = part.ends.length >= 2 && part.ends.every((e) => (e.cutAngleDeg ?? 0) > 0.5) ? 2 : 1;
-  const sawStep = (saw: Saw): CostedStep => step(saw, (m) => {
+  /** `partsPerStock`: the parts one length of the stock makes at this saw's kerf, which says how many bars the batch needs (null: unknown). */
+  const sawStep = (saw: Saw, partsPerStock: number | null): CostedStep => step(saw, (m) => {
     const fit = fitsStock(m);
     if (fit) return fail(fit);
     const sawable = num('maxSawableCutoutAngle');
@@ -520,21 +522,29 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     if (!material.cutCodeFamily) return fail(`saw_cut_rate lists no cut-code family for ${material.name} (cut code ${material.cutCode ?? 'none'})`);
     const rows = sawRates.filter((r) => r['Process Name'] === saw && String(r['Material Cut Code Family']) === material.cutCodeFamily)
       .sort((a, b) => Number(a['Material Width (mm)']) - Number(b['Material Width (mm)']));
-    const row = rows.find((r) => Number(r['Material Width (mm)']) >= outsideSize - 1e-6);
-    if (!row) return fail(`saw_cut_rate has no ${saw} rate for cut-code family ${material.cutCodeFamily} at ${r2(outsideSize)} mm wide`);
-    // Parts in a bundle: as many sections as the saw's stock height and width hold, within the reference's limit for the saw.
-    const maxH = machineValue(m, 'max_stock_height_mm') ?? outsideSize;
-    const maxW = machineValue(m, 'max_stock_width_mm') ?? outsideSize;
-    const fit2 = Math.max(1, Math.floor(maxH / Math.max(1e-6, Math.min(sec.widthMm, sec.heightMm))) * Math.floor(maxW / Math.max(1e-6, outsideSize)));
-    const bundle = Math.max(1, Math.min(fit2, num(SAW_BUNDLE[saw]) ?? 1));
+    if (!rows.some((r) => Number(r['Material Width (mm)']) >= outsideSize - 1e-6)) {
+      return fail(`saw_cut_rate has no ${saw} rate for cut-code family ${material.cutCodeFamily} at ${r2(outsideSize)} mm wide`);
+    }
+    // The bars cut at once (costing/stock/band-saw.ts, the rule Stock Machining's saw uses): as many as the saw's stock width and height hold,
+    // within the reference's limit for the saw, and never more than the batch needs. A bundle is cut as one section, so its cutting rate is
+    // the row at the bundle's width (the widest row for a wider bundle): bundling shares the index and the handling, not the cutting.
+    const bundle = sawBundle(
+      { widthMm: outsideSize, heightMm: Math.min(sec.widthMm, sec.heightMm), diameterMm: null, plate: false },
+      { maxWidthMm: machineValue(m, 'max_stock_width_mm'), maxHeightMm: machineValue(m, 'max_stock_height_mm'), maxDiameterMm: null },
+      num(SAW_BUNDLE[saw]) ?? 1, scenario.batchSize, partsPerStock ?? 1,
+    );
+    const row = rows.find((r) => Number(r['Material Width (mm)']) >= bundle.widthMm - 1e-6) ?? rows[rows.length - 1]!;
     return timed(BAR_TUBE_CALC.saw, m, {
       cut_area_mm2: seed(r2(cutArea), maxCutAngle > 0.5 ? `the section's metal area over cos ${r2(maxCutAngle)} degrees (mm²)` : "the section's metal area (mm²)"),
-      parts_per_bundle: seed(bundle, `${bundle} per bundle: the saw's stock height and width hold ${fit2}, ${SAW_BUNDLE[saw]} ${num(SAW_BUNDLE[saw]) ?? 'unset'}`),
+      parts_per_bundle: seed(bundle.bars, `${bundle.bars} per bundle, ${r2(bundle.widthMm)} mm wide in the cut: the saw's stock width and height hold ${bundle.fits}, ${SAW_BUNDLE[saw]} ${num(SAW_BUNDLE[saw]) ?? 'unset'}, the batch needs ${bundle.barsForBatch}`),
       cuts_per_part: seed(cutsPerPart, cutsPerPart === 2 ? 'both ends cut at an angle' : 'one cut per part'),
     }, {
       'saw_cut_rate.Cutting Rate (mm^2 / min)': lookupSeed('saw_cut_rate', row, 'Cutting Rate (mm^2 / min)', ['Process Name', 'Material Cut Code Family', 'Material Width (mm)']),
     });
   }, ['The stock fits its height, width and diameter', 'Its max cut angle takes the end cuts', 'saw_cut_rate lists the material at the section width']);
+  /** The parts one bought length makes when `saw` cuts it (Bar and Tube - Stock per part at the saw's kerf); null when the stock is not sized. */
+  const partsPerLength = (saw: Saw): number | null =>
+    stockFor(num(SAW_KERF[saw]) ?? 0, `${SAW_KERF[saw]}: the ${saw.toLowerCase()}'s kerf (mm)`).run?.outputs['Parts per Stock'] ?? null;
   /** A shear cuts a bar or profile its capacity for the stock form holds (memory machines_shear capacity columns); never a round tube or bar. */
   const shearStep = (): CostedStep => step('Shear', (m) => {
     if (maxCutAngle > 0.5) return fail('a shear cuts square: an end is cut at an angle');
@@ -795,7 +805,7 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
       });
     }, ['It heats the press\'s billet diameter']);
     const die = step('Die Preheat', (m) => timed(BAR_TUBE_CALC.diePreheat, m, {}), ['Any die oven: heated before the run, charged as its setup']);
-    const cut = cheapest(allowedSaws.map(sawStep));
+    const cut = cheapest(allowedSaws.map((saw) => sawStep(saw, perBillet)));
     const bends = bendLines([...PROFILE_BENDING]);
     const steps = [extrude, preheat, die, ...(allowedSaws.length ? [cut] : []), ...(openings > 0 ? [punchStep()] : []), ...bends.steps];
     const billetStock = billet ? { run: billet, reasons: [] } : { run: null, reasons: ['no billet: the extrusion press has no machine'] };
@@ -812,7 +822,7 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
 
   // ── Saw and punch ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   const bends = bendLines([...STOCK_BENDING]);
-  const cut = cheapest([...allowedSaws.map(sawStep), shearStep()]);
+  const cut = cheapest([...allowedSaws.map((saw) => sawStep(saw, partsPerLength(saw))), shearStep()]);
   const sawKerf = SAWS.includes(cut.line.process as Saw) ? num(SAW_KERF[cut.line.process as Saw]) ?? 0 : 0;
   const sawStock = stockFor(sawKerf, SAWS.includes(cut.line.process as Saw) ? `${SAW_KERF[cut.line.process as Saw]}: the ${cut.line.process.toLowerCase()}'s kerf (mm)` : 'a shear leaves no kerf');
   finish('saw', [cut, ...(openings > 0 ? [punchStep()] : []), ...endCutSteps(), ...formSteps(), ...bends.steps], sawStock, {
