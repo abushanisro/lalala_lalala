@@ -75,9 +75,25 @@ export function coilLine(c: NonNullable<RollFormingSummary['coil']>): string {
   return `${Math.round(c.massKg).toLocaleString('en-US')} kg coil · ${c.partsPerCoil.toLocaleString('en-US')} parts · change ${Math.round(c.changeTimeS).toLocaleString('en-US')} s (${c.method}) → ${n(c.perPartS)} s a part`;
 }
 
-/** A tube's sizes: "Ø50 x 2 mm wall" or "oval 92 x 32 x 2 mm wall"; null for an open section. */
+/** A closed section's outside sizes: "Ø50 x 2 mm wall" for a round tube, "40 x 40 x 1.5 mm wall" for any other. */
 export function tubeLine(t: NonNullable<RollFormingSummary['section']['tube']>): string {
   const wall = t.wallMm != null ? ` x ${n(t.wallMm)} mm wall` : '';
   if (t.outerDiameterMm != null) return `Ø${n(t.outerDiameterMm)}${wall}`;
-  return `oval${t.majorMm != null && t.minorMm != null ? ` ${n(t.majorMm)} x ${n(t.minorMm)}` : ''}${wall}`;
+  const size = t.outerWidthMm != null && t.outerHeightMm != null ? `${n(t.outerWidthMm)} x ${n(t.outerHeightMm)}` : 'outside not measured';
+  return `${size}${wall}`;
+}
+
+/** The ribs found (bends counted from 1 across the strip): "rib, bends 2-3, 46.9 mm span, formed at level 1"; empty when there is none. */
+export function ribLines(groups: NonNullable<RollFormingSummary['stations']['groups']>): string[] {
+  return groups.filter((g) => g.rib).map((g) => [
+    `rib, bends ${g.firstBend + 1}-${g.lastBend + 1}`,
+    ...(g.spanMm != null ? [`${n(g.spanMm)} mm span`] : []),
+    ...(g.level != null ? [`formed at level ${g.level}`] : []),
+  ].join(', '));
+}
+
+/** The sharp bends' effect on the strip: "strip 0.6 mm narrower for it (measured 120)"; null when it does not change. */
+export function sharpStripLine(changeMm: number | undefined, measuredWidthMm: number | undefined): string | null {
+  if (changeMm == null || Math.abs(changeMm) < 0.005) return null;
+  return `strip ${n(Math.abs(changeMm))} mm ${changeMm < 0 ? 'narrower' : 'wider'} for it${measuredWidthMm != null ? ` (measured ${n(measuredWidthMm)})` : ''}`;
 }

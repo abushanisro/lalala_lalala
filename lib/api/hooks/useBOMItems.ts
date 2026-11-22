@@ -1318,12 +1318,13 @@ export interface CostSummaryDto {
     rule: { route: string; closed: boolean; basis: string };
     section: {
       heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
-      /** A tube's sizes (round: outerDiameterMm; oval: major / minor); null for an open section. */
-      tube?: { outerDiameterMm: number | null; wallMm: number | null; majorMm: number | null; minorMm: number | null } | null;
-      /** Bends modelled sharp (no radius in the CAD), priced at the material's minimum bend radius. */
-      sharpBends?: { count: number; pricedRadiusMm: number | null; basis: string } | null;
+      /** A closed section's outside sizes (round: outerDiameterMm; otherwise its outer width and height) and wall; null for an open section. */
+      tube?: { outerDiameterMm: number | null; outerWidthMm: number | null; outerHeightMm: number | null; wallMm: number | null } | null;
+      /** Bends modelled sharp (no radius in the CAD), priced at the material's minimum bend radius, and how much that changes the strip (mm, negative when narrower). */
+      sharpBends?: { count: number; pricedRadiusMm: number | null; stripChangeMm?: number; basis: string } | null;
     };
-    strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+    /** widthMm is the strip priced; measuredWidthMm the CAD's stretch-out (they differ when sharp bends are formed at a radius). */
+    strip: { widthMm: number; measuredWidthMm?: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
     /** Where the material's price per kg comes from (the India price of a namesake in another group, or the USA price). */
     materialPriceSource?: string | null;
     stations: {
@@ -1331,6 +1332,12 @@ export interface CostSummaryDto {
       /** What the flange a level carries is measured from (open strip, closed section, tube), and the mill's stand spacing it is formed over. */
       flangeSource?: string;
       standSpacingMm?: number | null;
+      /**
+       * Bends within distanceBetweenGroupBendsMax of each other (bend indices across the strip): a rib (its turns cancel) is formed as one unit
+       * at its inner bend's level and carries only its span; any other group as flanges. directionsMeasured false: no fold direction was measured.
+       */
+      groups?: { firstBend: number; lastBend: number; rib: boolean; level: number | null; spanMm: number | null; signedTurnDeg: number | null }[];
+      directionsMeasured?: boolean;
       levels: {
         level: number; bends: number; maxAngleDeg: number; passes: number;
         /** The flange the level's bends carry, the degrees a pass forms, and what limits it (memory's lift angle or the flange's length). */

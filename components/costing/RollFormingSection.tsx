@@ -1,7 +1,8 @@
 'use client';
 
 import {
-  ROLL_FORMING_ROUTE_OPTIONS, ROLL_FORMING_SCENARIO_KEYS, ROLL_FORMING_WELDING_OPTIONS, coilLine, lineSpeedLine, rollFormingOverridesOf, stationsLine, tubeLine,
+  ROLL_FORMING_ROUTE_OPTIONS, ROLL_FORMING_SCENARIO_KEYS, ROLL_FORMING_WELDING_OPTIONS, coilLine, lineSpeedLine, ribLines, rollFormingOverridesOf, sharpStripLine,
+  stationsLine, tubeLine,
   type RollFormingSummary, type RollFormingTooling,
 } from '@/lib/costing/roll-forming-view';
 
@@ -30,6 +31,8 @@ const whole = (v: string) => (v === '' ? null : Math.max(1, Math.round(Number(v)
 export function RollFormingSection({ rollForming: r, tooling, overrides, onChange }: Props) {
   const set = rollFormingOverridesOf(overrides);
   const closed = r?.section.closed ?? false;
+  const sharpStrip = r?.section.sharpBends ? sharpStripLine(r.section.sharpBends.stripChangeMm, r.strip.measuredWidthMm) : null;
+  const ribs = ribLines(r?.stations.groups ?? []);
   return (
     <div className="space-y-1 text-xs">
       <div className={rowClass}>
@@ -98,6 +101,7 @@ export function RollFormingSection({ rollForming: r, tooling, overrides, onChang
                 <span className="block text-muted-foreground" title={r.section.sharpBends.basis}>
                   {r.section.sharpBends.count} bend{r.section.sharpBends.count === 1 ? '' : 's'} modelled sharp
                   {r.section.sharpBends.pricedRadiusMm != null ? `, priced at R${n(r.section.sharpBends.pricedRadiusMm)}` : ''}
+                  {sharpStrip ? ` · ${sharpStrip}` : ''}
                 </span>
               )}
             </span>
@@ -120,6 +124,10 @@ export function RollFormingSection({ rollForming: r, tooling, overrides, onChang
               {stationsLine(r.stations)}
               {r.stations.override != null && <span className="block text-foreground">{r.stations.override} set in the Cost Guide</span>}
               {r.stations.panel && <span className="block text-muted-foreground">panel profile (8 or more bends): duplex mill, panel tooling</span>}
+              {ribs.map((line) => <span key={line} className="block text-muted-foreground">{line}, as one unit</span>)}
+              {r.stations.directionsMeasured === false && (r.stations.groups ?? []).length > 0 && (
+                <span className="block text-amber-600 dark:text-amber-400">bend directions not measured: close bends formed as flanges (Refresh analysis)</span>
+              )}
             </span>
           </div>
           {r.mill && (
