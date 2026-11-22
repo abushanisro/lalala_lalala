@@ -718,6 +718,8 @@ export interface CostSummaryDto {
   barTube?: BarTubeBreakdown;
   /** Multi-Spindle Machining: the bar, the machine and its station plan (the slowest station sets the cycle), the route quoted and every route. */
   multiSpindle?: MultiSpindleBreakdown;
+  /** Stock Machining: the stock the part is cut from (form, size, piece, yield), every other form priced beside it, and the band saw that cuts it. */
+  stockMachining?: StockMachiningBreakdown;
   /** Roto & Blow Molding: the shell (envelope, wall, inside, spout), its features' operations, parts per shot or arm, the route quoted and every route. */
   rotoBlow?: RotoBlowBreakdown;
   /** Roto & Blow Molding: the molds and trim tooling the quoted route needs, USD, kept out of the piece cost; costUsd null when its calculator cannot price it. */
@@ -1110,6 +1112,64 @@ export interface MultiSpindleBreakdown {
   complete: boolean;
   /** Every route: its total per part (summary currency) when its machine fits, or why it is not a route for the part. */
   options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+}
+
+/**
+ * A Stock Machining part's Cost Summary section (costing/stock, costing/stock-machining): the stock bought for it and the band saw that cuts
+ * it to pieces, before the Machining route cuts the part. Lengths in mm, masses in kg, times in s, money in the summary's currency.
+ */
+export interface StockMachiningBreakdown {
+  /** The form the part's shape asks for (stock-selection.ts autoStockForm), and why. */
+  rule: { form: string; basis: string };
+  /** The stock the quote prices; null when no form holds the part. */
+  stock: {
+    form: string;
+    sizeLabel: string;
+    /**
+     * The section as bought, and what the part needed before the size snapped to a preferred one. a: a bar's diameter, width across flats,
+     * side or width, a plate's thickness, a tube's outside diameter. b: a rectangular bar's height, a tube's bore; null otherwise.
+     */
+    boughtAMm: number; boughtBMm: number | null; requiredAMm: number; requiredBMm: number | null;
+    /** The stock left on each side of the section, and faced off each end. */
+    allowancePerSideMm: number; endAllowanceMm: number;
+    snapped: boolean;
+    /** The preferred sizes the stock is bought in: US (inch) or metric. */
+    unitSystem: string;
+    /** The piece cut for one part, which the machine starts from. A bar's piece has a length only. */
+    piece: { lengthMm: number; widthMm: number | null; thicknessMm: number | null };
+    /** The stock lost between two parts, and what cuts it: the band saw's kerf, or a bar-fed lathe's parting tool. */
+    cutWidthMm: number; cutOff: 'saw' | 'parting';
+    /** The parts one bar or plate makes, the bars or plates the batch needs, and the stock as bought (a plate has a width). */
+    partsPerStock: number; stocksForBatch: number; stockLengthMm: number; stockWidthMm: number | null;
+    /** A plate cut to the blank, when the blank is larger than the standard plate. */
+    virtualPlate: boolean;
+    /** The end of a bar that makes no part; null for plate. */
+    barEndMm: number | null;
+    utilizationPct: number;
+    /** The stock bought per part (the piece's share of a whole bar or plate), the piece, and the finished part; null without a density. */
+    purchasedKg: number | null; pieceKg: number | null; partKg: number | null;
+  } | null;
+  /** Why the chosen stock is not the rule's or the Cost Guide's form, when it is not. */
+  fallback: string | null;
+  /** Every form: its stock with what it costs a part (the stock bought, and its sawing), or why it is not offered. */
+  options: { form: string; sizeLabel: string | null; unavailable: string | null; materialCost: number | null; sawCost: number | null; chosen: boolean }[];
+  /** The saw that cuts the piece: its bundle (the bars cut at once, and what set it), the cutting rate and the cycle's parts. */
+  saw: {
+    machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
+    cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
+  } | null;
+  /** Why there is no saw: a bar-fed lathe parts the piece off, or what keeps the saw from being costed. Null with a saw. */
+  sawMissing: string | null;
+  /** The chips sold back: whether the credit is on (enableScrapMaterialCredit, or the Cost Guide's), the material's Scrap Cost Percent, and the credit taken per part. */
+  scrapCredit: { enabled: boolean; percent: number | null; credit: number };
+  /** Where the part's envelope came from: the cad-engine's stock measurement, or its bounding box (an analysis made before the measurement). */
+  partSource: 'measured' | 'bounding box';
+  /** The part's faces left as the stock supplies them (the stock carries no allowance there), which the mill does not finish; and its two end faces, where the cuts lie. */
+  asSuppliedFaceIds: { curvedWall: number[]; planarFace: number[] };
+  endFaceIds: number[];
+  /** The stock as the material record names it. */
+  stockLabel: string | null;
+  notes: string[];
 }
 
 export interface AdditiveBreakdown {
