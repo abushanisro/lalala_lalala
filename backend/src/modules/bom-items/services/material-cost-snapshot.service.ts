@@ -94,8 +94,9 @@ export class MaterialCostSnapshotService {
     );
     // The geometry does not change with the Digital Factory, the price per kg does.
     const staleAgainstLocation = !!existing && (existing.country ?? '') !== location;
-    // The blank the engine sized, as it describes it ("59×50×49 billet"): what the Part Summary shows as the stock.
-    const stockLabel = summary.blankSpec?.sizeLabel?.trim() || undefined;
+    // The blank the engine sized, as it describes it ("59×50×49 billet"): what the Part Summary shows as the stock. A Stock Machining part's
+    // is its stock with the piece and the yield (5/8" round bar, 33.59 mm piece, 172 per 6096 mm bar).
+    const stockLabel = summary.stockMachining?.stockLabel?.trim() || summary.blankSpec?.sizeLabel?.trim() || undefined;
     if (existing && !staleAgainstNesting && !staleAgainstLocation) {
       // A kept record written before the stock was recorded, or for a blank since resized within tolerance, takes the current label.
       if (stockLabel && existing.stockLabel !== stockLabel) await this.costRecords.update(existing.id, { stockLabel } as never, userId, token);
