@@ -14,7 +14,10 @@ mid-line arc is 2 pi, and the strip width is the mid-line's length (= section ar
   - the C channel swept round a 400 mm radius through 60 deg (both ways round): the curve's radius and angle, the same strip and bends,
     a hole in the curved web at its station; measured although the drawn-shell detector also takes it for a drawn shell
   - an angled and a notched end cut
-  - a flat plate, a bracket folded two ways, a drawn cup, a drawn box and a half cup: null (not a profile)
+  - the C channel, a hat and a closed rectangular tube with sharp corners (no bend radius), and the sharp C curved along its length: each
+    corner a bend of inner radius 0 ("sharp"), the flats read at the mid-surface
+  - a round tube (two half turns meeting at the seam, its wall read from its skins), a flat-oval tube and an oval ring of four arcs
+  - a flat plate, a bracket folded two ways (radiused, and sharp), a drawn cup, a drawn box and a half cup: null (not a profile)
 """
 import math
 
@@ -216,6 +219,119 @@ def corner_bracket():
     return unify.Shape()
 
 
+def sharp_section(points, t=T, closed=False):
+    """The cross-section face (plane z = 0) of a sheet of thickness t whose mid-line is the polyline `points`, its corners sharp (mitred, no
+    bend radius). closed: a counter-clockwise loop (a tube)."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+
+    pts = [complex(*p) for p in points]
+    n = len(pts)
+
+    def normal(a, b):
+        return (b - a) / abs(b - a) * 1j
+
+    def side(d):
+        out = []
+        for k in range(n):
+            if not closed and k in (0, n - 1):
+                out.append(pts[k] + d * (normal(pts[0], pts[1]) if k == 0 else normal(pts[-2], pts[-1])))
+            else:
+                n1, n2 = normal(pts[k - 1], pts[k]), normal(pts[k], pts[(k + 1) % n])
+                out.append(pts[k] + d * (n1 + n2) / (1 + (n1.conjugate() * n2).real))
+        return out
+
+    def loop(zs):
+        mk = BRepBuilderAPI_MakePolygon()
+        for z in zs:
+            mk.Add(gp_Pnt(z.real, z.imag, 0))
+        mk.Close()
+        return mk.Wire()
+
+    left, right = side(t / 2.0), side(-t / 2.0)
+    if not closed:
+        return BRepBuilderAPI_MakeFace(loop(left + right[::-1])).Face()
+    mk = BRepBuilderAPI_MakeFace(loop(right))  # turning left all the way round: the right skin is outside
+    inner = loop(left)
+    inner.Reverse()
+    mk.Add(inner)
+    return mk.Face()
+
+
+def ring_section(outer_edges, inner_edges):
+    """A closed section from its outer and inner outlines (lists of edges)."""
+    mk = BRepBuilderAPI_MakeFace(_wire(outer_edges))
+    inner = _wire(inner_edges)
+    inner.Reverse()
+    mk.Add(inner)
+    return mk.Face()
+
+
+def round_tube(od=50.0, wall=T, length=600.0):
+    from OCC.Core.gp import gp_Circ
+
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    return straight(ring_section([BRepBuilderAPI_MakeEdge(gp_Circ(ax, od / 2.0)).Edge()],
+                                 [BRepBuilderAPI_MakeEdge(gp_Circ(ax, od / 2.0 - wall)).Edge()]), length)
+
+
+def flat_oval_tube(flat=60.0, rm=15.0, t=T, length=500.0):
+    """A flat-oval tube: its mid-line two straights `flat` long joined by half circles of mid-line radius rm."""
+    def loop(r):
+        def q(x, y):
+            return gp_Pnt(x, y, 0)
+        return [BRepBuilderAPI_MakeEdge(q(0, -r), q(flat, -r)).Edge(),
+                BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(q(flat, -r), q(flat + r, 0), q(flat, r)).Value()).Edge(),
+                BRepBuilderAPI_MakeEdge(q(flat, r), q(0, r)).Edge(),
+                BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(q(0, r), q(-r, 0), q(0, -r)).Value()).Edge()]
+    return straight(ring_section(loop(rm + t / 2.0), loop(rm - t / 2.0)), length)
+
+
+# The four-arc oval: side arcs of mid-line radius 60 about (0, -/+30), end arcs of radius 20 about (+/-C, 0), tangent where they meet.
+ARC_R1, ARC_R2, ARC_D = 60.0, 20.0, 30.0
+ARC_C = math.sqrt((ARC_R1 - ARC_R2) ** 2 - ARC_D ** 2)
+ARC_A = math.atan2(ARC_D, ARC_C)  # the tangent points' direction from the side arcs' centres
+
+
+def arc_ring_tube(t=T, length=400.0):
+    """A closed ring of four arcs and no flat (an oval rolled from strip)."""
+    def loop(off):
+        r1, r2, a = ARC_R1 + off, ARC_R2 + off, ARC_A
+
+        def on(cx, cy, r, ang):
+            return gp_Pnt(cx + r * math.cos(ang), cy + r * math.sin(ang), 0)
+
+        def arc(cx, cy, r, a0, a1):
+            return BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(on(cx, cy, r, a0), on(cx, cy, r, (a0 + a1) / 2), on(cx, cy, r, a1)).Value()).Edge()
+        return [arc(0, -ARC_D, r1, a, math.pi - a), arc(-ARC_C, 0, r2, math.pi - a, math.pi + a),
+                arc(0, ARC_D, r1, math.pi + a, 2 * math.pi - a), arc(ARC_C, 0, r2, -a, a)]
+    return straight(ring_section(loop(t / 2.0), loop(-t / 2.0)), length)
+
+
+SHARP_C = [(1.0, 40.0), (1.0, 1.0), (99.0, 1.0), (99.0, 40.0)]  # the C channel's mid-line with sharp corners: flats 39 | 98 | 39
+
+
+def sharp_swept_c(r0=400.0, deg=60.0):
+    """The sharp-cornered C swept round r0 through `deg` (its web bent into a cylinder), as swept_c("x")."""
+    a = math.radians(deg)
+
+    def at(f):
+        return gp_Pnt(0, r0 * math.cos(a * f) - r0, r0 * math.sin(a * f))
+    path = _wire([BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(at(0.0), at(0.5), at(1.0)).Value()).Edge()])
+    pipe = BRepOffsetAPI_MakePipe(path, sharp_section(SHARP_C))
+    pipe.Build()
+    return pipe.Shape()
+
+
+def sharp_corner_bracket():
+    """A 100 x 100 x 2 base with sharp-cornered 30 mm flanges on two adjacent edges (three boxes fused): folded two ways."""
+    a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 100, 2, 100).Shape()
+    b = BRepPrimAPI_MakeBox(gp_Pnt(98, 0, 0), 2, 30, 100).Shape()
+    c = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 100, 30, 2).Shape()
+    unify = ShapeUpgrade_UnifySameDomain(BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(a, b).Shape(), c).Shape(), True, True, True)
+    unify.Build()
+    return unify.Shape()
+
+
 def _rf(shape):
     result = _extract(shape)
     return result, result["roll_form"]
@@ -236,7 +352,7 @@ def _seq(rf):
 def test_c_channel_strip_bends_and_levels():
     shape = c_channel()
     result, rf = _rf(shape)
-    assert rf["version"] == VERSION == "rf_v1"
+    assert rf["version"] == VERSION == "rf_v2"
     assert [abs(c) for c in rf["axis"]] == [0.0, 0.0, 1.0] and rf["axis_source"] == "bends"
     assert rf["length_mm"] == pytest.approx(1000.0, abs=0.01)
     assert rf["constant_section"] is True and rf["stock_fraction"] > 0.99
@@ -261,9 +377,11 @@ def test_c_channel_strip_bends_and_levels():
 
     assert [b["angle_deg"] for b in rf["bends"]] == [90.0, 90.0]
     assert [b["inner_radius_mm"] for b in rf["bends"]] == [R, R]
+    assert [b["sharp"] for b in rf["bends"]] == [False, False]
     assert [b["level"] for b in rf["bends"]] == [1, 1]
     assert _seq(rf) == ([pytest.approx(35.0, abs=0.01), pytest.approx(90.0, abs=0.01)], pytest.approx(35.0, abs=0.01))
     assert all(len(b["face_ids"]) == 2 for b in rf["bends"])  # inner and outer skin
+    assert rf["tube"] is None
 
     assert [(e["end"], e["kind"]) for e in rf["ends"]] == [("start", "square"), ("end", "square")]
     for e in rf["ends"]:
@@ -368,6 +486,107 @@ def test_angled_and_notched_end_cuts():
     assert rf["constant_section"] is True and rf["features"] == []
 
 
+# ── profiles modelled without bend radii ────────────────────────────────────
+# Each corner is sharp: the flats meet at an edge. A flat is read at the mid-surface (the mean of its skins, which differ by t tan(angle/2)
+# at a sharp corner), so the flats add up to the strip; the neutral fibre bends about the inner corner (K 0.33).
+
+def _sharp_neutral(strip, corners_deg):
+    return strip + sum(math.radians(a) * 0.33 * T - T * math.tan(math.radians(a) / 2.0) for a in corners_deg)
+
+
+def test_sharp_cornered_c_channel():
+    _result, rf = _rf(straight(sharp_section(SHARP_C), 1000.0))
+    assert rf["axis_source"] == "bends" and [abs(c) for c in rf["axis"]] == [0.0, 0.0, 1.0]
+    assert rf["constant_section"] is True and rf["length_mm"] == pytest.approx(1000.0, abs=0.01)
+    assert rf["strip_width_mm"] == pytest.approx(39 + 98 + 39, abs=0.01)
+    assert rf["strip_width_check"] == {"flats_mm": pytest.approx(176.0, abs=0.01), "bend_arcs_mm": 0.0, "agrees": True}
+    assert rf["strip_width_neutral_mm"] == pytest.approx(_sharp_neutral(176.0, [90, 90]), abs=0.02)
+    assert [(b["angle_deg"], b["inner_radius_mm"], b["sharp"], b["level"], b["face_ids"]) for b in rf["bends"]] == [
+        (90.0, 0.0, True, 1, []), (90.0, 0.0, True, 1, [])]  # a sharp corner has no face of its own
+    assert _seq(rf) == ([pytest.approx(39.0, abs=0.01), pytest.approx(98.0, abs=0.01)], pytest.approx(39.0, abs=0.01))
+    sec = rf["section"]
+    assert sec["width_mm"] == pytest.approx(100.0, abs=0.01) and sec["height_mm"] == pytest.approx(40.0, abs=0.01)
+    assert sec["area_mm2"] == pytest.approx(176.0 * T, abs=0.01) and sec["closed"] is False
+    assert [e["cut_perimeter_mm"] for e in rf["ends"]] == [pytest.approx(176.0, abs=0.01)] * 2
+
+
+def test_sharp_cornered_hat():
+    _result, rf = _rf(straight(sharp_section([(0, 0), (30, 0), (30, 40), (90, 40), (90, 0), (120, 0)]), 800.0))
+    assert rf["strip_width_mm"] == pytest.approx(30 + 40 + 60 + 40 + 30, abs=0.01)
+    assert [b["level"] for b in rf["bends"]] == [2, 1, 1, 2] and all(b["sharp"] for b in rf["bends"])
+    assert [b["angle_deg"] for b in rf["bends"]] == [90.0] * 4
+    flats, last = _seq(rf)
+    assert flats == [pytest.approx(x, abs=0.01) for x in (30, 40, 60, 40)] and last == pytest.approx(30.0, abs=0.01)
+    assert rf["strip_width_neutral_mm"] == pytest.approx(_sharp_neutral(200.0, [90] * 4), abs=0.02)
+
+
+def test_sharp_cornered_closed_rectangular_tube():
+    _result, rf = _rf(straight(sharp_section([(0, 0), (60, 0), (60, 40), (0, 40)], closed=True), 600.0))
+    sec = rf["section"]
+    assert sec["closed"] is True and sec["stock_form"] == "RECTANGULAR_TUBE"
+    assert rf["strip_width_mm"] == pytest.approx(2 * 60 + 2 * 40, abs=0.01)
+    # From the web (a 60 mm side) round the tube: every corner sharp, every flat counted once.
+    assert [b["level"] for b in rf["bends"]] == [1, 2, 2, 1] and all(b["sharp"] for b in rf["bends"])
+    flats, last = _seq(rf)
+    assert flats == [pytest.approx(x, abs=0.01) for x in (60, 40, 60, 40)] and last == 0.0
+    assert rf["tube"] == {"outer_diameter_mm": None, "outer_width_mm": pytest.approx(62.0, abs=0.01),
+                          "outer_height_mm": pytest.approx(42.0, abs=0.01), "wall_mm": pytest.approx(T, abs=0.001)}
+
+
+def test_sharp_cornered_channel_curved_along_its_length():
+    _result, rf = _rf(sharp_swept_c())
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(sharp_section(SHARP_C), props)
+    radius = 400.0 + props.CentreOfMass().Y()
+    assert rf["axis_source"] == "curve"
+    assert rf["curve"]["radius_mm"] == pytest.approx(radius, abs=0.01) and rf["curve"]["angle_deg"] == pytest.approx(60.0, abs=0.01)
+    assert rf["length_mm"] == pytest.approx(radius * math.pi / 3.0, abs=0.02)
+    assert rf["strip_width_mm"] == pytest.approx(176.0, abs=0.01)
+    assert [(b["angle_deg"], b["sharp"], b["level"]) for b in rf["bends"]] == [(90.0, True, 1), (90.0, True, 1)]
+    assert [e["kind"] for e in rf["ends"]] == ["square", "square"] and rf["features"] == []
+
+
+# ── tubes with no flat ──────────────────────────────────────────────────────
+
+def test_round_tube_two_half_turns_meeting_at_the_seam():
+    result, rf = _rf(round_tube())
+    # No flats: the extractor has no faces to read a thickness between (its sheet_thickness_mm is a fallback); the tube's wall is read from
+    # its concentric skins.
+    assert rf["thickness_mm"] == pytest.approx(T, abs=0.001)
+    sec = rf["section"]
+    assert sec["closed"] is True and sec["stock_form"] == "ROUND_TUBE"
+    assert rf["tube"] == {"outer_diameter_mm": pytest.approx(50.0, abs=0.01), "outer_width_mm": pytest.approx(50.0, abs=0.01),
+                          "outer_height_mm": pytest.approx(50.0, abs=0.01), "wall_mm": pytest.approx(T, abs=0.001)}
+    assert rf["strip_width_mm"] == pytest.approx(math.pi * (50.0 - T), abs=0.02)  # the mid-line circumference
+    assert [(b["angle_deg"], b["inner_radius_mm"], b["sharp"], b["flange_before_mm"], b["level"]) for b in rf["bends"]] == [
+        (180.0, 23.0, False, 0.0, 1), (180.0, 23.0, False, 0.0, 1)]
+    assert rf["last_flange_mm"] == 0.0
+    assert rf["constant_section"] is True and rf["length_mm"] == pytest.approx(600.0, abs=0.01)
+    assert [e["cut_perimeter_mm"] for e in rf["ends"]] == [pytest.approx(math.pi * 48.0, abs=0.05)] * 2
+
+
+def test_flat_oval_tube():
+    _result, rf = _rf(flat_oval_tube())
+    assert rf["section"]["closed"] is True
+    assert rf["strip_width_mm"] == pytest.approx(2 * 60.0 + 2 * math.pi * 15.0, abs=0.02)
+    assert [(b["angle_deg"], b["inner_radius_mm"], b["level"]) for b in rf["bends"]] == [(180.0, 14.0, 1), (180.0, 14.0, 1)]
+    flats, last = _seq(rf)
+    assert flats == [pytest.approx(60.0, abs=0.01)] * 2 and last == 0.0
+    assert rf["tube"] == {"outer_diameter_mm": None, "outer_width_mm": pytest.approx(92.0, abs=0.01),
+                          "outer_height_mm": pytest.approx(32.0, abs=0.01), "wall_mm": pytest.approx(T, abs=0.001)}
+
+
+def test_oval_ring_of_arcs():
+    _result, rf = _rf(arc_ring_tube())
+    assert rf["thickness_mm"] == pytest.approx(T, abs=0.001) and rf["section"]["closed"] is True
+    side, end = math.pi - 2 * ARC_A, 2 * ARC_A  # the arcs' angles
+    assert rf["strip_width_mm"] == pytest.approx(2 * ARC_R1 * side + 2 * ARC_R2 * end, abs=0.05)
+    angles = sorted(b["angle_deg"] for b in rf["bends"])
+    assert angles == [pytest.approx(math.degrees(x), abs=0.01) for x in (side, side, end, end)]
+    assert sorted(b["inner_radius_mm"] for b in rf["bends"]) == [ARC_R2 - 1, ARC_R2 - 1, ARC_R1 - 1, ARC_R1 - 1]
+    assert all(b["level"] == 1 and b["flange_before_mm"] == 0.0 for b in rf["bends"]) and rf["last_flange_mm"] == 0.0
+
+
 # ── curved profiles ─────────────────────────────────────────────────────────
 
 def _section_centroid():
@@ -420,7 +639,8 @@ def test_channel_curved_with_its_web_bent_and_a_hole_at_its_station():
     _cup,  # drawn: revolved about its axis, but reaching it
     _box,  # drawn: radii three ways
     half_cup,  # a flange round half a disc: open, but the disc reaches the axis
-], ids=["flat-plate", "corner-bracket", "drawn-cup", "drawn-box", "half-cup"])
+    sharp_corner_bracket,  # folded two ways, with sharp corners
+], ids=["flat-plate", "corner-bracket", "drawn-cup", "drawn-box", "half-cup", "sharp-corner-bracket"])
 def test_parts_that_are_not_profiles_measure_null(make):
     result, rf = _rf(make())
     assert "roll_form" in result and rf is None

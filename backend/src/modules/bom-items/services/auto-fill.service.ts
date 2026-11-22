@@ -196,9 +196,9 @@ interface HydroformMeasurement {
 
 /**
  * What a sheet-metal part is measured for roll forming (cad-engine sheet_metal/features/roll_form.py, its "roll_form" result), as
- * feature_graph.summary.rollFormGeometry: the top-level keys camelCase, the objects inside (section, stripWidthCheck, bends, curve, features,
- * ends) as the engine writes them, snake_case -- as hydroformGeometry(). null when the engine found the part is not a profile (no cross-section
- * bends running one way, or flat) or did not measure it (an analysis from before rf_v1).
+ * feature_graph.summary.rollFormGeometry: the top-level keys camelCase, the objects inside (section, stripWidthCheck, bends, tube, curve,
+ * features, ends) as the engine writes them, snake_case -- as hydroformGeometry(). null when the engine found the part is not a profile (no cross-section
+ * bends running one way, or flat) or did not measure it (an analysis from before rf_v2).
  */
 export function rollFormGeometry(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -218,6 +218,7 @@ export function rollFormGeometry(raw: unknown): Record<string, unknown> | null {
     thicknessMm: rf.thickness_mm ?? null,
     bends: rf.bends ?? null,
     lastFlangeMm: rf.last_flange_mm ?? null,
+    tube: rf.tube ?? null,
     curve: rf.curve ?? null,
     features: rf.features ?? null,
     ends: rf.ends ?? null,
@@ -239,6 +240,7 @@ interface RollFormMeasurement {
   thickness_mm?: unknown;
   bends?: unknown;
   last_flange_mm?: unknown;
+  tube?: unknown;
   curve?: unknown;
   features?: unknown;
   ends?: unknown;

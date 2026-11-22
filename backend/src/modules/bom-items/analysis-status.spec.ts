@@ -58,18 +58,20 @@ describe('deriveAnalysisStatus', () => {
     expect(deriveAnalysisStatus(part({ featureGraph: sheet({ bendCount: 6 }) }), 'none', CURRENT).cad).toBe('ready');
   });
 
-  it('a part set to Sheet Metal Roll Forming is stale until Refresh analysis measures it for roll forming (rf_v1)', () => {
+  it('a part set to Sheet Metal Roll Forming is stale until Refresh analysis measures it for roll forming (rf_v2)', () => {
     const sheet = (summary: Record<string, unknown> | undefined) => ({ ...analysed('sheet_metal'), ...(summary ? { summary } : {}) });
     const rolled = (summary: Record<string, unknown> | undefined) => part({ featureGraph: sheet(summary), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal Roll Forming' });
     // Analysed as sheet metal before the roll-forming measurement existed (it has the hydroforming one, not this).
     expect(deriveAnalysisStatus(rolled({ hydroformGeometry: { extractionVersion: 'hf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
     expect(deriveAnalysisStatus(rolled(undefined), 'none', CURRENT).cad).toBe('stale');
     expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v0' } }), 'none', CURRENT).cad).toBe('stale');
-    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // rf_v1 measured neither sharp-cornered profiles nor round tubes: analysed again, such a part is measured.
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v2' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
     // The current engine found the part is not a profile: analysing again gives the same, so it is current (the quote says why).
     expect(deriveAnalysisStatus(rolled({ rollFormGeometry: null }), 'none', CURRENT).cad).toBe('ready');
     // The hydroforming measurement does not stand in for it, nor it for the hydroforming one.
-    const hydro = part({ featureGraph: sheet({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal - Hydroforming' });
+    const hydro = part({ featureGraph: sheet({ rollFormGeometry: { extractionVersion: 'rf_v2' } }), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal - Hydroforming' });
     expect(deriveAnalysisStatus(hydro, 'none', CURRENT).cad).toBe('stale');
   });
 

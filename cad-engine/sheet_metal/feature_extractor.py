@@ -478,10 +478,11 @@ class SheetMetalFeatureExtractor:
             logger.warning(f"[SheetMetal] hydroform measurement failed: {e}")
         # What roll forming the part rests on (sheet_metal/features/roll_form.py): the long axis, the section, the strip, the
         # cross-section bends in order across it, the curve along the length, the punched features and the end cuts. Measured
-        # for every single-body sheet part that is not flat; None when the part is not a profile, and a failure here never fails
-        # the extraction.
+        # for every single-body sheet part; None when the part is not a profile, and a failure here never fails the extraction.
+        # Not gated on flat_part: a round tube has no flats to read a thickness between, so its sheet_thickness is the bbox
+        # fallback and it reads as "flat"; the measurement reads the tube's wall itself (and turns a flat plate away at once).
         roll_form: Optional[Dict[str, Any]] = None
-        if len(bodies) <= 1 and not flat_part:
+        if len(bodies) <= 1:
             try:
                 roll_form = measure_roll_form(shape, sheet_thickness, sheet_faces, lances, formed_features)
             except Exception as e:
@@ -911,8 +912,8 @@ class SheetMetalFeatureExtractor:
             # The hydroforming measurements (sheet_metal/features/hydroform.py, "hf_v1"): measured for every sheet part,
             # None when the part has no sheet frame or the measurement failed.
             "hydroform": hydroform,
-            # The roll-forming measurements (sheet_metal/features/roll_form.py, "rf_v1"): measured for every single-body sheet
-            # part, None when the part is not a profile (or flat, or the measurement failed).
+            # The roll-forming measurements (sheet_metal/features/roll_form.py, "rf_v2"): measured for every single-body sheet
+            # part, None when the part is not a profile (or the measurement failed).
             "roll_form": roll_form,
             "sheet_geometry_debug": {**geom_debug, **validation_debug},
             "feature_graph_v2": feature_graph_v2,
