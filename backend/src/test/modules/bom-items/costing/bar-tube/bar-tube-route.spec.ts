@@ -40,15 +40,39 @@ describe('saw and punch, a 25 x 1.5 A36 round tube 1 m long', () => {
     expect(saw.complete).toBe(true);
   });
 
-  it('cycle: the section at the band saw rate for cut-code family 1 at 50 mm wide, the 1 m index at the axial feed, load and unload, per bundle', () => {
+  // The batch of 100 needs ceil(100 / 6) = 17 lengths, so 17 are cut at once (the saw holds 20 x 16 of them, maxPartsPerBundleBandSaw is 18).
+  // They lie 17 x 25 = 425 mm wide in the cut, so the blade cuts at the 500 mm row's rate. Every tube's own section is cut; the bundle shares
+  // one index of 1 m and one load and unload.
+  it('cycle: each tube\'s section at the band saw rate for the bundle\'s width, plus its share of the bundle\'s index, load and unload', () => {
     const line = saw.lines[0]!;
     const m = allBarTubeMachines()['bar_tube_fab_band_saw']!.find((x) => x.name === line.machineName)!;
     const ref = realBarTubeReference();
-    const rate = Number(ref.table('saw_cut_rate').find((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === '1' && Number(r['Material Width (mm)']) === 50)!['Cutting Rate (mm^2 / min)']);
-    expect(rate).toBe(6451.6);
-    const bundle = Math.min(Math.floor(machineValue(m, 'max_stock_height_mm')! / 25) * Math.floor(machineValue(m, 'max_stock_width_mm')! / 25), ref.number('maxPartsPerBundleBandSaw')!);
-    const sec = (AREA / rate * 60 + 1000 / machineValue(m, 'axial_feed_rate_mm_per_s')! + machineValue(m, 'load_plus_unload_time_s')!) / bundle;
+    const rateAt = (width: number) => Number(ref.table('saw_cut_rate').find((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === '1' && Number(r['Material Width (mm)']) === width)!['Cutting Rate (mm^2 / min)']);
+    expect(rateAt(50)).toBe(6451.6);
+    const across = Math.floor(machineValue(m, 'max_stock_width_mm')! / 25);
+    const holds = across * Math.floor(machineValue(m, 'max_stock_height_mm')! / 25);
+    const bundle = Math.min(holds, ref.number('maxPartsPerBundleBandSaw')!, Math.ceil(100 / 6));
+    expect(bundle).toBe(17);
+    expect(Math.min(bundle, across) * 25).toBe(425);
+    const sec = AREA / rateAt(500) * 60 + (1000 / machineValue(m, 'axial_feed_rate_mm_per_s')! + machineValue(m, 'load_plus_unload_time_s')!) / bundle;
     expect(line.cycleTimeMin * 60).toBeCloseTo(sec, 1);
+  });
+
+  it('a batch one length makes is not bundled: the tube is cut alone, at the rate for its own width', () => {
+    const line = buildBarTubeRoutes(input(TUBE, { scenario: { batchSize: 6, route: null } })).routes.find((r) => r.key === 'saw')!.lines[0]!;
+    const m = allBarTubeMachines()['bar_tube_fab_band_saw']!.find((x) => x.name === line.machineName)!;
+    const sec = AREA / 6451.6 * 60 + 1000 / machineValue(m, 'axial_feed_rate_mm_per_s')! + machineValue(m, 'load_plus_unload_time_s')!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(sec, 1);
+  });
+
+  it('a bundle never saws faster than the blade cuts: the cut of each part stays, whatever the bundle', () => {
+    const cycle = (batchSize: number) => buildBarTubeRoutes(input(TUBE, { scenario: { batchSize, route: null } })).routes.find((r) => r.key === 'saw')!.lines[0]!.cycleTimeMin * 60;
+    const ref = realBarTubeReference();
+    const slowest = Math.min(...ref.table('saw_cut_rate').filter((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === '1').map((r) => Number(r['Cutting Rate (mm^2 / min)'])));
+    // 18 to a bundle (the reference's limit) at a batch of 1,000: more than the cut alone, far less than a tube cut on its own.
+    expect(cycle(1000)).toBeGreaterThan(AREA / 6451.6 * 60);
+    expect(cycle(1000)).toBeLessThan(cycle(6) / 10);
+    expect(cycle(1000)).toBeLessThanOrEqual(AREA / slowest * 60 + (1000 / 75 + 60) / 18 + 0.05);
   });
 
   it('stock: floor((6096 − 75) / (1000 + 3 mm band saw kerf)) = 6 parts per 6096 mm length; a sixth of the length at the round tube price', () => {

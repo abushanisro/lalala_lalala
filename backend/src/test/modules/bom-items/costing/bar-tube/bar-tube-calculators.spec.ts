@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { normalizeFieldName } from '../../../../../modules/calculators/calculator-formula-evaluator';
 import { barTubeCalculatorsByName, loadBarTubeCalculatorSpec } from '../../../../../modules/bom-items/costing/bar-tube/calculators/bar-tube-calculator-spec';
-import { buildBarTubeCalculatorsMigrationSql } from '../../../../../modules/bom-items/costing/bar-tube/calculators/bar-tube-calculators-migration';
+import { buildBarTubeCalculatorsMigrationSql, buildBarTubeSawBundleMigrationSql } from '../../../../../modules/bom-items/costing/bar-tube/calculators/bar-tube-calculators-migration';
 import { runReferenceCalculator, type CalcSeed } from '../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -32,6 +32,17 @@ function run(name: string, values: Record<string, number>, output?: string) {
 describe('bar and tube calculator spec', () => {
   it('is what migration 1091 creates (regenerate the migration after editing the spec)', () => {
     expect(readFileSync(join(MIGRATIONS, '1091_bar_tube_calculators.sql'), 'utf8')).toBe(buildBarTubeCalculatorsMigrationSql());
+  });
+
+  // 1091 divided the whole saw cycle, cutting included, by the parts in a bundle. 1117 ships version 2, which shares only the index and the
+  // handling; the superseded entry stays only so 1091 regenerates as applied.
+  it('the saw cut is what migration 1117 creates, and the engine reads only that version', () => {
+    expect(readFileSync(join(MIGRATIONS, '1117_bar_tube_saw_bundle.sql'), 'utf8')).toBe(buildBarTubeSawBundleMigrationSql());
+    const saw = all.filter((c) => c.name === 'Bar and Tube - Saw cut');
+    expect(saw).toHaveLength(1);
+    expect(saw[0]).toMatchObject({ migration: 1117, version: 2 });
+    expect(byName['Bar and Tube - Saw cut']!.version).toBe(2);
+    expect(loadBarTubeCalculatorSpec({ includeSuperseded: true }).calculators.filter((c) => c.name === 'Bar and Tube - Saw cut')).toHaveLength(2);
   });
 
   it('every operation it computes is a process of memory/Bar and tube fab, each costed process has one, none twice', () => {
@@ -86,5 +97,25 @@ describe('bar and tube calculators, worked by hand', () => {
     });
     expect(r.value).toBeCloseTo(area / 6451.6 * 60 + 1000 / 75 + 60, 4);
     expect(r.value).toBeCloseTo(74.363, 2);
+  });
+
+  // The same tube, 18 to a bundle: the blade still cuts every tube's section (1.03 s each, at the bundle's rate), and the bundle shares one
+  // index and one load and unload: (13.33 + 60) / 18 = 4.07 s. Version 1 divided the cut by 18 as well and gave 4.13 s in all.
+  it('saw cut in a bundle of 18: cut 1.03 s for each part, + (13.33 + 60) / 18 = 4.07 s of shared handling = 5.10 s', () => {
+    const area = (Math.PI / 4) * (25 ** 2 - 22 ** 2);
+    const r = run('Bar and Tube - Saw cut', {
+      'Cut Area': area, 'Cutting Rate': 6451.6, 'Cut Length': 1000, 'Axial Feed Rate': 75, 'Load and Unload': 60, 'Parts per Bundle': 18, 'Cuts per Part': 1,
+    });
+    expect(r.outputs['Cut Time']).toBeCloseTo(1.0299, 3);
+    expect(r.outputs['Handling per Part']).toBeCloseTo(4.0741, 3);
+    expect(r.value).toBeCloseTo(5.104, 2);
+  });
+
+  it('two angled ends are two cuts of each part, bundled or not', () => {
+    const area = (Math.PI / 4) * (25 ** 2 - 22 ** 2);
+    const r = run('Bar and Tube - Saw cut', {
+      'Cut Area': area, 'Cutting Rate': 6451.6, 'Cut Length': 1000, 'Axial Feed Rate': 75, 'Load and Unload': 60, 'Parts per Bundle': 18, 'Cuts per Part': 2,
+    });
+    expect(r.value).toBeCloseTo(2 * 1.0299 + 4.0741, 2);
   });
 });

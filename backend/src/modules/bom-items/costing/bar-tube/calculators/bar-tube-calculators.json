@@ -93,6 +93,29 @@
         { "name": "Cut Time", "unit": "s", "formula": "{Cuts per Part} * {Cut Area} / {Cutting Rate} * 60" },
         { "name": "Index Time", "unit": "s", "formula": "{Cut Length} / {Axial Feed Rate}" },
         { "name": "Cycle Time", "unit": "s", "formula": "({Cut Time} + {Index Time} + {Load and Unload}) / {Parts per Bundle} * {Cycle Time Factor}" }
+      ],
+      "supersededBy": 1117
+    },
+    {
+      "key": "bar_tube.saw",
+      "name": "Bar and Tube - Saw cut",
+      "operations": ["Band Saw", "Circular Saw", "Reciprocating Saw"],
+      "description": "Cutting the stock to length: the section's metal area (more on an angled cut) at the saw's cutting rate for the material's cut-code family and the width in the cut (lookup saw_cut_rate; a bundle is cut as one section, at the bundle's width), the stock indexed by one part length at the saw's axial feed, the load and unload of each bundle. Bars cut in a bundle (as the saw's capacity, maxPartsPerBundle and the bars the batch needs allow) share the index and the handling; each part's own section is still cut.",
+      "version": 2,
+      "migration": 1117,
+      "fields": [
+        { "name": "Cut Area", "unit": "mm²", "source": { "engine": "cut_area_mm2 (the section's metal area, over the cosine of an angled cut)" } },
+        { "name": "Cutting Rate", "unit": "mm²/min", "source": { "lookup": "saw_cut_rate.Cutting Rate (mm^2 / min)" } },
+        { "name": "Cut Length", "unit": "mm", "source": { "cad": "developed_length" } },
+        { "name": "Axial Feed Rate", "unit": "mm/s", "source": { "machine": "axial_feed_rate_mm_per_s" } },
+        { "name": "Load and Unload", "unit": "s", "source": { "machine": "load_plus_unload_time_s" } },
+        { "name": "Parts per Bundle", "unit": null, "source": { "engine": "parts_per_bundle (as many as fit the saw's stock height and width, within maxPartsPerBundle and the bars the batch needs)" } },
+        { "name": "Cuts per Part", "unit": null, "source": { "engine": "cuts_per_part (one; two when both ends are cut at an angle)" } },
+        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
+        { "name": "Cut Time", "unit": "s", "formula": "{Cuts per Part} * {Cut Area} / {Cutting Rate} * 60" },
+        { "name": "Index Time", "unit": "s", "formula": "{Cut Length} / {Axial Feed Rate}" },
+        { "name": "Handling per Part", "unit": "s", "formula": "({Index Time} + {Load and Unload}) / {Parts per Bundle}" },
+        { "name": "Cycle Time", "unit": "s", "formula": "({Cut Time} + {Handling per Part}) * {Cycle Time Factor}" }
       ]
     },
     {
