@@ -20,6 +20,7 @@ import { loadAssemblyMoldingCalculatorSpec } from '../costing/plastic-molding/in
 import { loadAssemblyPlasticMoldingCalculatorSpec } from '../costing/plastic-molding/multi-shot/calculators/assembly-plastic-molding-calculator-spec';
 import { loadForgingCalculatorSpec } from '../costing/forging/calculators/forging-calculator-spec';
 import { loadHydroformingCalculatorSpec } from '../costing/hydroforming/calculators/hydroforming-calculator-spec';
+import { loadRollFormingCalculatorSpec } from '../costing/roll-forming/calculators/roll-forming-calculator-spec';
 import { loadPlasticMoldingCalculatorSpec } from '../costing/plastic-molding/calculators/plastic-molding-calculator-spec';
 
 @Injectable()
@@ -243,6 +244,11 @@ export class CalculatorCatalogService {
   /** The Sheet Metal - Hydroforming calculators (migration 1110), from the database. */
   loadHydroformingCalculators(accessToken: string): Promise<ReferenceCalculators> {
     return this.loadSpecCalculators('hydroforming-calculators', loadHydroformingCalculatorSpec(), accessToken);
+  }
+
+  /** The Sheet Metal Roll Forming calculators (migration 1113), from the database. */
+  loadRollFormingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('roll-forming-calculators', loadRollFormingCalculatorSpec(), accessToken);
   }
 
   /** The Multi-Spindle Machining calculators (migration 1095), from the database. */

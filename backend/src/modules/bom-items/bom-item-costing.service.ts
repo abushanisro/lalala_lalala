@@ -2,13 +2,17 @@ import { buildHydroformingCostSummary } from './costing/hydroforming/hydroformin
 import { HydroformingCostService } from './costing/hydroforming/hydroforming-cost.service';
 import { HYDROFORMING_KEYS, HYDROFORMING_ROUTES, type HydroformingRouteKey } from './costing/hydroforming/hydroforming-route';
 import { hydroformingRouteFor, hydroformingRouteId } from './costing/hydroforming/hydroforming-route-comparison';
+import { buildRollFormingCostSummary } from './costing/roll-forming/roll-forming-cost-summary';
+import { RollFormingCostService, type RollFormingCostResult } from './costing/roll-forming/roll-forming-cost.service';
+import { ROLL_FORMING_ROUTES, type RollFormingRouteKey } from './costing/roll-forming/roll-forming-route';
+import { rollFormingRouteFor, rollFormingRouteId } from './costing/roll-forming/roll-forming-route-comparison';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type ThreadEntry } from './costing/machining/feature-holes';
 import {
   ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
-  MULTI_SPINDLE_PROCESS_GROUP, familiesOfProcessGroup,
+  MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, familiesOfProcessGroup,
 } from './costing/shared/core/part-family-process-group';
 import { electricityUsd, loadLocationElectricity } from './costing/shared/location-electricity';
 import { castingSourcePath } from '../sand-casting/casting-source';
@@ -290,6 +294,8 @@ const isMultiShot = (item: { scenarioOverrides?: Record<string, unknown> | null 
 const isMultiSpindle = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.['processGroup'] === MULTI_SPINDLE_PROCESS_GROUP;
 /** Whether a part is hydroformed: its Process is Sheet Metal - Hydroforming (a sheet-metal part, blanked and formed on a hydroform press). */
 const isHydroforming = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.processGroup === HYDROFORMING_PROCESS_GROUP;
+/** Whether a part is roll formed: its Process is Sheet Metal Roll Forming (a sheet-metal profile, formed from coil on a roll forming line). */
+const isRollForming = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.processGroup === ROLL_FORMING_PROCESS_GROUP;
 /** The part's Process as the user chose it (scenarioOverrides.processGroup); null when none is chosen. */
 const processGroupOf = (item: { scenarioOverrides?: Record<string, unknown> | null }): string | null => {
   const g = item.scenarioOverrides?.['processGroup'];
@@ -407,6 +413,8 @@ export class BomItemCostingService {
     private readonly rotoBlowCostService?: RotoBlowCostService,
     /** The hydroforming routes; optional for the same reason (without it a Sheet Metal - Hydroforming part is one named, uncosted line). */
     private readonly hydroformingCostService?: HydroformingCostService,
+    /** The roll forming routes; optional for the same reason (without it a Sheet Metal Roll Forming part is one named, uncosted line). */
+    private readonly rollFormingCostService?: RollFormingCostService,
   ) { }
 
   // Every getCostSummary/getRouteComparison money field is computed in the
@@ -537,6 +545,7 @@ export class BomItemCostingService {
       ...(dto.barTube ? { barTube: { ...dto.barTube, options: convertRouteOptions(dto.barTube.options, conv) } } : {}),
       ...(dto.rotoBlow ? { rotoBlow: { ...dto.rotoBlow, options: convertRouteOptions(dto.rotoBlow.options, conv) } } : {}),
       ...(dto.hydroforming ? { hydroforming: { ...dto.hydroforming, options: convertRouteOptions(dto.hydroforming.options, conv) } } : {}),
+      ...(dto.rollForming ? { rollForming: { ...dto.rollForming, options: convertRouteOptions(dto.rollForming.options, conv) } } : {}),
       ...(dto.multiSpindle ? { multiSpindle: { ...dto.multiSpindle, options: convertRouteOptions(dto.multiSpindle.options, conv) } } : {}),
       ...(dto.insertMolding ? { insertMolding: { ...dto.insertMolding, options: convertRouteOptions(dto.insertMolding.options, conv) } } : {}),
       ...(dto.multiShot ? { multiShot: { ...dto.multiShot, options: convertRouteOptions(dto.multiShot.options, conv) } } : {}),
@@ -2197,8 +2206,8 @@ export class BomItemCostingService {
     // numbers, never a vague "mismatch" with nothing to act on.
     materialWarnings.push(...drawingCadConsistency.filter((m) => m.status === 'mismatch').map((m) => m.message));
     // The checks of the numbers the sheet-metal quote prices from (bend and hole counts, cut length: geometry-reconciliation.ts). A hydroformed
-    // part is priced from its hydroform measurement instead, so they say nothing about its quote (and would name a press brake line it has not).
-    if (family === 'sheet_metal' && !isHydroforming(item)) materialWarnings.push(...reconcileSheetGeometry(fg).map((f) => f.message));
+    // or roll formed part is priced from its own measurement instead, so they say nothing about its quote (and would name a press brake line it has not).
+    if (family === 'sheet_metal' && !isHydroforming(item) && !isRollForming(item)) materialWarnings.push(...reconcileSheetGeometry(fg).map((f) => f.message));
     // The grade this process prices: the part's own, or, when the process prices only its own materials and the grade is not one of them,
     // its closest own material, said in the warnings (process-materials.ts). Every engine below prices this grade.
     const pricedGrade = await this.materialResolutionService.gradeForProcess(accessToken, itemGrade, family, processGroupOf(item));
@@ -2871,6 +2880,41 @@ export class BomItemCostingService {
         localLinesOut.localCurrency = locInfo.code;
       }
       return { ...this.normalizeCostSummaryToCurrency(hydroformingResult, rates, locInfo.code, item.scenarioOverrides), resolvedInputs: costingInputs };
+    }
+
+    // ── Sheet Metal Roll Forming ──────────────────────────────────────────────
+    // A sheet-metal part whose Process is Sheet Metal Roll Forming: measured by the cad-engine as a profile (sheet_metal/features/roll_form.py,
+    // via auto-fill's rollFormGeometry) and priced by memory/Sheet metal roll forming (roll-forming-route.ts): a coil line, uncoiled, flattened,
+    // punched, roll formed, welded when closed and cut off by scissor or blade, as memory's rule picks unless the Cost Guide sets one; the rolls
+    // and the press dies are tooling.
+    if (family === 'sheet_metal' && isRollForming(item)) {
+      const usdToLocal = locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code);
+      const zeroCtx = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
+      const rollForming: RollFormingCostResult = this.rollFormingCostService
+        ? await this.rollFormingCostService.price({
+          client: this.databaseService.getClient(accessToken), accessToken, location, grade,
+          // Absent (an analysis from before the measurement) and null (not a profile) are told apart.
+          geometry: summary.rollFormGeometry as Record<string, unknown> | null | undefined,
+          sheetThicknessMm: sheetThicknessMm > 0 ? sheetThicknessMm : null,
+          amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null,
+          ...(forceDieCastingProcess ? { forceRoute: forceDieCastingProcess } : {}),
+          overrides: item.scenarioOverrides, batchSize, usdToLocal, costContext: zeroCtx,
+        })
+        : { route: null, routes: [], rule: null, part: null, material: null, note: null, missing: [`the ${ROLL_FORMING_PROCESS_GROUP} cost service is not available`], warnings: [] };
+      const rollFormingResult = {
+        ...buildRollFormingCostSummary({
+          rollForming, materialGrade: grade, materialCostPerKg, materialSource, batchSize, warnings: [...materialWarnings], ratesSource: RATES_SOURCE_LABEL,
+        }),
+        ...currencyMeta,
+        drawingCadConsistency,
+      };
+      this.overrides.applyCostOverrides(rollFormingResult, costOverrides);
+      if (costOverrides.size > 0) rollFormingResult.costOverrides = Object.fromEntries(costOverrides);
+      if (localLinesOut) {
+        localLinesOut.lines = JSON.parse(JSON.stringify(rollFormingResult.processLines)) as ProcessLineCost[];
+        localLinesOut.localCurrency = locInfo.code;
+      }
+      return { ...this.normalizeCostSummaryToCurrency(rollFormingResult, rates, locInfo.code, item.scenarioOverrides), resolvedInputs: costingInputs };
     }
 
     // ── Casting (die / sand / investment) ────────────────────────────────────
@@ -5507,6 +5551,47 @@ export class BomItemCostingService {
   }
 
   /**
+   * A roll formed part's route comparison: the Scissor and the Blade Cut-Off line, each the full Cost Summary priced on that route. The recommended
+   * one is the route the quote chose (memory's rule, unless the Cost Guide sets one); the cheapest complete one is badged.
+   */
+  private async rollFormingRouteComparison(
+    id: string, userId: string, accessToken: string,
+    requestedBatchSize: number | undefined, requestedLocation: string, requestedProductionLifeYears?: number,
+    localCurrencyOut?: { routes?: RouteResultDto[]; localCurrency?: string },
+  ): Promise<RouteComparisonResponseDto> {
+    const keys: RollFormingRouteKey[] = ROLL_FORMING_ROUTES.map((r) => r.key);
+    const locals = keys.map((): { lines?: ProcessLineCost[]; localCurrency?: string } => ({}));
+    const [quote, ...summaries] = await Promise.all([
+      this.computeCostSummary(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, undefined, undefined, 'sheet_metal'),
+      ...keys.map((key, i) => this.computeCostSummary(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, key, locals[i], 'sheet_metal')),
+    ]);
+    const routes = keys.map((key, i) => rollFormingRouteFor(key, summaries[i]!));
+    if (localCurrencyOut) {
+      localCurrencyOut.routes = routes.map((r, i) => ({ ...r, processLines: locals[i]!.lines ?? [] }));
+      localCurrencyOut.localCurrency = locals[0]!.localCurrency;
+    }
+    const recommended = quote!.rollForming?.complete ? rollFormingRouteId(quote!.rollForming.route) : null;
+    const cheapest = routes.filter((r) => r.isFeasible && r.totalCost != null).sort((a, b) => (a.totalCost ?? 0) - (b.totalCost ?? 0))[0]?.routeId ?? null;
+    return {
+      bomItemId: id,
+      batchSize: quote!.batchSize,
+      recommendedRouteId: recommended,
+      materialCost: quote!.materialCost,
+      materialGrade: quote!.materialGrade,
+      grossWeightKg: quote!.grossWeightKg,
+      materialCostPerKg: quote!.materialCostPerKg,
+      materialSource: quote!.materialSource,
+      routes: routes.map((r) => ({ ...r, badges: { ...r.badges, lowestCost: r.routeId === cheapest } })),
+      comparisonWarnings: recommended ? [] : [`No ${ROLL_FORMING_PROCESS_GROUP} route is both feasible and fully costed for this part.`],
+      currency: quote!.currency ?? 'USD',
+      currencySymbol: quote!.currencySymbol ?? '$',
+      ...(quote!.toUsdRate != null ? { toUsdRate: quote!.toUsdRate } : {}),
+      ...(quote!.usdToDisplayRate != null ? { usdToDisplayRate: quote!.usdToDisplayRate } : {}),
+      resolvedInputs: quote!.resolvedInputs,
+    };
+  }
+
+  /**
    * A part built layer by layer: its route comparison, every build route of its domain (Additive Manufacturing: metal sintering, laser
    * sintering, material jetting, stereolithography; Rapid Prototyping: laser sintering, 3D printing, stereolithography), each the full Cost
    * Summary priced on that route, as the composites routes are. The recommended one is the route the quote chose.
@@ -5833,6 +5918,10 @@ export class BomItemCostingService {
     // Sheet Metal - Hydroforming: Deep Draw and Fluid Cell, each the full quote on that route (hydroforming-route-comparison.ts).
     if (family === 'sheet_metal' && isHydroforming(item)) {
       return this.hydroformingRouteComparison(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, localCurrencyOut);
+    }
+    // Sheet Metal Roll Forming: the Scissor and the Blade Cut-Off line, each the full quote on that route (roll-forming-route-comparison.ts).
+    if (family === 'sheet_metal' && isRollForming(item)) {
+      return this.rollFormingRouteComparison(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, localCurrencyOut);
     }
     if (family === 'additive') {
       return this.additiveRouteComparison(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, localCurrencyOut,

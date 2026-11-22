@@ -73,6 +73,8 @@ export function familiesAnalysedForHint(hint: string): readonly string[] {
 export const CASTING_PROCESS_GROUP = 'Casting';
 /** A hydroformed part: a sheet-metal part (its CAD analysis is sheet metal's), priced by costing/hydroforming. */
 export const HYDROFORMING_PROCESS_GROUP = 'Sheet Metal - Hydroforming';
+/** A roll formed profile: a sheet-metal part (its CAD analysis is sheet metal's, which measures it as a profile), priced by costing/roll-forming. */
+export const ROLL_FORMING_PROCESS_GROUP = 'Sheet Metal Roll Forming';
 
 /**
  * Process groups with no CAD family of their own, and the families they are costed as. A hydroformed part is a sheet-metal part. A Casting part
@@ -81,6 +83,8 @@ export const HYDROFORMING_PROCESS_GROUP = 'Sheet Metal - Hydroforming';
  */
 const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
   [HYDROFORMING_PROCESS_GROUP]: ['sheet_metal'],
+  // Roll forming: a sheet-metal part measured as a profile (its strip, bends and punched features), priced on a coil line (roll-forming/).
+  [ROLL_FORMING_PROCESS_GROUP]: ['sheet_metal'],
   [CASTING_PROCESS_GROUP]: ['die_cast', 'sand_cast', 'investment_cast'],
   // Insert molding: a molded plastic part, analysed and priced as one, on the insert presses with its inserts loaded (plastic-molding/insert).
   [INSERT_MOLDING_PROCESS_GROUP]: ['plastic_molded'],

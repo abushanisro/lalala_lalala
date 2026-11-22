@@ -44,7 +44,7 @@ describe('the process a part is costed as', () => {
     const r = resolve({ scenarioOverrides: { processGroup: 'Sheet Plastic' } }, 'Generic ABS, Fittings', 'milled');
     expect(r.family).toBe('unknown');
     expect(r.familySource).toBe('process');
-    expect(r.warning).toBe('The Process "Sheet Plastic" has no cost model yet, so this part is not costed. Set its Process to one that has: 2-Model Machining, Additive Manufacturing, Assembly, Assembly Molding, Assembly Plastic Molding, Bar and Tube Fabrication, Casting, Casting Investment, Composites, Die Casting, Forging, Machining, Multi-Spindle Machining, Part Assembly, Plastic Molding, Powder Metal, Rapid Prototyping, Roto & Blow Molding, Sand Casting, Sheet Metal, Sheet Metal - Hydroforming.');
+    expect(r.warning).toBe('The Process "Sheet Plastic" has no cost model yet, so this part is not costed. Set its Process to one that has: 2-Model Machining, Additive Manufacturing, Assembly, Assembly Molding, Assembly Plastic Molding, Bar and Tube Fabrication, Casting, Casting Investment, Composites, Die Casting, Forging, Machining, Multi-Spindle Machining, Part Assembly, Plastic Molding, Powder Metal, Rapid Prototyping, Roto & Blow Molding, Sand Casting, Sheet Metal, Sheet Metal - Hydroforming, Sheet Metal Roll Forming.');
   });
 
   it('a Powder Metal part is a powder metal part, whatever its material or last analysis', () => {
@@ -102,8 +102,9 @@ describe('the process a part is costed as', () => {
     expect(resolve(casting, 'ASTM A148 Grade 80-40', 'sand_cast').family).toBe('sand_cast');
   });
 
-  it('a process priced as a route of another group is costed as that group (hydroforming: sheet metal)', () => {
+  it('a process priced as a route of another group is costed as that group (hydroforming, roll forming: sheet metal)', () => {
     expect(resolve({ scenarioOverrides: { processGroup: 'Sheet Metal - Hydroforming' } }, 'SPCC', 'sheet_metal')).toEqual({ family: 'sheet_metal', familySource: 'process', warning: null });
+    expect(resolve({ scenarioOverrides: { processGroup: 'Sheet Metal Roll Forming' } }, 'SPCC', 'milled')).toEqual({ family: 'sheet_metal', familySource: 'process', warning: null });
   });
 
   // Cannula Holder bottom: Process Casting, analysed as a die casting, quoted and applied as investment casting. Its Design Guidance read the

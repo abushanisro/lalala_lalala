@@ -36,7 +36,7 @@ function fromPerPart(
  * The tools of the summary's route: the injection mold (every mold the job wears out, one investment), the die casting die, the coreboxes of the
  * cores (die casting and sand casting), and the wax pattern die of an investment casting.
  */
-export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'family' | 'dieTooling' | 'coreboxTooling' | 'patternTooling' | 'forgingDies' | 'firstArticleInspection' | 'barTubeTooling' | 'rotoBlowTooling' | 'hydroformingTooling'>): RouteToolingItem[] {
+export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'family' | 'dieTooling' | 'coreboxTooling' | 'patternTooling' | 'forgingDies' | 'firstArticleInspection' | 'barTubeTooling' | 'rotoBlowTooling' | 'hydroformingTooling' | 'rollFormingTooling'>): RouteToolingItem[] {
   const items: RouteToolingItem[] = [];
   const die = summary.dieTooling;
   if (die?.ok) {
@@ -58,6 +58,10 @@ export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'fam
   // costed, is not written.
   for (const t of summary.hydroformingTooling ?? []) {
     items.push(...fromPerPart(`hydroforming-${t.key}`, 'die', t.description, t.detail, t.costUsd, t.perPartUsd, t.amortizationParts));
+  }
+  // The mill's rolls and the press dies the roll forming job wears out (costUsd: that whole investment, over the parts the engine spread it).
+  for (const t of summary.rollFormingTooling ?? []) {
+    items.push(...fromPerPart(`roll-forming-${t.key}`, 'die', t.description, t.detail, t.costUsd, t.perPartUsd, t.amortizationParts));
   }
   const fai = summary.firstArticleInspection;
   if (fai) items.push(...fromPerPart('first-article-inspection', 'inspection', 'First article inspection (CMM)', fai.detail, fai.costUsd, fai.perPartUsd));

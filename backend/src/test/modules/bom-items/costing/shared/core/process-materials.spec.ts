@@ -1,5 +1,5 @@
 import {
-  closestProcessMaterial, isMaterialNamed, pricedGradeFor, PROCESS_OWN_MATERIAL_GROUP, type OwnMaterial, type ProcessMaterial,
+  closestProcessMaterial, isMaterialNamed, ownMaterialGroup, pricedGradeFor, PROCESS_OWN_MATERIAL_GROUP, type OwnMaterial, type ProcessMaterial,
 } from '../../../../../../modules/bom-items/costing/shared/core/process-materials';
 
 // Rows as raw_materials holds them for the Bar and Tube Fabrication group (names, types and densities from the local data).
@@ -49,6 +49,19 @@ describe('the grade a process prices (Apply never fails on a material the proces
       expect(PROCESS_OWN_MATERIAL_GROUP[family]).toBeUndefined();
       expect(pricedGradeFor({ family, processLabel: 'Machining', grade: 'Generic PETG Copol', own: petg, materials: BAR_TUBE })).toEqual({ grade: 'Generic PETG Copol', note: null });
     }
+  });
+
+  it('a Sheet Metal Roll Forming part, analysed as sheet metal, is priced from the roll forming materials: a sheet steel as its closest roll forming steel', () => {
+    expect(ownMaterialGroup('sheet_metal', 'Sheet Metal Roll Forming')).toBe('Sheet Metal Roll Forming');
+    expect(ownMaterialGroup('sheet_metal', null)).toBeUndefined();
+    const rollForming: ProcessMaterial[] = [
+      { name: 'Aluminum, AA 1100', grade: 'Generic Aluminum, AA 1100', materialType: 'Aluminum', densityKgM3: 2700 },
+      { name: 'Steel, Cold Worked, AISI 1008', grade: 'Generic Steel, Cold Worked, AISI 1008', materialType: 'Steel', densityKgM3: 7850 },
+    ];
+    const spcc: OwnMaterial = { name: 'SPCC', grade: 'SPCC', materialGroup: 'Ferrous & Non-Ferrous', materialType: 'Steel', densityKgM3: 7850 };
+    const r = pricedGradeFor({ family: 'sheet_metal', processGroup: 'Sheet Metal Roll Forming', processLabel: 'Sheet Metal Roll Forming', grade: 'SPCC', own: spcc, materials: rollForming });
+    expect(r.grade).toBe('Steel, Cold Worked, AISI 1008');
+    expect(r.note).toMatch(/^"SPCC" is not a Sheet Metal Roll Forming material: priced as "Steel, Cold Worked, AISI 1008"/);
   });
 
   it('every engine that matches its grade by exact name in its own group is covered', () => {

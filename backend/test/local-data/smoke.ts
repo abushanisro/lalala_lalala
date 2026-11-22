@@ -95,6 +95,13 @@ async function main(): Promise<void> {
     must(JSON.stringify(rows.map((r) => [r.operation, r.calculator_name])) === JSON.stringify([['Hydroform', 'Hydroforming - Hydroform'], ['Offline Blank', 'Hydroforming - Offline blank']]),
       `rows ${JSON.stringify(rows)}`);
   });
+  await check('migration 1113 bound the ten Sheet Metal Roll Forming catalog rows to their roll forming calculators', async () => {
+    const q = encodeURIComponent('Sheet Metal Roll Forming');
+    const rows = await (await api(`/process_calculator_mappings?process_group=eq.${q}&select=operation,calculator_name&order=operation`, minter.forService())).json() as { operation: string; calculator_name: string | null }[];
+    const welding = (o: string) => o.startsWith('Integrated ');
+    must(rows.length === 10 && rows.every((r) => r.calculator_name === (welding(r.operation) ? 'Roll Forming - Integrated Welding' : `Roll Forming - ${r.operation}`)),
+      `rows ${JSON.stringify(rows)}`);
+  });
   await check('the carried user directory is readable through migration 932 (same id as the source)', async () => {
     const res = await api('/rpc/directory_find_by_email', minter.forService(), { method: 'POST', body: JSON.stringify({ p_email: 'Alice@Example.com' }) });
     must(res.ok && (await res.json()) === '11111111-1111-4111-8111-111111111111', `HTTP ${res.status}`);
