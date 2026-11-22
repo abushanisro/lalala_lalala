@@ -1,3 +1,4 @@
+import { latheMillingLines, type LatheMillingOp } from './lathe-milling';
 import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
 import { cylindersToTurn, type TurnedCylinder, type TurnedRing } from './turned-diameters';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
@@ -9,6 +10,7 @@ import {
   type PartGeometryForCapability,
 } from '../../shared/capability/machine-capability';
 import type { MachineCapability } from '../../shared/capability/machine-selection/seed-registry';
+import { liveToolingVerdict, type LiveToolWork } from '../capability/live-tooling';
 import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
 import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
@@ -166,6 +168,12 @@ export interface MachiningCostInput {
   // Feature volumes from feature_graph_v2 — enables per-feature cycle time instead
   // of (billetVol − partVol) / MRR. When absent, falls back to the bbox formula.
   featureOps?: Array<{ name: string; timeSec: number; source: string; /** feature_graph_v2 ids of the features the operation is performed on. */ featureIds?: string[]; /** The steps of the calculator that timed the operation. */ trace?: CalculationTraceStep[]; /** The inputs the operation could not be priced without (its time is then 0). */ missing?: string }>;
+  /**
+   * The sequenced operations on the features a lathe mills with a live tool: the part's keyways that are not broached, and its slots
+   * (lathe-milling.ts). The turning engine prices each operation name as a line of the lathe; the milling engine does not read it
+   * (featureOps holds them there). Unset or empty = the part has none.
+   */
+  latheMilling?: LatheMillingOp[];
   // The drawing callout costed by the reference surface-treatment engine
   // (BomItemsService.resolveSurfaceTreatmentDbRate). Null = the callout names no
   // reference process: no line, a warning.
@@ -1504,6 +1512,32 @@ export function checkMachiningCapability(
   return { overallCapable: warnings.length === 0, machineCapabilityWarnings: warnings };
 }
 
+export interface LatheCapabilityResult extends MachiningCapabilityResult {
+  /** The live-tool part of the warnings: what the machine cannot make, or that its live tooling is not on file. */
+  liveToolWarnings: string[];
+}
+
+/**
+ * Whether a lathe can make the part: the part within the machine's envelope (checkMachiningCapability) and, when the part needs a live
+ * tool (cross and off-axis holes, milled keyways and slots: live-tooling.ts), the machine having one. ONE definition for the cost summary
+ * and the route comparison, so the route the Cost tab quotes is one the comparison calls capable.
+ */
+export function checkLatheCapability(
+  machineClass: MachineClassId,
+  part: { maxLength: number; maxWidth: number; maxHeight: number; weightKg: number; liveTool: LiveToolWork },
+  machine: { name: string; capability?: MachineCapability | null; capabilitySource?: 'imported' | 'seed' | 'default_class' },
+): LatheCapabilityResult {
+  const envelope = checkMachiningCapability(
+    machineClass, part.maxLength, part.maxWidth, part.maxHeight, part.weightKg, machine.capability, machine.capabilitySource,
+  );
+  const liveTooling = liveToolingVerdict(part.liveTool, machine.capability, machine.name);
+  return {
+    overallCapable: envelope.overallCapable && liveTooling.capable,
+    machineCapabilityWarnings: [...envelope.machineCapabilityWarnings, ...liveTooling.warnings],
+    liveToolWarnings: liveTooling.warnings,
+  };
+}
+
 // ── Milled cost summary ──────────────────────────────────────────────────
 
 export function computeMillingCostSummary(
@@ -2046,11 +2080,11 @@ export function computeTurningCostSummary(
     }
   }
   // The lathe's setup is charged once, on the first of its operations that
-  // has a cycle time: rough turning, else finish turning, else drilling or
-  // parting (a bar that needs no roughing is still set up). A turning line is
-  // emitted only when it has a time or names what it lacks: no roughing to do
-  // is not missing data. Turning that cannot be priced keeps its Rough
-  // Turning gap line, which carries the setup.
+  // has a cycle time: rough turning, else finish turning, else drilling,
+  // milling or parting (a bar that needs no roughing is still set up). A
+  // turning line is emitted only when it has a time or names what it lacks:
+  // no roughing to do is not missing data. Turning that cannot be priced
+  // keeps its Rough Turning gap line, which carries the setup.
   let setupCharged = false;
   const latheLine = (
     operation: string, min: number, run: LineRun,
@@ -2088,6 +2122,17 @@ export function computeTurningCostSummary(
   if (boringMin > 0 || drilling.missing.length > 0) {
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
     processLines.push(latheLine('Drilling', boringMin, drilling));
+  }
+
+  // ── Live-tool milling ─────────────────────────────────────────────────────
+  // The part's keyways that are not broached, and its slots: each sequenced
+  // operation ("Rough Milling", "Slot Milling") is a line of the lathe, timed
+  // by that operation's own calculator, with the features it mills as its
+  // rows (lathe-milling.ts). Whether this lathe has the live tool for them is
+  // the route's capability (checkLatheCapability), not a cost. An operation
+  // the sequencer could not time is a named gap on its line.
+  for (const milling of latheMillingLines(input.latheMilling)) {
+    processLines.push(withFeatureGroups(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), milling.rows));
   }
 
   // ── Tapping ───────────────────────────────────────────────────────────────

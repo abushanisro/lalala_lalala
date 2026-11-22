@@ -212,8 +212,12 @@ export class MultiSpindleCostService {
     const keyOf = (v: unknown): MultiSpindleRouteKey | null => MULTI_SPINDLE_ROUTES.find((r) => r.key === v)?.key ?? null;
     const quote = quoteMultiSpindle({
       ref: reference, spec, calculators, machines, rules, bar, part, material: req.material,
-      // The cylinders the engine turned from this bar: the same rule on the same bar (turned-diameters.ts).
-      engine: { lines: engine.processLines, holes, threads, turned: cylindersToTurn(turned, bar.circumscribedMm) },
+      // The cylinders the engine turned from this bar: the same rule on the same bar (turned-diameters.ts). Its milling lines are the
+      // operations on the part's keyways and slots, which a live tool mills.
+      engine: {
+        lines: engine.processLines, liveMilling: [...new Set((req.turning.latheMilling ?? []).map((op) => op.name))],
+        holes, threads, turned: cylindersToTurn(turned, bar.circumscribedMm),
+      },
       chosen: keyOf(req.forceRoute) ?? keyOf(req.overrides?.[MULTI_SPINDLE_ROUTE_KEY]),
       batchSize: req.batchSize, costContext: req.costContext, usdToLocal: req.usdToLocal,
     });

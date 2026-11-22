@@ -1,5 +1,5 @@
 import { fetchMachinePool } from '../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selector';
-import { liveToolHoles, liveToolingVerdict } from '../../../../../../modules/bom-items/costing/machining/capability/live-tooling';
+import { liveToolHoles, liveToolMilledFeatures, liveToolingVerdict } from '../../../../../../modules/bom-items/costing/machining/capability/live-tooling';
 
 // R_M-0230-032 lead nut housing, its machining_features as the CAD engine stored them (local database). The two bores on the turning axis
 // need no driven tool; the cross holes do. The off-axis axial bores carry distance_from_axis_mm once the CAD engine exports it for them.
@@ -46,28 +46,119 @@ describe('liveToolHoles: the holes a lathe drills only with a driven tool', () =
   });
 });
 
-describe('liveToolingVerdict: can this lathe drill them?', () => {
+// Lead Screw side shaft, its feature_graph_v2 as the CAD engine stores it once the keyway on its turned diameter is recognised: one closed
+// keyway (a broach cannot enter it, so it is milled) and two Ø2.529 cross holes.
+const shaftKeyway = {
+  id: 'Keyway-default_c1', feature_type: 'Keyway', variant: 'default',
+  occurrences: [{ face_ids: [13, 14, 15, 25, 26], material_removed_mm3: 107.91, depth_mm: 2.951, walled_fraction: 1.0, length_mm: 9.971, width_mm: 4.0 }],
+};
+const radialSlots = { id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial', occurrences: [{ material_removed_mm3: 60 }, { material_removed_mm3: 60 }] };
+const shaftCrossHoles = [
+  { type: 'SimpleHole', variant: 'cross', params: { diameter_mm: 2.529 } },
+  { type: 'SimpleHole', variant: 'cross', params: { diameter_mm: 2.529 } },
+];
+
+describe('liveToolMilledFeatures: the keyways and slots a lathe mills', () => {
+  it('counts the keyways and the slots left to mill, one per occurrence, and nothing a lathe turns or drills', () => {
+    const turnedAndDrilled = [
+      { id: 'Ring-outer_diameter_c1', feature_type: 'Ring', variant: 'outer_diameter', occurrences: [{}, {}] },
+      { id: 'SimpleHole-cross_c1', feature_type: 'SimpleHole', variant: 'cross', occurrences: [{}, {}] },
+    ];
+    expect(liveToolMilledFeatures([...turnedAndDrilled, shaftKeyway, radialSlots])).toEqual([{ type: 'Keyway', count: 1 }, { type: 'Slot', count: 2 }]);
+    expect(liveToolMilledFeatures(turnedAndDrilled)).toEqual([]);
+  });
+
+  it('adds up the groups of one type: two keyways of different sizes are two keyways', () => {
+    expect(liveToolMilledFeatures([shaftKeyway, { ...shaftKeyway, id: 'Keyway-default_c2' }])).toEqual([{ type: 'Keyway', count: 2 }]);
+  });
+
+  it('is empty for no features', () => {
+    expect(liveToolMilledFeatures(undefined)).toEqual([]);
+    expect(liveToolMilledFeatures([])).toEqual([]);
+  });
+});
+
+describe('liveToolingVerdict: can this lathe make what the part needs a live tool for?', () => {
   const holes = liveToolHoles(leadNut);
+  const shaftHoles = liveToolHoles(shaftCrossHoles);
+  const shaftMilled = liveToolMilledFeatures([shaftKeyway]);
+  const noLiveTool = { liveToolingPowerKw: 0 };
+  const liveTool = { liveToolingPowerKw: 14.9 };
+  const notOnFile = { liveToolingPowerKw: null };
 
-  it('a machine with no live-tool spindle (0 kW) cannot, and says which holes', () => {
-    const v = liveToolingVerdict(holes, { liveToolingPowerKw: 0 }, 'Haas DS-30 with BAR3010SS Feeder');
-    expect(v.capable).toBe(false);
-    expect(v.warnings[0]).toContain('Haas DS-30 with BAR3010SS Feeder has no live-tool spindle');
-    expect(v.warnings[0]).toContain('5 cross holes');
+  describe('holes only', () => {
+    it('a machine with no live-tool spindle (0 kW) cannot, and says which holes', () => {
+      const v = liveToolingVerdict({ holes, milled: [] }, noLiveTool, 'Haas DS-30 with BAR3010SS Feeder');
+      expect(v.capable).toBe(false);
+      expect(v.warnings).toEqual([
+        'Haas DS-30 with BAR3010SS Feeder has no live-tool spindle (memory/Machining/machine): it cannot drill the part\'s 5 cross holes '
+        + '(1x Ø2, 2x Ø3.2, 2x Ø6); a lathe with live tooling (C/Y axis) or a mill is needed.',
+      ]);
+    });
+
+    it('a machine with one can', () => {
+      expect(liveToolingVerdict({ holes, milled: [] }, liveTool, 'Haas DS-30Y with BAR3010SS Feeder')).toEqual({ capable: true, warnings: [] });
+    });
+
+    it('a machine whose live tooling is not on file is not ruled out, and says so (unknown is never assumed either way)', () => {
+      const v = liveToolingVerdict({ holes, milled: [] }, notOnFile, 'Lathe X');
+      expect(v.capable).toBe(true);
+      expect(v.warnings).toEqual(['Live tooling of Lathe X is not on file: whether it can drill the part\'s 5 cross holes (1x Ø2, 2x Ø3.2, 2x Ø6) is not checked.']);
+    });
   });
 
-  it('a machine with one can', () => {
-    expect(liveToolingVerdict(holes, { liveToolingPowerKw: 14.9 }, 'Haas DS-30Y with BAR3010SS Feeder')).toEqual({ capable: true, warnings: [] });
+  describe('milled features only: a keyway or a slot needs the live tool exactly as a cross hole does', () => {
+    const work = { holes: [], milled: liveToolMilledFeatures([shaftKeyway, radialSlots]) };
+
+    it('a machine with no live-tool spindle (0 kW) cannot, and says what it cannot mill', () => {
+      expect(liveToolingVerdict(work, noLiveTool, 'Haas DS-30')).toEqual({
+        capable: false,
+        warnings: ['Haas DS-30 has no live-tool spindle (memory/Machining/machine): it cannot mill the part\'s 1 keyway and 2 slots; a lathe with live tooling (C/Y axis) or a mill is needed.'],
+      });
+    });
+
+    it('a machine with one can', () => {
+      expect(liveToolingVerdict(work, liveTool, 'Haas DS-30Y')).toEqual({ capable: true, warnings: [] });
+    });
+
+    it('a machine whose live tooling is not on file is not ruled out, and says so', () => {
+      expect(liveToolingVerdict(work, notOnFile, 'Lathe X')).toEqual({
+        capable: true, warnings: ['Live tooling of Lathe X is not on file: whether it can mill the part\'s 1 keyway and 2 slots is not checked.'],
+      });
+      // No capability resolved for the machine at all is the same unknown.
+      expect(liveToolingVerdict(work, null, 'Lathe X').capable).toBe(true);
+    });
   });
 
-  it('a machine whose live tooling is not on file is not ruled out, and says so (unknown is never assumed either way)', () => {
-    const v = liveToolingVerdict(holes, { liveToolingPowerKw: null }, 'Lathe X');
-    expect(v.capable).toBe(true);
-    expect(v.warnings[0]).toContain('not on file');
+  describe('both: the shaft\'s keyway and its two cross holes', () => {
+    const work = { holes: shaftHoles, milled: shaftMilled };
+
+    it('a machine with no live-tool spindle (0 kW) cannot, and names both', () => {
+      expect(liveToolingVerdict(work, noLiveTool, 'Haas DS-30 with BAR3010SS Feeder')).toEqual({
+        capable: false,
+        warnings: [
+          'Haas DS-30 with BAR3010SS Feeder has no live-tool spindle (memory/Machining/machine): it cannot mill the part\'s 1 keyway and drill its '
+          + '2 cross holes (2x Ø2.529); a lathe with live tooling (C/Y axis) or a mill is needed.',
+        ],
+      });
+    });
+
+    it('a machine with one can', () => {
+      expect(liveToolingVerdict(work, liveTool, 'Haas DS-30Y with BAR3010SS Feeder')).toEqual({ capable: true, warnings: [] });
+    });
+
+    it('a machine whose live tooling is not on file is not ruled out, and says so', () => {
+      expect(liveToolingVerdict(work, notOnFile, 'Lathe X')).toEqual({
+        capable: true,
+        warnings: ['Live tooling of Lathe X is not on file: whether it can mill the part\'s 1 keyway and drill its 2 cross holes (2x Ø2.529) is not checked.'],
+      });
+    });
   });
 
-  it('a part with no such holes needs no live tooling on any machine', () => {
-    expect(liveToolingVerdict([], { liveToolingPowerKw: 0 }, 'Haas DS-30')).toEqual({ capable: true, warnings: [] });
+  it('none: a part with no such hole, keyway or slot needs no live tooling on any machine', () => {
+    for (const capability of [noLiveTool, liveTool, notOnFile, null]) {
+      expect(liveToolingVerdict({ holes: [], milled: [] }, capability, 'Haas DS-30')).toEqual({ capable: true, warnings: [] });
+    }
   });
 });
 

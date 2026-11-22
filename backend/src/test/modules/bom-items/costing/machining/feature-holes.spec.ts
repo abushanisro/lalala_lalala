@@ -71,7 +71,7 @@ describe('the shaft on a multi-spindle', () => {
     });
     const threads = timeThreadGroups({ threads: normalizeThreadSpecs(tappedHolesOfFeatures(SHAFT, noOccurrences)), tap: (_t, n) => ({ sec: 1.5 * n, missing: [] }) });
     const w = multiSpindleWork({
-      lines: [], holes, threads, partLengthMm: 25.5, partVolumeMm3: 2038.34, turned: [{ diameterMm: 14, lengthMm: 25.5 }],
+      lines: [], liveMilling: [], holes, threads, partLengthMm: 25.5, partVolumeMm3: 2038.34, turned: [{ diameterMm: 14, lengthMm: 25.5 }],
       barSectionAreaMm2: (Math.PI / 4) * 15.875 ** 2, stockLengthMm: 26.29,
     });
     expect(w.gaps).toEqual([]);

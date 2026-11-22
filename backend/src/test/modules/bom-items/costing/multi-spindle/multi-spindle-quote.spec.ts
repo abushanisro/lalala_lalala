@@ -30,7 +30,7 @@ const barFor = (system: 'US' | 'metric'): SelectedBar => {
 const quote = (over: Partial<Parameters<typeof quoteMultiSpindle>[0]> = {}) => quoteMultiSpindle({
   ref: stockReferenceFromMemory(), spec: loadMultiSpindleCalculatorSpec(), calculators: multiSpindleCalculatorsByName(),
   machines: multiSpindleMachinesFromMemory(), rules: splitRulesFromMemory(), bar: barFor('US'), part, material: steel,
-  engine: { lines: engineLines(), holes: [], threads: [], turned }, chosen: null, batchSize: 1000, costContext: ZERO_CONTEXT, usdToLocal: 1, ...over,
+  engine: { lines: engineLines(), liveMilling: [], holes: [], threads: [], turned }, chosen: null, batchSize: 1000, costContext: ZERO_CONTEXT, usdToLocal: 1, ...over,
 });
 
 describe('quoteMultiSpindle', () => {
@@ -80,7 +80,7 @@ describe('quoteMultiSpindle', () => {
   });
 
   it('never fails: an operation the data cannot time is a named gap line, and the route keeps the rest', () => {
-    const q = quote({ engine: { lines: engineLines('Not priced — missing real input: tblVirtualPartoffInsertCutData row.'), holes: [], threads: [], turned } });
+    const q = quote({ engine: { lines: engineLines('Not priced — missing real input: tblVirtualPartoffInsertCutData row.'), liveMilling: [], holes: [], threads: [], turned } });
     expect(q.complete).toBe(false);
     const gapLine = q.route!.lines.find((l) => l.process === 'Parting')!;
     expect(gapLine).toMatchObject({ totalCost: 0, processGroup: 'Multi-Spindle Machining', physicsGap: { reason: expect.stringContaining('tblVirtualPartoffInsertCutData') } });

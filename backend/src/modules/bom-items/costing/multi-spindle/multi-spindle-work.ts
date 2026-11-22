@@ -5,7 +5,8 @@
 // divided by stations and without its index line, which the station plan and the cycle calculator replace. Holes are timed per diameter
 // group with the same drilling calculator (computeDrillCycle), and threads per size with the same tapping calculator (computeTapCycle):
 // those a live tool makes (cross and off-axis holes and threads, live-tooling.ts, feature-holes.ts) on a live-tool slide, the others on an
-// end slide.
+// end slide. The keyways and slots the engine mills (lathe-milling.ts) are milled on a live-tool slide too, each of its milling lines one
+// operation of the cycle: a machine with no live-tool slide cannot take the part (multi-spindle-stations.ts).
 //
 // Rough turning and the end-slide drilling carry the ratio their tblMultiSpindleOpSplittingThresholds row is read against: ring removed
 // volume to total removed volume (Ring, Rough Turning), and hole length to part length (SimpleHole, Drilling). The ring removed volume is
@@ -54,6 +55,8 @@ export interface ThreadGroupWork {
 
 export interface MultiSpindleWorkInput {
   lines: readonly ProcessLineCost[];
+  /** The names of the engine's lines a live tool mills (the operations on the part's keyways and slots, lathe-milling.ts). */
+  liveMilling: readonly string[];
   holes: readonly HoleGroupWork[];
   threads: readonly ThreadGroupWork[];
   partLengthMm: number;
@@ -94,7 +97,7 @@ export function multiSpindleWork(input: MultiSpindleWorkInput): MultiSpindleWork
       if (line.process === 'Drilling' && input.holes.length === 0 && line.physicsGap) gaps.push({ process: line.process, reason: reasonOf(line.physicsGap) });
       continue;
     }
-    const slide = IN_CYCLE_SLIDE[line.process];
+    const slide = IN_CYCLE_SLIDE[line.process] ?? (input.liveMilling.includes(line.process) ? 'live' : undefined);
     if (!slide) {
       offMachine.push(line);
       continue;

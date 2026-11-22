@@ -120,11 +120,11 @@ export function quoteMultiSpindle(input: {
   part: MultiSpindlePart;
   material: MultiSpindleMaterial;
   /**
-   * The turning engine's lines on the bar (in the location's currency), the holes timed by diameter group, the threads by size, and the
-   * cylinders it turns down from the bar (each one's diameter and length).
+   * The turning engine's lines on the bar (in the location's currency), which of them a live tool mills (by name), the holes timed by
+   * diameter group, the threads by size, and the cylinders it turns down from the bar (each one's diameter and length).
    */
   engine: {
-    lines: readonly ProcessLineCost[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[];
+    lines: readonly ProcessLineCost[]; liveMilling: readonly string[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[];
     turned: readonly { diameterMm: number; lengthMm: number }[];
   };
   /** A route set by hand (Cost Guide) or priced on its own (the route comparison). */
@@ -148,7 +148,8 @@ export function quoteMultiSpindle(input: {
   };
 
   const work = multiSpindleWork({
-    lines: input.engine.lines, holes: input.engine.holes, threads: input.engine.threads, partLengthMm: part.lengthMm, partVolumeMm3: part.volumeMm3,
+    lines: input.engine.lines, liveMilling: input.engine.liveMilling, holes: input.engine.holes, threads: input.engine.threads,
+    partLengthMm: part.lengthMm, partVolumeMm3: part.volumeMm3,
     turned: input.engine.turned, barSectionAreaMm2: bar.sectionAreaMm2, stockLengthMm: part.lengthMm + bar.facingStockMm,
   });
   const gapLines = work.gaps.map((g) => gap(g.process, MULTI_SPINDLE_PROCESS_GROUP, MULTI_SPINDLE_MACHINE_CLASS, g.reason));
