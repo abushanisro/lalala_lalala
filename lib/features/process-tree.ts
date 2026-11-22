@@ -1,5 +1,6 @@
 import { type CostSummaryDto, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { type SecondaryProcessLine } from '@/lib/api/hooks/useSecondaryProcesses';
+import { MATERIAL_STOCK_STEP, allowanceLine, materialStockFeatures, pieceLine, yieldLine } from '@/lib/costing/stock-machining-view';
 import { AS_SUPPLIED_STEP, asSuppliedFaceIdsOf, asSuppliedOccurrences } from '@/lib/costing/two-model-view';
 import { fmt, fmtInt, formatEstCycleTime } from '@/lib/features/display-format';
 import { gdtCalloutNodes } from '@/lib/features/gdt-callout-nodes';
@@ -7,7 +8,7 @@ import { groupFeaturesByType } from '@/lib/features/machining-feature-tree';
 import {
   familyToProcessGroupLabel,
 } from '@/lib/features/process-group';
-import { firstStepHoldsUnclaimedFeatures, isMachiningTreeFamily, showsCatalogOperations, showsStepTextRows, wholePartLabel } from '@/lib/features/process-tree-family';
+import { firstStepHoldsUnclaimedFeatures, isMachiningTreeFamily, isStockStep, showsCatalogOperations, showsStepTextRows, wholePartLabel } from '@/lib/features/process-tree-family';
 import { sheetMetalOperationNodes, type OperationTreeNode } from '@/lib/features/sheet-metal-operation-nodes';
 import type { FeatureGraph, FeatureGraphSummary, FeatureNodeV2 } from '@/lib/types/manufacturing';
 
@@ -308,6 +309,10 @@ export function buildProcessTree(
     return sheetMetalOperationNodes(idPrefix, line.catalogOperations).map(withMachine);
   };
 
+  // The part's first step, which holds the features no step claims: the first after the stock's own (a Stock Machining part's band saw
+  // cuts the stock to pieces and makes none of them).
+  const firstStepIdx = recs.findIndex((r, i) => !isStockStep(lineForRec(r, i)));
+
   const operations: ProcessTreeNode[] = recs.map((rec, opIdx) => {
     // Moulded-part geometry is PART-level: it belongs to the part's first
     // resolved operation, whatever the engineer named or however many steps
@@ -398,7 +403,7 @@ export function buildProcessTree(
             ...(feats.length > 0 ? { children: typeGroupNodes(`machining_type_${opIdx}_${i}`, feats, machine) } : {}),
           });
         });
-      } else if (opIdx === 0 && firstStepHoldsUnclaimedFeatures(family)) {
+      } else if (opIdx === firstStepIdx && firstStepHoldsUnclaimedFeatures(family)) {
         const unclaimed = v2All.filter((f) => !claimedIds.has(f.id));
         featureNodes.push(...typeGroupNodes(`machining_type_${opIdx}`, unclaimed, machine));
       }
@@ -638,6 +643,40 @@ export function buildProcessTree(
         v2Occurrences: [{ featureId: o.featureId, occurrenceIndex: o.occurrenceIndex }],
         attrs: [{ name: 'Feature', value: o.featureType }, { name: 'Faces', value: String(o.faceIds.length) }, { name: 'Machined', value: 'No: as supplied' }],
       })),
+    });
+  }
+
+  // Stock Machining: the catalog's "Material Stock" step, first, with the faces left as the stock supplies them (the mill or lathe does not
+  // finish them). It has no cost line: the stock is the part's material. The Band Saw's own line follows, its StockTrim on the end faces.
+  const stock = cost?.stockMachining?.stock;
+  if (cost?.stockMachining && stock) {
+    const supplied = materialStockFeatures(cost.stockMachining);
+    operations.unshift({
+      id: 'op_material_stock',
+      kind: 'operation',
+      label: MATERIAL_STOCK_STEP,
+      processName: MATERIAL_STOCK_STEP,
+      factory,
+      machine: stock.sizeLabel,
+      attrs: [
+        { name: 'Stock', value: stock.sizeLabel }, { name: 'Allowance', value: allowanceLine(stock) },
+        { name: 'Piece', value: pieceLine(stock) }, { name: 'Yield', value: yieldLine(stock) },
+        { name: 'Cost', value: "In the part's material cost" },
+      ],
+      children: supplied.length > 0
+        ? supplied.map((f) => ({
+          id: `material_stock_${f.key}`,
+          kind: 'feature' as const,
+          label: f.label,
+          factory,
+          machine: stock.sizeLabel,
+          faceOccurrences: [f.faceIds],
+          attrs: [{ name: 'Faces', value: String(f.faceIds.length) }, { name: 'Machined', value: 'No: as supplied' }],
+        }))
+        : [{
+          id: 'material_stock_none', kind: 'feature' as const, label: 'No as-supplied faces', factory, machine: stock.sizeLabel,
+          attrs: [{ name: 'Why', value: 'Every side of the part carries stock allowance, so the machine finishes every face.' }],
+        }],
     });
   }
 

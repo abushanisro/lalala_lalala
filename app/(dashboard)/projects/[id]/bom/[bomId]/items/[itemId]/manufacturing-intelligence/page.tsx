@@ -25,6 +25,7 @@ import { SandCastingSection } from '@/components/costing/SandCastingSection';
 import { SandMetalBalance } from '@/components/costing/SandMetalBalance';
 import { SandMouldingDetail } from '@/components/costing/SandMouldingDetail';
 import { SandSnapshotsPanel } from '@/components/costing/SandSnapshotsPanel';
+import { StockMachiningSection } from '@/components/costing/StockMachiningSection';
 import { TwoModelSection } from '@/components/costing/TwoModelSection';
 import { GcdToleranceTab } from '@/components/features/manufacturing-intelligence/GcdToleranceTab';
 import { MachineChoicePanel } from '@/components/features/manufacturing-intelligence/MachineChoicePanel';
@@ -168,6 +169,7 @@ import { useMHRPickerRows, useMHRRecord } from '@/lib/api/hooks/useMHR';
 import { routeMachineDrift } from '@/lib/costing/applied-route';
 import { isMultiSpindleItem } from '@/lib/costing/multi-spindle-view';
 import { isRollFormingItem } from '@/lib/costing/roll-forming-view';
+import { isStockMachiningItem } from '@/lib/costing/stock-machining-view';
 import { isTwoModelPart } from '@/lib/costing/two-model-view';
 import { hasDfmRiskFactor } from '@/lib/dfm/hasRiskFactor';
 import { splitNote } from '@/lib/text/concise-note';
@@ -4605,6 +4607,18 @@ function CostGuidePanel({
                   currencySymbol={cgpCostSummary.currencySymbol ?? '₹'}
                   stockFormOverride={(item.scenarioOverrides?.stockForm as string | undefined) ?? null}
                   onStockFormChange={(v) => { patchScenarioOverrides.mutate({ id: item.id, patch: { stockForm: v } }); }}
+                />
+              </Section>
+            )}
+
+            {isStockMachiningItem(item) && (
+              <Section title="Stock Machining">
+                <StockMachiningSection
+                  stockMachining={cgpCostSummary?.stockMachining}
+                  currencySymbol={cgpCostSummary?.currencySymbol ?? '$'}
+                  overrides={item.scenarioOverrides}
+                  onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
+                  onSelectHighlight={onSelectHighlight}
                 />
               </Section>
             )}
