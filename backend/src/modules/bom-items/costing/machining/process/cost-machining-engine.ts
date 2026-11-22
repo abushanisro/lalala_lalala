@@ -128,7 +128,20 @@ export interface MachiningCostInput {
     billetVolMm3: number;  // pre-computed optimized blank volume
     utilizationPct: number | null;
     barDiameterMm?: number; // real stock_profiles round-bar diameter
+    /**
+     * The stock bought per part (mm³), when it is more than the piece the machine starts from: the piece's share of a whole bar or plate,
+     * with the bar's end, the cuts and the nest's gaps (costing/stock). The material is priced on it; what is machined away, and the bar
+     * a lathe turns down from, stay the piece's. Absent: the piece is what is bought.
+     */
+    purchasedVolMm3?: number;
+    /** What chose the stock, for a calculation's source text; absent = the blank optimizer (stock_profiles). */
+    sizeSource?: string;
   };
+  /**
+   * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = a band saw did, so the turning
+   * engine prices no Parting; 'parting' = the lathe parts it off the bar. Absent: the engine's own rule (a lathe always parts off).
+   */
+  stockCutOff?: 'saw' | 'parting';
   // Per-side machining stock allowance from the reference rule
   // (costing/machining/stock-allowance.ts, via BlankOptimizerService
   // .stockAllowanceFor). Used only for the bounding-box billet when no
@@ -1490,11 +1503,13 @@ export function computeMillingCostSummary(
       : 0;
   const billetVolMm3 = input.blankResult?.billetVolMm3 ?? rawBilletVol;
   const billetWeightKg = r3((billetVolMm3 / 1e9) * materialDensityKgM3);
+  // The stock bought per part: the piece itself, or its share of the whole bar or plate when the stock model states one.
+  const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : billetWeightKg;
   // Stock weight x cost/kg. No markup: the reference has none, and its only
   // scrap adjustment (per-material Scrap Cost Percent) is a resale CREDIT,
   // applied only when enableScrapMaterialCredit is true — false in
   // memory/Machining, Stock Maching and Multi-Spindle Maching.
-  const materialCost = r2(billetWeightKg * materialCostPerKg);
+  const materialCost = r2(stockWeightKg * materialCostPerKg);
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
   if (billetVolMm3 === 0) warnings.push('Bounding box is zero — billet cost may be inaccurate');
@@ -1754,13 +1769,13 @@ export function computeMillingCostSummary(
   }
 
   const sustainability = computeSustainability(
-    materialGrade, materialCostPerKg, finishedWeightKg, billetWeightKg, batchSize, processLines,
+    materialGrade, materialCostPerKg, finishedWeightKg, stockWeightKg, batchSize, processLines,
   );
 
   return {
     materialCost,
     materialGrade: materialGrade ?? 'Unknown',
-    grossWeightKg: billetWeightKg,
+    grossWeightKg: stockWeightKg,
     materialCostPerKg,
     materialSource,
     processLines,
@@ -1833,8 +1848,10 @@ export function computeTurningCostSummary(
   const fallbackBarVolMm3 = Math.PI * (fallbackDiamMm / 2) ** 2 * fallbackBarLenMm;
   const barVolMm3 = input.blankResult?.billetVolMm3 ?? fallbackBarVolMm3;
   const barWeightKg = r3((barVolMm3 / 1e9) * materialDensityKgM3);
+  // The stock bought per part: the piece itself, or its share of the whole bar when the stock model states one.
+  const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : barWeightKg;
   // Stock weight x cost/kg — no markup (see the milling billet above).
-  const materialCost = r2(barWeightKg * materialCostPerKg);
+  const materialCost = r2(stockWeightKg * materialCostPerKg);
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
   if (volume > 0 && barVolMm3 > 0 && volume > barVolMm3) {
@@ -1877,9 +1894,15 @@ export function computeTurningCostSummary(
   // A non-round blank (billet, rectangular bar) has no bar diameter to turn
   // from: turning and parting report that gap rather than inventing one.
   const barDiameterMm = input.blankResult?.barDiameterMm ?? 0;
-  const barDiameterSource = `Blank optimizer: ${input.blankResult?.sizeLabel ?? 'none'} (stock_profiles)`;
+  // The stock model names what chose the stock (sizeSource); with none it is the blank optimizer's stock_profiles row.
+  const stockSource = input.blankResult?.sizeSource;
+  const barDiameterSource = stockSource
+    ? `${stockSource}: ${input.blankResult?.sizeLabel ?? 'none'}`
+    : `Blank optimizer: ${input.blankResult?.sizeLabel ?? 'none'} (stock_profiles)`;
   const barMissing = barDiameterMm > 0 ? null
-    : `round-bar stock for this part (blank optimizer chose ${input.blankResult?.sizeLabel ?? 'no blank'}, not a round bar)`;
+    : stockSource
+      ? `bar stock for this part (the stock chosen is ${input.blankResult?.sizeLabel ?? 'none'}, which a lathe does not turn from)`
+      : `round-bar stock for this part (blank optimizer chose ${input.blankResult?.sizeLabel ?? 'no blank'}, not a round bar)`;
   const radialStockMm = Math.max(0, (barDiameterMm - partDiameterMm) / 2);
 
   let roughTurningMin = 0;
@@ -2062,27 +2085,30 @@ export function computeTurningCostSummary(
   // bar radius. Insert, cutting speed and feed come from the real
   // tblVirtualPartoffInsertCutData row (resolvePartoffParams: this material,
   // narrowest insert whose DepthMaxMm reaches the cut). No real insert → gap.
-  const partingMissing: string[] = [];
-  let partingRun: CalcRun = EMPTY_RUN;
-  let partingMin = 0;
-  const partoff = barMissing ? null : partingLookupSeeds({ matClass, partoffTable: input.partoffTable }, { 'Bar Diameter': barDiameterMm });
-  if (barMissing) {
-    partingMissing.push(barMissing);
-  } else if (partoff && partoff.missing.length > 0) {
-    partingMissing.push(...partoff.missing);
-  } else if (partoff) {
-    partingRun = runMachiningCalculator(input.machiningCalculators, 'Parting', {
-      'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-      ...partoff.seeds,
-    });
-    partingMin = (partingRun.sec ?? 0) / 60;
+  // A piece a band saw cut off its stock (stockCutOff 'saw') is not parted: the saw's own line prices that cut.
+  if (input.stockCutOff !== 'saw') {
+    const partingMissing: string[] = [];
+    let partingRun: CalcRun = EMPTY_RUN;
+    let partingMin = 0;
+    const partoff = barMissing ? null : partingLookupSeeds({ matClass, partoffTable: input.partoffTable }, { 'Bar Diameter': barDiameterMm });
+    if (barMissing) {
+      partingMissing.push(barMissing);
+    } else if (partoff && partoff.missing.length > 0) {
+      partingMissing.push(...partoff.missing);
+    } else if (partoff) {
+      partingRun = runMachiningCalculator(input.machiningCalculators, 'Parting', {
+        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
+        ...partoff.seeds,
+      });
+      partingMin = (partingRun.sec ?? 0) / 60;
+    }
+    const partingGap = [...partingMissing, ...partingRun.missing];
+    if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
+    processLines.push(withRun(makeLine(
+      resolveOperationName(machineClass, 'Parting', input.realOperationCategories, warnings),
+      0, r2((partingMin / 60) * mhrRate.rate), partingMin, mhrRate, input.processIdentityByMachineClass,
+    ), partingRun, [], partingMissing));
   }
-  const partingGap = [...partingMissing, ...partingRun.missing];
-  if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
-  processLines.push(withRun(makeLine(
-    resolveOperationName(machineClass, 'Parting', input.realOperationCategories, warnings),
-    0, r2((partingMin / 60) * mhrRate.rate), partingMin, mhrRate, input.processIdentityByMachineClass,
-  ), partingRun, [], partingMissing));
 
   // ── Gear/spline teeth (AxiGroove → Hobbing) ────────────────────────────
   // One Hobbing calculator run per recognised tooth form. Module = tip
@@ -2257,13 +2283,13 @@ export function computeTurningCostSummary(
   );
 
   const sustainability = computeSustainability(
-    materialGrade, materialCostPerKg, finishedWeightKg, barWeightKg, batchSize, processLines,
+    materialGrade, materialCostPerKg, finishedWeightKg, stockWeightKg, batchSize, processLines,
   );
 
   return {
     materialCost,
     materialGrade: materialGrade ?? 'Unknown',
-    grossWeightKg: barWeightKg,
+    grossWeightKg: stockWeightKg,
     materialCostPerKg,
     materialSource,
     processLines,

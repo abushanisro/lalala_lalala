@@ -3,6 +3,7 @@
 // client (this project's standing rule against mocked-database spec files).
 // BlankOptimizerService (blank-optimizer.service.ts) is the thin DB-fetching
 // wrapper around these functions; it owns no geometry of its own.
+import type { StockSelection } from '../../stock/stock-selection';
 
 
 export interface BoundingBox {
@@ -27,6 +28,14 @@ export interface BlankResult {
    *  rule, costing/machining/stock-allowance.ts); null when the rule's
    *  variables are not staged, so no allowance was added. */
   stockAllowancePerSideMm?: number | null;
+  /**
+   * The stock model's choice (costing/stock), for a part whose Process is Stock Machining: billetVolMm3 is then the piece the machine
+   * starts from, purchasedVolMm3 the stock bought per part (the piece's share of a whole bar or plate), sizeSource what chose the stock,
+   * and stock the choice itself with every other form priced beside it.
+   */
+  purchasedVolMm3?: number;
+  sizeSource?: string;
+  stock?: StockSelection;
 }
 
 export interface StockProfile {

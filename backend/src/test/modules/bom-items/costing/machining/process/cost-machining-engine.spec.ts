@@ -2530,3 +2530,63 @@ describe('operator labour on machining lines', () => {
     }
   });
 });
+
+// A part cut from a whole bar or plate (costing/stock): the machine starts from the piece, the material is the piece's share of the stock
+// bought, and a band saw, not the lathe, may have cut the piece off.
+describe('a blank cut from stock: the piece is machined, the stock bought is the material', () => {
+  // A Ø30 x 100 mm piece of a bar that makes 50 pieces of its 6096 mm: 6096 / 50 = 121.92 mm of bar bought a part.
+  const pieceVol = Math.PI * 15 ** 2 * 100;
+  const boughtVol = Math.PI * 15 ** 2 * 121.92;
+  const bar = { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: pieceVol, utilizationPct: 50 };
+  const turned = (overrides: Partial<MachiningCostInput> = {}) => computeTurningCostSummary(
+    turnedInput({ maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000, blankResult: bar, turningParams: REAL_TURNING_PARAMS, ...overrides } as any),
+    mc('2_axis_lathe'),
+  );
+
+  it('prices the material on the stock bought per part when the blank states it; with none the piece is what is bought', () => {
+    const piece = turned();
+    const bought = turned({ blankResult: { ...bar, purchasedVolMm3: boughtVol } });
+    // 70,686 mm³ x 2700 kg/m³ = 0.191 kg; 86,180 mm³ = 0.233 kg; at 350 a kg.
+    expect(piece.grossWeightKg).toBe(0.191);
+    expect(piece.materialCost).toBe(66.85);
+    expect(bought.grossWeightKg).toBe(0.233);
+    expect(bought.materialCost).toBe(81.55);
+    // What is machined away, and every operation's time, are the piece's either way.
+    expect(bought.materialRemoval).toEqual(piece.materialRemoval);
+    expect(bought.processLines.map((l) => [l.process, l.cycleTimeMin])).toEqual(piece.processLines.map((l) => [l.process, l.cycleTimeMin]));
+    expect(bought.totalCost).toBeCloseTo(piece.totalCost + (81.55 - 66.85), 2);
+  });
+
+  it('a milled blank the same: the plate bought per part is the material, the blank is what is milled', () => {
+    const blank = { form: 'plate', sizeLabel: '1-1/4" plate', billetVolMm3: 200_000, utilizationPct: 40 };
+    const piece = computeMillingCostSummary(milledInput({ blankResult: blank }), mc('3_axis_mill'));
+    const bought = computeMillingCostSummary(milledInput({ blankResult: { ...blank, purchasedVolMm3: 250_000 } }), mc('3_axis_mill'));
+    // 200,000 mm³ = 0.54 kg; 250,000 mm³ = 0.675 kg; at 350 a kg.
+    expect([piece.grossWeightKg, piece.materialCost]).toEqual([0.54, 189]);
+    expect([bought.grossWeightKg, bought.materialCost]).toEqual([0.675, 236.25]);
+    expect(bought.materialRemoval!.billetWeightKg).toBe(0.54);
+    expect(bought.totalProcessCost).toBe(piece.totalProcessCost);
+  });
+
+  it('a piece a band saw cut off is not parted: no Parting line; parted off the bar, or with nothing said, the lathe parts it', () => {
+    const lathe = turned();
+    const parted = turned({ stockCutOff: 'parting' });
+    const sawn = turned({ stockCutOff: 'saw' });
+    const parting = lathe.processLines.find((l) => l.process === 'Parting')!;
+    expect(parting).toBeDefined();
+    expect(parted.processLines.map((l) => l.process)).toEqual(lathe.processLines.map((l) => l.process));
+    expect(sawn.processLines.map((l) => l.process)).toEqual(lathe.processLines.map((l) => l.process).filter((p) => p !== 'Parting'));
+    expect(sawn.totalProcessCost).toBeCloseTo(lathe.totalProcessCost - parting.totalCost, 2);
+    expect(sawn.warnings.some((w) => w.includes('Parting'))).toBe(false);
+  });
+
+  it('a calculation that reads the bar names what chose the stock', () => {
+    const named = turned({ blankResult: { ...bar, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
+    const sources = (r: typeof named) => JSON.stringify(r.processLines.find((l) => l.process === 'Rough Turning')!.calculationTrace);
+    expect(sources(named)).toContain('Stock Machining stock (tblPreferredSizes): Ø30 round bar');
+    expect(sources(turned())).toContain('Blank optimizer: Ø30 round bar (stock_profiles)');
+    // A stock a lathe cannot turn from (a plate) is named as the stock model's, not the blank optimizer's.
+    const plate = turned({ blankResult: { form: 'plate', sizeLabel: '1" plate', billetVolMm3: pieceVol, utilizationPct: 50, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
+    expect(plate.warnings.join(' ')).toContain('the stock chosen is 1" plate, which a lathe does not turn from');
+  });
+});
