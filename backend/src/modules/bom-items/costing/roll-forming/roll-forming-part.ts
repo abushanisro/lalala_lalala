@@ -3,6 +3,8 @@
  * roll_form.py), stored as feature_graph.summary.rollFormGeometry (auto-fill.service rollFormGeometry()). An analysis carrying another
  * version (or none) is measured again by Refresh analysis.
  */
+import { NOT_A_SHEET_CAUSES, NOT_A_SHEET_RATIO, sheetShare } from '../shared/physics/sheet-share';
+
 export const ROLL_FORM_EXTRACTION_VERSION = 'rf_v3';
 
 // A roll formed part as the engine takes it: rollFormGeometry's top-level keys camelCase, the objects inside as the cad-engine writes them,
@@ -112,15 +114,39 @@ const faceIds = (v: unknown): number[] => (Array.isArray(v) ? v.map(num).filter(
 export const ROLL_FORM_REFRESH = 'press Refresh analysis so the part is measured for roll forming';
 export const NOT_A_PROFILE = 'the part is not a roll formed profile';
 
+/** What the sheet-metal measurement found of the part as a whole, which says why a part measured as no profile is not one. */
+export interface RollFormSheetContext {
+  /** The part's volume (mm³). */
+  partVolumeMm3: number | null;
+  /** The flat pattern the sheet-metal measurement unfolded (mm²). */
+  flatPatternAreaMm2: number | null;
+  /** The bends the sheet-metal measurement found; null when it did not count them. */
+  bendCount: number | null;
+}
+
+/**
+ * Why a part the cad-engine measured as no profile is not one, the plainest cause first: not a sheet part at all (its volume is more than
+ * NOT_A_SHEET_RATIO times the sheet measured: a turned or machined part read as a thin sheet), a flat part (no bends: nothing to roll form), or
+ * bends that do not all run along one axis.
+ */
+export function notAProfileReason(sheetThicknessMm: number | null | undefined, sheet: RollFormSheetContext | null | undefined): string {
+  const share = sheet ? sheetShare(sheet.partVolumeMm3, sheet.flatPatternAreaMm2, sheetThicknessMm, 'flat') : null;
+  if (share && share.ratio > NOT_A_SHEET_RATIO) return `${NOT_A_PROFILE}: ${share.found}; ${NOT_A_SHEET_CAUSES}`;
+  if (sheet?.bendCount === 0) return `${NOT_A_PROFILE}: it is flat (no bends), so a roll forming line has nothing to form; a flat part is cut from a blank (Sheet Metal)`;
+  return `${NOT_A_PROFILE}: the cad-engine found no cross-section swept along one axis (its bends do not all run one way)`;
+}
+
 /**
  * The part, or what keeps it from being one, each named. A part analysed before the measurement existed (no rollFormGeometry) is asked to be
- * analysed again; null is the current engine's answer that the part is not a profile (no constant cross-section along a long axis); a value a
- * current measurement left out is one the cad-engine could not measure on this part. `sheetThicknessMm`: the part's sheet thickness, used when
- * the measurement does not give one.
+ * analysed again; null is the current engine's answer that the part is not a profile (no constant cross-section along a long axis), and
+ * `sheet` (what the sheet-metal measurement found) says why (notAProfileReason); a value a current measurement left out is one the cad-engine
+ * could not measure on this part. `sheetThicknessMm`: the part's sheet thickness, used when the measurement does not give one.
  */
-export function rollFormPart(g: RollFormGeometrySummary | null | undefined, sheetThicknessMm?: number | null): { part: RollFormPart | null; missing: string[] } {
+export function rollFormPart(
+  g: RollFormGeometrySummary | null | undefined, sheetThicknessMm?: number | null, sheet?: RollFormSheetContext | null,
+): { part: RollFormPart | null; missing: string[] } {
   if (g === undefined) return { part: null, missing: [`the roll forming measurements: ${ROLL_FORM_REFRESH}`] };
-  if (g === null) return { part: null, missing: [`${NOT_A_PROFILE}: the cad-engine found no cross-section swept along one axis (no bends running one way, or a flat part)`] };
+  if (g === null) return { part: null, missing: [notAProfileReason(sheetThicknessMm, sheet)] };
   const version = get(g, 'extraction_version') ?? get(g, 'version');
   if (version !== ROLL_FORM_EXTRACTION_VERSION) return { part: null, missing: [`the roll forming measurements: ${ROLL_FORM_REFRESH}`] };
   const stockFraction = nonNegative(get(g, 'stock_fraction'));

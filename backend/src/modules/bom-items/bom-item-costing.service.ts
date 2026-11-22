@@ -2890,12 +2890,19 @@ export class BomItemCostingService {
     if (family === 'sheet_metal' && isRollForming(item)) {
       const usdToLocal = locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code);
       const zeroCtx = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
+      const measuredBends = Number(summary.bendCount ?? item.bendCount ?? Number.NaN);
       const rollForming: RollFormingCostResult = this.rollFormingCostService
         ? await this.rollFormingCostService.price({
           client: this.databaseService.getClient(accessToken), accessToken, location, grade,
           // Absent (an analysis from before the measurement) and null (not a profile) are told apart.
           geometry: summary.rollFormGeometry as Record<string, unknown> | null | undefined,
           sheetThicknessMm: sheetThicknessMm > 0 ? sheetThicknessMm : null,
+          // Why a part measured as no profile is not one: a solid read as a thin sheet, a flat part, or bends running more than one way.
+          sheet: {
+            partVolumeMm3: Number(item.volume) > 0 ? Number(item.volume) : null,
+            flatPatternAreaMm2: measuredFlatAreaMm2 > 0 ? measuredFlatAreaMm2 : null,
+            bendCount: Number.isFinite(measuredBends) ? measuredBends : null,
+          },
           amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null,
           ...(forceDieCastingProcess ? { forceRoute: forceDieCastingProcess } : {}),
           overrides: item.scenarioOverrides, batchSize, usdToLocal, costContext: zeroCtx,
