@@ -1,3 +1,5 @@
+import { STOCK_MACHINING_PROCESS_GROUP } from '@/lib/costing/stock-machining-view'
+
 /**
  * The process tree's two ways of showing a step's features. Catalog families: the backend attaches each step's catalog operations (the
  * operation and the features it makes) for sheet metal, plastic molding and sand casting. Machining-tree families (machining, die casting): per-line
@@ -43,4 +45,12 @@ const MACHINED_FAMILIES: ReadonlySet<string> = new Set(['milled', 'turned', 'mil
  */
 export function firstStepHoldsUnclaimedFeatures(family: string): boolean {
   return MACHINED_FAMILIES.has(family)
+}
+
+/**
+ * Whether a cost line is one of the stock's own steps: a Stock Machining part's band saw cuts the stock to pieces before any machine makes a
+ * feature. Such a step is never "the part's first step" above.
+ */
+export function isStockStep(line: { processGroup?: string | null } | null | undefined): boolean {
+  return line?.processGroup === STOCK_MACHINING_PROCESS_GROUP
 }

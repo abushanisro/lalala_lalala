@@ -88,29 +88,33 @@ export const MACHINED_FAMILY_HINT = 'machined'
  */
 export function processGroupToFamilyHint(group: string | null | undefined): string | undefined {
   if (!group) return undefined;
-  const families = Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).filter(([f, g]) => g === group && !NO_CAD_EXTRACTOR.has(f)).map(([f]) => f);
+  const own = Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).filter(([f, g]) => g === group && !NO_CAD_EXTRACTOR.has(f)).map(([f]) => f);
+  const families = own.length > 0 ? own : COSTED_AS_FAMILIES[group] ?? [];
   if (families.length > 1 && families.every((f) => MACHINING_FAMILIES.has(f))) return MACHINED_FAMILY_HINT;
-  return families[0] ?? COSTED_AS_FAMILY[group];
+  return families[0];
 }
 
 /**
- * Process groups with no CAD family of their own, and the family their CAD analysis runs as (the first of the backend's COSTED_AS_FAMILIES,
- * part-family-process-group.ts): a hydroformed part is a sheet-metal part; a Casting part is analysed as a die casting and priced by every
- * casting process.
+ * Process groups with no CAD family of their own, and the families they are costed as (the backend's COSTED_AS_FAMILIES,
+ * part-family-process-group.ts), the one their CAD analysis runs as first: a hydroformed part is a sheet-metal part; a Casting part is
+ * analysed as a die casting and priced by every casting process.
  */
-const COSTED_AS_FAMILY: Readonly<Record<string, string>> = {
-  'Sheet Metal - Hydroforming': 'sheet_metal',
+const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
+  'Sheet Metal - Hydroforming': ['sheet_metal'],
   // Roll forming: a sheet-metal profile measured as one (cad-engine roll_form), formed from coil on a roll forming line (backend roll-forming).
-  'Sheet Metal Roll Forming': 'sheet_metal',
-  Casting: 'die_cast',
+  'Sheet Metal Roll Forming': ['sheet_metal'],
+  Casting: ['die_cast', 'sand_cast', 'investment_cast'],
   // Insert molding: a molded plastic part on the insert presses (backend plastic-molding/insert).
-  'Assembly Molding': 'plastic_molded',
+  'Assembly Molding': ['plastic_molded'],
   // Multi-shot molding: a molded plastic part, each shot on a multi-shot press (backend plastic-molding/multi-shot).
-  'Assembly Plastic Molding': 'plastic_molded',
+  'Assembly Plastic Molding': ['plastic_molded'],
   // Multi-spindle machining: a turned part made from bar on a CNC multi-spindle or twin-spindle turning center (backend multi-spindle).
-  'Multi-Spindle Machining': 'turned',
+  'Multi-Spindle Machining': ['turned'],
   // Rapid prototyping: analysed for its build as an additive part, priced in its own domain (backend additive/additive-domain.ts).
-  'Rapid Prototyping': 'additive',
+  'Rapid Prototyping': ['additive'],
+  // Stock machining: a part machined from bar or plate (its stock picked, sawn, then the Machining route; backend stock-machining). A
+  // machined part of any of the three machining families: the geometry picks which, so its analysis hint is "machined".
+  'Stock Machining': ['milled', 'turned', 'mill_turn'],
 };
 
 /**
@@ -118,7 +122,7 @@ const COSTED_AS_FAMILY: Readonly<Record<string, string>> = {
  * is not costed, so the Process fields say so on the option instead of letting it be chosen blind.
  */
 export function isCostedProcessGroup(group: string | null | undefined): boolean {
-  return !!group && (Object.values(FAMILY_HINT_TO_PROCESS_GROUP).includes(group) || group in COSTED_AS_FAMILY);
+  return !!group && (Object.values(FAMILY_HINT_TO_PROCESS_GROUP).includes(group) || group in COSTED_AS_FAMILIES);
 }
 
 /** A process group as an option of a Process field: marked when it has no cost model. */
