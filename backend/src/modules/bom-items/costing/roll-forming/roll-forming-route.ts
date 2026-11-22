@@ -13,7 +13,7 @@ import { punchPlan, rollFormingCatalogOperations, stepRow, type PunchPlan } from
 import {
   flattening, LINE_ORDER, limitingCap, machineCaps, machineSpeedCap, partLengthToleranceRow, slowestPress, type Line, type LineRole, type SpeedCap,
 } from './roll-forming-line';
-import { stationPlan, type LevelPlan, type StationPlan } from './roll-forming-stations';
+import { stationPlan, type BendGroup, type LevelPlan, type StationPlan } from './roll-forming-stations';
 import { cutOffDiePlan, pressDie, punchDiePlan, rollTooling, type RollFormingTool } from './roll-forming-tooling';
 import { line } from '../casting/casting-finishing';
 import { machineChoice, type ChoiceEval } from '../casting/machine-choice';
@@ -133,17 +133,21 @@ export interface RollFormingRoute {
   lines: ProcessLineCost[];
   material: {
     costUsd: number; stripKg: number; partKg: number; scrapKg: number; feedLengthMm: number; slugMm: number;
+    /** The strip the coil is slit to (mm): the measured width, wider for bends modelled sharp (sharpBends). */
+    stripWidthMm: number;
     run: ReferenceCalcRun | null; stripRun: ReferenceCalcRun | null;
   };
   stations: {
     forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean;
     levels: StationLevel[]; levelSource: StationPlan['levelSource']; flangeSource: StationPlan['flangeSource'];
+    /** The groups of bends close together, each a rib (formed as one unit, carrying its own span) or formed as flanges. */
+    groups: BendGroup[]; directionsMeasured: boolean;
     /** The stand spacing the passes were found on (the chosen mill's horizontal center length); null with no mill. */
     standSpacingMm: number | null;
     run: ReferenceCalcRun | null;
   };
   /** Bends modelled sharp (no radius), priced at the material's minimum bend radius; null when none is. */
-  sharpBends: { count: number; pricedRadiusMm: number | null; basis: string } | null;
+  sharpBends: { count: number; pricedRadiusMm: number | null; stripAddedMm: number; basis: string } | null;
   mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean } | null;
   requiredShaftMm: number | null;
   lineSpeed: { mmPerS: number; limiting: string | null; caps: SpeedCap[]; multiplier: number; speedsTried: number; run: ReferenceCalcRun } | null;
@@ -163,6 +167,7 @@ export interface RollFormingRoute {
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+const r4 = (n: number) => Math.round(n * 10000) / 10000;
 const isGap = (l: ProcessLineCost) => l.physicsGap != null;
 const flag = (m: SandMachine, key: string) => m.specs[key] === true || String(m.specs[key]).toLowerCase() === 'true';
 
@@ -267,12 +272,25 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   if (material.densityKgM3 == null || !(material.densityKgM3 > 0)) return none(`${material.name}: its density`);
   if (material.costPerKgUsd == null || !(material.costPerKgUsd > 0)) return none(`${material.name}: its price per kg`);
   const t = part.thicknessMm;
-  const W = part.stripWidthMm;
+  // A bend modelled sharp is priced at the material's minimum bend radius r, and the strip the coil is slit to grows by its bend allowance
+  // θ(r + K t) (K 0.33 below r = 2t, else 0.41: the extractor's rule) less the θ 0.33 t the measurement bends a sharp corner by.
+  const minRadius = minBendRadius(ref, t, material.yieldMpa);
+  const sharp = part.bends.filter((b) => b.sharp);
+  const sharpAddMm = minRadius.mm == null ? 0 : sharp.reduce((sum, b) => {
+    const theta = (b.angleDeg * Math.PI) / 180;
+    const k = minRadius.mm! < 2 * t ? 0.33 : 0.41;
+    return sum + theta * (minRadius.mm! + k * t) - theta * 0.33 * t;
+  }, 0);
+  const W = part.stripWidthMm + sharpAddMm;
+  const priced: RollFormPart = sharpAddMm > 0 ? { ...part, stripWidthMm: W } : part;
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
+  const measuredStrip = part.stripWidthSource === 'neutral fibre'
+    ? `the section's flats and bends at the neutral fibre (${r2(part.stripWidthMidMm)} mm at the mid-line)`
+    : "the section's mid-line stretch-out, its area / t";
   const cad: Record<string, CalcSeed | undefined> = {
-    strip_width_mm: seed(W, part.stripWidthSource === 'neutral fibre'
-      ? `the strip the coil is slit to: the section's flats and bends at the neutral fibre (mm; ${r2(part.stripWidthMidMm)} mm at the mid-line)`
-      : "the strip the coil is slit to: the section's mid-line stretch-out, its area / t (mm)"),
+    strip_width_mm: seed(W, sharpAddMm > 0
+      ? `the strip the coil is slit to (mm): ${r2(part.stripWidthMm)} mm measured (${measuredStrip}) + ${r2(sharpAddMm)} mm for ${sharp.length} sharp bend(s) at the ${r2(minRadius.mm!)} mm radius they are priced at`
+      : `the strip the coil is slit to: ${measuredStrip} (mm)`),
     length_mm: seed(part.lengthMm, 'the part length along the profile (mm)'),
     thickness_mm: seed(t, 'the sheet thickness (mm)'),
   };
@@ -301,14 +319,14 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   });
 
   // ── What the part needs of the line, whatever the cut-off ─────────────────────────────────────────────────────────────────────────
-  const sharp = part.bends.filter((b) => b.sharp);
-  const minRadius = minBendRadius(ref, t, material.yieldMpa);
   const sharpBends = sharp.length ? {
-    count: sharp.length, pricedRadiusMm: minRadius.mm,
-    basis: minRadius.mm != null ? `modelled sharp: priced at the material's minimum bend radius ${minRadius.k} x t = ${r2(minRadius.mm)} mm (${minRadius.basis})`
+    count: sharp.length, pricedRadiusMm: minRadius.mm, stripAddedMm: sharpAddMm,
+    basis: minRadius.mm != null
+      ? `modelled sharp: priced at the material's minimum bend radius ${minRadius.k} x t = ${r2(minRadius.mm)} mm (${minRadius.basis}); the strip is ${r2(sharpAddMm)} mm wider for it `
+        + `(each bend's allowance θ(r + K t) less the θ 0.33 t the measurement bends a sharp corner by): ${r2(W)} mm, measured ${r2(part.stripWidthMm)} mm`
       : `modelled sharp: priced with no radius, as modelled (${minRadius.basis})`,
   } : null;
-  const plan = stationPlan(ref, part, minRadius.mm);
+  const plan = stationPlan(ref, priced, minRadius.mm);
   // The passes of each level on a mill of stand spacing S (its horizontal center length), and the stations they make: per spacing, once.
   const passesBySpacing = new Map<string, { levels: StationLevel[]; forming: number } | { reasons: string[] }>();
   const levelPasses = (mill: SandMachine | null): { levels: StationLevel[]; forming: number } | { reasons: string[] } => {
@@ -365,6 +383,21 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     const leadIn = run.run.outputs['Lead-in Passes'] ?? 0;
     return { ...p, run: run.run, rule, leadIn, finishing: Math.round(run.sec - p.forming - leadIn), total: scenario.stations ?? rule };
   };
+  /** The rolls a mill needs (its stations on its own stand spacing), spread over the job's parts: weighed in the line's choice when the job has a volume. */
+  const rollsByStations = new Map<number, number>();
+  const rollsPerPart = (mill: SandMachine): { usd: number; stations: number } | null => {
+    const parts = scenario.amortizationParts;
+    const st = stationsOn(mill);
+    if (!(parts != null && parts > 0) || 'reasons' in st) return null;
+    const hit = rollsByStations.get(st.total);
+    if (hit != null) return { usd: hit, stations: st.total };
+    const r = rollTooling({
+      kit, ref, stripWidthMm: W, stations: st.total, panel: plan.panel, multiplierOverride: scenario.toolingMultiplier, materialType: material.materialType, amortizationParts: parts,
+    });
+    const usd = r.tool.investmentUsd != null ? r.tool.investmentUsd / parts : 0;
+    rollsByStations.set(st.total, usd);
+    return { usd, stations: st.total };
+  };
   const plain = stationsOn(null);
   if ('reasons' in plain) return none(...plain.reasons);
   const { infeasible, warnings: feasibilityWarnings } = rollFormingFeasibility(ref, part, material);
@@ -391,6 +424,15 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   if (!(shear != null && shear > 0)) sharedWarnings.push(`The presses' force is not checked: ${material.name} has no shear strength on file.`);
   if (plan.levelSource === 'assumed' && plan.bendCount > 0) sharedWarnings.push('The bends\' levels out from the web were not measured: every bend is taken as one level (the fewest forming passes).');
   if (plan.flangeSource === 'not measured' && plan.bendCount > 0) sharedWarnings.push('The flats across the strip were not measured: each level\'s passes are its angle over rollFormingLiftAngle, without the flange-length limit.');
+  const ribs = plan.groups.filter((g) => g.rib);
+  if (ribs.length) {
+    sharedWarnings.push(`${ribs.length} rib(s) (bends within ${r2(plan.groupGapMm ?? 0)} mm whose turns cancel: distanceBetweenGroupBendsMax x distanceBetweenGroupBendsMultiplier) `
+      + 'formed each as one unit at its inner bend\'s level, carrying only its own span, not the panel beyond it.');
+  }
+  if (plan.groups.length && !plan.directionsMeasured) {
+    sharedWarnings.push(`Bend directions were not measured: ${plan.groups.length} group(s) of bends within ${r2(plan.groupGapMm ?? 0)} mm are formed as flanges `
+      + '(a rib, whose turns cancel, would carry only its own span: press Refresh analysis once the cad-engine measures directions).');
+  }
   if (plan.levels.some((l) => l.flangeCarriedMm != null)) {
     sharedWarnings.push('A long flange takes more passes: a pass bends it no more than the stand spacing allows (rigid-plastic deformation length, Bhattacharyya et al. 1984), '
       + 'which is conservative (later studies find the deformation length shorter).');
@@ -418,12 +460,13 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     const partKg = Math.max(0, (W * part.lengthMm - punchedArea) * t * material.densityKgM3!) / 1e9;
     const stationsView = (s: Stations, spacing: number | null) => ({
       forming: s.forming, leadIn: s.leadIn, finishing: s.finishing, rule: s.rule, total: s.total, override: scenario.stations, panel: plan.panel,
-      levels: s.levels, levelSource: plan.levelSource, flangeSource: plan.flangeSource, standSpacingMm: spacing, run: s.run,
+      levels: s.levels, levelSource: plan.levelSource, flangeSource: plan.flangeSource, groups: plan.groups, directionsMeasured: plan.directionsMeasured,
+      standSpacingMm: spacing, run: s.run,
     });
     const base = {
       key: def.key, label: def.label,
       material: {
-        costUsd: materialUsd, stripKg, partKg, scrapKg: Math.max(0, stripKg - partKg), feedLengthMm: feed, slugMm: slug,
+        costUsd: materialUsd, stripKg, partKg, scrapKg: Math.max(0, stripKg - partKg), feedLengthMm: feed, slugMm: slug, stripWidthMm: W,
         run: 'run' in materialRun ? materialRun.run : null, stripRun: 'run' in stripRun ? stripRun.run : null,
       },
       sharpBends,
@@ -464,9 +507,12 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
       return kn != null && cap != null && kn > cap + 1e-9 ? `${r2(kn)} kN of cutting over its ${cap} kN` : null;
     };
     // The section the welder's working envelope must take: a tube's outside (an oval's two sizes), else the section's width and height.
-    const weldSection = part.tube
-      ? { a: part.tube.majorMm ?? part.tube.outerDiameterMm, b: part.tube.minorMm ?? part.tube.outerDiameterMm, what: `the ${r2(part.tube.outerDiameterMm)} mm tube` }
-      : { a: part.section.widthMm, b: part.section.heightMm, what: `the ${r2(part.section.widthMm)} x ${r2(part.section.heightMm)} mm section` };
+    const tube = part.tube;
+    const weldSection = tube?.outerDiameterMm != null
+      ? { a: tube.outerDiameterMm, b: tube.outerDiameterMm, what: `the ${r2(tube.outerDiameterMm)} mm tube` }
+      : tube?.outerWidthMm != null && tube.outerHeightMm != null
+        ? { a: tube.outerWidthMm, b: tube.outerHeightMm, what: `the ${r2(tube.outerWidthMm)} x ${r2(tube.outerHeightMm)} mm tube` }
+        : { a: part.section.widthMm, b: part.section.heightMm, what: `the ${r2(part.section.widthMm)} x ${r2(part.section.heightMm)} mm section` };
     const places: LinePlace[] = [
       {
         role: 'uncoiler', process: ROLL_FORMING_PROCESS.uncoiler, machines: input.machinesByClass[ROLL_FORMING_CLASS.uncoiler] ?? [],
@@ -616,7 +662,7 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
         const pool = fixed.has(p.role) ? [{ m: fixed.get(p.role)! }] : poolAt(p.role, v);
         let pick: { m: SandMachine; cost: number } | null = null;
         for (const c of pool) {
-          const cost = costOf(p.process, c.m, sec.sec);
+          const cost = costOf(p.process, c.m, sec.sec) + (p.role === 'mill' ? rollsPerPart(c.m)?.usd ?? 0 : 0);
           if (pick == null || cost < pick.cost - 1e-12 || (Math.abs(cost - pick.cost) <= 1e-12 && c.m.name.localeCompare(pick.m.name) < 0)) pick = { m: c.m, cost };
         }
         if (!pick) return null;
@@ -680,6 +726,11 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     const coilSeed = coil ? seed(coilS, `${RF_CALC.coilChange}: ${r2(coil.changeTimeS)} s every ${coil.partsPerCoil} parts`) : seed(0, 'no uncoiler on the line');
     const ruleText = 'The cheapest whole line: at every speed the line\'s limits allow, the cheapest capable machine of each place that runs at least that fast '
       + '(machine rate, crew and setup); the cheapest line quoted';
+    const parts = scenario.amortizationParts;
+    const millRule = parts != null && parts > 0
+      ? `${ruleText}. The mill is weighed with its rolls spread over the job's ${parts.toLocaleString('en-US')} parts (multiplier x strip x its stations on its own `
+        + 'stand spacing): a mill with a longer spacing needs fewer stations for a long flange and can win on tooling though its hour rate is higher'
+      : `${ruleText}. The rolls are not weighed: the job has no volume to spread them over`;
     const costed = new Map<LineRole, CostedStep>();
     for (const p of places) {
       const pick = chosen.get(p.role);
@@ -701,9 +752,14 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
         const reasons = c.reason ? [c.reason]
           : c.cap != null && c.cap < best!.v - 1e-6 ? [`lets the line run at most ${r2(c.cap)} mm/s; the cheapest line runs at ${r2(v)} mm/s`]
             : !pool.has(c.m) ? ['not a preferred machine (usePreferredMachines)'] : [];
-        return { name: c.m.name, reasons, cost: reasons.length === 0 && 'run' in sec ? costOf(p.process, c.m, sec.sec) : null };
+        if (reasons.length || !('run' in sec)) return { name: c.m.name, reasons, cost: null };
+        const lineUsd = costOf(p.process, c.m, sec.sec);
+        const rolls = p.role === 'mill' ? rollsPerPart(c.m) : null;
+        return rolls
+          ? { name: c.m.name, reasons, cost: lineUsd + rolls.usd, note: `line ${r4(lineUsd)} + rolls ${r4(rolls.usd)} USD a part (${rolls.stations} stations)` }
+          : { name: c.m.name, reasons, cost: lineUsd };
       });
-      costed.set(p.role, { ...step, line: { ...step.line, machineChoice: machineChoice({ rule: ruleText, criteria: p.criteria, evals, chosen: pick.machine.name }) } });
+      costed.set(p.role, { ...step, line: { ...step.line, machineChoice: machineChoice({ rule: p.role === 'mill' ? millRule : ruleText, criteria: p.criteria, evals, chosen: pick.machine.name }) } });
     }
 
     // ── The lines, in the line's order, each with its breakdown and memory's catalog rows ───────────────────────────────────────────

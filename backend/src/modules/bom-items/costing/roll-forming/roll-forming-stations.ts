@@ -5,8 +5,10 @@
 // and Collins 1984, J Mech Work Technol 9:181-191, rigid-plastic), which must fit within the mill's stand spacing S, so a pass forms at most
 // dθ_max = 3 t S² / (8 a³). The rigid-plastic length is conservative (later studies find the real deformation length shorter), so long flanges
 // may be given a pass or two more than a mill needs. Then a lead-in pass above leadInRollStationThicknessThreshold and the cross-section
-// tolerance's finishing passes. A profile of minNumBendsForPanelCrossSection bends or more is a panel: duplex mills and the panel tooling
-// multiplier. The passes of each level are a calculator run per mill (Roll Forming - Level Passes); this file finds the levels and the flange
+// tolerance's finishing passes. Bends close together form a group (the flat between consecutive bends within distanceBetweenGroupBendsMax x
+// distanceBetweenGroupBendsMultiplier); a group whose turns cancel (a rib: its far flat returns to the plane, read from each bend's direction)
+// is formed as one unit at the level of its inner bend, and carries only the span inside it, not the panel beyond. A profile of
+// minNumBendsForPanelCrossSection bends or more is a panel: duplex mills and the panel tooling multiplier. The passes of each level are a calculator run per mill (Roll Forming - Level Passes); this file finds the levels and the flange
 // each one carries. Pure.
 import type { RollFormBend, RollFormPart } from './roll-forming-part';
 import type { SandReference } from '../casting/sand/sand-reference';
@@ -28,6 +30,10 @@ export interface StationPlan {
   levelSource: 'cad' | 'flats' | 'assumed';
   /** How each bend's carried flange is found: across the open strip to its edge, round a closed section to the seam, half a tube's strip, or not known. */
   flangeSource: 'open strip' | 'closed section' | 'tube' | 'not measured';
+  /** The groups of bends close together (two or more), each a rib when its turns cancel; directionsMeasured false when no bend has a direction. */
+  groups: BendGroup[];
+  directionsMeasured: boolean;
+  groupGapMm: number | null;
   liftAngleDeg: number;
   panel: boolean;
   panelThreshold: number | null;
@@ -78,6 +84,24 @@ export function webIndex(bends: readonly RollFormBend[], flats: readonly number[
   return widest(flats.map((_, w) => w));
 }
 
+/** Bends close together (consecutive, the flat between each within the group gap): a rib when their signed turns cancel. */
+export interface BendGroup {
+  /** The first and last bend of the group (indices across the strip). */
+  first: number;
+  last: number;
+  rib: boolean;
+  /** The sum of the group's turns (degrees, each signed by its direction); null when a direction is not measured. */
+  signedTurnDeg: number | null;
+  /** A rib's level: its inner bend's (the lowest of its bends'); null for a group formed as flanges. */
+  level: number | null;
+  /** The span inside the group (its inner flats and the arcs between its first and last bend): what a rib carries. */
+  spanMm: number | null;
+}
+
+/** A closed section with no flat (a round tube's two half turns, an oval ring of arcs): its bends each carry half the strip to the seam. */
+export const isRing = (part: Pick<RollFormPart, 'bends' | 'section'>): boolean =>
+  part.section.closed && part.bends.length > 0 && part.bends.every((b) => (b.flangeBeforeMm ?? 0) <= 1e-6);
+
 type FlangePart = Pick<RollFormPart, 'bends' | 'lastFlangeMm' | 'thicknessMm' | 'section' | 'tube' | 'stripWidthMm'>;
 
 /**
@@ -88,7 +112,7 @@ type FlangePart = Pick<RollFormPart, 'bends' | 'lastFlangeMm' | 'thicknessMm' | 
  */
 export function flangesCarried(part: FlangePart, sharpRadiusMm: number | null): { carried: (number | null)[]; source: StationPlan['flangeSource'] } {
   const { bends } = part;
-  if (part.tube) return { carried: bends.map(() => part.stripWidthMm / 2), source: 'tube' };
+  if (isRing(part)) return { carried: bends.map(() => part.stripWidthMm / 2), source: 'tube' };
   const flats = [...bends.map((b) => b.flangeBeforeMm), part.section.closed ? 0 : part.lastFlangeMm];
   if (bends.length === 0 || flats.some((f) => f == null)) return { carried: bends.map(() => null), source: 'not measured' };
   const f = flats as number[];
@@ -112,11 +136,54 @@ export function flangesCarried(part: FlangePart, sharpRadiusMm: number | null): 
   return { carried, source: 'open strip' };
 }
 
-/** The bends' levels, the flange each level carries, the panel rule and the cross-section tolerance's row. */
+/**
+ * The groups of bends close together: consecutive bends whose flat between them is within `gapMm` (distanceBetweenGroupBendsMax x
+ * distanceBetweenGroupBendsMultiplier). A group is a rib when every bend's direction is measured and their signed turns cancel (within a
+ * degree): its far flat returns to the plane. A ring (a tube with no flat) has none.
+ */
+export function bendGroups(part: FlangePart, gapMm: number | null, levels: readonly number[], sharpRadiusMm: number | null): BendGroup[] {
+  const { bends } = part;
+  if (gapMm == null || isRing(part)) return [];
+  const groups: BendGroup[] = [];
+  let first = 0;
+  const close = (i: number) => {
+    if (i > first) {
+      const members = bends.slice(first, i + 1);
+      const measured = members.every((b) => b.direction != null);
+      const signed = measured ? members.reduce((s, b) => s + b.direction! * b.angleDeg, 0) : null;
+      const rib = signed != null && Math.abs(signed) <= 1;
+      const inner = bends.slice(first + 1, i + 1).map((b) => b.flangeBeforeMm);
+      const arcs = bends.slice(first + 1, i).map((b) => ((b.angleDeg * Math.PI) / 180) * (pricedRadius(b, sharpRadiusMm) + part.thicknessMm / 2));
+      const span = inner.every((f) => f != null) ? (inner).reduce((s, x) => s + x, 0) + arcs.reduce((s, x) => s + x, 0) : null;
+      groups.push({ first, last: i, rib, signedTurnDeg: signed, level: rib ? Math.min(...levels.slice(first, i + 1)) : null, spanMm: span });
+    }
+  };
+  for (let i = 0; i < bends.length; i++) {
+    const next = bends[i + 1]?.flangeBeforeMm;
+    if (i + 1 < bends.length && next != null && next <= gapMm + 1e-9) continue;
+    close(i);
+    first = i + 1;
+  }
+  return groups;
+}
+
+/** The bends' levels, the flange each level carries (a rib its own span), the panel rule and the cross-section tolerance's row. */
 export function stationPlan(ref: SandReference, part: FlangePart, sharpRadiusMm: number | null): StationPlan {
   const lift = ref.number('rollFormingLiftAngle') ?? 15;
-  const { levels: byBend, source } = bendLevels(part);
-  const { carried, source: flangeSource } = flangesCarried(part, sharpRadiusMm);
+  const { levels: measured, source } = bendLevels(part);
+  const { carried: toEdge, source: flangeSource } = flangesCarried(part, sharpRadiusMm);
+  const max = ref.number('distanceBetweenGroupBendsMax');
+  const gapMm = max != null ? max * (ref.number('distanceBetweenGroupBendsMultiplier') ?? 1) : null;
+  const groups = bendGroups(part, gapMm, measured, sharpRadiusMm);
+  // A rib is formed as one unit at its inner bend's level, carrying only its own span.
+  const byBend = [...measured];
+  const carried = [...toEdge];
+  for (const g of groups.filter((x) => x.rib)) {
+    for (let i = g.first; i <= g.last; i++) {
+      byBend[i] = g.level!;
+      carried[i] = g.spanMm;
+    }
+  }
   const levels = new Map<number, { bends: number; maxAngleDeg: number; flangeCarriedMm: number | null }>();
   part.bends.forEach((b, i) => {
     const level = byBend[i];
@@ -128,7 +195,7 @@ export function stationPlan(ref: SandReference, part: FlangePart, sharpRadiusMm:
   const toleranceName = ref.text('crossSectionTolerance');
   return {
     bendCount: part.bends.length, levels: [...levels.entries()].sort(([a], [b]) => a - b).map(([level, l]) => ({ level, ...l })),
-    levelSource: source, flangeSource, liftAngleDeg: lift,
+    levelSource: source, flangeSource, groups, directionsMeasured: part.bends.some((b) => b.direction != null), groupGapMm: gapMm, liftAngleDeg: lift,
     panel: panelThreshold != null && part.bends.length >= panelThreshold, panelThreshold,
     toleranceRow: toleranceRow(ref, 'Cross Section', toleranceName), toleranceName,
   };

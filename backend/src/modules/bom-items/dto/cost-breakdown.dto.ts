@@ -981,15 +981,15 @@ export interface RollFormingBreakdown {
   rule: { route: string; closed: boolean; basis: string };
   section: {
     heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
-    /** A closed round or oval tube's outside diameter (an oval's long and short sizes) and wall; null for any other section. */
-    tube: { outerDiameterMm: number; wallMm: number | null; majorMm: number | null; minorMm: number | null } | null;
-    /** Bends modelled with no radius, priced at the material's minimum bend radius (minBendRadii x t); null when none is. */
-    sharpBends: { count: number; pricedRadiusMm: number | null; basis: string } | null;
+    /** A closed section's outside sizes (a round tube's diameter) and wall; null for an open section. */
+    tube: { outerDiameterMm: number | null; outerWidthMm: number | null; outerHeightMm: number | null; wallMm: number | null } | null;
+    /** Bends modelled with no radius, priced at the material's minimum bend radius (minBendRadii x t), and how much wider that makes the strip; null when none is. */
+    sharpBends: { count: number; pricedRadiusMm: number | null; stripAddedMm: number; basis: string } | null;
   };
   /** Where the material's price per kg was read (the group's cost_usa, or in India another group's cost_india of the same material). */
   materialPriceSource: string | null;
   /** The strip a part uses: its width (the section's stretch-out), the part and the feed (the part plus the slug), and their masses. */
-  strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+  strip: { widthMm: number; measuredWidthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
   /**
    * The roll stations on the chosen mill: each level's passes (its largest angle in passes of degreesPerPass: rollFormingLiftAngle, or less
    * when governedBy 'flange length', the longest flange the level carries over the mill's stand spacing), the lead-in and finishing passes,
@@ -1001,6 +1001,13 @@ export interface RollFormingBreakdown {
     flangeSource: string;
     /** The chosen mill's stand spacing (horizontal center length, mm); null with no mill. */
     standSpacingMm: number | null;
+    /**
+     * The groups of bends within distanceBetweenGroupBendsMax of each other (bend indices across the strip): a rib (its turns cancel) is formed
+     * as one unit at its inner bend's level and carries only its span; any other group is formed as flanges. directionsMeasured false: no
+     * bend direction was measured, so no group can be found a rib.
+     */
+    groups: { firstBend: number; lastBend: number; rib: boolean; level: number | null; spanMm: number | null; signedTurnDeg: number | null }[];
+    directionsMeasured: boolean;
     levels: { level: number; bends: number; maxAngleDeg: number; flangeCarriedMm: number | null; passes: number; degreesPerPass: number; governedBy: 'lift angle' | 'flange length' }[];
   };
   mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;

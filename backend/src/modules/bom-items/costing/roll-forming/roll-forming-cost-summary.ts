@@ -70,10 +70,10 @@ export function buildRollFormingCostSummary(input: {
     ...(route && part ? {
       blankSpec: {
         form: 'sheet' as const,
-        sizeLabel: `${r2(part.stripWidthMm)} mm x ${r2(route.material.feedLengthMm)} mm strip, ${r2(part.thicknessMm)} mm coil`,
+        sizeLabel: `${r2(route.material.stripWidthMm)} mm x ${r2(route.material.feedLengthMm)} mm strip, ${r2(part.thicknessMm)} mm coil`,
         grossWeightKg: r3(grossKg), netWeightKg: r3(partKg), utilizationPct: grossKg > 0 ? r2((100 * partKg) / grossKg) : 0,
         wasteKg: r3(route.material.scrapKg), wasteCost: r2(route.material.scrapKg * perKg),
-        sheetSource: `coil strip ${r2(part.stripWidthMm)} mm wide (the section's stretch-out)${route.material.slugMm > 0 ? `, ${r2(route.material.slugMm)} mm slug a part (slugDieCutOffLength)` : ''}`,
+        sheetSource: `coil strip ${r2(route.material.stripWidthMm)} mm wide (the section's stretch-out${route.sharpBends?.stripAddedMm ? ', wider for its sharp bends' : ''})${route.material.slugMm > 0 ? `, ${r2(route.material.slugMm)} mm slug a part (slugDieCutOffLength)` : ''}`,
       },
     } : {}),
     // The mill's rolls and the press dies (USD): listed in the Cost Guide's tooling and written on Apply, not in the piece cost.
@@ -90,20 +90,28 @@ export function buildRollFormingCostSummary(input: {
           heightMm: r2(part.section.heightMm), widthMm: r2(part.section.widthMm), closed: part.section.closed, bends: part.bends.length,
           curveRadiusMm: part.curve ? r2(part.curve.radiusMm) : null,
           tube: part.tube ? {
-            outerDiameterMm: r2(part.tube.outerDiameterMm), wallMm: part.tube.wallMm != null ? r2(part.tube.wallMm) : null,
-            majorMm: part.tube.majorMm != null ? r2(part.tube.majorMm) : null, minorMm: part.tube.minorMm != null ? r2(part.tube.minorMm) : null,
+            outerDiameterMm: part.tube.outerDiameterMm != null ? r2(part.tube.outerDiameterMm) : null,
+            outerWidthMm: part.tube.outerWidthMm != null ? r2(part.tube.outerWidthMm) : null, outerHeightMm: part.tube.outerHeightMm != null ? r2(part.tube.outerHeightMm) : null,
+            wallMm: part.tube.wallMm != null ? r2(part.tube.wallMm) : null,
           } : null,
-          sharpBends: route.sharpBends ? { count: route.sharpBends.count, pricedRadiusMm: route.sharpBends.pricedRadiusMm != null ? r2(route.sharpBends.pricedRadiusMm) : null, basis: route.sharpBends.basis } : null,
+          sharpBends: route.sharpBends ? {
+            count: route.sharpBends.count, pricedRadiusMm: route.sharpBends.pricedRadiusMm != null ? r2(route.sharpBends.pricedRadiusMm) : null,
+            stripAddedMm: r2(route.sharpBends.stripAddedMm), basis: route.sharpBends.basis,
+          } : null,
         },
         materialPriceSource: input.rollForming.material?.priceSource ?? null,
         strip: {
-          widthMm: r2(part.stripWidthMm), thicknessMm: r2(part.thicknessMm), lengthMm: r2(part.lengthMm), feedLengthMm: r2(route.material.feedLengthMm),
+          widthMm: r2(route.material.stripWidthMm), measuredWidthMm: r2(part.stripWidthMm), thicknessMm: r2(part.thicknessMm), lengthMm: r2(part.lengthMm), feedLengthMm: r2(route.material.feedLengthMm),
           slugMm: r2(route.material.slugMm), massKg: r3(route.material.stripKg), partMassKg: r3(route.material.partKg),
         },
         stations: {
           forming: route.stations.forming, leadIn: route.stations.leadIn, finishing: route.stations.finishing, rule: route.stations.rule,
           total: route.stations.total, override: route.stations.override, panel: route.stations.panel, levelSource: route.stations.levelSource,
-          flangeSource: route.stations.flangeSource, standSpacingMm: route.stations.standSpacingMm,
+          flangeSource: route.stations.flangeSource, standSpacingMm: route.stations.standSpacingMm, directionsMeasured: route.stations.directionsMeasured,
+          groups: route.stations.groups.map((g) => ({
+            firstBend: g.first, lastBend: g.last, rib: g.rib, level: g.level, spanMm: g.spanMm != null ? r2(g.spanMm) : null,
+            signedTurnDeg: g.signedTurnDeg != null ? r2(g.signedTurnDeg) : null,
+          })),
           levels: route.stations.levels.map((l) => ({
             level: l.level, bends: l.bends, maxAngleDeg: r2(l.maxAngleDeg), flangeCarriedMm: l.flangeCarriedMm != null ? r2(l.flangeCarriedMm) : null,
             passes: l.passes, degreesPerPass: r2(l.degreesPerPass), governedBy: l.governedBy,

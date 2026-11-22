@@ -27,16 +27,18 @@ export interface RollFormBend {
   level: number | null;
   /** Modelled with no bend radius (the cad-engine's sharp: true, inner radius 0): priced at the material's minimum bend radius. */
   sharp: boolean;
+  /** Which way the bend turns the strip (1 or -1, the cad-engine's direction); null when not measured (before it measures directions). */
+  direction: 1 | -1 | null;
   faceIds: number[];
 }
 
-/** A closed round or oval tube's own sizes (the cad-engine's optional tube; an oval gives its two sizes). */
+/** A closed section's outside sizes (the cad-engine's tube, carried by every closed section since rf_v2: a round tube has its diameter). */
 export interface RollFormTube {
-  outerDiameterMm: number;
+  /** A round tube's outside diameter; null for any other closed section. */
+  outerDiameterMm: number | null;
+  outerWidthMm: number | null;
+  outerHeightMm: number | null;
   wallMm: number | null;
-  /** An oval's long and short outside sizes; null on a round tube. */
-  majorMm: number | null;
-  minorMm: number | null;
 }
 
 /** A feature punched in the flat strip before the mill. */
@@ -69,7 +71,7 @@ export interface RollFormPart {
   /** The share of the length that is the constant section (the cad-engine's own check). */
   stockFraction: number | null;
   section: { heightMm: number; widthMm: number; areaMm2: number | null; perimeterMm: number | null; closed: boolean; stockForm: string | null };
-  /** A closed round or oval tube (formed from two 180° bends), with its outside size; null for any other section. */
+  /** A closed section's outside sizes (a round tube's diameter); null for an open section, or when not measured. */
   tube: RollFormTube | null;
   /**
    * The strip the coil is slit to (mm): the section's flats and bends at the neutral fibre (strip_width_neutral_mm, the flat pattern's own
@@ -151,7 +153,8 @@ export function rollFormPart(g: RollFormGeometrySummary | null | undefined, shee
     const level = num(get(b, 'level'));
     return [{
       angleDeg: Math.abs(angle), innerRadiusMm: nonNegative(get(b, 'inner_radius_mm')), flangeBeforeMm: nonNegative(get(b, 'flange_before_mm')),
-      level: level != null && level >= 1 ? Math.round(level) : null, sharp: get(b, 'sharp') === true, faceIds: faceIds(get(b, 'face_ids')),
+      level: level != null && level >= 1 ? Math.round(level) : null, sharp: get(b, 'sharp') === true,
+      direction: num(get(b, 'direction')) === 1 ? 1 : num(get(b, 'direction')) === -1 ? -1 : null, faceIds: faceIds(get(b, 'face_ids')),
     }];
   });
   const features = list(featuresRaw).flatMap((f): RollFormFeature[] => {
@@ -165,9 +168,9 @@ export function rollFormPart(g: RollFormGeometrySummary | null | undefined, shee
   const curve = obj(get(g, 'curve'));
   const radius = positive(get(curve, 'radius_mm'));
   const tube = obj(get(g, 'tube'));
-  const major = positive(get(tube, 'major_mm')) ?? positive(get(tube, 'width_mm'));
-  const minor = positive(get(tube, 'minor_mm')) ?? positive(get(tube, 'height_mm'));
-  const od = positive(get(tube, 'outer_diameter_mm')) ?? (major != null && minor != null ? Math.max(major, minor) : null);
+  const od = positive(get(tube, 'outer_diameter_mm'));
+  const outerWidth = positive(get(tube, 'outer_width_mm'));
+  const outerHeight = positive(get(tube, 'outer_height_mm'));
   return {
     part: {
       lengthMm: length, axisSource: text(get(g, 'axis_source')), stockFraction,
@@ -175,7 +178,8 @@ export function rollFormPart(g: RollFormGeometrySummary | null | undefined, shee
         heightMm: height, widthMm: width, areaMm2: positive(get(section, 'area_mm2')), perimeterMm: positive(get(section, 'perimeter_mm')),
         closed: get(section, 'closed') === true, stockForm: text(get(section, 'stock_form')),
       },
-      tube: od != null ? { outerDiameterMm: od, wallMm: positive(get(tube, 'wall_mm')), majorMm: major, minorMm: minor } : null,
+      tube: tube && (od != null || outerWidth != null || outerHeight != null)
+        ? { outerDiameterMm: od, outerWidthMm: outerWidth ?? od, outerHeightMm: outerHeight ?? od, wallMm: positive(get(tube, 'wall_mm')) } : null,
       stripWidthMm: strip, stripWidthSource: neutral != null ? 'neutral fibre' : 'mid-line', stripWidthMidMm: mid ?? strip,
       thicknessMm: thickness, bends, lastFlangeMm: nonNegative(get(g, 'last_flange_mm')),
       curve: radius != null ? { radiusMm: radius, angleDeg: positive(get(curve, 'angle_deg')) } : null,

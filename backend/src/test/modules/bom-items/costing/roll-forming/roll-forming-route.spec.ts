@@ -148,12 +148,12 @@ describe('the roll stations (bend levels, lift angle and flange length on the mi
     const r = route(input(wide), 'scissor');
     const S = r.stations.standSpacingMm!;
     expect(r.stations.levels).toEqual([{ level: 1, bends: 2, maxAngleDeg: 90, flangeCarriedMm: 100, passes: Math.ceil(90 / deg(S) - 1e-6), degreesPerPass: expect.closeTo(deg(S), 6), governedBy: 'flange length' }]);
-    // The line picks the mill its stations fit cheapest: the 3" 12 stand's 508 mm spacing takes the flange in 11 passes, 12 stations.
-    expect(r.mill).toMatchObject({ name: 'Roll Former 3" Shaft Diameter 12 Stand', stands: 12 });
-    expect(r.stations).toMatchObject({ forming: 11, total: 12, standSpacingMm: 508 });
+    // With its rolls weighed over the job, the line picks the 3.5" 12 stand: its 635 mm spacing takes the flange in 7 passes, 8 stations.
+    expect(r.mill).toMatchObject({ name: 'Roll Former 3.5" Shaft Diameter 12 Stand', stands: 12 });
+    expect(r.stations).toMatchObject({ forming: 7, total: 8, standSpacingMm: 635 });
     // On a mill of 381 mm spacing the same flange needs ceil(90 / 4.68) = 20 passes, so a 12 stand 2" mill is not capable.
     const reasons = lineOf(r, 'Roll Forming Mill')?.machineChoice?.candidates;
-    expect(reasons?.[0]?.name).toBe('Roll Former 3" Shaft Diameter 12 Stand');
+    expect(reasons?.[0]?.name).toBe('Roll Former 3.5" Shaft Diameter 12 Stand');
     expect(r.warnings.join(' ')).toMatch(/conservative \(later studies find the deformation length shorter\)/);
   });
 
@@ -174,10 +174,10 @@ describe('the roll stations (bend levels, lift angle and flange length on the mi
 
   it('levels from the flats when the cad-engine gives none: k bends out from the widest flat; measured levels name the web', () => {
     // A hat: brim 20, wall 30, crown 60, wall 30, brim 20: the crown is the web, the walls' bends level 1, the brims' level 2.
-    const hat = { bends: [20, 30, 60, 30].map((before) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: before, level: null, sharp: false, faceIds: [] })), lastFlangeMm: 20 };
+    const hat = { bends: [20, 30, 60, 30].map((before) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: before, level: null, sharp: false, direction: null, faceIds: [] })), lastFlangeMm: 20 };
     expect(bendLevels(hat)).toEqual({ levels: [2, 1, 1, 2], source: 'flats' });
     // A channel deeper than its web: the measured levels (both 1) put the web between the bends, so each carries its 100 mm flange.
-    expect(webIndex([bend(90, 100, 1), bend(90, 47.7, 1)].map((b) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: b.flange_before_mm, level: 1, sharp: false, faceIds: [] })), [100, 47.7, 100])).toBe(1);
+    expect(webIndex([bend(90, 100, 1), bend(90, 47.7, 1)].map((b) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: b.flange_before_mm, level: 1, sharp: false, direction: null, faceIds: [] })), [100, 47.7, 100])).toBe(1);
   });
 
   it('a bend modelled sharp is priced at the material\'s minimum bend radius (minBendRadii x t), said, and is not warned as too tight', () => {
@@ -188,6 +188,13 @@ describe('the roll stations (bend levels, lift angle and flange length on the mi
     expect(r.sharpBends).toMatchObject({ count: 1, pricedRadiusMm: 1.5 });
     expect(r.warnings.join(' ')).toContain("1 bend(s) modelled sharp: priced at the material's minimum bend radius 1 x t = 1.5 mm");
     expect(r.warnings.join(' ')).not.toMatch(/tighter than/);
+    // The strip grows by the bend allowance at that radius, θ(r + K t), less the θ 0.33 t the measurement bends a sharp corner by: here θ r.
+    const added = (Math.PI / 2) * (1.5 + 0.33 * 1.5) - (Math.PI / 2) * 0.33 * 1.5;
+    expect(r.sharpBends!.stripAddedMm).toBeCloseTo(added, 9);
+    expect(r.material.stripWidthMm).toBeCloseTo(120 + added, 9);
+    expect(r.material.stripKg).toBeCloseTo(((120 + added) * 2000 * 1.5 * 7850) / 1e9, 9);
+    // At r = 2t and above the allowance takes K 0.41: a 1000 MPa-yield strip takes the 6 x t row.
+    expect(route(input(sharp, { material: { ...STEEL, yieldMpa: 1000 } }), 'scissor').sharpBends!.stripAddedMm).toBeCloseTo((Math.PI / 2) * (6 * 1.5 + 0.41 * 1.5) - (Math.PI / 2) * 0.33 * 1.5, 9);
   });
 
   it('a profile of minNumBendsForPanelCrossSection (8) bends is a panel: a duplex mill and the panel tooling multiplier', () => {
@@ -210,7 +217,56 @@ describe('the roll stations (bend levels, lift angle and flange length on the mi
   });
 });
 
+describe('ribs: bends close together whose turns cancel', () => {
+  // A 600 mm panel, 0.7 mm, with one trapezoid rib in the middle (up 45°, top, down 45°, back 45°: walls 12 mm, top 20 mm) and a 20 mm
+  // flange on each edge; the web is the left panel flat, so the left flange and the rib's first bend are level 1, the far flange level 5.
+  const rib = (directions: boolean) => partOf(measured({
+    lengthMm: 3000, section: { height_mm: 25, width_mm: 600, area_mm2: 460, perimeter_mm: 1320, closed: false, stock_form: 'GENERIC_EXTRUSION' },
+    stripWidthMm: 660, stripWidthNeutralMm: 658, thicknessMm: 0.7, lastFlangeMm: 20,
+    bends: [
+      [90, 20, 1, 1], [45, 280, 1, 1], [45, 12, 2, -1], [45, 20, 3, -1], [45, 12, 4, 1], [90, 280, 5, 1],
+    ].map(([angle, before, level, dir]) => ({ ...bend(angle, before, level), ...(directions ? { direction: dir } : {}) })),
+  }));
+
+  it('a group whose signed turns cancel is a rib: formed as one unit at its inner bend\'s level, carrying only its own span', () => {
+    const plan = stationPlan(ref, rib(true), null);
+    expect(plan.groupGapMm).toBe(31.75);
+    expect(plan.groups).toEqual([{ first: 1, last: 4, rib: true, signedTurnDeg: 0, level: 1, spanMm: expect.closeTo(12 + 20 + 12 + 2 * (Math.PI / 4) * (1.5 + 0.35), 6) }]);
+    // The rib's four bends join level 1 and carry its 47 mm span, not the 300 mm of panel and flange beyond it; levels 2 to 4 are empty.
+    expect(plan.levels.map((l) => [l.level, l.bends, l.maxAngleDeg, Math.round(l.flangeCarriedMm!)])).toEqual([[1, 5, 90, 47], [5, 1, 90, 20]]);
+    const r = route(input(rib(true)), 'scissor');
+    expect(r.stations.groups[0]).toMatchObject({ rib: true, level: 1 });
+    expect(r.warnings.join(' ')).toMatch(/1 rib\(s\) .* formed each as one unit at its inner bend's level/);
+  });
+
+  it('without bend directions the group is formed as flanges, warned', () => {
+    const plan = stationPlan(ref, rib(false), null);
+    expect(plan).toMatchObject({ directionsMeasured: false, groups: [{ first: 1, last: 4, rib: false, signedTurnDeg: null, level: null }] });
+    expect(plan.levels.find((l) => l.level === 1)?.flangeCarriedMm).toBeGreaterThan(300);
+    expect(route(input(rib(false)), 'scissor').warnings.join(' ')).toMatch(/^.*Bend directions were not measured: 1 group\(s\) of bends within 31.75 mm are formed as flanges/);
+  });
+});
+
 describe('the mill (preferred first, then the cheapest that has what the profile needs)', () => {
+  it('its rolls are weighed in the line\'s choice over the job\'s parts, said in the choice note', () => {
+    const wide = partOf(measured({
+      lengthMm: 2000, section: { height_mm: 101.5, width_mm: 153, area_mm2: 531, perimeter_mm: 700, closed: false, stock_form: 'GENERIC_EXTRUSION' },
+      stripWidthMm: 354.8, stripWidthNeutralMm: 354, bends: [bend(90, 100, 1), bend(90, 147.7, 1)], lastFlangeMm: 100,
+    }));
+    // With no volume the rolls are not weighed: the mill of the cheapest line, the 3" 12 stand (508 mm spacing, 12 stations).
+    const unweighed = route(input(wide, {}, { amortizationParts: null }), 'scissor');
+    expect(unweighed.mill?.name).toBe('Roll Former 3" Shaft Diameter 12 Stand');
+    expect(lineOf(unweighed, 'Roll Forming Mill')!.machineChoice!.rule).toMatch(/The rolls are not weighed: the job has no volume/);
+    // Weighed over 100,000 parts the 3.5" 12 stand wins: its longer spacing needs 8 stations, the rolls a third cheaper than the line costs more.
+    const weighed = route(input(wide, {}, { amortizationParts: 100000 }), 'scissor');
+    const choice = lineOf(weighed, 'Roll Forming Mill')!.machineChoice!;
+    expect(choice.rule).toMatch(/The mill is weighed with its rolls spread over the job's 100,000 parts/);
+    expect(choice.candidates[0]).toMatchObject({ name: 'Roll Former 3.5" Shaft Diameter 12 Stand', status: 'chosen' });
+    expect(choice.candidates[0]?.reasons[0]).toMatch(/^line [0-9.]+ \+ rolls [0-9.]+ USD a part \(8 stations\)$/);
+    expect(weighed.stations.total).toBeLessThan(unweighed.stations.total);
+    expect(weighed.tooling[0].costUsd!).toBeLessThan(route(input(wide, {}, { amortizationParts: null }), 'scissor').tooling[0].costUsd!);
+  });
+
   it('the C channel: a standard mill with the 2" shaft millShaftDiameters gives 1.5 mm, the section height, the roll space and the stands', () => {
     const r = route(input(CHANNEL), 'scissor');
     expect(requiredShaft(ref, 1.5, STEEL.utsMpa)).toMatchObject({ mm: 50.8 });
@@ -273,9 +329,9 @@ describe('the line, chosen whole at one speed: the slowest of its limits, named'
     const big = partOf(measured({
       lengthMm: 1500, section: { height_mm: 90, width_mm: 90, area_mm2: 420, perimeter_mm: 560, closed: true, stock_form: 'ROUND_TUBE' },
       stripWidthMm: 278, stripWidthNeutralMm: 277, bends: [{ ...bend(180, 0, 1), flange_before_mm: 0 }, { ...bend(180, 0, 1), flange_before_mm: 0 }], lastFlangeMm: 0,
-      tube: { outer_diameter_mm: 90, wall_mm: 1.5 },
+      tube: { outer_diameter_mm: 90, outer_width_mm: 90, outer_height_mm: 90, wall_mm: 1.5 },
     }));
-    expect(big.tube).toEqual({ outerDiameterMm: 90, wallMm: 1.5, majorMm: null, minorMm: null });
+    expect(big.tube).toEqual({ outerDiameterMm: 90, outerWidthMm: 90, outerHeightMm: 90, wallMm: 1.5 });
     const r = route(input(big), 'blade');
     expect(r.welding?.machine).toBe('HFI Welder 200kW');
     expect(route(input(TUBE), 'blade').welding?.machine).toBe('HFI Welder 100kW');
@@ -427,7 +483,7 @@ describe('the flanges: a short free flange is warned, a long one only costs pass
     const tube = partOf(measured({
       lengthMm: 1500, section: { height_mm: 50, width_mm: 50, area_mm2: 228, perimeter_mm: 310, closed: true, stock_form: 'ROUND_TUBE' },
       stripWidthMm: 152.4, stripWidthNeutralMm: 152, bends: [{ ...bend(180, 0, 1), flange_before_mm: 0 }, { ...bend(180, 0, 1), flange_before_mm: 0 }], lastFlangeMm: 0,
-      tube: { outer_diameter_mm: 50, wall_mm: 1.5 },
+      tube: { outer_diameter_mm: 50, outer_width_mm: 50, outer_height_mm: 50, wall_mm: 1.5 },
     }));
     const plan = stationPlan(ref, tube, null);
     expect(plan).toMatchObject({ flangeSource: 'tube', levels: [{ level: 1, bends: 2, maxAngleDeg: 180, flangeCarriedMm: 76 }] });
@@ -554,9 +610,22 @@ describe('the material: the roll forming group\'s own, priced at the location', 
     const india = await service.getMaterial(rowsClient(tables), name, 'India');
     expect(india?.material).toMatchObject({ costPerKgUsd: 0.87, priceSource: `India: cost_india of ${name} in Ferrous & Non-Ferrous` });
     expect(india?.warning).toMatch(/^The material price in India is cost_india of Steel, Cold Worked, AISI 1008 in the Ferrous & Non-Ferrous group \(0.87 USD\/kg\)/);
-    const unpriced = await service.getMaterial(rowsClient({ ...tables, raw_materials: tables.raw_materials.slice(0, 1) }), name, 'India');
+  });
+
+  it('in India with no material of its name priced: cost_india of the closest priced material of its type (nearest density, then USA price), named', async () => {
+    const others = [
+      { id: 'a', name: 'Steel, Hot Worked, AISI 1020', material_group: 'Ferrous & Non-Ferrous', material_type: 'Steel', density_kg_m3: 7870, cost_usa: 1.7, cost_india: 0.81 },
+      { id: 'b', name: 'Steel, Cold Worked, AISI 1010', material_group: 'Ferrous & Non-Ferrous', material_type: 'Steel', density_kg_m3: 7850, cost_usa: 2.4, cost_india: 0.95 },
+      { id: 'c', name: 'Steel, Cold Worked, AISI 1012', material_group: 'Ferrous & Non-Ferrous', material_type: 'Steel', density_kg_m3: 7850, cost_usa: 1.8, cost_india: 0.9 },
+      { id: 'd', name: 'Aluminum, AA 1100', material_group: 'Ferrous & Non-Ferrous', material_type: 'Aluminum', density_kg_m3: 7850, cost_usa: 1.75, cost_india: 2.87 },
+    ];
+    const closest = await service.getMaterial(rowsClient({ ...tables, raw_materials: [tables.raw_materials[0], ...others] }), name, 'India');
+    // Same type and density (7850): AISI 1012's 1.8 USA price is nearest 1.751.
+    expect(closest?.material).toMatchObject({ costPerKgUsd: 0.9, priceSource: 'India: cost_india of Steel, Cold Worked, AISI 1012 (Ferrous & Non-Ferrous), the closest priced Steel material' });
+    expect(closest?.warning).toMatch(/^No group prices Steel, Cold Worked, AISI 1008 in India: priced at cost_india of Steel, Cold Worked, AISI 1012/);
+    const unpriced = await service.getMaterial(rowsClient({ ...tables, raw_materials: [tables.raw_materials[0], others[3]] }), name, 'India');
     expect(unpriced?.material.costPerKgUsd).toBe(1.751);
-    expect(unpriced?.warning).toBe(`The material price is the reference's USA price (cost_usa 1.751 USD/kg): no group prices ${name} in India.`);
+    expect(unpriced?.warning).toBe("The material price is the reference's USA price (cost_usa 1.751 USD/kg): no Steel material is priced in India.");
   });
 });
 

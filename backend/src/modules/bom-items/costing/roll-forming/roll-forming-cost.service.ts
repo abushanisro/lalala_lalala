@@ -129,8 +129,9 @@ export class RollFormingCostService {
   /**
    * The roll forming material whose name or grade equals `grade`, case-insensitively (raw_materials, material group Sheet Metal Roll Forming),
    * with its strengths (raw_material_properties) and its price at the location. The group's materials hold the USA price (cost_usa) only: in
-   * India the price is cost_india of the same material in another group (Ferrous & Non-Ferrous prices most of them; cost_india is held in
-   * USD), said; only when no group prices it there, the USA price, warned. Null when the grade is not one.
+   * India the price is cost_india (held in USD) of the same material in another group (Ferrous & Non-Ferrous prices most of them); else, as
+   * other engines price a process's closest material, of the closest priced material of the same material type (the nearest density, then
+   * the nearest USA price), named; only when no material of the type is priced there, the USA price, warned. Null when the grade is not one.
    */
   async getMaterial(client: DbClient, grade: string | null, location = 'USA'): Promise<{ material: RollFormingMaterial; warning: string | null } | null> {
     const g = (grade ?? '').trim();
@@ -154,12 +155,18 @@ export class RollFormingCostService {
         .neq('material_group', ROLL_FORMING_PROCESS_GROUP).ilike('name', escapeLikePattern(name)).not('cost_india', 'is', null)
         .order('material_group').limit(1);
       const hit = ((priced ?? []) as { material_group: string | null; cost_india: unknown }[]).find((x) => positive(x.cost_india) != null);
+      const closest = hit ? null : await this.closestIndiaPrice(client, row, usa);
       if (hit) {
         price = positive(hit.cost_india);
         priceSource = `India: cost_india of ${name} in ${hit.material_group ?? 'another group'}`;
         warning = `The material price in India is cost_india of ${name} in the ${hit.material_group ?? 'another'} group (${price} USD/kg): the ${ROLL_FORMING_PROCESS_GROUP} materials hold the USA price only.`;
+      } else if (closest) {
+        price = closest.price;
+        priceSource = `India: cost_india of ${closest.name} (${closest.group}), the closest priced ${closest.type} material`;
+        warning = `No group prices ${name} in India: priced at cost_india of ${closest.name} (${closest.group}, ${closest.price} USD/kg), the closest priced `
+          + `${closest.type} material (${closest.basis}).`;
       } else {
-        warning = `The material price is the reference's USA price (cost_usa ${usa ?? '?'} USD/kg): no group prices ${name} in India.`;
+        warning = `The material price is the reference's USA price (cost_usa ${usa ?? '?'} USD/kg): no ${typeof row.material_type === 'string' ? row.material_type : ''} material is priced in India.`;
       }
     } else if (location !== 'USA') {
       warning = `The material price is the reference's USA price (cost_usa): it holds none for ${location}.`;
@@ -173,6 +180,28 @@ export class RollFormingCostService {
       },
       warning,
     };
+  }
+
+  /**
+   * The India price of the material priced closest to `row` (the established closest-material rule, process-materials.ts): a material of the
+   * same type with a cost_india, the nearest density first, then the nearest USA price; null when its type has none.
+   */
+  private async closestIndiaPrice(client: DbClient, row: Record<string, unknown>, usaPrice: number | null): Promise<{ name: string; group: string; type: string; price: number; basis: string } | null> {
+    const type = typeof row.material_type === 'string' ? row.material_type.trim() : '';
+    if (!type) return null;
+    const { data } = await client.from('raw_materials').select('name, material_group, material_type, density_kg_m3, density, cost_usa, cost_india')
+      .ilike('material_type', escapeLikePattern(type)).not('cost_india', 'is', null);
+    const density = positive(row.density_kg_m3) ?? (positive(row.density) != null ? positive(row.density)! * 1000 : null);
+    const rows = ((data ?? []) as Record<string, unknown>[]).flatMap((r) => {
+      const price = positive(r.cost_india);
+      const d = positive(r.density_kg_m3) ?? (positive(r.density) != null ? positive(r.density)! * 1000 : null);
+      return price != null && typeof r.name === 'string' ? [{ name: r.name, group: typeof r.material_group === 'string' ? r.material_group : 'another group', price, d, usa: positive(r.cost_usa) }] : [];
+    });
+    const gap = (a: number | null, b: number | null) => (a != null && b != null ? Math.abs(a - b) : Infinity);
+    const best = rows.sort((a, b) => gap(a.d, density) - gap(b.d, density) || gap(a.usa, usaPrice) - gap(b.usa, usaPrice) || a.name.localeCompare(b.name))[0];
+    if (!best) return null;
+    const basis = `density ${best.d ?? '?'} kg/m³ against ${density ?? '?'}${usaPrice != null && best.usa != null ? `, USA price ${best.usa} against ${usaPrice} USD/kg` : ''}`;
+    return { name: best.name, group: best.group, type, price: best.price, basis };
   }
 
   async price(req: RollFormingCostRequest): Promise<RollFormingCostResult> {
