@@ -8,6 +8,7 @@
 import { loadStockMachiningCalculatorSpec } from './calculators/stock-machining-calculator-spec';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { fail, routeKit } from '../shared/calculators/route-kit';
+import { STOCK_MACHINING_PROCESS_GROUP } from '../shared/core/part-family-process-group';
 import { sawBundle, sawFit, sawHandlingRow, sawRateRow, type SawBundle, type SawStock } from '../stock/band-saw';
 import { BAND_SAW_CUT_SOURCE } from '../stock/stock-research';
 
@@ -18,7 +19,7 @@ import type { CalcSeed, ReferenceCalcRun, ReferenceCalculatorDef } from '../shar
 import type { StockReference } from '../stock/stock-reference';
 import type { StockOption, StockPart } from '../stock/stock-selection';
 
-export const STOCK_MACHINING_PROCESS_GROUP = 'Stock Machining';
+export { STOCK_MACHINING_PROCESS_GROUP };
 /** The reference domain of its variables and lookups, for a calculator input's source. */
 export const STOCK_MACHINING_DOMAIN = 'stock_machining';
 /** The HR Rates machine class of each process (migrations 815 and 1114). */
@@ -27,6 +28,20 @@ export const STOCK_MACHINING_CALC = {
   stock: 'Stock Machining - Material Stock', size: 'Stock Machining - Stock Size', bar: 'Stock Machining - Bar Stock', plate: 'Stock Machining - Plate Stock',
   saw: 'Stock Machining - Band Saw', scrap: 'Stock Machining - Scrap Credit',
 } as const;
+
+/** What cuts a part's piece off its stock: the band saw, or a bar-fed lathe's parting tool. */
+export type StockCutOff = 'saw' | 'parting';
+
+/** The machine classes fed whole bar (HR Rates: the bar-fed lathes with a sub spindle), which part each piece off themselves. */
+export const BAR_FED_LATHE_CLASSES: ReadonlySet<string> = new Set(['2_axis_bar_feed_lathe_with_sub_spindle', '3_axis_bar_feed_lathe_with_sub_spindle']);
+
+/**
+ * How the piece a machine starts from is cut off its stock. A bar-fed lathe takes the whole bar and parts each piece off: its route has no
+ * Band Saw line and keeps its Parting line. Every other machine is loaded with a sawn piece: a Band Saw line, and no Parting.
+ */
+export function stockCutOffOf(machineClass: string): StockCutOff {
+  return BAR_FED_LATHE_CLASSES.has(machineClass) ? 'parting' : 'saw';
+}
 
 /** The part's material as the stock is priced and sawn. */
 export interface StockMachiningMaterial {
@@ -51,7 +66,7 @@ export interface StockMachiningInput {
   option: StockOption;
   material: StockMachiningMaterial;
   /** What cuts the piece off: the band saw, or a bar-fed lathe's parting tool (then no Band Saw line). */
-  cutOff: 'saw' | 'parting';
+  cutOff: StockCutOff;
   /** The bar end the stock was yielded with (mm), and where the value came from. */
   remnant: { mm: number; source: string };
   /** Whether the chips are sold back (enableScrapMaterialCredit, or the Cost Guide's). */
