@@ -11,16 +11,19 @@
 // Each part takes its length, the parting tool's width (tblPartingRingWidth: the first row whose diameter covers the bar's corners, the
 // last for a larger bar) and the facing stock (minStockAllowance). What the bar costs per part is the "Multi-Spindle Machining - Bar
 // Stock" calculator's (migration 1095).
+import {
+  allowancePerSideMm, barSectionAreaMm2, circumscribedDiameterMm, partingRingsOf, partingWidthMm, preferredSizesOf, snapUp, unitSystemFor,
+  type PreferredSize, type UnitSystem,
+} from '../stock/stock-sizing';
+
 import type { SandReference } from '../casting/sand/sand-reference';
 
-export type BarForm = 'round' | 'hex' | 'square';
-export type UnitSystem = 'US' | 'metric';
+// The sizing rules themselves (allowance, preferred sizes, snapping, parting width) are the stock rules every machined-from-stock process
+// shares (stock/stock-sizing.ts); this file reads Multi-Spindle's own variables into them.
+export { barSectionAreaMm2, circumscribedDiameterMm, unitSystemFor };
+export type { PreferredSize, UnitSystem };
 
-export interface PreferredSize {
-  sizeMm: number;
-  /** The table's own name for the size: 5/8", 16 mm. */
-  label: string;
-}
+export type BarForm = 'round' | 'hex' | 'square';
 
 /** How a form's bar is sized from the part: the allowance on each side (a percent of the outside size, clamped) and whether it snaps. */
 export interface BarSizing {
@@ -60,24 +63,6 @@ export interface SelectedBar {
   barLengthMm: number;
 }
 
-/** Inch bar in USA, metric bar everywhere else (user decision 2026-11-20: bar sizes by location). */
-export function unitSystemFor(location: string): UnitSystem {
-  return location === 'USA' ? 'US' : 'metric';
-}
-
-/** The bar's cross-section: round π/4 D², hex √3/2 AF², square AF². */
-export function barSectionAreaMm2(form: BarForm, sizeMm: number): number {
-  if (form === 'hex') return (Math.sqrt(3) / 2) * sizeMm ** 2;
-  if (form === 'square') return sizeMm ** 2;
-  return (Math.PI / 4) * sizeMm ** 2;
-}
-
-/** The diameter of the circle through the bar's corners: round D, hex 2 AF / √3, square √2 AF. */
-export function circumscribedDiameterMm(form: BarForm, sizeMm: number): number {
-  if (form === 'hex') return (2 * sizeMm) / Math.sqrt(3);
-  if (form === 'square') return Math.SQRT2 * sizeMm;
-  return sizeMm;
-}
 
 const NUMBERS = [
   'percentStockAllowance', 'minStockAllowance', 'maxStockAllowance', 'standardStockLength',
@@ -101,14 +86,6 @@ export function multiSpindleStockReference(ref: SandReference): { reference: Mul
   const n = (name: (typeof NUMBERS)[number]) => ref.number(name)!;
   const flats = (finished: boolean, percent: number, minMm: number, snap: boolean): BarSizing =>
     finished ? { percent, minMm, maxMm: n('maxStockAllowance'), snap } : { percent: 0, minMm: 0, maxMm: 0, snap };
-  // A system's own rows ("both" is the two systems together); sorted, one entry per size.
-  const sizes = (system: UnitSystem): PreferredSize[] => {
-    const rows = ref.table('tblPreferredSizes')
-      .filter((r) => r.unitSystem === system && Number(r.sizeMm) > 0)
-      .map((r) => ({ sizeMm: Number(r.sizeMm), label: String(r.comment ?? `${Number(r.sizeMm)} mm`).trim() }))
-      .sort((a, b) => a.sizeMm - b.sizeMm);
-    return rows.filter((s, i) => i === 0 || s.sizeMm !== rows[i - 1].sizeMm);
-  };
   return {
     reference: {
       sizing: {
@@ -118,11 +95,8 @@ export function multiSpindleStockReference(ref: SandReference): { reference: Mul
       },
       facingStockMm: n('minStockAllowance'),
       barLengthMm: n('standardStockLength'),
-      preferredSizes: { US: sizes('US'), metric: sizes('metric') },
-      partingRings: ref.table('tblPartingRingWidth')
-        .map((r) => ({ diameterMm: Number(r.diameterMm), ringWidthMm: Number(r.ringWidthMm) }))
-        .filter((r) => r.diameterMm > 0 && r.ringWidthMm > 0)
-        .sort((a, b) => a.diameterMm - b.diameterMm),
+      preferredSizes: { US: preferredSizesOf(ref, 'US'), metric: preferredSizesOf(ref, 'metric') },
+      partingRings: partingRingsOf(ref),
     },
     missing: [],
   };
@@ -140,13 +114,13 @@ export function selectBar(
   if (!(part.outsideMm > 0)) return { missing: 'the part\'s turned diameter (press Refresh analysis so the part is measured)' };
   if (!(part.lengthMm > 0)) return { missing: 'the part\'s turned length (press Refresh analysis so the part is measured)' };
   const s = ref.sizing[part.form];
-  const allowance = Math.min(s.maxMm, Math.max(s.minMm, (s.percent / 100) * part.outsideMm));
+  const allowance = allowancePerSideMm(s, part.outsideMm);
   const requiredMm = part.outsideMm + 2 * allowance;
   let sizeMm = requiredMm;
   let label = `${r3(requiredMm)} mm`;
   if (s.snap) {
     const sizes = ref.preferredSizes[unitSystem];
-    const size = sizes.find((x) => x.sizeMm >= requiredMm - 1e-9);
+    const size = snapUp(sizes, requiredMm);
     if (!size) {
       return { missing: `no ${unitSystem === 'US' ? 'inch' : 'metric'} preferred bar size of at least ${r3(requiredMm)} mm in tblPreferredSizes (largest ${sizes.at(-1)?.sizeMm ?? 0} mm)` };
     }
@@ -154,12 +128,12 @@ export function selectBar(
     label = size.label;
   }
   const circumscribedMm = circumscribedDiameterMm(part.form, sizeMm);
-  const ring = ref.partingRings.find((r) => r.diameterMm >= circumscribedMm - 1e-9) ?? ref.partingRings.at(-1);
-  if (!ring) return { missing: 'tblPartingRingWidth has no rows' };
+  const ringWidthMm = partingWidthMm(ref.partingRings, circumscribedMm);
+  if (ringWidthMm == null) return { missing: 'tblPartingRingWidth has no rows' };
   return {
     form: part.form, unitSystem, sizeMm, sizeLabel: `${label} ${FORM_NAME[part.form]}`, circumscribedMm, requiredMm,
     allowancePerSideMm: allowance, snapped: s.snap, sectionAreaMm2: barSectionAreaMm2(part.form, sizeMm),
-    partingWidthMm: ring.ringWidthMm, facingStockMm: ref.facingStockMm, lengthPerPartMm: part.lengthMm + ring.ringWidthMm + ref.facingStockMm,
+    partingWidthMm: ringWidthMm, facingStockMm: ref.facingStockMm, lengthPerPartMm: part.lengthMm + ringWidthMm + ref.facingStockMm,
     barLengthMm: ref.barLengthMm,
   };
 }
