@@ -89,7 +89,13 @@ export function buildRollFormingCostSummary(input: {
         section: {
           heightMm: r2(part.section.heightMm), widthMm: r2(part.section.widthMm), closed: part.section.closed, bends: part.bends.length,
           curveRadiusMm: part.curve ? r2(part.curve.radiusMm) : null,
+          tube: part.tube ? {
+            outerDiameterMm: r2(part.tube.outerDiameterMm), wallMm: part.tube.wallMm != null ? r2(part.tube.wallMm) : null,
+            majorMm: part.tube.majorMm != null ? r2(part.tube.majorMm) : null, minorMm: part.tube.minorMm != null ? r2(part.tube.minorMm) : null,
+          } : null,
+          sharpBends: route.sharpBends ? { count: route.sharpBends.count, pricedRadiusMm: route.sharpBends.pricedRadiusMm != null ? r2(route.sharpBends.pricedRadiusMm) : null, basis: route.sharpBends.basis } : null,
         },
+        materialPriceSource: input.rollForming.material?.priceSource ?? null,
         strip: {
           widthMm: r2(part.stripWidthMm), thicknessMm: r2(part.thicknessMm), lengthMm: r2(part.lengthMm), feedLengthMm: r2(route.material.feedLengthMm),
           slugMm: r2(route.material.slugMm), massKg: r3(route.material.stripKg), partMassKg: r3(route.material.partKg),
@@ -97,15 +103,20 @@ export function buildRollFormingCostSummary(input: {
         stations: {
           forming: route.stations.forming, leadIn: route.stations.leadIn, finishing: route.stations.finishing, rule: route.stations.rule,
           total: route.stations.total, override: route.stations.override, panel: route.stations.panel, levelSource: route.stations.levelSource,
-          levels: route.stations.levels.map((l) => ({ level: l.level, bends: l.bends, maxAngleDeg: r2(l.maxAngleDeg), passes: l.passes })),
+          flangeSource: route.stations.flangeSource, standSpacingMm: route.stations.standSpacingMm,
+          levels: route.stations.levels.map((l) => ({
+            level: l.level, bends: l.bends, maxAngleDeg: r2(l.maxAngleDeg), flangeCarriedMm: l.flangeCarriedMm != null ? r2(l.flangeCarriedMm) : null,
+            passes: l.passes, degreesPerPass: r2(l.degreesPerPass), governedBy: l.governedBy,
+          })),
         },
         mill: route.mill ? { ...route.mill, requiredShaftMm: route.requiredShaftMm } : null,
         lineSpeed: route.lineSpeed ? {
-          mmPerS: r2(route.lineSpeed.mmPerS), limiting: route.lineSpeed.limiting, multiplier: route.lineSpeed.multiplier,
+          mmPerS: r2(route.lineSpeed.mmPerS), limiting: route.lineSpeed.limiting, multiplier: route.lineSpeed.multiplier, speedsTried: route.lineSpeed.speedsTried,
           caps: route.lineSpeed.caps.map((c) => ({ name: c.name, mmPerS: r2(c.mmPerS) })),
         } : null,
         coil: route.coil ? {
           massKg: r2(route.coil.massKg), partsPerCoil: route.coil.partsPerCoil, changeTimeS: r2(route.coil.changeTimeS), perPartS: r3(route.coil.perPartS), method: route.coil.method,
+          setupMethod: route.coil.setupMethod,
         } : null,
         dieSharpeningPerPartS: r3(route.dieSharpeningPerPartS),
         flattener: route.flattener,

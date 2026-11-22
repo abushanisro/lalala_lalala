@@ -6,17 +6,10 @@
       "key": "roll_forming.coil_material_stock",
       "name": "Roll Forming - Coil Material Stock",
       "operations": ["Coil Material Stock"],
-      "results": ["Run Time", "Stoppage per Part"],
-      "description": "Coil Material Stock, per part: the coil as supplied (memory operation As Supplied), on the line for the part's run. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.",
+      "description": "Coil Material Stock: the coil as supplied (memory operation As Supplied; its machine has no operator and no price). It holds the strip each part is made from (Roll Forming - Strip, priced by Roll Forming - Material) and takes no machine time: no line is costed for it.",
       "fields": [
-        { "name": "Feed Length", "unit": "mm", "source": { "engine": "feed_length_mm (the part length plus the cut-off slug: Roll Forming - Strip)" } },
-        { "name": "Line Speed", "unit": "mm/s", "source": { "engine": "line_speed_mm_s (Roll Forming - Line Speed: the slowest of the line's limits)" } },
-        { "name": "Coil Change per Part", "unit": "s", "source": { "engine": "coil_change_s (Roll Forming - Coil Change: the line stopped for each coil, over the parts a coil makes)" } },
-        { "name": "Die Sharpening per Part", "unit": "s", "source": { "engine": "die_sharpening_s (Roll Forming - Die Sharpening: the line stopped to re-sharpen the press dies)" } },
-        { "name": "Cycle Time Factor", "unit": null, "source": { "variable": "cycleTimeAdjustmentFactor" } },
-        { "name": "Run Time", "unit": "s", "formula": "{Feed Length} / {Line Speed}" },
-        { "name": "Stoppage per Part", "unit": "s", "formula": "{Coil Change per Part} + {Die Sharpening per Part}" },
-        { "name": "Cycle Time", "unit": "s", "formula": "({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}" }
+        { "name": "Strip Mass", "unit": "kg", "source": { "engine": "strip_mass_kg (Roll Forming - Strip: the strip a part uses off the coil)" } },
+        { "name": "Cycle Time", "unit": "s", "formula": "0 * {Strip Mass}" }
       ]
     },
     {
@@ -125,15 +118,34 @@
       ]
     },
     {
+      "key": "roll_forming.level_passes",
+      "name": "Roll Forming - Level Passes",
+      "operations": [],
+      "helper": true,
+      "output": "Passes",
+      "results": ["Flange Increment", "Degrees per Pass"],
+      "description": "The roll passes one level of bends takes on a mill: its largest angle in passes of at most rollFormingLiftAngle, and of no more than the longest flange the level's bends carry can take between two stands. A flange of length a bent dθ deforms over L_d = sqrt(8 a³ dθ / (3 t)) along the strip (Bhattacharyya, Smith, Yee and Collins 1984, J Mech Work Technol 9:181-191, rigid-plastic), which must fit within the stand spacing S (the mill's horizontal center length), so a pass forms at most dθ = 3 t S² / (8 a³). The rigid-plastic length is conservative: later studies find the deformation length shorter. The rule is the engine's own, agreed with the user.",
+      "fields": [
+        { "name": "Largest Angle", "unit": "°", "source": { "engine": "largest_angle_deg (the level's largest bend angle)" } },
+        { "name": "Lift Angle", "unit": "°", "source": { "variable": "rollFormingLiftAngle" } },
+        { "name": "Flange Carried", "unit": "mm", "source": { "engine": "flange_carried_mm (the longest flange the level's bends carry out to the free edge or seam; 0 when not measured)" } },
+        { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
+        { "name": "Stand Spacing", "unit": "mm", "source": { "engine": "stand_spacing_mm (the mill's horizontal center length)" } },
+        { "name": "Flange Increment", "unit": "°", "formula": "IF({Flange Carried} > 0, 3 * {Sheet Thickness} * {Stand Spacing} ^ 2 / (8 * {Flange Carried} ^ 3) * 180 / pi, {Lift Angle})" },
+        { "name": "Degrees per Pass", "unit": "°", "formula": "min({Lift Angle}, {Flange Increment})" },
+        { "name": "Passes", "unit": null, "formula": "CEIL({Largest Angle} / {Degrees per Pass} - 0.000001)" }
+      ]
+    },
+    {
       "key": "roll_forming.stations",
       "name": "Roll Forming - Stations",
       "operations": [],
       "helper": true,
       "output": "Roll Stations",
       "results": ["Lead-in Passes"],
-      "description": "The roll stations a profile needs: the forming passes of its bends (grouped by precedence level, level k being k bends out from the web, the widest flat; each level ceil(its largest angle / rollFormingLiftAngle) passes), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The level rule is the engine's own (the data gives the lift per pass, no formula), agreed with the user 2026-11-22.",
+      "description": "The roll stations a profile needs on a mill: the forming passes of its bend levels (Roll Forming - Level Passes, each level in passes of at most rollFormingLiftAngle and of no more than its longest carried flange takes between the mill's stands), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The rule is the engine's own, agreed with the user 2026-11-22.",
       "fields": [
-        { "name": "Forming Passes", "unit": null, "source": { "engine": "forming_passes (each bend level: ceil(its largest angle / rollFormingLiftAngle))" } },
+        { "name": "Forming Passes", "unit": null, "source": { "engine": "forming_passes (the levels' passes on the mill: Roll Forming - Level Passes)" } },
         { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
         { "name": "Lead-in Thickness Threshold", "unit": "mm", "source": { "variable": "leadInRollStationThicknessThreshold" } },
         { "name": "Finishing Passes", "unit": null, "source": { "engine": "finishing_passes (toleranceThresholds: the crossSectionTolerance row's Number of Finishing Passes)" } },
@@ -172,24 +184,27 @@
       "operations": [],
       "helper": true,
       "output": "Coil Change per Part",
-      "results": ["Full Coil Mass", "Coil Mass", "Parts per Coil", "Coil Change Time"],
-      "description": "The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses; each change threads the new coil (coilThreadingTime) or, for a strip thicker than coilEndWeldingThicknessThreshold, welds it to the last (coilEndWeldTime), plus the uncoiler's coil load time. The rule is the engine's own, agreed with the user 2026-11-22.",
+      "results": ["Full Coil Mass", "Coil Mass", "Parts per Coil", "End Weld", "Coil Change Time"],
+      "description": "The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses. coilSetupMethod decides the change: Threading threads the new coil (coilThreadingTime); Welding welds it to the last (coilEndWeldTime); Let eMithran Decide welds a strip thicker than coilEndWeldingThicknessThreshold and threads a thinner one; each plus the uncoiler's coil load time. With an Accumulator the end weld is made while the accumulator feeds the line, which stops only for the coil load (not at all on a double mandrel uncoiler, which loads the next coil while it runs). The rule is the engine's own, agreed with the user 2026-11-22.",
       "fields": [
         { "name": "Coil Inner Diameter", "unit": "mm", "source": { "variable": "stockCoilInnerDiameter" } },
         { "name": "Coil Outer Diameter", "unit": "mm", "source": { "variable": "stockCoilOuterDiameter" } },
-        { "name": "Strip Width", "unit": "mm", "source": { "cad": "strip_width_mm (the section's stretch-out)" } },
+        { "name": "Strip Width", "unit": "mm", "source": { "cad": "strip_width_mm (the strip the coil is slit to)" } },
         { "name": "Density", "unit": "kg/m³", "source": { "material": "density_kg_m3" } },
         { "name": "Uncoiler Capacity", "unit": "kg", "source": { "machine": "max_coil_capacity_kg" } },
         { "name": "Strip Mass per Part", "unit": "kg", "source": { "engine": "strip_mass_kg (Roll Forming - Strip)" } },
         { "name": "Sheet Thickness", "unit": "mm", "source": { "cad": "thickness_mm (the sheet)" } },
         { "name": "End Weld Thickness Threshold", "unit": "mm", "source": { "variable": "coilEndWeldingThicknessThreshold" } },
+        { "name": "Setup Method", "unit": null, "source": { "engine": "setup_method (coilSetupMethod: 0 Let eMithran Decide, 1 Threading, 2 Welding, 3 Accumulator)" } },
         { "name": "Coil Threading Time", "unit": "s", "source": { "variable": "coilThreadingTime" } },
         { "name": "Coil End Weld Time", "unit": "s", "source": { "variable": "coilEndWeldTime" } },
         { "name": "Coil Load Time", "unit": "s", "source": { "machine": "coil_load_time_s" } },
+        { "name": "Double Mandrel", "unit": null, "source": { "engine": "double_mandrel (1 when the uncoiler has a double mandrel, else 0)" } },
         { "name": "Full Coil Mass", "unit": "kg", "formula": "pi / 4 * ({Coil Outer Diameter} ^ 2 - {Coil Inner Diameter} ^ 2) * {Strip Width} * {Density} / 1000000000" },
         { "name": "Coil Mass", "unit": "kg", "formula": "min({Full Coil Mass}, {Uncoiler Capacity})" },
         { "name": "Parts per Coil", "unit": null, "formula": "max(floor({Coil Mass} / {Strip Mass per Part}), 1)" },
-        { "name": "Coil Change Time", "unit": "s", "formula": "IF({Sheet Thickness} > {End Weld Thickness Threshold}, {Coil End Weld Time}, {Coil Threading Time}) + {Coil Load Time}" },
+        { "name": "End Weld", "unit": null, "formula": "IF({Setup Method} == 1, 0, IF({Setup Method} == 0, IF({Sheet Thickness} > {End Weld Thickness Threshold}, 1, 0), 1))" },
+        { "name": "Coil Change Time", "unit": "s", "formula": "IF({Setup Method} == 3, IF({Double Mandrel} > 0, 0, {Coil Load Time}), IF({End Weld} > 0, {Coil End Weld Time}, {Coil Threading Time}) + {Coil Load Time})" },
         { "name": "Coil Change per Part", "unit": "s", "formula": "{Coil Change Time} / {Parts per Coil}" }
       ]
     },

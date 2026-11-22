@@ -8,12 +8,12 @@
 --
 -- Sheet Metal Roll Forming was staged (reference data 2026-RollForm: 126 variables, 19 lookup tables; 125 HR Rates machines, migrations
 -- 862 and 1112) but its ten catalog processes had no calculator, and a part whose Process is Sheet Metal Roll Forming was not costed. These
--- are the calculators of its coil line: Coil Material Stock, Uncoiler, Coil Flattener, Punch Press, Roll Forming Mill, the four integrated
--- welding processes and the Cut-Off Press compute the catalog processes (each machine busy for the part's run at the line speed, plus the
--- line's stoppages); the roll stations, the line speed, the coil change, the die re-sharpening, the strip, the material, the press force,
--- the roll tooling and the press dies are helpers the engine runs per part, which no operation maps to. The data has no cycle, station or
--- tooling formula: those rules are the engine's own, agreed with the user 2026-11-22. The calculators are named "Roll Forming - ..." (a
--- user's own calculator is named "Sheet Metal - Roll Forming").
+-- are the calculators of its coil line: Uncoiler, Coil Flattener, Punch Press, Roll Forming Mill, the four integrated welding processes and
+-- the Cut-Off Press compute the catalog processes (each machine busy for the part's run at the line speed, plus the line's stoppages);
+-- Coil Material Stock, the coil as supplied, takes no machine time. The level passes, the roll stations, the line speed, the coil change,
+-- the die re-sharpening, the strip, the material, the press force, the roll tooling and the press dies are helpers the engine runs per
+-- part, which no operation maps to. The data has no cycle, station or tooling formula: those rules are the engine's own, agreed with the
+-- user 2026-11-22. The calculators are named "Roll Forming - ..." (a user's own calculator is named "Sheet Metal - Roll Forming").
 --
 -- This migration creates one global calculator per spec entry (inputs are the
 -- values the cost engine seeds, each shown with its source in the calculation
@@ -33,24 +33,18 @@ BEGIN
   SELECT id INTO v_id FROM public.calculators WHERE name = $q$Roll Forming - Coil Material Stock$q$ AND user_id IS NULL AND retired_at IS NULL;
   IF v_id IS NULL THEN
     INSERT INTO public.calculators (user_id, name, calc_category, calculator_type, is_template, is_public, is_global, description)
-    VALUES (NULL, $q$Roll Forming - Coil Material Stock$q$, 'process', 'single', false, true, true, $q$Coil Material Stock, per part: the coil as supplied (memory operation As Supplied), on the line for the part's run. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.$q$)
+    VALUES (NULL, $q$Roll Forming - Coil Material Stock$q$, 'process', 'single', false, true, true, $q$Coil Material Stock: the coil as supplied (memory operation As Supplied; its machine has no operator and no price). It holds the strip each part is made from (Roll Forming - Strip, priced by Roll Forming - Material) and takes no machine time: no line is costed for it.$q$)
     RETURNING id INTO v_id;
   ELSE
-    UPDATE public.calculators SET calc_category = 'process', description = $q$Coil Material Stock, per part: the coil as supplied (memory operation As Supplied), on the line for the part's run. The line runs at one speed, the slowest of its limits (Roll Forming - Line Speed), so every machine on it is busy for the part's feed length (the part plus the cut-off slug) at that speed, plus its share of the line's stoppages: the coil change and the press dies' re-sharpening (the line stands still for both). The rule is the engine's own (the data has no cycle formula), agreed with the user 2026-11-22.$q$, updated_at = now() WHERE id = v_id;
+    UPDATE public.calculators SET calc_category = 'process', description = $q$Coil Material Stock: the coil as supplied (memory operation As Supplied; its machine has no operator and no price). It holds the strip each part is made from (Roll Forming - Strip, priced by Roll Forming - Material) and takes no machine time: no line is costed for it.$q$, updated_at = now() WHERE id = v_id;
   END IF;
 
   DELETE FROM public.calculator_fields WHERE calculator_id = v_id;
   INSERT INTO public.calculator_fields
     (calculator_id, field_name, display_label, field_type, unit, data_source, source_table, source_field, default_value, display_order, is_required)
   VALUES
-    (v_id, $q$Feed Length$q$, $q$Feed Length (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 1, true),
-    (v_id, $q$Line Speed$q$, $q$Line Speed (mm/s)$q$, $q$number$q$, $q$mm/s$q$, NULL, NULL, NULL, NULL, 2, true),
-    (v_id, $q$Coil Change per Part$q$, $q$Coil Change per Part (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 3, true),
-    (v_id, $q$Die Sharpening per Part$q$, $q$Die Sharpening per Part (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 4, true),
-    (v_id, $q$Cycle Time Factor$q$, $q$Cycle Time Factor$q$, $q$number$q$, NULL, NULL, NULL, NULL, NULL, 5, true),
-    (v_id, $q$Run Time$q$, $q$Run Time (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q${Feed Length} / {Line Speed}$q$, 6, false),
-    (v_id, $q$Stoppage per Part$q$, $q$Stoppage per Part (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q${Coil Change per Part} + {Die Sharpening per Part}$q$, 7, false),
-    (v_id, $q$Cycle Time$q$, $q$Cycle Time (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q$({Run Time} + {Stoppage per Part}) * {Cycle Time Factor}$q$, 8, false);
+    (v_id, $q$Strip Mass$q$, $q$Strip Mass (kg)$q$, $q$number$q$, $q$kg$q$, NULL, NULL, NULL, NULL, 1, true),
+    (v_id, $q$Cycle Time$q$, $q$Cycle Time (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q$0 * {Strip Mass}$q$, 2, false);
 
   UPDATE public.process_calculator_mappings
   SET calculator_id = v_id, calculator_name = $q$Roll Forming - Coil Material Stock$q$, is_active = is_active OR machine_class IS NOT NULL
@@ -253,6 +247,34 @@ BEGIN
 END
 $calc$;
 
+-- Roll Forming - Level Passes
+DO $calc$
+DECLARE v_id UUID;
+BEGIN
+  SELECT id INTO v_id FROM public.calculators WHERE name = $q$Roll Forming - Level Passes$q$ AND user_id IS NULL AND retired_at IS NULL;
+  IF v_id IS NULL THEN
+    INSERT INTO public.calculators (user_id, name, calc_category, calculator_type, is_template, is_public, is_global, description)
+    VALUES (NULL, $q$Roll Forming - Level Passes$q$, 'process', 'single', false, true, true, $q$The roll passes one level of bends takes on a mill: its largest angle in passes of at most rollFormingLiftAngle, and of no more than the longest flange the level's bends carry can take between two stands. A flange of length a bent dθ deforms over L_d = sqrt(8 a³ dθ / (3 t)) along the strip (Bhattacharyya, Smith, Yee and Collins 1984, J Mech Work Technol 9:181-191, rigid-plastic), which must fit within the stand spacing S (the mill's horizontal center length), so a pass forms at most dθ = 3 t S² / (8 a³). The rigid-plastic length is conservative: later studies find the deformation length shorter. The rule is the engine's own, agreed with the user.$q$)
+    RETURNING id INTO v_id;
+  ELSE
+    UPDATE public.calculators SET calc_category = 'process', description = $q$The roll passes one level of bends takes on a mill: its largest angle in passes of at most rollFormingLiftAngle, and of no more than the longest flange the level's bends carry can take between two stands. A flange of length a bent dθ deforms over L_d = sqrt(8 a³ dθ / (3 t)) along the strip (Bhattacharyya, Smith, Yee and Collins 1984, J Mech Work Technol 9:181-191, rigid-plastic), which must fit within the stand spacing S (the mill's horizontal center length), so a pass forms at most dθ = 3 t S² / (8 a³). The rigid-plastic length is conservative: later studies find the deformation length shorter. The rule is the engine's own, agreed with the user.$q$, updated_at = now() WHERE id = v_id;
+  END IF;
+
+  DELETE FROM public.calculator_fields WHERE calculator_id = v_id;
+  INSERT INTO public.calculator_fields
+    (calculator_id, field_name, display_label, field_type, unit, data_source, source_table, source_field, default_value, display_order, is_required)
+  VALUES
+    (v_id, $q$Largest Angle$q$, $q$Largest Angle (°)$q$, $q$number$q$, $q$°$q$, NULL, NULL, NULL, NULL, 1, true),
+    (v_id, $q$Lift Angle$q$, $q$Lift Angle (°)$q$, $q$number$q$, $q$°$q$, NULL, NULL, NULL, NULL, 2, true),
+    (v_id, $q$Flange Carried$q$, $q$Flange Carried (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 3, true),
+    (v_id, $q$Sheet Thickness$q$, $q$Sheet Thickness (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 4, true),
+    (v_id, $q$Stand Spacing$q$, $q$Stand Spacing (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 5, true),
+    (v_id, $q$Flange Increment$q$, $q$Flange Increment (°)$q$, $q$calculated$q$, $q$°$q$, NULL, NULL, NULL, $q$IF({Flange Carried} > 0, 3 * {Sheet Thickness} * {Stand Spacing} ^ 2 / (8 * {Flange Carried} ^ 3) * 180 / pi, {Lift Angle})$q$, 6, false),
+    (v_id, $q$Degrees per Pass$q$, $q$Degrees per Pass (°)$q$, $q$calculated$q$, $q$°$q$, NULL, NULL, NULL, $q$min({Lift Angle}, {Flange Increment})$q$, 7, false),
+    (v_id, $q$Passes$q$, $q$Passes$q$, $q$calculated$q$, NULL, NULL, NULL, NULL, $q$CEIL({Largest Angle} / {Degrees per Pass} - 0.000001)$q$, 8, false);
+END
+$calc$;
+
 -- Roll Forming - Stations
 DO $calc$
 DECLARE v_id UUID;
@@ -260,10 +282,10 @@ BEGIN
   SELECT id INTO v_id FROM public.calculators WHERE name = $q$Roll Forming - Stations$q$ AND user_id IS NULL AND retired_at IS NULL;
   IF v_id IS NULL THEN
     INSERT INTO public.calculators (user_id, name, calc_category, calculator_type, is_template, is_public, is_global, description)
-    VALUES (NULL, $q$Roll Forming - Stations$q$, 'process', 'single', false, true, true, $q$The roll stations a profile needs: the forming passes of its bends (grouped by precedence level, level k being k bends out from the web, the widest flat; each level ceil(its largest angle / rollFormingLiftAngle) passes), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The level rule is the engine's own (the data gives the lift per pass, no formula), agreed with the user 2026-11-22.$q$)
+    VALUES (NULL, $q$Roll Forming - Stations$q$, 'process', 'single', false, true, true, $q$The roll stations a profile needs on a mill: the forming passes of its bend levels (Roll Forming - Level Passes, each level in passes of at most rollFormingLiftAngle and of no more than its longest carried flange takes between the mill's stands), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The rule is the engine's own, agreed with the user 2026-11-22.$q$)
     RETURNING id INTO v_id;
   ELSE
-    UPDATE public.calculators SET calc_category = 'process', description = $q$The roll stations a profile needs: the forming passes of its bends (grouped by precedence level, level k being k bends out from the web, the widest flat; each level ceil(its largest angle / rollFormingLiftAngle) passes), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The level rule is the engine's own (the data gives the lift per pass, no formula), agreed with the user 2026-11-22.$q$, updated_at = now() WHERE id = v_id;
+    UPDATE public.calculators SET calc_category = 'process', description = $q$The roll stations a profile needs on a mill: the forming passes of its bend levels (Roll Forming - Level Passes, each level in passes of at most rollFormingLiftAngle and of no more than its longest carried flange takes between the mill's stands), a lead-in pass for a strip thicker than leadInRollStationThicknessThreshold, and the finishing passes of the cross-section tolerance (toleranceThresholds, crossSectionTolerance). The Cost Guide's rollFormStations replaces the result. The rule is the engine's own, agreed with the user 2026-11-22.$q$, updated_at = now() WHERE id = v_id;
   END IF;
 
   DELETE FROM public.calculator_fields WHERE calculator_id = v_id;
@@ -320,10 +342,10 @@ BEGIN
   SELECT id INTO v_id FROM public.calculators WHERE name = $q$Roll Forming - Coil Change$q$ AND user_id IS NULL AND retired_at IS NULL;
   IF v_id IS NULL THEN
     INSERT INTO public.calculators (user_id, name, calc_category, calculator_type, is_template, is_public, is_global, description)
-    VALUES (NULL, $q$Roll Forming - Coil Change$q$, 'process', 'single', false, true, true, $q$The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses; each change threads the new coil (coilThreadingTime) or, for a strip thicker than coilEndWeldingThicknessThreshold, welds it to the last (coilEndWeldTime), plus the uncoiler's coil load time. The rule is the engine's own, agreed with the user 2026-11-22.$q$)
+    VALUES (NULL, $q$Roll Forming - Coil Change$q$, 'process', 'single', false, true, true, $q$The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses. coilSetupMethod decides the change: Threading threads the new coil (coilThreadingTime); Welding welds it to the last (coilEndWeldTime); Let eMithran Decide welds a strip thicker than coilEndWeldingThicknessThreshold and threads a thinner one; each plus the uncoiler's coil load time. With an Accumulator the end weld is made while the accumulator feeds the line, which stops only for the coil load (not at all on a double mandrel uncoiler, which loads the next coil while it runs). The rule is the engine's own, agreed with the user 2026-11-22.$q$)
     RETURNING id INTO v_id;
   ELSE
-    UPDATE public.calculators SET calc_category = 'process', description = $q$The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses; each change threads the new coil (coilThreadingTime) or, for a strip thicker than coilEndWeldingThicknessThreshold, welds it to the last (coilEndWeldTime), plus the uncoiler's coil load time. The rule is the engine's own, agreed with the user 2026-11-22.$q$, updated_at = now() WHERE id = v_id;
+    UPDATE public.calculators SET calc_category = 'process', description = $q$The line stopped for each new coil, shared by the parts a coil makes: the coil (the annulus between stockCoilInnerDiameter and stockCoilOuterDiameter, as wide as the strip, no heavier than the uncoiler holds) over the strip a part uses. coilSetupMethod decides the change: Threading threads the new coil (coilThreadingTime); Welding welds it to the last (coilEndWeldTime); Let eMithran Decide welds a strip thicker than coilEndWeldingThicknessThreshold and threads a thinner one; each plus the uncoiler's coil load time. With an Accumulator the end weld is made while the accumulator feeds the line, which stops only for the coil load (not at all on a double mandrel uncoiler, which loads the next coil while it runs). The rule is the engine's own, agreed with the user 2026-11-22.$q$, updated_at = now() WHERE id = v_id;
   END IF;
 
   DELETE FROM public.calculator_fields WHERE calculator_id = v_id;
@@ -338,14 +360,17 @@ BEGIN
     (v_id, $q$Strip Mass per Part$q$, $q$Strip Mass per Part (kg)$q$, $q$number$q$, $q$kg$q$, NULL, NULL, NULL, NULL, 6, true),
     (v_id, $q$Sheet Thickness$q$, $q$Sheet Thickness (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 7, true),
     (v_id, $q$End Weld Thickness Threshold$q$, $q$End Weld Thickness Threshold (mm)$q$, $q$number$q$, $q$mm$q$, NULL, NULL, NULL, NULL, 8, true),
-    (v_id, $q$Coil Threading Time$q$, $q$Coil Threading Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 9, true),
-    (v_id, $q$Coil End Weld Time$q$, $q$Coil End Weld Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 10, true),
-    (v_id, $q$Coil Load Time$q$, $q$Coil Load Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 11, true),
-    (v_id, $q$Full Coil Mass$q$, $q$Full Coil Mass (kg)$q$, $q$calculated$q$, $q$kg$q$, NULL, NULL, NULL, $q$pi / 4 * ({Coil Outer Diameter} ^ 2 - {Coil Inner Diameter} ^ 2) * {Strip Width} * {Density} / 1000000000$q$, 12, false),
-    (v_id, $q$Coil Mass$q$, $q$Coil Mass (kg)$q$, $q$calculated$q$, $q$kg$q$, NULL, NULL, NULL, $q$min({Full Coil Mass}, {Uncoiler Capacity})$q$, 13, false),
-    (v_id, $q$Parts per Coil$q$, $q$Parts per Coil$q$, $q$calculated$q$, NULL, NULL, NULL, NULL, $q$max(floor({Coil Mass} / {Strip Mass per Part}), 1)$q$, 14, false),
-    (v_id, $q$Coil Change Time$q$, $q$Coil Change Time (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q$IF({Sheet Thickness} > {End Weld Thickness Threshold}, {Coil End Weld Time}, {Coil Threading Time}) + {Coil Load Time}$q$, 15, false),
-    (v_id, $q$Coil Change per Part$q$, $q$Coil Change per Part (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q${Coil Change Time} / {Parts per Coil}$q$, 16, false);
+    (v_id, $q$Setup Method$q$, $q$Setup Method$q$, $q$number$q$, NULL, NULL, NULL, NULL, NULL, 9, true),
+    (v_id, $q$Coil Threading Time$q$, $q$Coil Threading Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 10, true),
+    (v_id, $q$Coil End Weld Time$q$, $q$Coil End Weld Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 11, true),
+    (v_id, $q$Coil Load Time$q$, $q$Coil Load Time (s)$q$, $q$number$q$, $q$s$q$, NULL, NULL, NULL, NULL, 12, true),
+    (v_id, $q$Double Mandrel$q$, $q$Double Mandrel$q$, $q$number$q$, NULL, NULL, NULL, NULL, NULL, 13, true),
+    (v_id, $q$Full Coil Mass$q$, $q$Full Coil Mass (kg)$q$, $q$calculated$q$, $q$kg$q$, NULL, NULL, NULL, $q$pi / 4 * ({Coil Outer Diameter} ^ 2 - {Coil Inner Diameter} ^ 2) * {Strip Width} * {Density} / 1000000000$q$, 14, false),
+    (v_id, $q$Coil Mass$q$, $q$Coil Mass (kg)$q$, $q$calculated$q$, $q$kg$q$, NULL, NULL, NULL, $q$min({Full Coil Mass}, {Uncoiler Capacity})$q$, 15, false),
+    (v_id, $q$Parts per Coil$q$, $q$Parts per Coil$q$, $q$calculated$q$, NULL, NULL, NULL, NULL, $q$max(floor({Coil Mass} / {Strip Mass per Part}), 1)$q$, 16, false),
+    (v_id, $q$End Weld$q$, $q$End Weld$q$, $q$calculated$q$, NULL, NULL, NULL, NULL, $q$IF({Setup Method} == 1, 0, IF({Setup Method} == 0, IF({Sheet Thickness} > {End Weld Thickness Threshold}, 1, 0), 1))$q$, 17, false),
+    (v_id, $q$Coil Change Time$q$, $q$Coil Change Time (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q$IF({Setup Method} == 3, IF({Double Mandrel} > 0, 0, {Coil Load Time}), IF({End Weld} > 0, {Coil End Weld Time}, {Coil Threading Time}) + {Coil Load Time})$q$, 18, false),
+    (v_id, $q$Coil Change per Part$q$, $q$Coil Change per Part (s)$q$, $q$calculated$q$, $q$s$q$, NULL, NULL, NULL, $q${Coil Change Time} / {Parts per Coil}$q$, 19, false);
 END
 $calc$;
 
@@ -533,16 +558,17 @@ DECLARE bad TEXT;
 BEGIN
   SELECT string_agg(e.name, ', ') INTO bad
   FROM (VALUES
-    ($q$Roll Forming - Coil Material Stock$q$, 8, 1),
+    ($q$Roll Forming - Coil Material Stock$q$, 2, 1),
     ($q$Roll Forming - Uncoiler$q$, 8, 1),
     ($q$Roll Forming - Coil Flattener$q$, 8, 1),
     ($q$Roll Forming - Punch Press$q$, 8, 1),
     ($q$Roll Forming - Roll Forming Mill$q$, 8, 1),
     ($q$Roll Forming - Integrated Welding$q$, 8, 4),
     ($q$Roll Forming - Cut-Off Press$q$, 11, 1),
+    ($q$Roll Forming - Level Passes$q$, 8, 0),
     ($q$Roll Forming - Stations$q$, 6, 0),
     ($q$Roll Forming - Line Speed$q$, 14, 0),
-    ($q$Roll Forming - Coil Change$q$, 16, 0),
+    ($q$Roll Forming - Coil Change$q$, 19, 0),
     ($q$Roll Forming - Die Sharpening$q$, 6, 0),
     ($q$Roll Forming - Strip$q$, 8, 0),
     ($q$Roll Forming - Material$q$, 3, 0),

@@ -40,7 +40,11 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const HOLES: ReadonlySet<RollFormFeatureType> = new Set(['SimpleHole', 'ComplexHole']);
 const STATION_ORDER: readonly RollFormFeatureType[] = ['SimpleHole', 'ComplexHole', 'Cutout', 'Lance', 'Form'];
 
-/** The first row of a breakpoint table whose `key` column is at or above `value` (sorted by it): how the data's tables are read. */
+/**
+ * The first row of a breakpoint table whose `key` column is at or above `value` (sorted by it): how the data's tables are read. Each row's key
+ * is the upper bound of its band: memory's tables end with sentinel rows (999999999 in minHoleDiameterRatios and handlingTimes, 9999 in
+ * minBendRadii, 9999999 in dieAccelerationRates) that only make sense as upper bounds, since read as lower bounds they would never be reached.
+ */
 export function stepRow(rows: readonly KitRow[], key: string, value: number): KitRow | null {
   return [...rows].filter((r) => Number.isFinite(Number(r[key]))).sort((a, b) => Number(a[key]) - Number(b[key])).find((r) => Number(r[key]) >= value - 1e-9) ?? null;
 }

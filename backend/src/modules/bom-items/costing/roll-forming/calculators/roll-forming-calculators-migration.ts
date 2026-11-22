@@ -13,12 +13,12 @@ export function buildRollFormingCalculatorsMigrationSql(): string {
     rootCause: [
       'Sheet Metal Roll Forming was staged (reference data 2026-RollForm: 126 variables, 19 lookup tables; 125 HR Rates machines, migrations',
       '862 and 1112) but its ten catalog processes had no calculator, and a part whose Process is Sheet Metal Roll Forming was not costed. These',
-      'are the calculators of its coil line: Coil Material Stock, Uncoiler, Coil Flattener, Punch Press, Roll Forming Mill, the four integrated',
-      'welding processes and the Cut-Off Press compute the catalog processes (each machine busy for the part\'s run at the line speed, plus the',
-      'line\'s stoppages); the roll stations, the line speed, the coil change, the die re-sharpening, the strip, the material, the press force,',
-      'the roll tooling and the press dies are helpers the engine runs per part, which no operation maps to. The data has no cycle, station or',
-      'tooling formula: those rules are the engine\'s own, agreed with the user 2026-11-22. The calculators are named "Roll Forming - ..." (a',
-      'user\'s own calculator is named "Sheet Metal - Roll Forming").',
+      'are the calculators of its coil line: Uncoiler, Coil Flattener, Punch Press, Roll Forming Mill, the four integrated welding processes and',
+      'the Cut-Off Press compute the catalog processes (each machine busy for the part\'s run at the line speed, plus the line\'s stoppages);',
+      'Coil Material Stock, the coil as supplied, takes no machine time. The level passes, the roll stations, the line speed, the coil change,',
+      'the die re-sharpening, the strip, the material, the press force, the roll tooling and the press dies are helpers the engine runs per',
+      'part, which no operation maps to. The data has no cycle, station or tooling formula: those rules are the engine\'s own, agreed with the',
+      'user 2026-11-22. The calculators are named "Roll Forming - ..." (a user\'s own calculator is named "Sheet Metal - Roll Forming").',
     ].join('\n'),
   });
 }

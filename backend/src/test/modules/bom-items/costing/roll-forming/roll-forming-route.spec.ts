@@ -2,11 +2,12 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-import { GRADE_LABOUR, realRollFormingCatalog, realRollFormingReference, rollFormingMachines, rollFormingMaterial } from './roll-forming-test-data';
+import { GRADE_LABOUR, realLookups, realRollFormingCatalog, realRollFormingReference, realVariables, rollFormingMachines, rollFormingMaterial } from './roll-forming-test-data';
+import { resolveSandReference } from '../../../../../modules/bom-items/costing/casting/sand/sand-reference';
 import { loadRollFormingCalculatorSpec, rollFormingCalculatorsByName } from '../../../../../modules/bom-items/costing/roll-forming/calculators/roll-forming-calculator-spec';
 import { buildRollFormingCalculatorsMigrationSql } from '../../../../../modules/bom-items/costing/roll-forming/calculators/roll-forming-calculators-migration';
 import { buildRollFormingCostSummary, ROLL_FORMING_NOT_COSTED } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-cost-summary';
-import { rollFormingOverrides, type RollFormingCostResult } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-cost.service';
+import { RollFormingCostService, rollFormingOverrides, type RollFormingCostResult } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-cost.service';
 import { punchPlan } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-features';
 import { partLengthToleranceRow } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-line';
 import { rollFormPart, ROLL_FORM_EXTRACTION_VERSION, type RollFormPart } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-part';
@@ -15,7 +16,8 @@ import {
   type RollFormingRoute, type RollFormingRouteInput,
 } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-route';
 import { rollFormingRouteFor } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-route-comparison';
-import { bendLevels, stationPlan } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-stations';
+import { bendLevels, stationPlan, webIndex } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-stations';
+import { toolLifeRow } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-tooling';
 import { routeToolingItems } from '../../../../../modules/bom-items/costing/shared/route-tooling';
 import { realToolShop } from '../hydroforming/hydroforming-test-data';
 
@@ -123,19 +125,46 @@ describe('the profile as the cad-engine measures it (rf_v1)', () => {
   });
 });
 
-describe('the roll stations (bend levels x rollFormingLiftAngle, lead-in and finishing passes)', () => {
-  it('a C channel: one level of two 90° bends is ceil(90 / 15) = 6 passes, and the Standard cross-section tolerance 1 finishing pass', () => {
-    const plan = stationPlan(ref, CHANNEL);
-    expect(plan).toMatchObject({ formingPasses: 6, liftAngleDeg: 15, panel: false, levelSource: 'cad' });
-    expect(plan.levels).toEqual([{ level: 1, bends: 2, maxAngleDeg: 90, passes: 6 }]);
+describe('the roll stations (bend levels, lift angle and flange length on the mill, lead-in and finishing passes)', () => {
+  it('a C channel: one level of two 90° bends at rollFormingLiftAngle 15° a pass is 6 passes, and the Standard tolerance 1 finishing pass', () => {
+    const plan = stationPlan(ref, CHANNEL, null);
+    expect(plan).toMatchObject({ liftAngleDeg: 15, panel: false, levelSource: 'cad', flangeSource: 'open strip' });
+    // Each bend carries its 33 mm flange out to the strip's edge.
+    expect(plan.levels).toEqual([{ level: 1, bends: 2, maxAngleDeg: 90, flangeCarriedMm: 33 }]);
     expect(plan.toleranceRow?.['Number of Finishing Passes']).toBe(1);
-    expect(route(input(CHANNEL), 'scissor').stations).toMatchObject({ forming: 6, leadIn: 0, finishing: 1, rule: 7, total: 7 });
+    const r = route(input(CHANNEL), 'scissor');
+    expect(r.stations).toMatchObject({ forming: 6, leadIn: 0, finishing: 1, rule: 7, total: 7, standSpacingMm: 381 });
+    expect(r.stations.levels).toEqual([{ level: 1, bends: 2, maxAngleDeg: 90, flangeCarriedMm: 33, passes: 6, degreesPerPass: 15, governedBy: 'lift angle' }]);
   });
 
-  it('each level takes its largest angle: the tube 6 + 6 forming passes; a 100° and a 40° bend on one level take ceil(100 / 15) = 7', () => {
-    expect(stationPlan(ref, TUBE).levels.map((l) => l.passes)).toEqual([6, 6]);
-    expect(route(input(TUBE), 'blade').stations.total).toBe(13);
-    expect(stationPlan(ref, { bends: [{ ...CHANNEL.bends[0], angleDeg: 100 }, { ...CHANNEL.bends[1], angleDeg: 40 }], lastFlangeMm: 33 }).formingPasses).toBe(7);
+  it('a long flange takes more passes: no more than 3 t S² / (8 a³) a pass on the mill\'s stand spacing S (Bhattacharyya et al. 1984)', () => {
+    // A 150 mm web with 100 mm flanges, 1.5 mm: on a 381 mm stand spacing a pass bends the 100 mm flange 4.68°, on 508 mm 8.32°.
+    const wide = partOf(measured({
+      lengthMm: 2000, section: { height_mm: 101.5, width_mm: 153, area_mm2: 531, perimeter_mm: 700, closed: false, stock_form: 'GENERIC_EXTRUSION' },
+      stripWidthMm: 354.8, stripWidthNeutralMm: 354, bends: [bend(90, 100, 1), bend(90, 147.7, 1)], lastFlangeMm: 100,
+    }));
+    const deg = (S: number) => ((3 * 1.5 * S * S) / (8 * 100 ** 3)) * (180 / Math.PI);
+    expect(deg(381)).toBeCloseTo(4.68, 2);
+    const r = route(input(wide), 'scissor');
+    const S = r.stations.standSpacingMm!;
+    expect(r.stations.levels).toEqual([{ level: 1, bends: 2, maxAngleDeg: 90, flangeCarriedMm: 100, passes: Math.ceil(90 / deg(S) - 1e-6), degreesPerPass: expect.closeTo(deg(S), 6), governedBy: 'flange length' }]);
+    // The line picks the mill its stations fit cheapest: the 3" 12 stand's 508 mm spacing takes the flange in 11 passes, 12 stations.
+    expect(r.mill).toMatchObject({ name: 'Roll Former 3" Shaft Diameter 12 Stand', stands: 12 });
+    expect(r.stations).toMatchObject({ forming: 11, total: 12, standSpacingMm: 508 });
+    // On a mill of 381 mm spacing the same flange needs ceil(90 / 4.68) = 20 passes, so a 12 stand 2" mill is not capable.
+    const reasons = lineOf(r, 'Roll Forming Mill')?.machineChoice?.candidates;
+    expect(reasons?.[0]?.name).toBe('Roll Former 3" Shaft Diameter 12 Stand');
+    expect(r.warnings.join(' ')).toMatch(/conservative \(later studies find the deformation length shorter\)/);
+  });
+
+  it('each level takes its largest angle; round a closed section a bend carries the strip to the seam, the shorter way', () => {
+    const plan = stationPlan(ref, TUBE, null);
+    expect(plan.flangeSource).toBe('closed section');
+    // The web-side corners carry a 37 mm side, a corner and half the top; the far corners half the top: 18.5 mm.
+    expect(plan.levels.map((l) => [l.level, Math.round(l.flangeCarriedMm! * 10) / 10])).toEqual([[1, 59], [2, 18.5]]);
+    expect(route(input(TUBE), 'blade').stations).toMatchObject({ forming: 12, total: 13 });
+    const r = route(input({ ...CHANNEL, bends: [{ ...CHANNEL.bends[0], angleDeg: 100 }, { ...CHANNEL.bends[1], angleDeg: 40 }] }), 'scissor');
+    expect(r.stations.forming).toBe(7);
   });
 
   it('a strip thicker than leadInRollStationThicknessThreshold (1.524 mm) takes a lead-in pass', () => {
@@ -143,18 +172,30 @@ describe('the roll stations (bend levels x rollFormingLiftAngle, lead-in and fin
     expect(route(input(thick), 'scissor').stations).toMatchObject({ forming: 6, leadIn: 1, finishing: 1, total: 8 });
   });
 
-  it('levels from the flats when the cad-engine gives none: k bends out from the widest flat', () => {
+  it('levels from the flats when the cad-engine gives none: k bends out from the widest flat; measured levels name the web', () => {
     // A hat: brim 20, wall 30, crown 60, wall 30, brim 20: the crown is the web, the walls' bends level 1, the brims' level 2.
-    const hat = { bends: [20, 30, 60, 30].map((before) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: before, level: null, faceIds: [] })), lastFlangeMm: 20 };
+    const hat = { bends: [20, 30, 60, 30].map((before) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: before, level: null, sharp: false, faceIds: [] })), lastFlangeMm: 20 };
     expect(bendLevels(hat)).toEqual({ levels: [2, 1, 1, 2], source: 'flats' });
+    // A channel deeper than its web: the measured levels (both 1) put the web between the bends, so each carries its 100 mm flange.
+    expect(webIndex([bend(90, 100, 1), bend(90, 47.7, 1)].map((b) => ({ angleDeg: 90, innerRadiusMm: 1.5, flangeBeforeMm: b.flange_before_mm, level: 1, sharp: false, faceIds: [] })), [100, 47.7, 100])).toBe(1);
+  });
+
+  it('a bend modelled sharp is priced at the material\'s minimum bend radius (minBendRadii x t), said, and is not warned as too tight', () => {
+    const sharp = partOf({ ...CHANNEL_G, bends: [{ ...bend(90, 33, 1, [1]), inner_radius_mm: 0, sharp: true }, bend(90, 47.7, 1, [2])] });
+    expect(sharp.bends[0]).toMatchObject({ sharp: true, innerRadiusMm: 0 });
+    const r = route(input(sharp), 'scissor');
+    // AISI 1008, 245 MPa yield: the 345 MPa row's 1 x t.
+    expect(r.sharpBends).toMatchObject({ count: 1, pricedRadiusMm: 1.5 });
+    expect(r.warnings.join(' ')).toContain("1 bend(s) modelled sharp: priced at the material's minimum bend radius 1 x t = 1.5 mm");
+    expect(r.warnings.join(' ')).not.toMatch(/tighter than/);
   });
 
   it('a profile of minNumBendsForPanelCrossSection (8) bends is a panel: a duplex mill and the panel tooling multiplier', () => {
     const angles = [45, 45, 90, 90, 90, 90, 45, 45];
     const panel = partOf(measured({
-      lengthMm: 3000, section: { height_mm: 40, width_mm: 600, area_mm2: 1050, perimeter_mm: 1500, closed: false, stock_form: 'GENERIC_EXTRUSION' },
-      stripWidthMm: 700, stripWidthNeutralMm: 698, thicknessMm: 0.7,
-      bends: angles.map((a, i) => bend(a, 60, [4, 3, 2, 1, 1, 2, 3, 4][i])), lastFlangeMm: 60,
+      lengthMm: 3000, section: { height_mm: 40, width_mm: 120, area_mm2: 112, perimeter_mm: 330, closed: false, stock_form: 'GENERIC_EXTRUSION' },
+      stripWidthMm: 160, stripWidthNeutralMm: 159, thicknessMm: 0.7,
+      bends: angles.map((a, i) => bend(a, 15, [4, 3, 2, 1, 1, 2, 3, 4][i])), lastFlangeMm: 15,
     }));
     const r = route(input(panel), 'scissor');
     expect(r.stations.panel).toBe(true);
@@ -170,12 +211,14 @@ describe('the roll stations (bend levels x rollFormingLiftAngle, lead-in and fin
 });
 
 describe('the mill (preferred first, then the cheapest that has what the profile needs)', () => {
-  it('the C channel: a standard mill with the stands, the 2" shaft millShaftDiameters gives 1.5 mm, the section height and the roll space', () => {
+  it('the C channel: a standard mill with the 2" shaft millShaftDiameters gives 1.5 mm, the section height, the roll space and the stands', () => {
     const r = route(input(CHANNEL), 'scissor');
     expect(requiredShaft(ref, 1.5, STEEL.utsMpa)).toMatchObject({ mm: 50.8 });
     expect(r.mill).toMatchObject({ name: 'Roll Former 2" Shaft Diameter 12 Stand', stands: 12, shaftDiameterMm: 50.8, type: 'standard' });
     expect(lineOf(r, 'Roll Forming Mill')?.machineChoice).toMatchObject({ chosen: 'Roll Former 2" Shaft Diameter 12 Stand', checkedCount: 37 });
-    expect(lineOf(r, 'Roll Forming Mill')?.machineChoice?.criteria).toEqual(['Enough roll stands', 'The shaft the strip needs', 'Takes the stock thickness', 'Forms the section height', 'Its roll space takes the strip', 'A standard mill']);
+    expect(lineOf(r, 'Roll Forming Mill')?.machineChoice?.criteria).toEqual([
+      'The shaft the strip needs', 'Takes the stock thickness', 'Forms the section height', 'Its roll space takes the strip', 'A standard mill', 'Enough roll stands for the passes on its stand spacing',
+    ]);
   });
 
   it('an ultra-high-strength material (UTS at or above ultraHighStrengthMaterialThresholdLow) takes a shaft a size up', () => {
@@ -185,7 +228,7 @@ describe('the mill (preferred first, then the cheapest that has what the profile
   });
 });
 
-describe('the line speed: the slowest of its limits, named', () => {
+describe('the line, chosen whole at one speed: the slowest of its limits, named', () => {
   it('a 2 m channel runs at the part-length tolerance\'s 660.4 mm/s (Encoder Open Loop, +/-0.762 mm; the variable\'s "+/- " spelling matched)', () => {
     expect(partLengthToleranceRow(ref).row?.['Maximum Line Speed (mm / s)']).toBe(660.4);
     const r = route(input(CHANNEL), 'scissor');
@@ -195,6 +238,18 @@ describe('the line speed: the slowest of its limits, named', () => {
     const mill = runOf(lineOf(r, 'Roll Forming Mill'));
     expect(mill['Run Time']).toBeCloseTo(2000 / 660.4, 3);
     expect(mill['Cycle Time']).toBeCloseTo(2000 / 660.4 + r.coil!.perPartS + r.dieSharpeningPerPartS, 3);
+  });
+
+  it('the cheapest whole line: no other uncoiler makes the line cheaper (its coil change stops every machine)', () => {
+    const r = route(input(CHANNEL), 'scissor');
+    const machinesTotal = (x: RollFormingRoute) => x.lines.reduce((s, l) => s + l.totalCost, 0);
+    const chosen = lineOf(r, 'Uncoiler')!.machineName;
+    const preferred = rollFormingMachines('USA')[ROLL_FORMING_CLASS.uncoiler].filter((m) => m.preferred && m.name !== chosen);
+    for (const u of preferred) {
+      const only = { ...rollFormingMachines('USA'), [ROLL_FORMING_CLASS.uncoiler]: [u] };
+      expect(machinesTotal(route(input(CHANNEL, { machinesByClass: only }), 'scissor'))).toBeGreaterThanOrEqual(machinesTotal(r) - 1e-6);
+    }
+    expect(lineOf(r, 'Uncoiler')?.machineChoice?.rule).toMatch(/^The cheapest whole line/);
   });
 
   it('a short part is held to its presses\' strokes: strokes a minute x stationaryDieLineSpeedFactor x the feed / 60', () => {
@@ -214,6 +269,20 @@ describe('the line speed: the slowest of its limits, named', () => {
     expect(r.lineSpeed).toMatchObject({ mmPerS: 500, limiting: 'Integrated HFI Welding HFI Welder 400kW' });
   });
 
+  it('the welder\'s working envelope must take the section: a 90 mm tube is past the 100 kW welder\'s 76.2 mm, so the 200 kW welds it', () => {
+    const big = partOf(measured({
+      lengthMm: 1500, section: { height_mm: 90, width_mm: 90, area_mm2: 420, perimeter_mm: 560, closed: true, stock_form: 'ROUND_TUBE' },
+      stripWidthMm: 278, stripWidthNeutralMm: 277, bends: [{ ...bend(180, 0, 1), flange_before_mm: 0 }, { ...bend(180, 0, 1), flange_before_mm: 0 }], lastFlangeMm: 0,
+      tube: { outer_diameter_mm: 90, wall_mm: 1.5 },
+    }));
+    expect(big.tube).toEqual({ outerDiameterMm: 90, wallMm: 1.5, majorMm: null, minorMm: null });
+    const r = route(input(big), 'blade');
+    expect(r.welding?.machine).toBe('HFI Welder 200kW');
+    expect(route(input(TUBE), 'blade').welding?.machine).toBe('HFI Welder 100kW');
+    // The 100 kW is under the tube, the 400 kW would hold the line to 500 mm/s: the 200 kW is the one capable at the line's 660.4 mm/s.
+    expect(lineOf(r, 'Integrated HFI Welding')?.machineChoice).toMatchObject({ checkedCount: 3, capableCount: 1 });
+  });
+
   it('a curved profile runs at profileRollBendingSpeed (85 mm/s) on a mill with a curving unit', () => {
     const curved = { ...CHANNEL, curve: { radiusMm: 2000, angleDeg: 57.3 } };
     const r = route(input(curved), 'scissor');
@@ -231,11 +300,30 @@ describe('the coil: its change shared by the parts a coil makes', () => {
     const stripKg = (120 * 2000 * 1.5 * 7850) / 1e9;
     const parts = Math.floor(coilKg / stripKg);
     const change = v('coilEndWeldTime') + Number(uncoiler.specs.coil_load_time_s);
-    expect(r.coil).toMatchObject({ partsPerCoil: parts, changeTimeS: change });
+    expect(r.coil).toMatchObject({ partsPerCoil: parts, changeTimeS: change, setupMethod: 'Let eMithran Decide' });
     expect(r.coil!.perPartS).toBeCloseTo(change / parts, 9);
     expect(r.coil!.method).toMatch(/^end weld/);
     // A strip at or under coilEndWeldingThicknessThreshold is threaded instead.
-    expect(route(input({ ...CHANNEL, thicknessMm: 1 }), 'scissor').coil!.changeTimeS).toBe(v('coilThreadingTime') + Number(uncoiler.specs.coil_load_time_s));
+    const thin = route(input({ ...CHANNEL, thicknessMm: 1 }), 'scissor');
+    const thinUncoiler = rollFormingMachines('USA')[ROLL_FORMING_CLASS.uncoiler].find((m) => m.name === lineOf(thin, 'Uncoiler')!.machineName)!;
+    expect(thin.coil!.changeTimeS).toBe(v('coilThreadingTime') + Number(thinUncoiler.specs.coil_load_time_s));
+  });
+
+  it('coilSetupMethod: Threading and Welding force the method; an Accumulator stops the line only for the coil load (a double mandrel: not at all)', () => {
+    const withSetup = (method: string) => {
+      const variables = realVariables().map((x) => (x.key === 'coilSetupMethod' ? { ...x, value: method } : x));
+      const own = resolveSandReference({ variables, lookups: realLookups() });
+      return route(input(CHANNEL, { ref: own }), 'scissor');
+    };
+    const threading = withSetup('Threading');
+    const load = (r: RollFormingRoute) => Number(rollFormingMachines('USA')[ROLL_FORMING_CLASS.uncoiler].find((m) => m.name === lineOf(r, 'Uncoiler')!.machineName)!.specs.coil_load_time_s);
+    expect(threading.coil).toMatchObject({ setupMethod: 'Threading', changeTimeS: v('coilThreadingTime') + load(threading) });
+    const welding = withSetup('Welding');
+    expect(welding.coil?.changeTimeS).toBe(v('coilEndWeldTime') + load(welding));
+    const accumulator = withSetup('Accumulator');
+    const mandrel = rollFormingMachines('USA')[ROLL_FORMING_CLASS.uncoiler].find((m) => m.name === lineOf(accumulator, 'Uncoiler')!.machineName)!;
+    expect(accumulator.coil?.changeTimeS).toBe(mandrel.specs.has_double_mandrel === true ? 0 : load(accumulator));
+    expect(accumulator.warnings.join(' ')).toMatch(/coilSetupMethod Accumulator/);
   });
 
   it('die re-sharpening stops the line stationaryDieChangeoverTime every numHitsPerDieChange hits of each press die', () => {
@@ -247,6 +335,10 @@ describe('the coil: its change shared by the parts a coil makes', () => {
     const r = route(input(CHANNEL), 'scissor');
     expect(runOf(lineOf(r, 'Cut-Off Press'))['Banding per Part']).toBeCloseTo(v('packBandingTime') / v('partBandedPackSize'), 9);
     expect(runOf(lineOf(r, 'Roll Forming Mill'))['Banding per Part']).toBeUndefined();
+  });
+
+  it('the coil as supplied (Coil Material Stock) is the material only: no line, no machine time', () => {
+    expect(lineOf(route(input(CHANNEL), 'scissor'), 'Coil Material Stock')).toBeUndefined();
   });
 
   it('the coil is flattened at or above coilFlatteningThickness, or of a yield at or above coilFlatteningYieldStrength', () => {
@@ -274,7 +366,7 @@ describe("the cut-off and memory's rule", () => {
     const routes = routesOf(input(TUBE));
     const { route: quoted } = chooseRollFormingRoute(routes, rollFormingRule(ref, TUBE), null);
     expect(quoted?.key).toBe('blade');
-    expect(quoted?.lines.map((l) => l.process)).toEqual(['Coil Material Stock', 'Uncoiler', 'Roll Forming Mill', 'Integrated HFI Welding', 'Cut-Off Press']);
+    expect(quoted?.lines.map((l) => l.process)).toEqual(['Uncoiler', 'Roll Forming Mill', 'Integrated HFI Welding', 'Cut-Off Press']);
     expect(quoted?.complete).toBe(true);
   });
 
@@ -322,7 +414,41 @@ describe('the punch press: one progressive die before the mill', () => {
   });
 });
 
+describe('the flanges: a short free flange is warned, a long one only costs passes', () => {
+  it('a free edge flange under minBendFlapSizeThicknessMultiplier x t is warned; no maximum applies to a roll formed flange', () => {
+    expect(route(input(CHANNEL), 'scissor').warnings.join(' ')).not.toMatch(/free flange/);
+    const short = partOf({ ...CHANNEL_G, bends: [bend(90, 3, 1), bend(90, 47.7, 1)], lastFlangeMm: 120 });
+    const w = route(input(short), 'scissor').warnings.join(' ');
+    expect(w).toContain('The free flange(s) of 3 mm are shorter than minBendFlapSizeThicknessMultiplier 3 x t (4.5 mm)');
+    expect(w).not.toMatch(/maxBendFlapSizeThicknessMultiplier|120 mm/);
+  });
+
+  it('a round tube (two 180° bends) carries half its strip to the seam on each bend', () => {
+    const tube = partOf(measured({
+      lengthMm: 1500, section: { height_mm: 50, width_mm: 50, area_mm2: 228, perimeter_mm: 310, closed: true, stock_form: 'ROUND_TUBE' },
+      stripWidthMm: 152.4, stripWidthNeutralMm: 152, bends: [{ ...bend(180, 0, 1), flange_before_mm: 0 }, { ...bend(180, 0, 1), flange_before_mm: 0 }], lastFlangeMm: 0,
+      tube: { outer_diameter_mm: 50, wall_mm: 1.5 },
+    }));
+    const plan = stationPlan(ref, tube, null);
+    expect(plan).toMatchObject({ flangeSource: 'tube', levels: [{ level: 1, bends: 2, maxAngleDeg: 180, flangeCarriedMm: 76 }] });
+    const r = route(input(tube), 'blade');
+    const deg = ((3 * 1.5 * r.stations.standSpacingMm! ** 2) / (8 * 76 ** 3)) * (180 / Math.PI);
+    expect(r.stations.levels[0]).toMatchObject({ passes: Math.ceil(180 / Math.min(15, deg) - 1e-6), governedBy: deg < 15 ? 'flange length' : 'lift angle' });
+  });
+});
+
 describe('the tooling: the rolls and the press dies, spread over the job', () => {
+  it('the rolls\' life by the material\'s type, brass and the other copper alloys as copper; only an unmatched type is warned', () => {
+    expect(toolLifeRow(ref, 'Brass')).toMatchObject({ row: { 'Material Type': 'Copper' }, mappedFrom: 'Brass' });
+    expect(toolLifeRow(ref, 'Galv. Steel')?.row['Material Type']).toBe('Galvanized Steel');
+    expect(toolLifeRow(ref, 'Steel')).toMatchObject({ row: { 'Material Type': 'Steel' }, mappedFrom: null });
+    const brass = route(input(CHANNEL, { material: rollFormingMaterial('Brass, UNS C36000') }), 'scissor');
+    expect(brass.tooling[0]).toMatchObject({ toolLife: 17500000 });
+    expect(brass.tooling[0]?.detail).toContain('toolLifeByMaterial Copper, the family of Brass');
+    expect(brass.warnings.join(' ')).not.toMatch(/toolLifeByMaterial has no row/);
+    expect(toolLifeRow(ref, 'Unobtainium')).toBeNull();
+  });
+
   it('the rolls: toolingMultiplier_Standard x the strip width x the stations, with profit and SG&A, one set a toolLifeByMaterial life', () => {
     const r = route(input(CHANNEL), 'scissor');
     const rolls = r.tooling.find((t) => t.key === 'roll-tooling')!;
@@ -377,13 +503,73 @@ describe('the line in the USA and in India', () => {
   });
 });
 
+/** A PostgREST client over rows in memory: the filters getMaterial uses (eq, neq, ilike, or on name/grade, not null, in, order, limit). */
+function rowsClient(tables: Record<string, Record<string, unknown>[]>): never {
+  const unquote = (v: string) => v.replace(/^"|"$/g, '').replace(/\\(.)/g, '$1').toLowerCase();
+  return {
+    from: (table: string) => {
+      let rows = [...(tables[table] ?? [])];
+      const b = {
+        select: () => b,
+        eq: (c: string, v: unknown) => { rows = rows.filter((r) => r[c] === v); return b; },
+        neq: (c: string, v: unknown) => { rows = rows.filter((r) => r[c] !== v); return b; },
+        ilike: (c: string, v: string) => { rows = rows.filter((r) => String(r[c]).toLowerCase() === unquote(v)); return b; },
+        or: (expr: string) => {
+          const want = unquote(/ilike\.("(?:[^"\\]|\\.)*")/.exec(expr)![1]);
+          rows = rows.filter((r) => String(r.name).toLowerCase() === want || String(r.grade).toLowerCase() === want);
+          return b;
+        },
+        not: (c: string) => { rows = rows.filter((r) => r[c] != null); return b; },
+        in: (c: string, vs: unknown[]) => { rows = rows.filter((r) => vs.includes(r[c])); return b; },
+        order: (c: string) => { rows.sort((x, y) => String(x[c]).localeCompare(String(y[c]))); return b; },
+        limit: (n: number) => { rows = rows.slice(0, n); return b; },
+        then: (resolve: (v: { data: unknown[]; error: null }) => unknown) => resolve({ data: rows, error: null }),
+      };
+      return b;
+    },
+  } as never;
+}
+
+describe('the material: the roll forming group\'s own, priced at the location', () => {
+  const name = 'Steel, Cold Worked, AISI 1008';
+  const tables = {
+    raw_materials: [
+      { id: 'rf-1008', name, grade: `Generic ${name}`, material_group: 'Sheet Metal Roll Forming', material_type: 'Steel', density_kg_m3: 7850, cost_usa: 1.751, cost_india: null },
+      { id: 'fnf-1008', name, grade: `Generic ${name}`, material_group: 'Ferrous & Non-Ferrous', material_type: 'Steel', density_kg_m3: 7850, cost_usa: 1.6, cost_india: 0.87 },
+    ],
+    raw_material_properties: [
+      { raw_material_id: 'rf-1008', property_key: 'ultimate_tensile_strength', value_num: 350 },
+      { raw_material_id: 'rf-1008', property_key: 'tensile_yield_strength', value_num: 245 },
+      { raw_material_id: 'rf-1008', property_key: 'shear_strength', value_num: 229 },
+    ],
+  };
+  const service = new RollFormingCostService({} as never, {} as never, {} as never, {} as never);
+
+  it('in the USA: its cost_usa, with its strengths', async () => {
+    const r = await service.getMaterial(rowsClient(tables), name, 'USA');
+    expect(r).toMatchObject({ material: { costPerKgUsd: 1.751, utsMpa: 350, yieldMpa: 245, shearStrengthMpa: 229, priceSource: 'Sheet Metal Roll Forming cost_usa' }, warning: null });
+  });
+
+  it('in India: cost_india of the same material in another group (held in USD), said; else the USA price, warned', async () => {
+    const india = await service.getMaterial(rowsClient(tables), name, 'India');
+    expect(india?.material).toMatchObject({ costPerKgUsd: 0.87, priceSource: `India: cost_india of ${name} in Ferrous & Non-Ferrous` });
+    expect(india?.warning).toMatch(/^The material price in India is cost_india of Steel, Cold Worked, AISI 1008 in the Ferrous & Non-Ferrous group \(0.87 USD\/kg\)/);
+    const unpriced = await service.getMaterial(rowsClient({ ...tables, raw_materials: tables.raw_materials.slice(0, 1) }), name, 'India');
+    expect(unpriced?.material.costPerKgUsd).toBe(1.751);
+    expect(unpriced?.warning).toBe(`The material price is the reference's USA price (cost_usa 1.751 USD/kg): no group prices ${name} in India.`);
+  });
+});
+
 describe('a part the line cannot make', () => {
   it('a sheet thicker than maxCoilThickness, a yield above maxCoilYieldStrength or a curve tighter than the curving unit: No Cost Feature lines', () => {
     const thick = route(input({ ...CHANNEL, thicknessMm: 6 }), 'scissor');
     expect(thick).toMatchObject({ feasible: false, complete: false, totalUsd: null });
     expect(thick.lines.map((l) => [l.process, l.operation])).toEqual([['No Cost Feature', 'Not roll formed: the 6 mm sheet is thicker than a coil is roll formed (maxCoilThickness 5.08 mm)']]);
     expect(route(input(CHANNEL, { material: rollFormingMaterial('Inconel 718') }), 'scissor').infeasible[0]).toMatch(/1017 MPa yield is above .* \(maxCoilYieldStrength 965.26 MPa\)/);
-    expect(route(input({ ...CHANNEL, curve: { radiusMm: 100, angleDeg: 90 } }), 'scissor').infeasible[0]).toMatch(/tighter than the curving unit bends \(curveUnitTopRollerDiameter 150 mm\)/);
+    // The profile wraps the 150 mm top roller: its inner face (the centroid radius less half the 36.5 mm section) may be no tighter than 75 mm.
+    expect(route(input({ ...CHANNEL, curve: { radiusMm: 90, angleDeg: 90 } }), 'scissor').infeasible[0])
+      .toBe("the profile is curved to a 71.75 mm radius at its inner face (90 mm at its centroid less half its 36.5 mm depth), tighter than it wraps the curving unit's top roller (curveUnitTopRollerDiameter 150 mm: 75 mm radius)");
+    expect(route(input({ ...CHANNEL, curve: { radiusMm: 100, angleDeg: 90 } }), 'scissor').feasible).toBe(true);
   });
 });
 

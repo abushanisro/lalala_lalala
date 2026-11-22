@@ -1,8 +1,10 @@
-// The roll forming line as memory/Sheet metal roll forming lays it out: Coil Material Stock, Uncoiler, Coil Flattener (when the coil needs it),
-// Punch Press (when the strip has features to punch), Roll Forming Mill, Integrated Welding (a closed section), Cut-Off Press. The line runs at
-// one speed, the slowest of its limits (the engine's rule, agreed with the user 2026-11-22): each machine's max line speed, the part-length
-// tolerance's (partLengthToleranceThresholds), profileRollBendingSpeed on a curved profile, and each stationary-die press's strokes a minute
-// (x stationaryDieLineSpeedFactor, one stroke a part). The quote names the limit that sets it. Pure.
+// The roll forming line as memory/Sheet metal roll forming lays it out: the coil as supplied (Coil Material Stock: the material, no machine
+// time), Uncoiler, Coil Flattener (when the coil needs it), Punch Press (when the strip has features to punch), Roll Forming Mill, Integrated
+// Welding (a closed section), Cut-Off Press. The line runs at one speed, the slowest of its limits (the engine's rule, agreed with the user
+// 2026-11-22): each machine's max line speed, the part-length tolerance's (partLengthToleranceThresholds), profileRollBendingSpeed on a curved
+// profile, and each stationary-die press's strokes a minute (x stationaryDieLineSpeedFactor, one stroke a part). Because the speed is shared,
+// the line is chosen whole (roll-forming-route.ts): at each speed one of those limits allows, the cheapest machine of each place that runs at
+// least that fast, the cheapest line quoted. The quote names the limit that sets it. Pure.
 import { toleranceKey } from './roll-forming-stations';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 
@@ -10,8 +12,23 @@ import type { SandReference } from '../casting/sand/sand-reference';
 import type { KitRow } from '../shared/calculators/route-kit';
 
 /** A machine's place on the line, in the line's order. */
-export type LineRole = 'stock' | 'uncoiler' | 'flattener' | 'punch' | 'mill' | 'welder' | 'cutoff';
-export const LINE_ORDER: readonly LineRole[] = ['stock', 'uncoiler', 'flattener', 'punch', 'mill', 'welder', 'cutoff'];
+export type LineRole = 'uncoiler' | 'flattener' | 'punch' | 'mill' | 'welder' | 'cutoff';
+export const LINE_ORDER: readonly LineRole[] = ['uncoiler', 'flattener', 'punch', 'mill', 'welder', 'cutoff'];
+/** The places whose machine is a stationary-die press: its speed limit is its strokes a minute, one stroke a part. */
+export const PRESS_ROLES: ReadonlySet<LineRole> = new Set(['punch', 'cutoff']);
+
+/**
+ * The fastest a machine lets the line run (mm/s): a press's strokes a minute x stationaryDieLineSpeedFactor x the feed a stroke (one part), any
+ * other machine's max line speed; null when the machine sets no limit (no spec).
+ */
+export function machineSpeedCap(role: LineRole, m: SandMachine, feedMm: number, stationaryDieFactor: number): number | null {
+  if (PRESS_ROLES.has(role)) {
+    const spm = machineValue(m, 'strokes_per_minute');
+    return spm != null && spm > 0 ? (spm * stationaryDieFactor * feedMm) / 60 : null;
+  }
+  const v = machineValue(m, 'max_line_speed_mm_per_s');
+  return v != null && v > 0 ? v : null;
+}
 
 /** A machine on the line: its process (the catalog's) and the machine. */
 export interface LineMachine {

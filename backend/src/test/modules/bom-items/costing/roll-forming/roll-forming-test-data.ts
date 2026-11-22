@@ -23,6 +23,7 @@ const rows = (path: string) => readCsv(path).rows;
 export const realVariables = () => rows(join(DIR, 'roll_forming_variables.csv'))
   .map((r) => ({ key: String(r['Variable Name']), value: r['String Value'] == null ? null : String(r['String Value']), unit_type: (r['Unit Type Name'] as string) || null }));
 const stagedLookups = readdirSync(join(DIR, 'Lookup')).filter((f) => f.endsWith('.csv')).map((f) => ({ key: f.replace(/\.csv$/, ''), raw: { rows: rows(join(DIR, 'Lookup', f)) } }));
+export const realLookups = () => stagedLookups;
 export const realRollFormingReference = () => resolveSandReference({ variables: realVariables(), lookups: stagedLookups });
 
 /** Each place on the line: its process, its machine file and its machine class (migration 862). */

@@ -128,10 +128,11 @@ export class RollFormingCostService {
 
   /**
    * The roll forming material whose name or grade equals `grade`, case-insensitively (raw_materials, material group Sheet Metal Roll Forming),
-   * with its strengths (raw_material_properties) and its price (cost_usa: the reference's materials hold no other location's price). Null when
-   * the grade is not one.
+   * with its strengths (raw_material_properties) and its price at the location. The group's materials hold the USA price (cost_usa) only: in
+   * India the price is cost_india of the same material in another group (Ferrous & Non-Ferrous prices most of them; cost_india is held in
+   * USD), said; only when no group prices it there, the USA price, warned. Null when the grade is not one.
    */
-  async getMaterial(client: DbClient, grade: string | null): Promise<RollFormingMaterial | null> {
+  async getMaterial(client: DbClient, grade: string | null, location = 'USA'): Promise<{ material: RollFormingMaterial; warning: string | null } | null> {
     const g = (grade ?? '').trim();
     if (!g) return null;
     const { data, error } = await client.from('raw_materials')
@@ -143,11 +144,34 @@ export class RollFormingCostService {
     const row = data[0] as Record<string, unknown>;
     const { data: props } = await client.from('raw_material_properties').select('property_key, value_num').eq('raw_material_id', String(row.id)).in('property_key', [...PROPERTY_KEYS]);
     const p = Object.fromEntries(((props ?? []) as { property_key: string; value_num: unknown }[]).map((x) => [x.property_key, positive(x.value_num)]));
+    const name = typeof row.name === 'string' ? row.name : typeof row.grade === 'string' ? row.grade : g;
+    const usa = positive(row.cost_usa);
+    let price = usa;
+    let priceSource = `${ROLL_FORMING_PROCESS_GROUP} cost_usa`;
+    let warning: string | null = null;
+    if (location === 'India') {
+      const { data: priced } = await client.from('raw_materials').select('material_group, cost_india')
+        .neq('material_group', ROLL_FORMING_PROCESS_GROUP).ilike('name', escapeLikePattern(name)).not('cost_india', 'is', null)
+        .order('material_group').limit(1);
+      const hit = ((priced ?? []) as { material_group: string | null; cost_india: unknown }[]).find((x) => positive(x.cost_india) != null);
+      if (hit) {
+        price = positive(hit.cost_india);
+        priceSource = `India: cost_india of ${name} in ${hit.material_group ?? 'another group'}`;
+        warning = `The material price in India is cost_india of ${name} in the ${hit.material_group ?? 'another'} group (${price} USD/kg): the ${ROLL_FORMING_PROCESS_GROUP} materials hold the USA price only.`;
+      } else {
+        warning = `The material price is the reference's USA price (cost_usa ${usa ?? '?'} USD/kg): no group prices ${name} in India.`;
+      }
+    } else if (location !== 'USA') {
+      warning = `The material price is the reference's USA price (cost_usa): it holds none for ${location}.`;
+    }
     return {
-      id: String(row.id), name: String(row.name ?? row.grade ?? g), materialType: row.material_type ? String(row.material_type) : null,
-      densityKgM3: positive(row.density_kg_m3) ?? (positive(row.density) != null ? positive(row.density)! * 1000 : null),
-      costPerKgUsd: positive(row.cost_usa),
-      utsMpa: p.ultimate_tensile_strength ?? null, yieldMpa: p.tensile_yield_strength ?? null, shearStrengthMpa: p.shear_strength ?? null,
+      material: {
+        id: String(row.id), name, materialType: typeof row.material_type === 'string' ? row.material_type : null,
+        densityKgM3: positive(row.density_kg_m3) ?? (positive(row.density) != null ? positive(row.density)! * 1000 : null),
+        costPerKgUsd: price, priceSource,
+        utsMpa: p.ultimate_tensile_strength ?? null, yieldMpa: p.tensile_yield_strength ?? null, shearStrengthMpa: p.shear_strength ?? null,
+      },
+      warning,
     };
   }
 
@@ -158,17 +182,18 @@ export class RollFormingCostService {
     const { part, missing: partMissing } = rollFormPart(req.geometry, req.sheetThicknessMm);
     if (!part) return none(null, null, ...partMissing);
     for (const what of part.unmeasured) warnings.push(`The cad-engine could not measure ${what}.`);
-    const [{ reference, missing: refMissing }, calculators, machines, toolShop, operations, material] = await Promise.all([
+    const [{ reference, missing: refMissing }, calculators, machines, toolShop, operations, found] = await Promise.all([
       this.reference(),
       this.catalog.loadRollFormingCalculators(req.accessToken),
       this.machines.getMachinesByClass(req.client, ROLL_FORMING_ROUTE_CLASSES, req.location),
       this.castingReference.getToolShop(),
       this.operationCatalog(req.client),
-      this.getMaterial(req.client, req.grade),
+      this.getMaterial(req.client, req.grade, req.location),
     ]);
     if (!reference) return none(part, null, ...refMissing);
-    if (!material) return none(part, null, `"${req.grade ?? '(no material)'}" is not a roll forming material in Raw Materials (material group ${ROLL_FORMING_PROCESS_GROUP}): choose one in Material Grade`);
-    if (req.location !== 'USA') warnings.push(`The material price is the reference's USA price (cost_usa): it holds none for ${req.location}.`);
+    if (!found) return none(part, null, `"${req.grade ?? '(no material)'}" is not a roll forming material in Raw Materials (material group ${ROLL_FORMING_PROCESS_GROUP}): choose one in Material Grade`);
+    const material = found.material;
+    if (found.warning) warnings.push(found.warning);
     if (material.utsMpa == null || material.yieldMpa == null) {
       warnings.push(`${material.name} has no ${[material.utsMpa == null ? 'UTS' : null, material.yieldMpa == null ? 'yield strength' : null].filter(Boolean).join(' or ')} on file: `
         + 'the checks that read it (the ultra-high-strength shaft, the smallest hole, the coil flattener, the yield limit, the bend radius) go without it.');
@@ -198,9 +223,10 @@ export class RollFormingCostService {
       warnings.push(`The line's ${req.location} rates (${proxied.map((l) => l.process).join(', ')}) are the Netherlands export's overheads (no export lists the USA) with the USA labour of each wage grade (migration 1112).`);
     }
     warnings.push(
-      `Disclosed (the engine's rules, agreed 2026-11-22; the data has none): the roll stations (bend levels x rollFormingLiftAngle, lead-in and finishing passes), `
-      + 'the line speed (the slowest of its limits), the cycle (the feed length at the line speed plus the line\'s stoppages a part), the roll tooling '
-      + '(multiplier x strip width x stations) and the compact press die model.',
+      `Disclosed (the engine's rules, agreed 2026-11-22; the data has none): the roll stations (bend levels in passes of at most rollFormingLiftAngle `
+      + 'and of no more than the flange each level carries takes between the mill\'s stands), the line chosen whole at one speed (the slowest of its '
+      + 'limits), the cycle (the feed at the line speed plus the line\'s stoppages a part), the roll tooling (multiplier x strip width x stations) '
+      + 'and the compact press die model. The coil as supplied takes no machine time.',
     );
     if (req.overrides?.[ROLL_FORMING_KEYS.stations] != null && o.stations != null) warnings.push(`The roll stations are the Cost Guide's ${o.stations} (the rule gives ${route.stations.rule}).`);
     const local = routes.map((r) => routeToLocal(r, req.usdToLocal));

@@ -49,10 +49,26 @@ function amortise(costUsd: number, toolLife: number | null, parts: number | null
   return { investmentUsd: r2(investment), perPartUsd: Math.round((investment / parts) * 10000) / 10000, amortizationParts: parts, copies };
 }
 
-/** toolLifeByMaterial's row of a material type ("Galv. Steel" is filed as Galvanized Steel), or null. */
-export function toolLifeRow(ref: SandReference, materialType: string | null): KitRow | null {
-  const want = text(materialType) === 'galv. steel' ? 'galvanized steel' : text(materialType);
-  return want ? ref.table('toolLifeByMaterial').find((r) => text(r['Material Type']) === want) ?? null : null;
+/**
+ * toolLifeByMaterial's row of a material type: the type itself, else its family as the table files it (brass, bronze and the other copper
+ * alloys wear the rolls as copper does; "Galv. Steel" is Galvanized Steel). Null only when nothing matches.
+ */
+export function toolLifeRow(ref: SandReference, materialType: string | null): { row: KitRow; mappedFrom: string | null } | null {
+  const type = text(materialType);
+  if (!type) return null;
+  const rows = ref.table('toolLifeByMaterial');
+  const find = (want: string) => rows.find((r) => text(r['Material Type']) === want) ?? null;
+  const own = find(type);
+  if (own) return { row: own, mappedFrom: null };
+  const family = /\b(brass|bronze|copper|cupro|gunmetal)\b|^cu\b/.test(type) ? 'copper'
+    : /\bgalv/.test(type) ? 'galvanized steel'
+      : /\bstainless\b/.test(type) ? 'stainless steel'
+        : /\balumin/.test(type) ? 'aluminum'
+          : /\btitanium\b/.test(type) ? 'titanium'
+            : /\b(super ?alloy|nickel|inconel|hastelloy)\b/.test(type) ? 'heat resistant super alloys'
+              : /\bsteel\b/.test(type) ? 'steel' : null;
+  const mapped = family ? find(family) : null;
+  return mapped ? { row: mapped, mappedFrom: materialType } : null;
 }
 
 /** The mill's rolls: one set for the profile's stations, its life by the material's type. */
@@ -74,16 +90,17 @@ export function rollTooling(inp: {
       warnings: [`The roll tooling is not costed: ${run.reasons.join('; ')}.`],
     };
   }
-  const row = toolLifeRow(ref, inp.materialType);
+  const match = toolLifeRow(ref, inp.materialType);
+  const row = match?.row ?? null;
   const life = row != null ? Number(row['Num Parts Per Tool']) : ref.number('numPartsPerTool');
-  if (row == null) warnings.push(`The roll tooling's life is numPartsPerTool (${ref.number('numPartsPerTool') ?? '?'} parts): toolLifeByMaterial has no row for ${inp.materialType ?? 'the material\'s type'}.`);
+  if (row == null) warnings.push(`The roll tooling's life is numPartsPerTool (${ref.number('numPartsPerTool') ?? '?'} parts): toolLifeByMaterial has no row for ${inp.materialType ?? 'the material\'s type'}, nor for its family.`);
   const spread = amortise(run.sec, life, inp.amortizationParts);
   if (spread.investmentUsd == null) warnings.push('The roll tooling is not spread over the job: the scenario has no annual volume and production life.');
   return {
     tool: {
       key: 'roll-tooling', description,
       detail: `${r2(run.run.outputs['Tool Subtotal'] ?? 0)} USD (multiplier ${multiplier?.value ?? '?'} x ${r2(inp.stripWidthMm)} mm strip x ${inp.stations} stations) with profit and SG&A; `
-        + `one set lasts ${life != null ? Math.round(life).toLocaleString('en-US') : '?'} parts (${row != null ? `toolLifeByMaterial ${String(row['Material Type'])}` : 'numPartsPerTool'}); `
+        + `one set lasts ${life != null ? Math.round(life).toLocaleString('en-US') : '?'} parts (${row != null ? `toolLifeByMaterial ${String(row['Material Type'])}${match?.mappedFrom ? `, the family of ${match.mappedFrom}` : ''}` : 'numPartsPerTool'}); `
         + `${spread.copies ?? '?'} set(s) over ${inp.amortizationParts ?? '?'} parts. The rule is the engine's (the data has no roll tooling formula), agreed 2026-11-22.`,
       costUsd: r2(run.sec), ...spread, toolLife: life, run: run.run,
     },

@@ -979,19 +979,35 @@ export interface RollFormingBreakdown {
   routeLabel: string;
   /** Memory's cut-off rule: a closed section by blade, an open one by scissor (or cutOffOperationType when the data sets one). */
   rule: { route: string; closed: boolean; basis: string };
-  section: { heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null };
+  section: {
+    heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
+    /** A closed round or oval tube's outside diameter (an oval's long and short sizes) and wall; null for any other section. */
+    tube: { outerDiameterMm: number; wallMm: number | null; majorMm: number | null; minorMm: number | null } | null;
+    /** Bends modelled with no radius, priced at the material's minimum bend radius (minBendRadii x t); null when none is. */
+    sharpBends: { count: number; pricedRadiusMm: number | null; basis: string } | null;
+  };
+  /** Where the material's price per kg was read (the group's cost_usa, or in India another group's cost_india of the same material). */
+  materialPriceSource: string | null;
   /** The strip a part uses: its width (the section's stretch-out), the part and the feed (the part plus the slug), and their masses. */
   strip: { widthMm: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
-  /** The roll stations: the bends' passes by level, the lead-in and finishing passes, the rule's total and the Cost Guide's (override). */
+  /**
+   * The roll stations on the chosen mill: each level's passes (its largest angle in passes of degreesPerPass: rollFormingLiftAngle, or less
+   * when governedBy 'flange length', the longest flange the level carries over the mill's stand spacing), the lead-in and finishing passes,
+   * the rule's total and the Cost Guide's (override).
+   */
   stations: {
     forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean; levelSource: string;
-    levels: { level: number; bends: number; maxAngleDeg: number; passes: number }[];
+    /** How the carried flanges were found: 'open strip', 'closed section', 'tube' or 'not measured'. */
+    flangeSource: string;
+    /** The chosen mill's stand spacing (horizontal center length, mm); null with no mill. */
+    standSpacingMm: number | null;
+    levels: { level: number; bends: number; maxAngleDeg: number; flangeCarriedMm: number | null; passes: number; degreesPerPass: number; governedBy: 'lift angle' | 'flange length' }[];
   };
   mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;
   /** The line's speed, the limit that sets it, and every limit. */
-  lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[] } | null;
-  /** The coil: its mass, the parts it makes, the change (threading or end weld plus the uncoiler's load) and its share of a part (s). */
-  coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string } | null;
+  lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; speedsTried: number; caps: { name: string; mmPerS: number }[] } | null;
+  /** The coil: its mass, the parts it makes, the change (by coilSetupMethod: threading, end weld or an accumulator) and its share of a part (s). */
+  coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string; setupMethod: string } | null;
   dieSharpeningPerPartS: number;
   flattener: { needed: boolean; reason: string };
   /** The features punched in the flat strip (a die station per kind) and those that are No Cost Features, with why. */
