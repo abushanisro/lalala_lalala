@@ -345,3 +345,73 @@ def test_an_elongated_bar_with_no_turned_outer_diameter_is_milled():
 def test_not_measured_keeps_the_rotational_gates_as_they_were():
     family, _, _ = detect_part_family(**LEAD_NUT)
     assert family == "mill_turn"
+
+
+# ── A part lying within its largest turned diameter is turned ──────────────
+# Lead Screw side shaft (classification signals of the real part): Ø14 x 32, three turned diameters, a bore, cross holes and a keyway.
+# Two diameters long, so its box is neither a disc (mid/max 0.44) nor a rod (max/mid 2.28): it was milled at 0.65 with its diameters found.
+LEAD_SCREW_SHAFT = dict(
+    bbox_dims=[32.0, 14.04, 14.0], hole_count=8, secondary_features_count=16,
+    cyl_axis_alignment=0.5, rotational_face_ratio=0.286, planar_face_fraction=0.429, total_face_count=28,
+    large_cyl_count=3, pocket_count=12, thin_wall_ratio=0.209, volume_mm3=2646.0, turned_od_count=3,
+)
+
+
+def test_a_short_shaft_within_its_largest_turned_diameter_is_mill_turn():
+    family, confidence, reasons = detect_part_family(**LEAD_SCREW_SHAFT, within_turned_od=True)
+    assert family == "mill_turn"
+    assert confidence == 0.72
+    assert any("within its largest turned outer diameter" in r for r in reasons)
+
+
+def test_the_same_shaft_with_no_secondary_feature_is_turned():
+    family, confidence, _ = detect_part_family(**{**LEAD_SCREW_SHAFT, "secondary_features_count": 0, "pocket_count": 0}, within_turned_od=True)
+    assert (family, confidence) == ("turned", 0.75)
+
+
+def test_without_that_evidence_the_box_gates_decide_as_before():
+    assert detect_part_family(**LEAD_SCREW_SHAFT)[0] == "milled"
+    assert detect_part_family(**LEAD_SCREW_SHAFT, within_turned_od=False)[0] == "milled"
+
+
+def test_a_part_the_box_gates_already_class_keeps_its_result_and_reasons():
+    # A Ø30 x 100 rod (max/mid 3.3): the rod gate's verdict, confidence and reasons stand with or without the envelope evidence.
+    rod = dict(bbox_dims=[30.0, 30.0, 100.0], hole_count=0, secondary_features_count=0, turned_od_count=1, volume_mm3=70686.0)
+    assert detect_part_family(**rod, within_turned_od=True) == detect_part_family(**rod)
+    # A Ø100 x 20 flange with secondary features: the disc gate's.
+    disc = dict(bbox_dims=[20.0, 100.0, 100.0], hole_count=4, secondary_features_count=2, cyl_axis_alignment=0.70, rotational_face_ratio=0.40,
+                total_face_count=20, turned_od_count=1, volume_mm3=157080.0)
+    assert detect_part_family(**disc, within_turned_od=True) == detect_part_family(**disc)
+
+
+# A plain Ø20 x 80 shaft with two cross holes: 7 faces, 5 of them cylindrical (its two diameters count as holes in hole_density). Its box's
+# min/max is 0.25, "flat-ish" to the sheet-metal gates, and it read as perforated sheet metal.
+SHAFT_WITH_CROSS_HOLES = dict(
+    bbox_dims=[20.0, 20.0, 80.0], hole_count=5, secondary_features_count=2, cyl_axis_alignment=0.6, rotational_face_ratio=0.71,
+    total_face_count=7, large_cyl_count=0, pocket_count=0, volume_mm3=21000.0, turned_od_count=2,
+)
+
+
+def test_a_bar_as_thick_as_it_is_wide_is_not_flat_however_long():
+    assert detect_part_family(**SHAFT_WITH_CROSS_HOLES)[0] == "sheet_metal"
+    family, _, reasons = detect_part_family(**SHAFT_WITH_CROSS_HOLES, within_turned_od=True)
+    assert family == "mill_turn"
+    assert not any("sheet metal" in r for r in reasons)
+    # A Ø10 x 200 pin: min/max 0.05 is "very flat" to gate 0.
+    pin = dict(bbox_dims=[10.0, 10.0, 200.0], hole_count=1, secondary_features_count=0, total_face_count=3, volume_mm3=15700.0, turned_od_count=1)
+    assert detect_part_family(**pin)[0] == "sheet_metal"
+    assert detect_part_family(**pin, within_turned_od=True)[0] == "turned"
+
+
+def test_a_flat_disc_within_its_turned_diameter_is_still_judged_by_its_flatness():
+    # Ø100 x 2 with a few holes: a laser-cut blank. Its outline is a turned diameter to the geometry, and it is flat.
+    blank = dict(bbox_dims=[2.0, 100.0, 100.0], hole_count=5, secondary_features_count=0, total_face_count=8, volume_mm3=15000.0, turned_od_count=1)
+    assert detect_part_family(**blank, within_turned_od=True)[0] == "sheet_metal"
+
+
+def test_a_shell_within_its_outer_diameter_is_not_taken_for_a_turned_bar():
+    # A Ø50 x 100 tube with a 1.5 mm wall fills 9 % of its box: hollow enough to be rolled or drawn from sheet, so the evidence is not used.
+    shell = dict(bbox_dims=[50.0, 50.0, 100.0], hole_count=2, secondary_features_count=0, total_face_count=4, volume_mm3=22855.0, turned_od_count=1)
+    assert detect_part_family(**shell, within_turned_od=True) == detect_part_family(**shell)
+    # With no volume the hollowness is unknown: not used either.
+    assert detect_part_family(**{**LEAD_SCREW_SHAFT, "volume_mm3": 0.0}, within_turned_od=True)[0] == "milled"
