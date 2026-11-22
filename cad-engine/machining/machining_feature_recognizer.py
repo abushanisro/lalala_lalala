@@ -145,6 +145,11 @@ _MIN_FILLET_RADIUS_MM = 0.5
 # _collect_prismatic_pockets' own doc comment for the bug this closes.
 _STRUCTURAL_FACE_AXIS_TOL_MM = 0.05
 
+# A planar face is square to the turning axis (a candidate floor of a keyway
+# or a slot milled into a turned surface) when its normal makes less than
+# this cosine with the axis: within about 8 degrees of square.
+_RADIAL_FLOOR_MAX_DOT = 0.15
+
 
 def _is_bore(f: MachiningFeature) -> bool:
     """An individual axial bore (not a cross hole or an already-grouped pattern)."""
@@ -251,7 +256,7 @@ class MachiningFeatureRecognizer:
         cylinders = _deduplicate_cylinders(raw_cylinders)
         cones = self._collect_cones(shape)
         toroids = self._collect_toroids(shape)
-        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox)
+        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True)
 
         # ── Teeth around the axis (gear / spline) → AxiGroove ────────────────
         # Off-axis convex faces with N-fold rotational symmetry (axigroove.py).
@@ -281,6 +286,32 @@ class MachiningFeatureRecognizer:
             f"cones={len(cones)} toroids={len(toroids)} prismatic={len(prismatic)}"
         )
 
+        # ── Recess floors → keyway / radial slot, classified before the cylinders ─
+        # A keyway or a slot milled into a turned surface owns its faces (the floor and the walls standing on it),
+        # so none of them is reported a second time as something else.
+        # The flat bottom of a round hole that breaks out of the turned surface (a spot face, a counterbore on a
+        # diameter) is walled by that hole's cylinder alone: it belongs to the hole, which stays a cross hole.
+        cross_cylinders = [c for c in cylinders if c["kind"] == "cross_hole"]
+        recesses: List[Tuple[Dict, Tuple[MachiningFeatureType, str, Dict]]] = []
+        for p in prismatic:
+            result = _classify_prismatic_turned(p, main_axis)
+            if result is None:
+                continue
+            if p["radial"] and any(set(p["wall_faces"]) <= set(c.get("face_indices", [])) for c in cross_cylinders):
+                continue
+            recesses.append((p, result))
+        recess_faces = {i for p, _result in recesses if p["radial"] for i in p["face_indices"]}
+        # A flat wall of such a recess faces along the axis when the recess runs across it: it is the recess's
+        # wall, not the floor of a keyway of its own.
+        recesses = [(p, result) for p, result in recesses if p["radial"] or p["face_indices"][0] not in recess_faces]
+        # The concave arcs that end a keyway or a radial slot are its end walls, as the two half turns of a milled
+        # slot are its ends (_recognize_milled): a cylinder face that sweeps less than a bore and stands on the
+        # recess's floor is not a cross hole. A cross hole drilled through the shaft wraps all the way round and
+        # stays one. Read face by face: the ends of two keyways cut opposite each other lie on one axis line, and
+        # together they sweep a full turn.
+        half_turns = [c for c in raw_cylinders if c["kind"] == "cross_hole" and c.get("u_range", 2.0 * math.pi) < HOLE_MIN_SWEEP_RAD]
+        recess_ends = {i for c in half_turns for i in c.get("face_indices", [])} & recess_faces
+
         # ── Cylinders → external_diameter / through_hole / blind_hole / cross_hole ─
         # bore_id_to_cyl lets PCD detection read dist_from_axis and angle_deg after
         # bore features are emitted, without storing those fields in the public API.
@@ -289,6 +320,8 @@ class MachiningFeatureRecognizer:
         bore_id_to_cyl: Dict[str, Dict] = {}
 
         for cyl in cylinders:
+            if cyl["kind"] == "cross_hole" and set(cyl.get("face_indices", [])) <= recess_ends:
+                continue
             diameter_mm = round(cyl["radius"] * 2.0, 3)
             kind = cyl["kind"]
 
@@ -507,15 +540,9 @@ class MachiningFeatureRecognizer:
             ))
 
         # ── Prismatic pockets → slot / keyway only (skip structural faces) ────
-        # Structural transition faces (shoulders, datums) are excluded by requiring
-        # aspect ratio > 2.5. Generic "pocket" is not emitted from turned parts —
-        # pockets on turned parts are either keyways or radial slots.
-        p_idx = 0
-        for p in prismatic:
-            result = _classify_prismatic_turned(p, main_axis)
-            if result is None:
-                continue
-            ftype, variant, params = result
+        # Classified above (recesses). Generic "pocket" is not emitted from turned
+        # parts — pockets on turned parts are either keyways or radial slots.
+        for p_idx, (p, (ftype, variant, params)) in enumerate(recesses):
             features.append(MachiningFeature(
                 id=f"{ftype}_{p_idx}",
                 type=ftype,
@@ -524,7 +551,6 @@ class MachiningFeatureRecognizer:
                 confidence=0.70,
                 face_ids=p.get("face_indices", []),
             ))
-            p_idx += 1
 
         if not features:
             warnings.append(
@@ -1013,6 +1039,7 @@ class MachiningFeatureRecognizer:
         main_axis: Tuple[float, float, float],
         bbox: Optional[Dict] = None,
         hole_bottoms: Optional[set] = None,
+        radial: bool = False,
     ) -> List[Dict]:
         """
         The floors of the part's recesses, for slot / keyway / pocket classification: planar faces that
@@ -1020,6 +1047,15 @@ class MachiningFeatureRecognizer:
         a boss is not a floor, and the flat bottom of a hole belongs to the hole. Each floor carries
         dims = [depth, width, length]: the height of its tallest wall and the two sides of the floor itself.
         The face ordinals of hole bottoms are added to `hole_bottoms` when the caller passes a set.
+
+        radial (turned and mill-turn parts, where main_axis is the turning axis): the floors that face
+        across the axis are collected too. A keyway or a slot milled into a turned diameter or a bore has
+        such a floor; a shoulder or an end face does not (it faces along the axis). These floors carry
+        radial = True and own their walls: face_indices is the floor and the faces standing on its edges
+        (side walls, rounded ends). Where a keyway crosses two turned diameters its depth is that of its
+        deepest wall, the one cut into the larger diameter. A floor that faces the turning axis with walls
+        reaching up to it is left out: it is one side of a hole the axis runs through (the flat of a
+        D-shaped bore, a flat of a square or hexagon socket), not a recess cut into a turned surface.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1043,11 +1079,13 @@ class MachiningFeatureRecognizer:
         from OCC.Core.Bnd import Bnd_Box  # type: ignore
 
         from OCC.Core.TopoDS import topods  # type: ignore
-        from shared.feature_extent import faces_extents_mm
+        from shared.feature_extent import faces_box
         from .recessed_floor import RecessedFloors
 
         ax, ay, az = main_axis
         axis_lo, axis_hi = _axis_range(bbox, (ax, ay, az)) if bbox is not None else (None, None)
+        # A point on the turning axis: the part's own axis passes through its bounding-box centre (as collect_cylinders takes it).
+        on_axis = ((bbox["xmin"] + bbox["xmax"]) / 2, (bbox["ymin"] + bbox["ymax"]) / 2, (bbox["zmin"] + bbox["zmax"]) / 2) if bbox is not None else None
         floors = RecessedFloors(shape)
         pockets = []
         face_idx = 0
@@ -1062,8 +1100,11 @@ class MachiningFeatureRecognizer:
                 # Only include faces whose normal is parallel to the main axis
                 # (these are pocket-floor CANDIDATES; the part's own outer
                 # boundary faces at the axis extremes are excluded below).
+                # On a turned part, also the faces square to the turning axis
+                # (within about 8 degrees: a keyway's floor runs along the axis).
                 dot_with_axis = abs(nx * ax + ny * ay + nz * az)
-                if dot_with_axis > 0.85:
+                across_axis = radial and on_axis is not None and dot_with_axis < _RADIAL_FLOOR_MAX_DOT
+                if dot_with_axis > 0.85 or across_axis:
                     fbox = Bnd_Box()
                     brepbndlib.Add(face, fbox)
                     xmin, ymin, zmin, xmax, ymax, zmax = fbox.Get()
@@ -1082,16 +1123,29 @@ class MachiningFeatureRecognizer:
                     floor = floors.measure(topods.Face(face))
                     if floor and floor["hole_bottom"] and hole_bottoms is not None:
                         hole_bottoms.add(face_idx)
-                    sides = faces_extents_mm([topods.Face(face)]) if floor and floor["recessed"] and not floor["hole_bottom"] else None
+                    recessed = bool(floor and floor["recessed"] and not floor["hole_bottom"])
+                    if recessed and across_axis:
+                        # How far the turning axis stands above the floor, on the side its walls rise on. Within
+                        # the walls' height, the axis runs through the space they enclose: a side of an axial hole.
+                        origin = plane.Location()
+                        fnx, fny, fnz = floor["normal"]
+                        axis_height = (on_axis[0] - origin.X()) * fnx + (on_axis[1] - origin.Y()) * fny + (on_axis[2] - origin.Z()) * fnz
+                        recessed = not 0.0 < axis_height <= floor["depth_mm"]
+                    sides = faces_box([topods.Face(face)]) if recessed else None
                     if sides:
+                        (length, long_direction), (width, _across) = sides[0], sides[1]
                         pockets.append({
                             "normal": (nx, ny, nz),
-                            "dims": [floor["depth_mm"], sides[1], sides[0]],
+                            "dims": [floor["depth_mm"], width, length],
+                            "long_direction": long_direction,
                             "area_mm2": floor["area_mm2"],
                             "walled_fraction": floor["walled_fraction"],
                             "width_confined": floor["width_confined"],
                             "centroid": (cx, cy, cz),
-                            "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
+                            "radial": across_axis,
+                            "wall_faces": floor["wall_faces"],
+                            # OCC face ordinals — match face_map in memory_optimizer
+                            "face_indices": sorted([face_idx] + floor["wall_faces"]) if across_axis else [face_idx],
                         })
             face_idx += 1  # increment for EVERY face, not just planes
             exp.Next()
@@ -1354,15 +1408,21 @@ def _classify_prismatic_turned(
 
     Only Keyway and Slot/radial are emitted from turned parts — PocketV2 is not
     valid here because pockets on turned ODs are either keyways (parallel to axis)
-    or radial slots (perpendicular). Structural faces are filtered by aspect < 2.5.
+    or radial slots (perpendicular).
+
+    A floor that faces along the axis: Keyway when elongated; structural faces are
+    filtered by aspect < 2.5.
+    A floor that faces across the axis (milled into a turned diameter or a bore) is a
+    channel when walls stand on both sides of its width, and is named by the direction
+    of its long side, not by its normal: Keyway when it runs along the turning axis,
+    Slot/radial when it runs across it. Its proportions do not decide (a keyway is
+    often only two widths long). An open flat (a wall at its ends, or on one side)
+    is not a channel and is left out, as every generic pocket on a turned part is.
     """
     dims = pocket["dims"]
     short, mid, long = dims[0], dims[1], dims[2]
     if mid < 0.1:
         return None
-    aspect = long / mid
-    if aspect < 2.5:
-        return None  # structural transition face, shoulder, or datum face
 
     nx, ny, nz = pocket["normal"]
     ax, ay, az = main_axis
@@ -1372,6 +1432,8 @@ def _classify_prismatic_turned(
     centroid = pocket.get("centroid")
 
     if dot_with_axis > 0.85:
+        if long / mid < 2.5:
+            return None  # structural transition face, shoulder, or datum face
         # Floor normal is parallel to axis → keyway running along the shaft
         return "Keyway", "default", {
             "length_mm": round(long, 3),
@@ -1380,13 +1442,22 @@ def _classify_prismatic_turned(
             "centroid": centroid,
         }
 
-    # Elongated face with normal perpendicular to axis → radial slot on OD
-    return "Slot", "radial", {
+    if not pocket["width_confined"]:
+        return None
+    # The same fields a milled part's keyway carries: costing reads walled_fraction to tell a keyway closed at an
+    # end (milled) from one open at both ends (broached).
+    params = {
         "length_mm": round(long, 3),
         "width_mm": round(mid, 3),
         "depth_mm": round(short, 3),
         "centroid": centroid,
+        **{k: (round(v, 3) if isinstance(v, float) else v) for k in ("area_mm2", "walled_fraction", "width_confined")
+           if (v := pocket.get(k)) is not None},
     }
+    lx, ly, lz = pocket["long_direction"]
+    if abs(lx * ax + ly * ay + lz * az) > 0.85:
+        return "Keyway", "default", params
+    return "Slot", "radial", params
 
 
 def _detect_pcd_from_axial_bores(

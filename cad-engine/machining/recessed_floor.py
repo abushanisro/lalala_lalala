@@ -13,6 +13,9 @@ around it falls away), so it is not a floor; nothing was cut out above it.
                    the cutter that machines it can be no wider than the floor. On an open step it is not confined.
   hole_bottom      the walls are one hole's own cylinder all the way round: the flat bottom of a drilled or
                    counterbored hole, which belongs to the hole.
+  normal           the floor's normal, out of the material: the side its walls rise on.
+  wall_faces       the face ordinals of the walls that stand on the floor's edges (side walls, rounded ends, floor
+                   fillets): with the floor, the faces of the recess.
 
 Measured on the exact geometry (edges sampled along their curves); nothing is estimated.
 """
@@ -153,6 +156,8 @@ class RecessedFloors:
             "width_confined": _width_confined(boundary, normal),
             "hole_bottom": bool(walls) and walled_fraction > 0.99 and all(hole_wall(w) for w in walls),
             "area_mm2": area.Mass(),
+            "normal": normal,
+            "wall_faces": sorted({self._faces.FindIndex(w) - 1 for w in walls}),
         }
 
 
