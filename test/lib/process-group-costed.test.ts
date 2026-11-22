@@ -13,7 +13,7 @@ describe('process groups with a cost model', () => {
     expect(processGroupOptionLabel(group)).toBe(group);
   });
 
-  it.each(['Sheet Plastic', 'Stock Machining'])('%s is not, and its option says so', (group) => {
+  it.each(['Sheet Plastic'])('%s is not, and its option says so', (group) => {
     expect(isCostedProcessGroup(group)).toBe(false);
     expect(processGroupOptionLabel(group)).toBe(`${group} (not costed yet)`);
   });
@@ -49,6 +49,10 @@ describe('process groups with a cost model', () => {
   // to a milled part, while the backend's Refresh analysis knows the geometry picks the machining family.
   it('a Machining part is analysed as a machined part, the geometry picking the family; a process of one family still names it', () => {
     expect(processGroupToFamilyHint('Machining')).toBe('machined');
+    // Stock Machining is costed as the three machining families: its upload is analysed the same way, never forced to milled.
+    expect(processGroupToFamilyHint('Stock Machining')).toBe('machined');
+    expect(isCostedProcessGroup('Stock Machining')).toBe(true);
+    expect(processGroupOptionLabel('Stock Machining')).toBe('Stock Machining');
     expect(processGroupToFamilyHint('2-Model Machining')).toBe('two_model');
     expect(processGroupToFamilyHint('Multi-Spindle Machining')).toBe('turned');
     expect(processGroupToFamilyHint('Sheet Metal')).toBe('sheet_metal');
