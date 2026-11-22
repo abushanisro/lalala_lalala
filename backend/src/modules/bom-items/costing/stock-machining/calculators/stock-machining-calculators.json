@@ -1,0 +1,412 @@
+{
+  "domain": "stock_machining",
+  "processGroup": "Stock Machining",
+  "calculators": [
+    {
+      "key": "stock_machining.material_stock",
+      "name": "Stock Machining - Material Stock",
+      "operations": [
+        "Material Stock"
+      ],
+      "description": "Material Stock: the stock as supplied (memory operation As Supplied; its machine has no operator and no rate). It holds the bar or plate each part is cut from (Stock Machining - Bar Stock or Plate Stock) and takes no machine time: no line is costed for it. A face of the part that lies on the stock's surface where no stock is left on it is used as supplied.",
+      "fields": [
+        {
+          "name": "Stock Mass",
+          "unit": "kg",
+          "source": {
+            "engine": "stock_mass_kg (the stock bought per part: Stock Machining - Bar Stock or Plate Stock)"
+          }
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "0 * {Stock Mass}"
+        }
+      ]
+    },
+    {
+      "key": "stock_machining.stock_size",
+      "name": "Stock Machining - Stock Size",
+      "operations": [],
+      "helper": true,
+      "output": "Required Size",
+      "results": [
+        "Allowance"
+      ],
+      "description": "The size of stock a part needs: its outside size (its largest diameter, its width across flats, or a side of its section) plus the stock left on each side. The allowance is a percent of the outside size, at least a least and at most a most (percentStockAllowance, minStockAllowance, maxStockAllowance; hexPercentStockAllowance and hexMinStockWidthAllowance for hex bar), or the Cost Guide's. The stock is bought in the next preferred size at or above it (tblPreferredSizes: inch sizes in USA, metric elsewhere) when snapStockSize is true.",
+      "fields": [
+        {
+          "name": "Outside Size",
+          "unit": "mm",
+          "source": {
+            "engine": "outside_size_mm (the part's largest diameter, width across flats, or section side)"
+          }
+        },
+        {
+          "name": "Allowance Percent",
+          "unit": "%",
+          "source": {
+            "engine": "allowance_percent (percentStockAllowance; hexPercentStockAllowance for hex bar; 0 when the Cost Guide sets the allowance)"
+          }
+        },
+        {
+          "name": "Least Allowance",
+          "unit": "mm",
+          "source": {
+            "engine": "allowance_min_mm (minStockAllowance; hexMinStockWidthAllowance for hex bar; the Cost Guide's allowance when set)"
+          }
+        },
+        {
+          "name": "Most Allowance",
+          "unit": "mm",
+          "source": {
+            "engine": "allowance_max_mm (maxStockAllowance; the Cost Guide's allowance when set)"
+          }
+        },
+        {
+          "name": "Allowance",
+          "unit": "mm",
+          "formula": "min({Most Allowance}, max({Least Allowance}, {Allowance Percent} / 100 * {Outside Size}))"
+        },
+        {
+          "name": "Required Size",
+          "unit": "mm",
+          "formula": "{Outside Size} + 2 * {Allowance}"
+        }
+      ]
+    },
+    {
+      "key": "stock_machining.bar_stock",
+      "name": "Stock Machining - Bar Stock",
+      "operations": [],
+      "helper": true,
+      "output": "Material Cost",
+      "results": [
+        "Piece Length",
+        "Parts per Bar",
+        "Mass per Part",
+        "Piece Mass"
+      ],
+      "description": "The bar bought per part. The piece cut for a part is its length plus the stock faced off each end. A bar (standardStockLength) is cut into as many pieces as fit after the end that makes no part, one cut between pieces (the band saw's kerf, bandSawKerf; a parting tool's width, tblPartingRingWidth, on a bar-fed lathe). The end and the cuts are bought with the parts, so each part carries its share of the whole bar, priced per kg for the stock form (material_stock_prices). The data has no yield formula: this rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        {
+          "name": "Part Length",
+          "unit": "mm",
+          "source": {
+            "engine": "part_length_mm (the part's length along the stock)"
+          }
+        },
+        {
+          "name": "End Allowance",
+          "unit": "mm",
+          "source": {
+            "engine": "end_allowance_mm (the stock faced off each end: Stock Machining - Stock Size)"
+          }
+        },
+        {
+          "name": "Cut Width",
+          "unit": "mm",
+          "source": {
+            "engine": "cut_width_mm (bandSawKerf, or the parting ring width on a bar-fed lathe)"
+          }
+        },
+        {
+          "name": "Section Area",
+          "unit": "mm²",
+          "source": {
+            "engine": "section_area_mm2 (the bar's metal cross-section)"
+          }
+        },
+        {
+          "name": "Bar Length",
+          "unit": "mm",
+          "source": {
+            "variable": "standardStockLength"
+          }
+        },
+        {
+          "name": "Bar End",
+          "unit": "mm",
+          "source": {
+            "engine": "bar_end_mm (the end of a bar that makes no part)"
+          }
+        },
+        {
+          "name": "Density",
+          "unit": "kg/m³",
+          "source": {
+            "engine": "density_kg_m3 (the material's density)"
+          }
+        },
+        {
+          "name": "Price per kg",
+          "unit": "USD/kg",
+          "source": {
+            "engine": "price_per_kg (the stock form's price, material_stock_prices)"
+          }
+        },
+        {
+          "name": "Piece Length",
+          "unit": "mm",
+          "formula": "{Part Length} + 2 * {End Allowance}"
+        },
+        {
+          "name": "Parts per Bar",
+          "unit": null,
+          "formula": "floor(({Bar Length} - {Bar End}) / ({Piece Length} + {Cut Width}))"
+        },
+        {
+          "name": "Bar Mass",
+          "unit": "kg",
+          "formula": "{Bar Length} * {Section Area} * {Density} / 1000000000"
+        },
+        {
+          "name": "Mass per Part",
+          "unit": "kg",
+          "formula": "{Bar Mass} / {Parts per Bar}"
+        },
+        {
+          "name": "Piece Mass",
+          "unit": "kg",
+          "formula": "{Piece Length} * {Section Area} * {Density} / 1000000000"
+        },
+        {
+          "name": "Material Cost",
+          "unit": "USD",
+          "formula": "{Mass per Part} * {Price per kg}"
+        }
+      ]
+    },
+    {
+      "key": "stock_machining.plate_stock",
+      "name": "Stock Machining - Plate Stock",
+      "operations": [],
+      "helper": true,
+      "output": "Material Cost",
+      "results": [
+        "Mass per Part",
+        "Blank Mass"
+      ],
+      "description": "The plate bought per part. The blank is the part's length and width plus the stock left on each side, through a plate of the next preferred thickness. Blanks are cut in a grid on the standard plate (standardPlateLength x standardPlateWidth), a kerf apart, in the better of the two orientations; a blank the standard plate cannot hold is cut from a plate of its own size. Each part carries its share of the whole plate, priced per kg for plate (material_stock_prices). The data has no yield formula: this rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        {
+          "name": "Blank Length",
+          "unit": "mm",
+          "source": {
+            "engine": "blank_length_mm (the part's length plus the stock on each end)"
+          }
+        },
+        {
+          "name": "Blank Width",
+          "unit": "mm",
+          "source": {
+            "engine": "blank_width_mm (the part's width plus the stock on each side)"
+          }
+        },
+        {
+          "name": "Thickness",
+          "unit": "mm",
+          "source": {
+            "engine": "thickness_mm (the plate's thickness: the next preferred size at or above the part's height plus the stock on each face)"
+          }
+        },
+        {
+          "name": "Plate Length",
+          "unit": "mm",
+          "source": {
+            "engine": "plate_length_mm (standardPlateLength, or the blank's when it is larger)"
+          }
+        },
+        {
+          "name": "Plate Width",
+          "unit": "mm",
+          "source": {
+            "engine": "plate_width_mm (standardPlateWidth, or the blank's when it is larger)"
+          }
+        },
+        {
+          "name": "Parts per Plate",
+          "unit": null,
+          "source": {
+            "engine": "parts_per_plate (the blanks of the grid, a kerf apart)"
+          }
+        },
+        {
+          "name": "Density",
+          "unit": "kg/m³",
+          "source": {
+            "engine": "density_kg_m3 (the material's density)"
+          }
+        },
+        {
+          "name": "Price per kg",
+          "unit": "USD/kg",
+          "source": {
+            "engine": "price_per_kg (the plate price, material_stock_prices)"
+          }
+        },
+        {
+          "name": "Plate Mass",
+          "unit": "kg",
+          "formula": "{Plate Length} * {Plate Width} * {Thickness} * {Density} / 1000000000"
+        },
+        {
+          "name": "Mass per Part",
+          "unit": "kg",
+          "formula": "{Plate Mass} / {Parts per Plate}"
+        },
+        {
+          "name": "Blank Mass",
+          "unit": "kg",
+          "formula": "{Blank Length} * {Blank Width} * {Thickness} * {Density} / 1000000000"
+        },
+        {
+          "name": "Material Cost",
+          "unit": "USD",
+          "formula": "{Mass per Part} * {Price per kg}"
+        }
+      ]
+    },
+    {
+      "key": "stock_machining.band_saw",
+      "name": "Stock Machining - Band Saw",
+      "operations": [
+        "Band Saw"
+      ],
+      "results": [
+        "Cut Time",
+        "Feed Time",
+        "Load per Part"
+      ],
+      "description": "Band Saw, per part: cutting the stock to pieces. The area cut for one part at the saw's cutting rate for the material's cut-code family and the width in the cut (bandSawCutting: bars cut in a bundle are cut as one section, at the rate for the bundle's width); the stock advanced by one piece and kerf at the saw's axial feed rate, once for the bundle; the bar or plate loaded (bandSawHandling by its weight), shared by the parts it makes; and the piece unloaded (bandSawHandling by its weight). Bundling saves the feeding of each bar, not the cutting of it. The data has no saw cycle formula: this rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        {
+          "name": "Cut Area",
+          "unit": "mm²",
+          "source": {
+            "engine": "cut_area_mm2 (the stock's section cut for one part; a plate blank's two cut edges through its thickness)"
+          }
+        },
+        {
+          "name": "Cutting Rate",
+          "unit": "mm²/min",
+          "source": {
+            "lookup": "bandSawCutting.Cutting Rate (mm^2 / min)"
+          }
+        },
+        {
+          "name": "Feed Length",
+          "unit": "mm",
+          "source": {
+            "engine": "feed_length_mm (the piece and the cut: the stock advanced for each cut)"
+          }
+        },
+        {
+          "name": "Axial Feed Rate",
+          "unit": "mm/s",
+          "source": {
+            "machine": "axial_feed_rate_mm_per_s"
+          }
+        },
+        {
+          "name": "Bars per Bundle",
+          "unit": null,
+          "source": {
+            "engine": "bars_per_bundle (as many as fit the saw's stock width and height, within maxPartsPerBundleBandSaw and the bars the batch needs)"
+          }
+        },
+        {
+          "name": "Load Time",
+          "unit": "s",
+          "source": {
+            "lookup": "bandSawHandling.Load Time (s)"
+          }
+        },
+        {
+          "name": "Parts per Stock",
+          "unit": null,
+          "source": {
+            "engine": "parts_per_stock (the parts one bar or plate makes)"
+          }
+        },
+        {
+          "name": "Unload Time",
+          "unit": "s",
+          "source": {
+            "lookup": "bandSawHandling.Unload Time (s)"
+          }
+        },
+        {
+          "name": "Cycle Time Factor",
+          "unit": null,
+          "source": {
+            "variable": "cycleTimeAdjustmentFactor"
+          }
+        },
+        {
+          "name": "Cut Time",
+          "unit": "s",
+          "formula": "{Cut Area} / {Cutting Rate} * 60"
+        },
+        {
+          "name": "Feed Time",
+          "unit": "s",
+          "formula": "{Feed Length} / {Axial Feed Rate} / {Bars per Bundle}"
+        },
+        {
+          "name": "Load per Part",
+          "unit": "s",
+          "formula": "{Load Time} / {Parts per Stock}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "({Cut Time} + {Feed Time} + {Load per Part} + {Unload Time}) * {Cycle Time Factor}"
+        }
+      ]
+    },
+    {
+      "key": "stock_machining.scrap_credit",
+      "name": "Stock Machining - Scrap Credit",
+      "operations": [],
+      "helper": true,
+      "output": "Scrap Credit",
+      "description": "What the chips sell for: the stock bought per part less the part's own mass, at the stock's price and the material's Scrap Cost Percent (memory/Stock Maching materials). Taken off the material cost only when enableScrapMaterialCredit is true (false in the data) or the Cost Guide turns it on.",
+      "fields": [
+        {
+          "name": "Mass per Part",
+          "unit": "kg",
+          "source": {
+            "engine": "mass_per_part_kg (the stock bought per part)"
+          }
+        },
+        {
+          "name": "Part Mass",
+          "unit": "kg",
+          "source": {
+            "engine": "part_mass_kg (the finished part)"
+          }
+        },
+        {
+          "name": "Price per kg",
+          "unit": "USD/kg",
+          "source": {
+            "engine": "price_per_kg (the stock form's price, material_stock_prices)"
+          }
+        },
+        {
+          "name": "Scrap Cost Percent",
+          "unit": "%",
+          "source": {
+            "engine": "scrap_cost_percent (the material's Scrap Cost Percent: materialsBandSaw)"
+          }
+        },
+        {
+          "name": "Scrap Credit",
+          "unit": "USD",
+          "formula": "({Mass per Part} - {Part Mass}) * {Price per kg} * {Scrap Cost Percent} / 100"
+        }
+      ]
+    }
+  ]
+}

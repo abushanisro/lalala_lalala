@@ -2,7 +2,7 @@ import {
   resolveEffective, resolveEffectiveSheetThicknessMm,
   resolveScenarioCurrency, resolveScenarioFxSnapshot, resolveScenarioAskPrice,
   resolveScenarioBatchSize, resolveScenarioLocation, resolveScenarioProductionLifeYears,
-  resolveScenarioStockForm,
+  resolveScenarioStockForm, resolveScenarioStockAllowanceMm, resolveScenarioStockSnap, resolveScenarioStockRemnantMm, resolveScenarioStockScrapCredit,
 } from '../../../../../../modules/bom-items/costing/shared/physics/scenario-overrides';
 
 describe('resolveEffective', () => {
@@ -179,5 +179,42 @@ describe('resolveScenarioStockForm', () => {
   it('treats a value that is not a stock form as unset, never coercing it into one', () => {
     expect(resolveScenarioStockForm({ stockForm: 'i_beam' })).toBeNull();
     expect(resolveScenarioStockForm({ stockForm: 123 as any })).toBeNull();
+  });
+});
+
+// The Cost Guide's stock settings of a part machined from stock (costing/stock): each replaces a rule of memory/Stock Maching, and each is
+// null when unset so the rule itself applies.
+describe('the stock settings of a part machined from stock', () => {
+  it('the stock on each side and the bar end are lengths of 0 or more: 0 is a choice (the stock as supplied, a bar used to its end), not "unset"', () => {
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: 1.5 })).toBe(1.5);
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: 0 })).toBe(0);
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: 100 })).toBe(100);
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: 0 })).toBe(0);
+  });
+
+  it('snapping to preferred sizes and the scrap credit are true or false', () => {
+    expect(resolveScenarioStockSnap({ stockSnap: false })).toBe(false);
+    expect(resolveScenarioStockSnap({ stockSnap: true })).toBe(true);
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: true })).toBe(true);
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: false })).toBe(false);
+  });
+
+  it('are null when unset, so the data\'s rule applies', () => {
+    for (const read of [resolveScenarioStockAllowanceMm, resolveScenarioStockSnap, resolveScenarioStockRemnantMm, resolveScenarioStockScrapCredit]) {
+      expect(read({})).toBeNull();
+      expect(read(null)).toBeNull();
+      expect(read(undefined)).toBeNull();
+    }
+  });
+
+  it('a value of another kind is unset, never coerced: a negative or text length, a text or numeric flag', () => {
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: -1 })).toBeNull();
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: '2' as any })).toBeNull();
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: Number.NaN })).toBeNull();
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: -152.4 })).toBeNull();
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: Infinity })).toBeNull();
+    expect(resolveScenarioStockSnap({ stockSnap: 'false' as any })).toBeNull();
+    expect(resolveScenarioStockSnap({ stockSnap: 0 as any })).toBeNull();
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: 'yes' as any })).toBeNull();
   });
 });

@@ -3,8 +3,8 @@ import * as path from 'path';
 
 import { MACHINING_FAMILIES, isMachiningFamily } from '../../../../../domain/part-family';
 import {
-  MACHINED_FAMILY_HINT, NO_CAD_EXTRACTOR_FAMILIES, costedProcessGroups, familiesAnalysedForHint, familiesOfProcessGroup, familyHintOfProcessGroup,
-  processChoiceConflict,
+  MACHINED_FAMILY_HINT, NO_CAD_EXTRACTOR_FAMILIES, STOCK_MACHINING_PROCESS_GROUP, costedProcessGroups, familiesAnalysedForHint, familiesOfProcessGroup,
+  familyHintOfProcessGroup, processChoiceConflict,
 } from './part-family-process-group';
 
 describe('the family hint a process group is analysed with', () => {
@@ -76,5 +76,19 @@ describe('processChoiceConflict', () => {
     expect(processChoiceConflict({ family: 'sheet_metal' })).toBeNull(); // an analysis from an older engine
     expect(processChoiceConflict({ family: 'sheet_metal', geometricFamily: 'something_new' })).toBeNull();
     expect(processChoiceConflict(undefined)).toBeNull();
+  });
+});
+
+describe('Stock Machining', () => {
+  it('is costed as the machining families, the general one (milled) first, as Machining is', () => {
+    expect(STOCK_MACHINING_PROCESS_GROUP).toBe('Stock Machining');
+    expect(familiesOfProcessGroup('Stock Machining')).toEqual(['milled', 'turned', 'mill_turn']);
+    expect(familiesOfProcessGroup('Machining')).toEqual(['milled', 'turned', 'mill_turn']);
+    expect(costedProcessGroups()).toContain('Stock Machining');
+  });
+
+  it('so its parts are analysed as machined parts, the geometry picking the family: a shaft cut from bar is turned, not forced to milled', () => {
+    expect(familyHintOfProcessGroup('Stock Machining')).toBe(MACHINED_FAMILY_HINT);
+    expect(familiesAnalysedForHint(familyHintOfProcessGroup('Stock Machining')!)).toEqual(['milled', 'turned', 'mill_turn']);
   });
 });

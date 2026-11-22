@@ -44,7 +44,7 @@ describe('the process a part is costed as', () => {
     const r = resolve({ scenarioOverrides: { processGroup: 'Sheet Plastic' } }, 'Generic ABS, Fittings', 'milled');
     expect(r.family).toBe('unknown');
     expect(r.familySource).toBe('process');
-    expect(r.warning).toBe('The Process "Sheet Plastic" has no cost model yet, so this part is not costed. Set its Process to one that has: 2-Model Machining, Additive Manufacturing, Assembly, Assembly Molding, Assembly Plastic Molding, Bar and Tube Fabrication, Casting, Casting Investment, Composites, Die Casting, Forging, Machining, Multi-Spindle Machining, Part Assembly, Plastic Molding, Powder Metal, Rapid Prototyping, Roto & Blow Molding, Sand Casting, Sheet Metal, Sheet Metal - Hydroforming, Sheet Metal Roll Forming.');
+    expect(r.warning).toBe('The Process "Sheet Plastic" has no cost model yet, so this part is not costed. Set its Process to one that has: 2-Model Machining, Additive Manufacturing, Assembly, Assembly Molding, Assembly Plastic Molding, Bar and Tube Fabrication, Casting, Casting Investment, Composites, Die Casting, Forging, Machining, Multi-Spindle Machining, Part Assembly, Plastic Molding, Powder Metal, Rapid Prototyping, Roto & Blow Molding, Sand Casting, Sheet Metal, Sheet Metal - Hydroforming, Sheet Metal Roll Forming, Stock Machining.');
   });
 
   it('a Powder Metal part is a powder metal part, whatever its material or last analysis', () => {
@@ -72,6 +72,16 @@ describe('the process a part is costed as', () => {
   it('a Multi-Spindle Machining part is a turned part (made from bar on a multi-spindle), even when it was last analysed as milled', () => {
     expect(resolve({ scenarioOverrides: { processGroup: 'Multi-Spindle Machining' } }, 'AISI 1006', 'milled')).toEqual({ family: 'turned', familySource: 'process', warning: null });
     expect(resolve({ scenarioOverrides: { processGroup: 'Multi-Spindle Machining' } }, 'AISI 1006', 'turned').family).toBe('turned');
+  });
+
+  it('a Stock Machining part is a machined part: the geometry picks among milled, turned and mill-turn, milled when it reads as none of them', () => {
+    const stock = { scenarioOverrides: { processGroup: 'Stock Machining' } };
+    expect(resolve(stock, 'Aluminum, ANSI 6061', 'turned')).toEqual({ family: 'turned', familySource: 'process', warning: null });
+    expect(resolve(stock, 'Aluminum, ANSI 6061', 'mill_turn').family).toBe('mill_turn');
+    expect(resolve(stock, 'Aluminum, ANSI 6061', 'milled').family).toBe('milled');
+    // Last analysed as another process (a sheet-metal part moved to Stock Machining), or a plastic grade: still a machined part.
+    expect(resolve(stock, 'Aluminum, AA 7003', 'sheet_metal').family).toBe('milled');
+    expect(resolve(stock, 'Generic ABS, Fittings', 'plastic_molded').family).toBe('milled');
   });
 
   it('an Assembly Molding part is a molded plastic part (insert molding on the insert presses), whatever its last analysis', () => {

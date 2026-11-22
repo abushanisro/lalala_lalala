@@ -110,6 +110,10 @@ SELECT 'Sheet Metal - Hydroforming', n, n, false FROM unnest(ARRAY['Hydroform','
 INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
 SELECT 'Sheet Metal Roll Forming', n, n, false FROM unnest(ARRAY['Coil Flattener','Coil Material Stock','Cut-Off Press','Integrated HFI Welding',
   'Integrated Laser Welding','Integrated Rotary Spot Welding','Integrated TIG Welding','Punch Press','Roll Forming Mill','Uncoiler']) AS n;
+-- the Stock Machining catalog rows migration 790 seeds (inactive, no machine class, no calculator): migration 1115 classes both and 1116 links its
+-- calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Stock Machining', n, n, false FROM unnest(ARRAY['Band Saw','Material Stock']) AS n;
 -- the catalog columns and the process taxonomy as the real database has them (migrations 367-371, 424, 725), and the four
 -- secondary-operation calculators the baseline holds: migration 984 restores their catalog rows and fails if a calculator is missing
 ALTER TABLE public.process_calculator_mappings ADD COLUMN machine_class varchar(100), ADD COLUMN applicable_families text[],

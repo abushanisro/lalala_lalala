@@ -6,13 +6,19 @@ import { buildRollFormingCostSummary } from './costing/roll-forming/roll-forming
 import { RollFormingCostService, type RollFormingCostResult } from './costing/roll-forming/roll-forming-cost.service';
 import { ROLL_FORMING_ROUTES, type RollFormingRouteKey } from './costing/roll-forming/roll-forming-route';
 import { rollFormingRouteFor, rollFormingRouteId } from './costing/roll-forming/roll-forming-route-comparison';
+import { stockBlankResult, stockMachiningBreakdown, withStockMachining, type StockMachiningPlan } from './costing/stock-machining/stock-machining-cost-summary';
+import { StockMachiningCostService, type StockMachiningChoice } from './costing/stock-machining/stock-machining-cost.service';
+import { stockCutOffOf, type StockCutOff } from './costing/stock-machining/stock-machining-route';
+import { asSuppliedFaces } from './costing/stock/stock-part';
+import { withoutAsSuppliedFaces } from './costing/machining/operation/as-supplied-faces';
+import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock-price';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type ThreadEntry } from './costing/machining/feature-holes';
 import {
   ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
-  MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, familiesOfProcessGroup,
+  MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, STOCK_MACHINING_PROCESS_GROUP, familiesOfProcessGroup,
 } from './costing/shared/core/part-family-process-group';
 import { electricityUsd, loadLocationElectricity } from './costing/shared/location-electricity';
 import { castingSourcePath } from '../sand-casting/casting-source';
@@ -132,7 +138,7 @@ import { RateResolutionService } from './services/rate-resolution.service';
 import { CalculatorCatalogService } from './services/calculator-catalog.service';
 import { MaterialResolutionService } from './services/material-resolution.service';
 import { MachineDiscoveryService, type MachiningRouteRole } from './services/machine-discovery.service';
-import { billetFallback } from './costing/sheet-metal/machine/blank-stock-candidates';
+import { billetFallback, type BlankResult } from './costing/sheet-metal/machine/blank-stock-candidates';
 import { CastingReferenceService } from './costing/casting/casting-reference.service';
 import { SandCatalogOperationsService } from './costing/casting/sand/sand-catalog-operations.service';
 import { MachiningAllowanceService } from './costing/casting/machining-allowance.service';
@@ -296,6 +302,14 @@ const isMultiSpindle = (item: { scenarioOverrides?: Record<string, unknown> | nu
 const isHydroforming = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.processGroup === HYDROFORMING_PROCESS_GROUP;
 /** Whether a part is roll formed: its Process is Sheet Metal Roll Forming (a sheet-metal profile, formed from coil on a roll forming line). */
 const isRollForming = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.processGroup === ROLL_FORMING_PROCESS_GROUP;
+/** The material a Stock Machining part's stock is priced from, as its route builders take it: each stock form's price per kg in the location's currency. */
+interface StockRouteMaterial {
+  /** USD -> the location's currency. */
+  usdToLocal: number;
+  material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
+}
+/** Whether a part is machined from stock: its Process is Stock Machining (a machined part, with the stock bought for it and the band saw that cuts it). */
+const isStockMachining = (item: { scenarioOverrides?: Record<string, unknown> | null }) => item.scenarioOverrides?.processGroup === STOCK_MACHINING_PROCESS_GROUP;
 /** The part's Process as the user chose it (scenarioOverrides.processGroup); null when none is chosen. */
 const processGroupOf = (item: { scenarioOverrides?: Record<string, unknown> | null }): string | null => {
   const g = item.scenarioOverrides?.['processGroup'];
@@ -415,6 +429,8 @@ export class BomItemCostingService {
     private readonly hydroformingCostService?: HydroformingCostService,
     /** The roll forming routes; optional for the same reason (without it a Sheet Metal Roll Forming part is one named, uncosted line). */
     private readonly rollFormingCostService?: RollFormingCostService,
+    /** A Stock Machining part's stock and band saw; optional for the same reason (without it the stock is one named, uncosted line on its machining routes). */
+    private readonly stockMachiningCostService?: StockMachiningCostService,
   ) { }
 
   // Every getCostSummary/getRouteComparison money field is computed in the
@@ -547,6 +563,14 @@ export class BomItemCostingService {
       ...(dto.hydroforming ? { hydroforming: { ...dto.hydroforming, options: convertRouteOptions(dto.hydroforming.options, conv) } } : {}),
       ...(dto.rollForming ? { rollForming: { ...dto.rollForming, options: convertRouteOptions(dto.rollForming.options, conv) } } : {}),
       ...(dto.multiSpindle ? { multiSpindle: { ...dto.multiSpindle, options: convertRouteOptions(dto.multiSpindle.options, conv) } } : {}),
+      // A Stock Machining part's stock forms (the stock and its sawing, per part) and its scrap credit, the same.
+      ...(dto.stockMachining ? {
+        stockMachining: {
+          ...dto.stockMachining,
+          options: dto.stockMachining.options.map((o) => ({ ...o, materialCost: o.materialCost != null ? conv(o.materialCost) : null, sawCost: o.sawCost != null ? conv(o.sawCost) : null })),
+          scrapCredit: { ...dto.stockMachining.scrapCredit, credit: conv(dto.stockMachining.scrapCredit.credit) },
+        },
+      } : {}),
       ...(dto.insertMolding ? { insertMolding: { ...dto.insertMolding, options: convertRouteOptions(dto.insertMolding.options, conv) } } : {}),
       ...(dto.multiShot ? { multiShot: { ...dto.multiShot, options: convertRouteOptions(dto.multiShot.options, conv) } } : {}),
       ...(dto.assembly ? {
@@ -1386,6 +1410,7 @@ export class BomItemCostingService {
     locCurrencyCode: string;
     location: string;
     stockForm?: string | null;
+    stockPriceForm?: StockPriceForm | null;
     warnings: string[];
   }) {
     return this.materialResolutionService.resolveMaterialForFamily(input);
@@ -1494,12 +1519,21 @@ export class BomItemCostingService {
    * operations with their times. ONE definition, used by the cost summary and by the route comparison, so the
    * applied route is priced on the same operations the Cost tab lists.
    */
-  private async machiningFeaturePlan(item: any, fg: any, grade: string | null, accessToken: string) {
+  private async machiningFeaturePlan(
+    item: any, fg: any, grade: string | null, accessToken: string,
+    /** The faces the part's stock supplies finished (a Stock Machining part: stock/stock-part.ts asSuppliedFaces): the mill does not finish them. */
+    asSuppliedFaceIds: readonly number[] = [],
+  ) {
     const warnings: string[] = [];
     const matClass = detectMaterialClass(grade);
     const machinabilityRating = (fg?.machining_features?.material_machinability ?? null) as number | null;
     const machinabilityFactor = machinabilityRating != null ? machinabilityRating / 75 : 1.0;
-    const fgv2Features = ((fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2 ?? null)?.features ?? null) as unknown[] | null;
+    const fgv2Features = withoutAsSuppliedFaces(
+      ((fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2 ?? null)?.features ?? null) as unknown[] | null, new Set(asSuppliedFaceIds),
+    );
+    if (asSuppliedFaceIds.length > 0) {
+      warnings.push(`${asSuppliedFaceIds.length} face(s) of the part lie on the stock's own surface, where the stock carries no allowance: they are left as supplied, and the mill does not finish them.`);
+    }
     const [counterboreTable, chamferParams, roundingParams, drillingTable, tappingTable, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
       this.machiningLookup.getCounterboreTable(),
       this.machiningLookup.getChamferParams(matClass),
@@ -2214,6 +2248,7 @@ export class BomItemCostingService {
     if (pricedGrade.note) materialWarnings.push(pricedGrade.note);
     const grade = pricedGrade.grade;
     // The whole resolved material is kept: a part whose applied route is another molding process is priced by that process's engine in the route comparison, from this row.
+    // A Stock Machining part's material is priced on the form its stock model chose (stockMachiningPriceForm).
     const resolvedMaterial = await this.resolveMaterialForFamily({
         accessToken,
         grade,
@@ -2223,6 +2258,7 @@ export class BomItemCostingService {
         locCurrencyCode: locInfo.code,
         location,
         stockForm: resolveScenarioStockForm(item.scenarioOverrides),
+        ...(await this.stockMachiningPriceForm(item, fg, family, location)),
         warnings: materialWarnings,
       });
     const {
@@ -2299,7 +2335,14 @@ export class BomItemCostingService {
         width:  ((item as any).maxWidth  ?? 0) as number,
         height: ((item as any).maxHeight ?? 0) as number,
       };
-      const blankResult = await this.selectBlank(item, fg, family as MachiningFamily, accessToken);
+      const blankResult = await this.selectBlank(item, fg, family as MachiningFamily, accessToken, location);
+      // A Stock Machining part: its stock and band saw, on every route below (null for any other Process).
+      const stock = isStockMachining(item) ? await this.stockMachiningRoutes(item, fg, family as MachiningFamily, {
+        location, accessToken, batchSize, usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code),
+        material: { name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
+      }) : null;
+      // The milling engine prices no parting, so a mill's piece is sawn; a lathe's is cut off as its class says (a bar-fed lathe parts it off the bar).
+      const stockCutOffFor = (cls: string): StockCutOff => (family === 'milled' ? 'saw' : stockCutOffOf(cls));
 
       // Fix 3 + 4: Feature-based cycle time from feature_graph_v2.
       // machinabilityRating from machining_features.material_machinability or raw_materials.
@@ -2346,7 +2389,7 @@ export class BomItemCostingService {
         this.machiningLookup.getCapabilityRules(),
       ]);
       const machiningCalculators = await this.resolveMachiningCalculators(accessToken);
-      const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken);
+      const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock?.asSuppliedFaceIds);
       materialWarnings.push(...featurePlan.warnings);
       const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, heatTreatment } = featurePlan;
 
@@ -2555,11 +2598,13 @@ export class BomItemCostingService {
 
       const costedRoutes = candidateClasses.map(({ cls, rate }) => {
         const tappingRate = this.rates.inheritCncTappingRate(mhrRates.tapping, rate);
-        const input: MachiningCostInput = { ...baseCncInput, mhrRate: rate, tappingRate };
-        const cost =
+        const input: MachiningCostInput = { ...baseCncInput, ...(stock ? stock.input(stockCutOffFor(cls)) : {}), mhrRate: rate, tappingRate };
+        const engineCost =
           family === 'milled'
             ? computeMillingCostSummary(input, cls)
             : computeTurningCostSummary(input, cls);
+        // The route's quote with the stock on it: the Band Saw line before the machining, the stock bought per part as the material.
+        const cost = stock ? stock.apply(engineCost, stockCutOffFor(cls)) : engineCost;
         const selectedCandidate = rate.selection?.balanced?.candidate;
         const envelope = checkMachiningCapability(
           cls, baseCncInput.maxLength, baseCncInput.maxWidth, baseCncInput.maxHeight,
@@ -2587,6 +2632,11 @@ export class BomItemCostingService {
 
       const recommended = pickRecommendedRoute(costedRoutes);
       const cncResult = { ...recommended.cost, ...currencyMeta };
+      // The stock of the quoted route: a bar-fed lathe's is the bar it parts the piece off, any other machine's the sawn piece.
+      const quotedCutOff = stockCutOffFor(recommended.cls);
+      const quotedBlank = stock?.input(quotedCutOff).blankResult ?? blankResult;
+      const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize) : undefined;
+      if (stockBreakdown) cncResult.stockMachining = stockBreakdown;
       if (!recommended.capable) {
         cncResult.warnings.push(
           !costedRoutes.some((r) => r.hasRealRate)
@@ -2642,9 +2692,11 @@ export class BomItemCostingService {
       // (gross weight, waste, utilization) are honestly zeroed and
       // disclosed when density hasn't resolved, rather than hiding the
       // whole real form/size.
-      if (blankResult.billetVolMm3 > 0) {
+      if (quotedBlank.billetVolMm3 > 0) {
         const hasRealDensity = materialDensityKgM3 > 0;
-        const blankGrossKg  = hasRealDensity ? blankResult.billetVolMm3 / 1e9 * materialDensityKgM3 : 0;
+        // The stock bought per part: the piece itself, or its share of a whole bar or plate when the stock model states one.
+        const stockVolMm3 = quotedBlank.purchasedVolMm3 ?? quotedBlank.billetVolMm3;
+        const blankGrossKg  = hasRealDensity ? stockVolMm3 / 1e9 * materialDensityKgM3 : 0;
         let blankNetKg = ((item as any).weight ?? 0) as number;
         // Root cause (confirmed live, 2026-09-19): bom_items.weight is written
         // 0 at CAD-import time (density unknown yet — see
@@ -2676,21 +2728,21 @@ export class BomItemCostingService {
         }
         const blankWasteKg  = hasRealDensity ? Math.max(0, blankGrossKg - blankNetKg) : 0;
         const blankUtilPct  = hasRealDensity
-          ? (blankResult.utilizationPct ?? (blankGrossKg > 0 ? (blankNetKg / blankGrossKg) * 100 : 0))
+          ? (quotedBlank.utilizationPct ?? (blankGrossKg > 0 ? (blankNetKg / blankGrossKg) * 100 : 0))
           : 0;
         const densityGapNote = hasRealDensity
           ? null
           : 'Material grade not matched to a specific raw_materials density — gross weight/utilization not shown until a real grade is picked.';
-        const formNote = blankResult.requestedFormUnavailable?.reason ?? null;
+        const formNote = quotedBlank.requestedFormUnavailable?.reason ?? null;
         cncResult.blankSpec = {
-          form:           blankResult.form as BlankSpecDto['form'],
-          sizeLabel:      blankResult.sizeLabel,
+          form:           quotedBlank.form as BlankSpecDto['form'],
+          sizeLabel:      quotedBlank.sizeLabel,
           grossWeightKg:  Math.round(blankGrossKg * 1000) / 1000,
           netWeightKg:    Math.round(blankNetKg * 1000) / 1000,
           utilizationPct: Math.round(blankUtilPct * 10) / 10,
           wasteKg:        Math.round(blankWasteKg * 1000) / 1000,
           wasteCost:      r2(blankWasteKg * materialCostPerKg),
-          stockVolumeMm3: Math.round(blankResult.billetVolMm3),
+          stockVolumeMm3: Math.round(stockVolMm3),
           ...(hasRealDensity ? { densityKgM3: materialDensityKgM3 } : {}),
           ...((formNote || densityGapNote)
             ? { stockFormOverrideNote: [formNote, densityGapNote].filter(Boolean).join(' ') }
@@ -6028,6 +6080,8 @@ export class BomItemCostingService {
         locCurrencyCode: locInfo.code,
         location,
         stockForm: resolveScenarioStockForm(item.scenarioOverrides),
+        // A Stock Machining part's material is priced on the form its stock model chose, as on the cost summary.
+        ...(await this.stockMachiningPriceForm(item, fg, family, location)),
         warnings: comparisonWarnings,
       });
     const {
@@ -6472,8 +6526,9 @@ export class BomItemCostingService {
         // Inherited tapping runs on THIS route's primary machine — surface that
         // machine on the Tapping line, not the "class default (tapping)" panel.
         if (mhrRates.tapping.source !== 'mhr_database') {
+          // The route's machine is its first line after the stock's own (a Stock Machining route starts with its Band Saw).
           const primaryLine =
-            route.processLines.find((l) => l.process === 'Setup') ?? route.processLines[0];
+            route.processLines.find((l) => l.process === 'Setup') ?? route.processLines.find((l) => l.processGroup !== STOCK_MACHINING_PROCESS_GROUP) ?? route.processLines[0];
           const primarySelection = primaryLine
             ? (Object.values(mhrRates) as MHRRateInput[]).find((r) => r && typeof r.machineClass === 'string' && r.machineClass === primaryLine.machineClass)
                 ?.selection
@@ -6562,13 +6617,18 @@ export class BomItemCostingService {
         this.machiningLookup.getTurningParams(routeMatClass),
       ]);
       const routeDeburrLinearSpeed = routeDeburrParams.dataFound ? routeDeburrParams.linearSpeedMmPerSec : null;
+      // A Stock Machining part: what its stock is priced from, for every route builder below.
+      const stockMaterial: StockRouteMaterial | undefined = isStockMachining(item) ? {
+        usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code),
+        material: { name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
+      } : undefined;
       if (family === 'milled') {
         return attachToRoutes(await this.buildMilledRoutes(
           id, item, fg, summary, grade, materialCostPerKg, materialDensityKgM3,
           materialSource, mhrRates, batchSize, comparisonWarnings, locInfo, location,
           cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
           routeJigBoreTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeKeywayBroach, routeWireEdmParams,
-          accessToken,
+          accessToken, stockMaterial,
         ));
       }
       const turned = await this.buildTurnedRoutes(
@@ -6579,6 +6639,7 @@ export class BomItemCostingService {
         routeTurningParams,
         accessToken,
         family as MachiningFamily,
+        stockMaterial,
       );
       // A mill the operation catalog says can make every feature of this turned part is priced as its milled route,
       // beside the lathes. (The mills it rules out are already listed by buildTurnedRoutes.)
@@ -6590,7 +6651,7 @@ export class BomItemCostingService {
           materialSource, mhrRates, batchSize, [], locInfo, location,
           cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
           routeJigBoreTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeKeywayBroach, routeWireEdmParams,
-          accessToken,
+          accessToken, stockMaterial,
         );
         // Badges are awarded among the lathes; a mill route joins the ranking by its cost alone.
         turned.routes.push(...milled.routes.filter((r) => millable.has(r.routeId))
@@ -7708,7 +7769,7 @@ export class BomItemCostingService {
     ]);
 
     // Phase 3: blank optimizer for CNC primary routes (conditional)
-    const blankResult = isCNC ? await this.selectBlank(item, fg, family as MachiningFamily, accessToken) : null;
+    const blankResult = isCNC ? await this.selectBlank(item, fg, family as MachiningFamily, accessToken, location) : null;
 
     // Blank spec shared by all primary routes (same stock across machine class variants)
     const primaryBlankSpec = this.buildCandidateBlankSpec({
@@ -7817,7 +7878,8 @@ export class BomItemCostingService {
     }
 
     if (blankResult && materialDensityKgM3 > 0 && blankResult.billetVolMm3 > 0) {
-      const blankGrossKg = blankResult.billetVolMm3 / 1e9 * materialDensityKgM3;
+      // The stock bought per part: the piece itself, or its share of a whole bar or plate when the stock model states one.
+      const blankGrossKg = (blankResult.purchasedVolMm3 ?? blankResult.billetVolMm3) / 1e9 * materialDensityKgM3;
       const wasteKg      = Math.max(0, blankGrossKg - finishedWeightKg);
       return {
         form:           blankResult.form as BlankSpecDto['form'],
@@ -8632,6 +8694,8 @@ export class BomItemCostingService {
     keywayBroach?: KeywayBroachReference | null,
     wireEdmParams?: { roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean } | null,
     accessToken: string = '',
+    /** A Stock Machining part: the material its stock is priced from (stockMachiningRoutes); unset for any other Process. */
+    stockMaterial?: StockRouteMaterial,
   ): Promise<Omit<RouteComparisonDto, 'recommendedRouteId'>> {
     // Fix 1: milled parts always use feature recognizer hole count (not raw cylinder count)
     const milledCncSummary = machiningFeatureCounts(fg?.machining_features);
@@ -8650,10 +8714,13 @@ export class BomItemCostingService {
 
     // The same feature plan and blank the cost summary prices (machiningFeaturePlan), so a route is applied at
     // the operations and stock the Cost tab shows.
-    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken);
-    comparisonWarnings.push(...featurePlan.warnings);
     // A mill cuts this part from milled stock, whatever the part's own family.
-    const blankResult = await this.selectBlank(item, fg, 'milled', accessToken);
+    const blankResult = await this.selectBlank(item, fg, 'milled', accessToken, location);
+    // A Stock Machining part: its stock and band saw on every route. The milling engine prices no parting, so the piece is sawn whatever
+    // machine mills it (a bar-fed lathe milling with live tools included).
+    const stock = stockMaterial ? await this.stockMachiningRoutes(item, fg, 'milled', { location, accessToken, batchSize, ...stockMaterial }) : null;
+    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock?.asSuppliedFaceIds);
+    comparisonWarnings.push(...featurePlan.warnings);
 
     const baseInput: Omit<MachiningCostInput, 'mhrRate' | 'tappingRate'> = {
       blankResult,
@@ -8779,10 +8846,11 @@ export class BomItemCostingService {
 
     const routes: RouteResultDto[] = milledMachineClasses.map((mc) => {
       const routeRate = primaryRateByClass.get(mc)!;
-      const cost = computeMillingCostSummary(
-        { ...baseInput, mhrRate: routeRate, tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, routeRate) },
+      const engineCost = computeMillingCostSummary(
+        { ...baseInput, ...(stock ? stock.input('saw') : {}), mhrRate: routeRate, tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, routeRate) },
         mc,
       );
+      const cost = stock ? stock.apply(engineCost, 'saw') : engineCost;
       const routeCandidate = routeRate.selection?.balanced?.candidate;
       const envelope = checkMachiningCapability(
         mc, maxLength, maxWidth, maxHeight, finishedWeightKg,
@@ -8896,17 +8964,113 @@ export class BomItemCostingService {
    * routes) and the candidate routes all make, so a route is applied at the stock the Cost tab shows. The turned routes once skipped it:
    * with no blank the turning engine had no bar diameter, every lathe route was data-incomplete, and Apply found no route to choose.
    */
-  private selectBlank(item: any, fg: any, family: MachiningFamily, accessToken: string) {
+  private async selectBlank(
+    item: any, fg: any, family: MachiningFamily, accessToken: string, location: string,
+    /** A Stock Machining part: what cuts the piece off its stock on the route asking (a bar-fed lathe parts it off the bar). */
+    cutOff: StockCutOff = 'saw',
+  ): Promise<BlankResult> {
     const bbox = {
       length: ((item as any).maxLength ?? 0) as number,
       width:  ((item as any).maxWidth  ?? 0) as number,
       height: ((item as any).maxHeight ?? 0) as number,
     };
+    // A Stock Machining part's stock is the stock model's choice (costing/stock): the piece the machine starts from, with the stock bought
+    // per part beside it. When the model cannot choose (its reference is not staged, the part has no size) the blank below stands, and the
+    // quote names the gap.
+    const chosen = (await this.stockMachiningChoice(item, fg, family, location))?.choice;
+    const stock = chosen ? stockBlankResult(chosen, cutOff) : null;
+    if (stock) return stock;
     return this.blankOptimizer.selectOptimalBlank(
       bbox, (item.volume ?? 0) as number, family, accessToken,
       resolveScenarioStockForm(item.scenarioOverrides),
       this.resolveTurnedGeometry(fg, bbox),
     );
+  }
+
+  /**
+   * The stock the stock model chooses for a Stock Machining part (StockMachiningCostService.choose): from the cad-engine's stock measurement
+   * (the analysis summary's machiningStock) or, for an analysis made before it, the bounding box. It needs no material, so the material is
+   * priced on the form it chose. Null for a part of any other Process.
+   */
+  private async stockMachiningChoice(item: any, fg: any, family: MachiningFamily, location: string): Promise<{ choice: StockMachiningChoice | null; missing: string[] } | null> {
+    if (!isStockMachining(item)) return null;
+    if (!this.stockMachiningCostService) return { choice: null, missing: ['the Stock Machining cost service is not available'] };
+    const box = {
+      length: ((item as any).maxLength ?? 0) as number,
+      width:  ((item as any).maxWidth  ?? 0) as number,
+      height: ((item as any).maxHeight ?? 0) as number,
+    };
+    return this.stockMachiningCostService.choose({
+      location, overrides: item.scenarioOverrides,
+      part: { machiningStock: fg?.summary?.machiningStock, family, box, volumeMm3: (item.volume ?? 0) as number, turned: this.resolveTurnedGeometry(fg, box) },
+    });
+  }
+
+  /** The stock form a Stock Machining part's material is priced on: the form its stock model chose (a billet as plate); none for any other part. */
+  private async stockMachiningPriceForm(item: any, fg: any, family: string, location: string): Promise<{ stockPriceForm?: StockPriceForm }> {
+    if (!isMachiningFamily(family)) return {};
+    const form = (await this.stockMachiningChoice(item, fg, family as MachiningFamily, location))?.choice?.selection.saw.chosen?.form;
+    const priced = form ? stockPriceFormOf(form) : null;
+    return priced ? { stockPriceForm: priced } : {};
+  }
+
+  /**
+   * What a Stock Machining part's machining routes share (costing/stock-machining): its stock chosen and priced, the faces that stock
+   * supplies finished, what each route's engine takes from it (the piece it starts from, what cut it off, the price of its form) and the
+   * route's quote with the stock on it (the Band Saw line, the stock as the material cost). One definition for the cost summary and both
+   * route builders, so the Cost tab, the comparison and Apply agree. Null for a part of any other Process.
+   */
+  private async stockMachiningRoutes(item: any, fg: any, family: MachiningFamily, ctx: {
+    location: string; accessToken: string; batchSize: number;
+    /** USD -> the location's currency. */
+    usdToLocal: number;
+    /** The material the quote prices: its Raw Materials name, the grade asked for, its density, and each stock form's price per kg in the location's currency. */
+    material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
+  }): Promise<{
+    plan: StockMachiningPlan;
+    asSuppliedFaceIds: number[];
+    input: (cutOff: StockCutOff) => { blankResult?: BlankResult; stockCutOff?: StockCutOff; materialCostPerKg?: number };
+    apply: <T extends CostSummaryDto>(cost: T, cutOff: StockCutOff) => T;
+  } | null> {
+    const chosen = await this.stockMachiningChoice(item, fg, family, ctx.location);
+    if (!chosen) return null;
+    const { choice } = chosen;
+    const zeroCtx = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
+    const name = ctx.material.name ?? ctx.material.grade ?? 'the material';
+    const priced = choice && this.stockMachiningCostService
+      ? await this.stockMachiningCostService.price({
+        client: this.databaseService.getClient(ctx.accessToken), accessToken: ctx.accessToken, location: ctx.location, choice,
+        material: {
+          name, grade: ctx.material.grade, densityKgM3: ctx.material.densityKgM3 > 0 ? ctx.material.densityKgM3 : null,
+          pricePerKgUsd: Object.fromEntries(Object.entries(ctx.material.pricesPerKg).filter(([, v]) => v > 0).map(([form, v]) => [form, v / ctx.usdToLocal])),
+        },
+        batchSize: ctx.batchSize, usdToLocal: ctx.usdToLocal, costContext: zeroCtx,
+      })
+      : null;
+    const plan: StockMachiningPlan = {
+      choice, priced: priced?.stock ?? null, scrapCostPercent: priced?.material?.scrapCostPercent ?? null,
+      missing: [...chosen.missing, ...(priced?.missing ?? [])], warnings: priced?.warnings ?? [],
+    };
+    const blanks: Record<StockCutOff, BlankResult> = {
+      saw: await this.selectBlank(item, fg, family, ctx.accessToken, ctx.location, 'saw'),
+      parting: await this.selectBlank(item, fg, family, ctx.accessToken, ctx.location, 'parting'),
+    };
+    const sawn = choice?.selection.saw.chosen;
+    const supplied = sawn ? asSuppliedFaces(sawn, choice.part, choice.faces) : { curvedWall: [], planarFace: [] };
+    return {
+      plan,
+      asSuppliedFaceIds: [...supplied.curvedWall, ...supplied.planarFace],
+      // Only a blank the stock model chose says what cut it off and what its form costs; with none, the engine's own blank and rules stand.
+      input: (cutOff) => {
+        const blank = blanks[cutOff];
+        const form = blank.stock?.chosen?.form;
+        if (!form) return {};
+        const priceForm = stockPriceFormOf(form);
+        const perKg = priceForm ? ctx.material.pricesPerKg[priceForm] : undefined;
+        return { blankResult: blank, stockCutOff: cutOff, ...(perKg != null ? { materialCostPerKg: perKg } : {}) };
+      },
+      apply: (cost, cutOff) => withStockMachining(cost, plan, cutOff),
+    };
   }
 
   private async buildTurnedRoutes(
@@ -8945,8 +9109,12 @@ export class BomItemCostingService {
     accessToken: string = '',
     /** turned or mill_turn: the blank is chosen for the part's own family, as on the Cost tab. */
     family: MachiningFamily = 'turned',
+    /** A Stock Machining part: the material its stock is priced from (stockMachiningRoutes); unset for any other Process. */
+    stockMaterial?: StockRouteMaterial,
   ): Promise<Omit<RouteComparisonDto, 'recommendedRouteId'>> {
-    const blankResult = await this.selectBlank(item, fg, family, accessToken);
+    const blankResult = await this.selectBlank(item, fg, family, accessToken, location);
+    // A Stock Machining part: its stock and band saw on every route; a bar-fed lathe parts the piece off the bar instead (stockCutOffOf).
+    const stock = stockMaterial ? await this.stockMachiningRoutes(item, fg, family, { location, accessToken, batchSize, ...stockMaterial }) : null;
     // Fix 1: turned parts also use feature recognizer hole count
     const turnedCncSummary = machiningFeatureCounts(fg?.machining_features);
     const holeCount = turnedCncSummary !== null
@@ -9059,10 +9227,12 @@ export class BomItemCostingService {
 
     const routes: RouteResultDto[] = machineClasses.map((mc) => {
       const routeRate = primaryRateByClass.get(mc)!;
-      const cost = computeTurningCostSummary(
-        { ...baseInput, mhrRate: routeRate, tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, routeRate) },
+      const cutOff = stockCutOffOf(mc);
+      const engineCost = computeTurningCostSummary(
+        { ...baseInput, ...(stock ? stock.input(cutOff) : {}), mhrRate: routeRate, tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, routeRate) },
         mc,
       );
+      const cost = stock ? stock.apply(engineCost, cutOff) : engineCost;
       const routeCandidate = routeRate.selection?.balanced?.candidate;
       const envelope = checkMachiningCapability(
         mc, maxLength, maxWidth, maxHeight, finishedWeightKg,

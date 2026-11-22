@@ -63,6 +63,12 @@ export const MULTI_SPINDLE_PROCESS_GROUP = 'Multi-Spindle Machining';
 export const RAPID_PROTOTYPING_PROCESS_GROUP = 'Rapid Prototyping';
 
 /**
+ * Stock machining (memory/Stock Maching): a part machined from bar or plate, priced as its stock (Material Stock), the band saw that cuts it to
+ * pieces and the Machining route that cuts the part (costing/stock-machining).
+ */
+export const STOCK_MACHINING_PROCESS_GROUP = 'Stock Machining';
+
+/**
  * The cad-engine family_hint for a machining process that is not one family (cad-engine shared/part_family.py MACHINED_HINT): the part is
  * analysed as a machined part and the geometry picks milled, turned or mill-turn. Not a family: no analysis is stored as it.
  */
@@ -104,6 +110,8 @@ const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
   // Rapid prototyping: a part built layer by layer, analysed for its build as an additive part and priced in the Rapid Prototyping domain
   // (additive/additive-domain.ts: its own machines, materials, reference data and per-feature cleaning).
   [RAPID_PROTOTYPING_PROCESS_GROUP]: ['additive'],
+  // Stock machining: a machined part, analysed and cut as one; the geometry picks among the machining families, the general one (milled) first.
+  [STOCK_MACHINING_PROCESS_GROUP]: ['milled', 'turned', 'mill_turn'],
 };
 
 /**
