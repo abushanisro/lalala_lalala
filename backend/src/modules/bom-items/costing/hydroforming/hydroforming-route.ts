@@ -7,6 +7,7 @@ import { cappingTools, hydroformTooling, isHighStrength, stepRow, type Hydroform
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { fail, routeKit, type RouteKit } from '../shared/calculators/route-kit';
 import { HYDROFORMING_PROCESS_GROUP } from '../shared/core/part-family-process-group';
+import { NOT_A_SHEET_CAUSES, NOT_A_SHEET_RATIO, SHEET_WARN_RATIO, sheetShare } from '../shared/physics/sheet-share';
 
 import type { HydroformPart } from './hydroforming-part';
 import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
@@ -98,23 +99,18 @@ export interface HydroformingRouteInput {
 }
 
 /**
- * How much of the part is the sheet it is hydroformed from: its volume over the sheet the cad-engine measured (developed area x thickness).
- * A sheet part is about 1. Memory has no rule for this; the limits are the user's decision (2026-11-21): above NOT_A_SHEET_RATIO the part is not
- * hydroformed from one sheet (a machined block measured as a thin sheet: R_M-0230-032 LEAD NUT HOUSING, 7.3x), above SHEET_WARN_RATIO it is
- * quoted with a warning. A curved sheet of B-spline faces is not found by the cad-engine's twin search either, so the reason names both causes.
+ * How much of the part is the sheet it is hydroformed from: its volume over the sheet the cad-engine measured (developed area x thickness),
+ * by the shared rule (shared/physics/sheet-share.ts): above NOT_A_SHEET_RATIO the part is not hydroformed from one sheet, above
+ * SHEET_WARN_RATIO it is quoted with a warning.
  */
-export const NOT_A_SHEET_RATIO = 2;
-export const SHEET_WARN_RATIO = 1.25;
+export { NOT_A_SHEET_RATIO, SHEET_WARN_RATIO };
 
 export function sheetMeasure(part: HydroformPart, thicknessMm: number, partVolumeMm3: number | null | undefined): { ratio: number; refuse: string | null; warn: string | null } | null {
-  const sheetMm3 = part.developedAreaMm2 * thicknessMm;
-  if (!(partVolumeMm3 != null && partVolumeMm3 > 0 && sheetMm3 > 0)) return null;
-  const ratio = partVolumeMm3 / sheetMm3;
-  const found = `the cad-engine found ${Math.round((100 * sheetMm3) / partVolumeMm3)} % of the part's ${Math.round(partVolumeMm3).toLocaleString('en-US')} mm³ `
-    + `as a ${r2(thicknessMm)} mm sheet (${Math.round(part.developedAreaMm2).toLocaleString('en-US')} mm² developed, ${r2(ratio)}x)`;
-  const causes = 'it is not a sheet part, or its sheet was not all measured (a curved sheet of B-spline faces is not found)';
-  if (ratio > NOT_A_SHEET_RATIO) return { ratio, refuse: `the part is not hydroformed from one sheet: ${found}; ${causes}`, warn: null };
-  if (ratio > SHEET_WARN_RATIO) return { ratio, refuse: null, warn: `Not all of the part is sheet: ${found}. The quote prices that sheet; ${causes}.` };
+  const share = sheetShare(partVolumeMm3, part.developedAreaMm2, thicknessMm, 'developed');
+  if (!share) return null;
+  const { ratio, found } = share;
+  if (ratio > NOT_A_SHEET_RATIO) return { ratio, refuse: `the part is not hydroformed from one sheet: ${found}; ${NOT_A_SHEET_CAUSES}`, warn: null };
+  if (ratio > SHEET_WARN_RATIO) return { ratio, refuse: null, warn: `Not all of the part is sheet: ${found}. The quote prices that sheet; ${NOT_A_SHEET_CAUSES}.` };
   return { ratio, refuse: null, warn: null };
 }
 

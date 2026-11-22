@@ -10,7 +10,7 @@ import { buildRollFormingCostSummary, ROLL_FORMING_NOT_COSTED } from '../../../.
 import { RollFormingCostService, rollFormingOverrides, type RollFormingCostResult } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-cost.service';
 import { punchPlan } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-features';
 import { partLengthToleranceRow } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-line';
-import { rollFormPart, ROLL_FORM_EXTRACTION_VERSION, type RollFormPart } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-part';
+import { notAProfileReason, rollFormPart, ROLL_FORM_EXTRACTION_VERSION, type RollFormPart } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-part';
 import {
   buildRollFormingRoutes, chooseRollFormingRoute, requiredShaft, rollFormingRule, ROLL_FORMING_CLASS, ROLL_FORMING_PROCESS_GROUP,
   type RollFormingRoute, type RollFormingRouteInput,
@@ -122,6 +122,22 @@ describe('the profile as the cad-engine measures it (rf_v1)', () => {
     expect(rollFormPart(null).missing[0]).toMatch(/^the part is not a roll formed profile: /);
     expect(rollFormPart({ ...CHANNEL_G, constantSection: false, stockFraction: 0.61 }).missing).toEqual(['the part is not a roll formed profile: its cross-section changes along its length (the section holds over 61 % of its length)']);
     expect(rollFormPart({ ...CHANNEL_G, stripWidthMm: null, stripWidthNeutralMm: null }).missing).toEqual(["the strip width (the section's stretch-out): the cad-engine could not measure it on this part"]);
+  });
+
+  it('a part measured as no profile says why: not a sheet part, a flat part, or bends that do not run one way', () => {
+    // The Lead Screw side shaft, a turned part the sheet-metal measurement read as a 0.8 mm sheet of 36.6 mm² (4 "bends": its diameters).
+    expect(rollFormPart(null, 0.8, { partVolumeMm3: 2625.5, flatPatternAreaMm2: 36.6, bendCount: 4 }).missing).toEqual([
+      "the part is not a roll formed profile: the cad-engine found 1 % of the part's 2,626 mm³ as a 0.8 mm sheet (37 mm² flat, 89.67x); "
+        + 'it is not a sheet part, or its sheet was not all measured (a curved sheet of B-spline faces is not found)']);
+    // R_M-0230-039 STIFFNER 2: a 3 mm plate (its volume is 1.01x the sheet) with no bends.
+    expect(rollFormPart(null, 3, { partVolumeMm3: 15208.89, flatPatternAreaMm2: 5015.2, bendCount: 0 }).missing).toEqual([
+      'the part is not a roll formed profile: it is flat (no bends), so a roll forming line has nothing to form; a flat part is cut from a blank (Sheet Metal)']);
+    // A sheet with bends that do not all run one way (a bracket folded two ways), or nothing known of the part beyond the measurement.
+    const twoWays = 'the part is not a roll formed profile: the cad-engine found no cross-section swept along one axis (its bends do not all run one way)';
+    expect(notAProfileReason(1.5, { partVolumeMm3: 30000, flatPatternAreaMm2: 20000, bendCount: 2 })).toBe(twoWays);
+    expect(rollFormPart(null).missing).toEqual([twoWays]);
+    // An unknown bend count is not taken for a flat part, and a sheet share it cannot work out is not a refusal.
+    expect(notAProfileReason(1.5, { partVolumeMm3: null, flatPatternAreaMm2: 20000, bendCount: null })).toBe(twoWays);
   });
 });
 

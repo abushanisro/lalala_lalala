@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { loadRollFormingCalculatorSpec } from './calculators/roll-forming-calculator-spec';
-import { rollFormPart, type RollFormGeometrySummary, type RollFormPart } from './roll-forming-part';
+import { rollFormPart, type RollFormGeometrySummary, type RollFormPart, type RollFormSheetContext } from './roll-forming-part';
 import {
   buildRollFormingRoutes, chooseRollFormingRoute, rollFormingRule, ROLL_FORMING_KEYS, ROLL_FORMING_PROCESS_GROUP, ROLL_FORMING_ROUTE_CLASSES,
   ROLL_FORMING_ROUTES, WELDING_PROCESS, type RollFormingMaterial, type RollFormingRoute, type RollFormingRouteKey, type RollFormingRule, type WeldingKey,
@@ -31,6 +31,8 @@ export interface RollFormingCostRequest {
   geometry: RollFormGeometrySummary | null | undefined;
   /** The part's sheet thickness (mm), when the measurement gives none. */
   sheetThicknessMm?: number | null;
+  /** What the sheet-metal measurement found of the whole part: says why a part measured as no profile is not one. */
+  sheet?: RollFormSheetContext | null;
   forceRoute?: string;
   overrides: Record<string, unknown> | null | undefined;
   batchSize: number;
@@ -208,7 +210,7 @@ export class RollFormingCostService {
     const warnings: string[] = [];
     const none = (part: RollFormPart | null, material: RollFormingMaterial | null, ...missing: string[]): RollFormingCostResult =>
       ({ route: null, routes: [], rule: null, part, material, note: null, missing, warnings });
-    const { part, missing: partMissing } = rollFormPart(req.geometry, req.sheetThicknessMm);
+    const { part, missing: partMissing } = rollFormPart(req.geometry, req.sheetThicknessMm, req.sheet);
     if (!part) return none(null, null, ...partMissing);
     for (const what of part.unmeasured) warnings.push(`The cad-engine could not measure ${what}.`);
     const [{ reference, missing: refMissing }, calculators, machines, toolShop, operations, found] = await Promise.all([
