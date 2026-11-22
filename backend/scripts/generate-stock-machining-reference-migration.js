@@ -116,12 +116,17 @@ for (const file of exportFiles) {
   }
 }
 
+// The file's Data Source names the baseline the machine came from. A copy of the file that names the reference's vendor there is read as
+// "reference export baseline" (readCsv); another copy already names the product. Both are the one baseline, written under one name, so the
+// migration is the same from either copy.
+const BASELINE = 'eMithran Baseline';
+const dataSource = /baseline$/i.test(String(stock['Data Source'] ?? '')) ? BASELINE : stock['Data Source'];
 const stockSpecs = {
   source: `memory/${DIR}/Machine/machines_material_stock.csv`,
   standard_stock_length_mm: num(stock['Standard Stock Length (mm)'], 'Standard Stock Length (mm)'),
   is_preferred: stock['Is Preferred'] === true,
   overhead_multiplier: num(stock['Overhead Multiplier'], 'Overhead Multiplier'),
-  data_source: stock['Data Source'],
+  data_source: dataSource,
 };
 const stockRow = (location, country, basis) => `  (${[
   sqlStr(STOCK_CLASS), sqlStr(location), sqlStr(STOCK_MACHINE), sqlStr('USD'), sqlStr(country), sqlStr('BENCHMARK'), sqlStr(GROUP),
