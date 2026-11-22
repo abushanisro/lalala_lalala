@@ -1,4 +1,4 @@
-import { machiningStockPriceForm, resolveStockPrice, type StockPriceRow } from '../costing/machining/stock-price';
+import { machiningStockPriceForm, STOCK_PRICE_FORMS, stockPriceOfForm, type StockPriceForm, type StockPriceRow } from '../costing/machining/stock-price';
 import type { MaterialClampProperties } from '../costing/plastic-molding/clamp-force';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../common/database/database.service';
@@ -595,9 +595,19 @@ export class MaterialResolutionService {
     location: string;
     /** The scenario's Stock Form choice (resolveScenarioStockForm): the stock form the material is priced on; unset = the family's own. */
     stockForm?: string | null;
+    /**
+     * The exact stock form the material is priced on, when the stock model chose the stock (a Stock Machining part: stock-price.ts
+     * stockPriceFormOf). Unset: the family's own form, or the scenario's Stock Form as the blank optimizer can size it (machiningStockPriceForm).
+     */
+    stockPriceForm?: StockPriceForm | null;
     warnings: string[];
   }): Promise<{
     materialCostPerKg: number; materialDensityKgM3: number; materialSource: 'db' | 'default';
+    /**
+     * The price per kg of each stock form for this material at the location, in the location's currency, by the rule materialCostPerKg
+     * follows: the form's stock price when one is on file, else the material's own price. Empty when no row matched.
+     */
+    stockFormPricesPerKg: Partial<Record<StockPriceForm, number>>;
     // UTS/shear strength — resolved from the SAME raw_materials row density/cost
     // came from (same exact-then-tokenized match), so machine selection (press-
     // brake tonnage) and $ costing can never diverge onto two different material
@@ -632,6 +642,7 @@ export class MaterialResolutionService {
     materialRecord: { id: string; name: string; columns: MaterialSourceColumns } | null;
   }> {
     const { accessToken, grade, family, materialCol, rates, locCurrencyCode, location, warnings, stockForm } = input;
+    const priceForm = input.stockPriceForm ?? machiningStockPriceForm(family, stockForm);
 
     let ambiguityNote: string | null = null;
     if (grade) {
@@ -689,20 +700,23 @@ export class MaterialResolutionService {
           // price at this location when one is on file (stock-price.ts), converted
           // at today's FX snapshot; else the material's raw_materials price.
           const locationStockPrices = await this.loadStockPrices(client, location);
-          const stock = resolveStockPrice(locationStockPrices, best.material, family, location, stockForm);
+          const stock = stockPriceOfForm(locationStockPrices, best.material, priceForm, location);
           if (stock) {
             warnings.push(
               `Material priced on ${stock.form.replace('_', ' ')} stock for ${location}: ${stock.pricePerKg} ${stock.currencyCode}/kg (${stock.source}).`,
             );
-          } else if (machiningStockPriceForm(family, stockForm) && locationStockPrices.length > 0) {
-            warnings.push(`No ${machiningStockPriceForm(family, stockForm)!.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
+          } else if (priceForm && locationStockPrices.length > 0) {
+            warnings.push(`No ${priceForm.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
           }
+          // A form's price: its stock price when one is on file, else the material's own.
+          const priceOf = (s: ReturnType<typeof stockPriceOfForm>) => (s
+            ? s.pricePerKg * rates.convertStrict(s.currencyCode, locCurrencyCode)
+            : hasCost
+              ? (best.locCost != null && best.locCost > 0 ? best.locCost : (best.indiaCost as number) * rates.convertStrict('INR', locCurrencyCode))
+              : 0);
           return {
-            materialCostPerKg: stock
-              ? stock.pricePerKg * rates.convertStrict(stock.currencyCode, locCurrencyCode)
-              : hasCost
-                ? (best.locCost != null && best.locCost > 0 ? best.locCost : (best.indiaCost as number) * rates.convertStrict('INR', locCurrencyCode))
-                : 0,
+            materialCostPerKg: priceOf(stock),
+            stockFormPricesPerKg: Object.fromEntries(STOCK_PRICE_FORMS.map((f) => [f, priceOf(stockPriceOfForm(locationStockPrices, best.material, f, location))])),
             materialDensityKgM3: best.densityKgM3 as number,
             materialSource: 'db',
             utsMpa: strengths.utsMpa,
@@ -749,6 +763,7 @@ export class MaterialResolutionService {
     );
     return {
       materialCostPerKg: 0,
+      stockFormPricesPerKg: {},
       materialDensityKgM3: 0,
       materialSource: 'default',
       utsMpa: notFoundFamilyUts,

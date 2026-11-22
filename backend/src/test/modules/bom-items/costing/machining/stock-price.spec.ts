@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { machiningStockPriceForm, resolveStockPrice, type StockPriceRow } from '../../../../../modules/bom-items/costing/machining/stock-price';
+import { machiningStockPriceForm, resolveStockPrice, STOCK_PRICE_FORMS, stockPriceFormOf, stockPriceOfForm, type StockPriceRow } from '../../../../../modules/bom-items/costing/machining/stock-price';
 
 const CSV = join(__dirname, '../../../../../../../memory/plastic modeling/machine/India/raw_material_stock_costs.csv');
 const FORMS: Record<string, string> = {
@@ -71,5 +71,26 @@ describe('a Stock Form chosen in the scenario is the form the material is priced
     const plate = resolveStockPrice(all, material, 'milled', 'India');
     expect(round?.form).toBe('round_bar');
     expect(plate?.form).toBe('plate');
+  });
+});
+
+describe('a stock the stock model chose is priced as its own form', () => {
+  it('each form as itself, a billet as the plate it is sawn from, a tube as a tube (the stock model sizes one from the part\'s bore)', () => {
+    for (const form of STOCK_PRICE_FORMS) expect(stockPriceFormOf(form)).toBe(form);
+    expect(stockPriceFormOf('billet')).toBe('plate');
+    expect(stockPriceFormOf('round_tube')).toBe('round_tube');
+    // The blank optimizer cannot size a tube, so a Machining part's tube choice is still priced as the billet it falls back to.
+    expect(machiningStockPriceForm('turned', 'round_tube')).toBe('plate');
+    expect(stockPriceFormOf('i_beam')).toBeNull();
+  });
+
+  it('reads the form\'s own row at the location, whatever the family; none on file is no price', () => {
+    const all = rows();
+    const material = all[0]!.raw_material_name!;
+    const tube = all.find((r) => r.raw_material_name === material && r.stock_form === 'round_tube' && r.location === 'India');
+    expect(stockPriceOfForm(all, material, 'round_tube', 'India')?.pricePerKg ?? null).toBe(tube ? Number(tube.price_per_kg) : null);
+    expect(stockPriceOfForm(all, material, 'plate', 'India')).toEqual(resolveStockPrice(all, material, 'milled', 'India'));
+    expect(stockPriceOfForm(all, material, null, 'India')).toBeNull();
+    expect(stockPriceOfForm(all, material, 'plate', 'USA')).toBeNull();
   });
 });

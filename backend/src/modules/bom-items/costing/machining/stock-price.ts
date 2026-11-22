@@ -12,7 +12,9 @@
 
 import { isTurnedFamily } from '../../../../domain/part-family';
 
-type StockPriceForm = 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'square_bar' | 'round_tube' | 'plate';
+export type StockPriceForm = 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'square_bar' | 'round_tube' | 'plate';
+/** The forms machining stock is priced in (memory/Stock Maching materials). */
+export const STOCK_PRICE_FORMS: readonly StockPriceForm[] = ['round_bar', 'hex_bar', 'rectangular_bar', 'square_bar', 'round_tube', 'plate'];
 
 export interface StockPriceRow {
   raw_material_name: string | null;
@@ -36,6 +38,15 @@ export function machiningStockPriceForm(family: string, chosenForm?: string | nu
   return null;
 }
 
+/**
+ * The form a stock the stock model chose (costing/stock) is priced as: the form itself, a billet as the plate it is sawn from. A tube is
+ * priced as a tube here: the stock model sizes one from the part's bore, which the blank optimizer above cannot.
+ */
+export function stockPriceFormOf(stockForm: string): StockPriceForm | null {
+  if (stockForm === 'billet') return 'plate';
+  return (STOCK_PRICE_FORMS as readonly string[]).includes(stockForm) ? (stockForm as StockPriceForm) : null;
+}
+
 interface StockPrice {
   form: StockPriceForm;
   pricePerKg: number;
@@ -50,7 +61,16 @@ export function resolveStockPrice(
   location: string,
   chosenForm?: string | null,
 ): StockPrice | null {
-  const form = machiningStockPriceForm(family, chosenForm);
+  return stockPriceOfForm(rows, materialName, machiningStockPriceForm(family, chosenForm), location);
+}
+
+/** The price on file for a material in one stock form at a location; null when there is none. */
+export function stockPriceOfForm(
+  rows: readonly StockPriceRow[],
+  materialName: string | null | undefined,
+  form: StockPriceForm | null,
+  location: string,
+): StockPrice | null {
   if (!form || !materialName) return null;
   const row = rows.find((r) =>
     r.raw_material_name != null && r.raw_material_name.toLowerCase() === materialName.toLowerCase()
