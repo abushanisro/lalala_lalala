@@ -2,6 +2,8 @@ import { castingProcessOfFamily } from './costing/casting/casting-cost-summary';
 import { HYDROFORM_EXTRACTION_VERSION } from './costing/hydroforming/hydroforming-part';
 import { ROLL_FORM_EXTRACTION_VERSION } from './costing/roll-forming/roll-forming-part';
 import { familiesAnalysedForHint } from './costing/shared/core/part-family-process-group';
+import { MACHINING_STOCK_EXTRACTION_VERSION } from './costing/stock/stock-envelope';
+import { MACHINING_FAMILIES } from '../../domain/part-family';
 
 // The one place that says whether a BOM item has been analysed well enough to cost. It is derived from what is already stored
 // (the feature graph, the drawing, the casting-analysis rows), never kept in a column of its own, so it cannot drift from them.
@@ -46,21 +48,31 @@ export function castingStatusOf(rowStatuses: readonly string[]): AnalysisKindSta
 
 /**
  * Processes priced from a measurement made inside a CAD family other processes share: a hydroformed or roll-formed part is analysed as sheet
- * metal, and its measurement (feature_graph.summary.hydroformGeometry, hf_v1; rollFormGeometry, rf_v3) came with a later engine. The
+ * metal, and its measurement (feature_graph.summary.hydroformGeometry, hf_v1; rollFormGeometry, rf_v3) came with a later engine; a Stock
+ * Machining part is analysed as a machined part, and its stock envelope (machiningStock, stk_v1) came with a later engine too. The
  * feature-graph version and the family say nothing about it, so an analysis of that family made before it is otherwise current.
+ * `families` are the CAD families whose analysis carries the measurement.
  */
-const PROCESS_MEASUREMENT: Readonly<Record<string, { key: string; version: string }>> = {
-  'Sheet Metal - Hydroforming': { key: 'hydroformGeometry', version: HYDROFORM_EXTRACTION_VERSION },
-  'Sheet Metal Roll Forming': { key: 'rollFormGeometry', version: ROLL_FORM_EXTRACTION_VERSION },
+const PROCESS_MEASUREMENT: Readonly<Record<string, { key: string; version: string; families: readonly string[] }>> = {
+  'Sheet Metal - Hydroforming': { key: 'hydroformGeometry', version: HYDROFORM_EXTRACTION_VERSION, families: ['sheet_metal'] },
+  'Sheet Metal Roll Forming': { key: 'rollFormGeometry', version: ROLL_FORM_EXTRACTION_VERSION, families: ['sheet_metal'] },
+  'Stock Machining': { key: 'machiningStock', version: MACHINING_STOCK_EXTRACTION_VERSION, families: MACHINING_FAMILIES },
 };
 
 /**
  * Whether the stored analysis predates the measurement the chosen process is priced from: the summary has no such key, or another version of
- * it. A key the current engine wrote as null (it found nothing to measure) is current: analysing again gives the same.
+ * it. A key the current engine wrote as null (it found nothing to measure) is current: analysing again gives the same. So is an analysis as
+ * a family that does not carry the measurement (analysedFamily, when given): analysing it again as that family would not measure it, and
+ * whether it should be analysed as another family is the family hint's question (deriveAnalysisStatus).
  */
-export function predatesProcessMeasurement(summary: Readonly<Record<string, unknown>> | null | undefined, processGroup: string | null | undefined): boolean {
+export function predatesProcessMeasurement(
+  summary: Readonly<Record<string, unknown>> | null | undefined,
+  processGroup: string | null | undefined,
+  analysedFamily?: string | null,
+): boolean {
   const need = processGroup ? PROCESS_MEASUREMENT[processGroup] : undefined;
   if (!need) return false;
+  if (analysedFamily && !need.families.includes(analysedFamily)) return false;
   if (!summary || !(need.key in summary)) return true;
   const measured = summary[need.key];
   if (measured === null) return false;
@@ -124,7 +136,7 @@ export function deriveAnalysisStatus(
     if (cad === 'ready' && item.chosenFamilyHint && analysedFamily && !familiesAnalysedForHint(item.chosenFamilyHint).includes(analysedFamily)) cad = 'stale';
     // The chosen process is priced from a measurement this analysis predates (a part set to Sheet Metal - Hydroforming, analysed as sheet
     // metal before the hydroform measurement existed): Refresh analysis measures it. Without this, Apply took the part as analysed.
-    if (cad === 'ready' && predatesProcessMeasurement(item.featureGraph?.summary, item.chosenProcessGroup)) cad = 'stale';
+    if (cad === 'ready' && predatesProcessMeasurement(item.featureGraph?.summary, item.chosenProcessGroup, analysedFamily)) cad = 'stale';
   }
 
   const needsCasting = castingWorker && hasModel && !!family && castingProcessOfFamily(family) === 'sand_casting';

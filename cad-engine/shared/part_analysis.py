@@ -199,6 +199,16 @@ def analyze_part(
                 )
             except Exception as _fgv2_exc:
                 logger.warning(f"[machining_fgv2] synthesis failed: {_fgv2_exc}")
+            # The stock the part is cut from (machining/stock_envelope.py, "stock", stk_v1): the axis it runs along, its length, the
+            # round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's surface.
+            # Measured for every machined part; a failure here leaves it None and never fails the analysis.
+            stock = None
+            try:
+                from machining.stock_envelope import measure_stock  # type: ignore
+                stock = measure_stock(shape)
+            except Exception as _stock_exc:
+                logger.warning(f"[machining_features] stock envelope failed: {_stock_exc}")
+            machining_features_result["stock"] = stock
     except Exception as _cnc_exc:
         logger.warning(f"[machining_features] extraction failed: {_cnc_exc}")
 

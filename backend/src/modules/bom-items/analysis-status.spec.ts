@@ -77,6 +77,28 @@ describe('deriveAnalysisStatus', () => {
     expect(deriveAnalysisStatus(hydro, 'none', CURRENT).cad).toBe('stale');
   });
 
+  it('a part set to Stock Machining is stale until Refresh analysis measures its stock (stk_v1)', () => {
+    const machined = (family: string, summary: Record<string, unknown> | undefined) => ({ ...analysed(family), ...(summary ? { summary } : {}) });
+    const stock = (summary: Record<string, unknown> | undefined, family = 'milled') => part({ featureGraph: machined(family, summary), chosenProcessGroup: 'Stock Machining' });
+    // Analysed as a machined part before the stock envelope existed.
+    expect(deriveAnalysisStatus(stock({ holeCount: 4 }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(stock(undefined), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v0' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // Whichever machining family the geometry read: a shaft's stock is measured as a block's is.
+    expect(deriveAnalysisStatus(stock({ holeCount: 4 }, 'mill_turn'), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v1' } }, 'turned'), 'none', CURRENT).cad).toBe('ready');
+    // The current engine could not measure the stock: analysing again gives the same, so it is current (the quote says what is missing).
+    expect(deriveAnalysisStatus(stock({ machiningStock: null }), 'none', CURRENT).cad).toBe('ready');
+    // An analysis as another family carries no stock envelope, and analysing it again as that family would not measure one: it does not
+    // predate the measurement (it was stale for ever otherwise). Whether to analyse it as a machined part is the family hint's question.
+    expect(deriveAnalysisStatus(stock({ bendCount: 2 }, 'sheet_metal'), 'none', CURRENT).cad).toBe('ready');
+    // A plain Machining part (or no Process) needs no stock envelope, and the sheet-metal measurements do not stand in for it.
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }), chosenProcessGroup: 'Machining' }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }) }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(stock({ rollFormGeometry: { extractionVersion: 'rf_v3' } }), 'none', CURRENT).cad).toBe('stale');
+  });
+
   it('a part with no 3D file is not blocked: there is nothing to extract', () => {
     expect(deriveAnalysisStatus({ file3dPath: null, featureGraph: null }, 'none', CURRENT)).toMatchObject({ cad: 'not_required', ready: true });
   });

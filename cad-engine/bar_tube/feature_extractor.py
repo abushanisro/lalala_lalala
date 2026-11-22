@@ -34,6 +34,7 @@ from forging.feature_extractor import solid_volume
 from injection_molding.recognition.mesh import FaceMesh, tessellate_faces
 from injection_molding.recognition.vec import Vec, cross, dot, norm, scale, sub, unit
 from shared.casting_geometry import _faces
+from shared.solid_measures import principal_axes as _principal_axes
 from shared.stable_face_id import build_stable_face_id_map
 
 logger = logging.getLogger(__name__)
@@ -656,18 +657,6 @@ def plate_measurements(shape: Any, faces: Sequence[Any], info: Sequence[Dict[str
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # The extractor
 # ---------------------------------------------------------------------------------------------------------------------------------------
-
-def _principal_axes(shape: Any) -> Tuple[Optional[Vec], List[Vec]]:
-    from OCC.Core.BRepGProp import brepgprop  # type: ignore
-    from OCC.Core.GProp import GProp_GProps  # type: ignore
-    props = GProp_GProps()
-    brepgprop.VolumeProperties(shape, props)
-    pp = props.PrincipalProperties()
-    moments = pp.Moments()
-    axes = [_vec(pp.FirstAxisOfInertia()), _vec(pp.SecondAxisOfInertia()), _vec(pp.ThirdAxisOfInertia())]
-    order = sorted(range(3), key=lambda i: moments[i])  # least moment first: the long axis
-    return _vec(props.CentreOfMass()), [unit(axes[i]) for i in order]
-
 
 class BarTubeFeatureExtractor:
     def extract(
