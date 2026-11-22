@@ -174,7 +174,8 @@ function fromPlate(part: StockPart, ref: StockReference, blank: { lengthMm: numb
     stock,
     purchasedVolumeMm3,
     utilizationPct: purchasedVolumeMm3 > 0 ? Math.min(100, (part.volumeMm3 / purchasedVolumeMm3) * 100) : 0,
-    // The saw frees a blank along two of its edges (its neighbours' cuts free the other two), through the plate's thickness.
+    // The saw frees a blank along two of its edges (its neighbours' cuts free the other two), through the plate's thickness; it crosses the
+    // plate's width, which is what the vise must take and the width its cutting rate is read at.
     saw: { cutAreaMm2: blank.thicknessMm * (blank.lengthMm + blank.widthMm), widthMm: Math.min(stock.lengthMm, stock.widthMm), heightMm: blank.thicknessMm },
     notes: virtual
       ? [`The ${r3(blank.lengthMm)} x ${r3(blank.widthMm)} mm blank is larger than the standard ${ref.plate.lengthMm} x ${ref.plate.widthMm} mm plate: priced as a plate cut to the blank.`]
