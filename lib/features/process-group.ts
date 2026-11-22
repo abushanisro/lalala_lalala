@@ -53,6 +53,8 @@ export function familyToProcessGroupLabel(family: string | null | undefined): st
  */
 const ROUTES_AS_FAMILY: Readonly<Record<string, string>> = {
   'Sheet Metal - Hydroforming': 'hydroforming',
+  // A roll formed part's routes: the coil line ending in a Scissor or a Blade cut-off (backend roll-forming-route.ts ROLL_FORMING_ROUTES).
+  'Sheet Metal Roll Forming': 'roll_forming',
 };
 
 /**
@@ -83,6 +85,8 @@ export function processGroupToFamilyHint(group: string | null | undefined): stri
  */
 const COSTED_AS_FAMILY: Readonly<Record<string, string>> = {
   'Sheet Metal - Hydroforming': 'sheet_metal',
+  // Roll forming: a sheet-metal profile measured as one (cad-engine roll_form), formed from coil on a roll forming line (backend roll-forming).
+  'Sheet Metal Roll Forming': 'sheet_metal',
   Casting: 'die_cast',
   // Insert molding: a molded plastic part on the insert presses (backend plastic-molding/insert).
   'Assembly Molding': 'plastic_molded',

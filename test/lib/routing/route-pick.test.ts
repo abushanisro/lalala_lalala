@@ -17,6 +17,7 @@ describe('the route choice a complete route carries', () => {
     ['multispindle-twin', { multiSpindleRoute: 'twin' }],
     ['partassembly-robotic', { partAssemblyRoute: 'robotic' }],
     ['hydroform-fluid-cell', { hydroformRoute: 'fluid-cell' }],
+    ['roll-forming-blade', { rollFormCutOff: 'blade' }],
   ])('%s is its family\'s choice, and no other family\'s', (routeId, picks) => {
     expect(routePicksOf(route(routeId), null)).toEqual(picks);
   });
@@ -38,6 +39,8 @@ describe('the key a part keeps its route choice under', () => {
     expect(routePickKeyOf({ itemType: 'child_part', scenarioOverrides: { processGroup: 'Assembly' } }, 'die_cast')).toBe('assemblyRoute');
     // A hydroformed part is analysed as sheet metal, whose own routes carry no choice; its engine reads hydroformRoute.
     expect(routePickKeyOf({ itemType: 'child_part', scenarioOverrides: { processGroup: 'Sheet Metal - Hydroforming' } }, 'sheet_metal')).toBe('hydroformRoute');
+    // A roll formed part's engine reads its cut-off route under rollFormCutOff.
+    expect(routePickKeyOf({ itemType: 'child_part', scenarioOverrides: { processGroup: 'Sheet Metal Roll Forming' } }, 'sheet_metal')).toBe('rollFormCutOff');
     expect(routePickKeyOf({ itemType: 'child_part' }, 'sheet_metal')).toBeNull();
   });
 

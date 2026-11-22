@@ -5,7 +5,7 @@ import { isCostedProcessGroup, processGroupOptionLabel, processGroupToFamilyHint
 // A Process with no cost model is not costed (the backend's familiesOfProcessGroup), so the Process fields mark it instead of offering it blind:
 // a part whose Process had none was priced as whatever it was last analysed as.
 describe('process groups with a cost model', () => {
-  it.each(['Sheet Metal', 'Machining', 'Plastic Molding', 'Die Casting', 'Sand Casting', 'Casting Investment', 'Sheet Metal - Hydroforming', 'Casting', 'Forging', 'Powder Metal', 'Additive Manufacturing', 'Bar and Tube Fabrication', 'Assembly', 'Assembly Molding', 'Part Assembly', 'Rapid Prototyping', 'Roto & Blow Molding'])('%s is costed', (group) => {
+  it.each(['Sheet Metal', 'Machining', 'Plastic Molding', 'Die Casting', 'Sand Casting', 'Casting Investment', 'Sheet Metal - Hydroforming', 'Sheet Metal Roll Forming', 'Casting', 'Forging', 'Powder Metal', 'Additive Manufacturing', 'Bar and Tube Fabrication', 'Assembly', 'Assembly Molding', 'Part Assembly', 'Rapid Prototyping', 'Roto & Blow Molding'])('%s is costed', (group) => {
     expect(isCostedProcessGroup(group)).toBe(true);
     expect(processGroupOptionLabel(group)).toBe(group);
   });
@@ -23,6 +23,7 @@ describe('process groups with a cost model', () => {
   it('a Casting part is analysed as a die casting, a hydroformed one as sheet metal; a process with no cost model as nothing', () => {
     expect(processGroupToFamilyHint('Casting')).toBe('die_cast');
     expect(processGroupToFamilyHint('Sheet Metal - Hydroforming')).toBe('sheet_metal');
+    expect(processGroupToFamilyHint('Sheet Metal Roll Forming')).toBe('sheet_metal');
     expect(processGroupToFamilyHint('Sand Casting')).toBe('sand_cast');
     expect(processGroupToFamilyHint('Forging')).toBe('forged');
     expect(processGroupToFamilyHint('Powder Metal')).toBe('powder_metal');
@@ -53,6 +54,7 @@ describe('process groups with a cost model', () => {
 
   it('a hydroformed part (analysed as sheet metal) lists its Process\'s complete routes, not the sheet-metal cut-then-form builder', () => {
     expect(routingFamilyOf('sheet_metal', 'sheet_metal', 'Sheet Metal - Hydroforming')).toBe('hydroforming');
+    expect(routingFamilyOf('sheet_metal', 'sheet_metal', 'Sheet Metal Roll Forming')).toBe('roll_forming');
     expect(routingFamilyOf('sheet_metal', 'sheet_metal', 'Sheet Metal')).toBe('sheet_metal');
     expect(routingFamilyOf('sheet_metal', 'sheet_metal', null)).toBe('sheet_metal');
   });
