@@ -242,11 +242,18 @@ export function requiredShaft(ref: SandReference, thicknessMm: number, utsMpa: n
   return { mm, basis: `${table} at ${r2(thicknessMm)} mm${uhs ? ` (UTS ${r2(utsMpa)} MPa at or above ultraHighStrengthMaterialThresholdLow ${threshold} MPa)` : ''}` };
 }
 
-/** coilSetupMethod as the Coil Change calculator reads it: 0 Let eMithran Decide (the thickness rule), 1 Threading, 2 Welding, 3 Accumulator. */
+/** The name of coilSetupMethod's default: the engine picks threading or end welding by the strip's thickness. */
+export const COIL_SETUP_DECIDED = 'Let eMithran Decide';
+const COIL_SETUP_METHODS: readonly { code: number; name: string }[] = [{ code: 1, name: 'Threading' }, { code: 2, name: 'Welding' }, { code: 3, name: 'Accumulator' }];
+
+/**
+ * coilSetupMethod as the Coil Change calculator reads it: 0 Let eMithran Decide (the thickness rule), 1 Threading, 2 Welding, 3 Accumulator.
+ * Any value that is not one of the three methods is the default, under the default's own name: the staged text of that value is not shown
+ * (reference imports rewrite a cell that names the reference's vendor, so the same default reads differently from one copy to another).
+ */
 export function coilSetupMethod(ref: SandReference): { code: number; name: string } {
-  const name = ref.text('coilSetupMethod') ?? 'Let eMithran Decide';
-  const v = name.trim().toLowerCase();
-  return { code: v === 'threading' ? 1 : v === 'welding' ? 2 : v === 'accumulator' ? 3 : 0, name };
+  const v = (ref.text('coilSetupMethod') ?? '').trim().toLowerCase();
+  return COIL_SETUP_METHODS.find((m) => m.name.toLowerCase() === v) ?? { code: 0, name: COIL_SETUP_DECIDED };
 }
 
 /** One place on the line: its process, the machines it may run on, and what a machine must have (its speed apart). */

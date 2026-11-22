@@ -12,7 +12,7 @@ import { punchPlan } from '../../../../../modules/bom-items/costing/roll-forming
 import { partLengthToleranceRow } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-line';
 import { notAProfileReason, rollFormPart, ROLL_FORM_EXTRACTION_VERSION, type RollFormPart } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-part';
 import {
-  buildRollFormingRoutes, chooseRollFormingRoute, requiredShaft, rollFormingRule, ROLL_FORMING_CLASS, ROLL_FORMING_PROCESS_GROUP,
+  buildRollFormingRoutes, chooseRollFormingRoute, coilSetupMethod, requiredShaft, rollFormingRule, ROLL_FORMING_CLASS, ROLL_FORMING_PROCESS_GROUP,
   type RollFormingRoute, type RollFormingRouteInput,
 } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-route';
 import { rollFormingRouteFor } from '../../../../../modules/bom-items/costing/roll-forming/roll-forming-route-comparison';
@@ -377,6 +377,13 @@ describe('the coil: its change shared by the parts a coil makes', () => {
     const parts = Math.floor(coilKg / stripKg);
     const change = v('coilEndWeldTime') + Number(uncoiler.specs.coil_load_time_s);
     expect(r.coil).toMatchObject({ partsPerCoil: parts, changeTimeS: change, setupMethod: 'Let eMithran Decide' });
+    // The default is named the same whatever text a copy of the reference data holds for it (an import rewrites a cell naming the vendor).
+    for (const staged of ['reference export baseline', 'Let eMithran Decide', '', 'let emithran decide']) {
+      const own = resolveSandReference({ variables: realVariables().map((x) => (x.key === 'coilSetupMethod' ? { ...x, value: staged } : x)), lookups: realLookups() });
+      expect(coilSetupMethod(own)).toEqual({ code: 0, name: 'Let eMithran Decide' });
+      expect(route(input(CHANNEL, { ref: own }), 'scissor').coil).toMatchObject({ partsPerCoil: parts, changeTimeS: change, setupMethod: 'Let eMithran Decide' });
+    }
+    expect(coilSetupMethod(resolveSandReference({ variables: [{ key: 'coilSetupMethod', value: 'welding', unit_type: null }], lookups: [] }))).toEqual({ code: 2, name: 'Welding' });
     expect(r.coil!.perPartS).toBeCloseTo(change / parts, 9);
     expect(r.coil!.method).toMatch(/^end weld/);
     // A strip at or under coilEndWeldingThicknessThreshold is threaded instead.
