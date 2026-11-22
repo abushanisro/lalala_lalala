@@ -79,6 +79,28 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(calcs['Part Setup']?.name).toBe('Machining - Part Setup');
   });
 
+  it('the finishing passes as tool paths replace their 1031 entries, shipped in 1038', () => {
+    const committed = readFileSync(join(ROOT, 'migrations/1038_machining_finishing_calculators.sql'), 'utf-8');
+    expect(committed).toBe(buildMachiningCalculatorMigrationSql(1038, spec));
+    for (const op of ['Fine Finish Milling', 'Contouring', 'Perimeter Milling']) expect(calcs[op]?.fields.map((f) => f.field_name)).toContain('Feed Rate');
+  });
+
+  it('milling a keyway has its own calculator, shipped in 1118 and mapped on the machines the catalog gives the operation', () => {
+    const committed = readFileSync(join(ROOT, 'migrations/1118_machining_obround_slot_milling_calculator.sql'), 'utf-8');
+    expect(committed).toBe(buildMachiningCalculatorMigrationSql(1118, spec));
+    expect(calcs['Obround Slot Milling']?.name).toBe('Machining - Obround Slot Milling');
+    // The reference catalog's "Obround Slot Milling//Keyway" rows: the mills and the lathes with a live tool, not the 2-axis lathes.
+    expect(spec.calculators.find((c) => c.operation === 'Obround Slot Milling')!.machineClasses.map((cls) => spec.stations[cls])).toEqual([
+      '3 Axis Lathe', '3 Axis Bar Feed Lathe with Sub Spindle', 'Simultaneous Turning', 'MillTurn', '3 Axis Mill', '4 Axis Mill', '5 Axis Mill',
+    ]);
+    // The header states where the one default the reference data has no value for comes from; the database keeps it in the description.
+    expect(committed).toContain('-- Machining - Obround Slot Milling, Slotting Depth Ratio = 0.2. The engine\'s own value: the');
+    expect(committed).toContain('mmc-carbide.com/permanent/courses/70/depth-of-cut.html');
+    expect(spec.calculators.find((c) => c.operation === 'Obround Slot Milling')!.description).toContain('Mitsubishi Materials');
+    // The calculators shipped before it are the files they were: the header's new paragraph is written only for a field with a source note.
+    expect(readFileSync(join(ROOT, 'migrations/1037_machining_part_setup_calculator.sql'), 'utf-8')).not.toContain('The engine\'s own value');
+  });
+
   it('the milling calculator prices the line of every mill station, and of the live-tool turning machines', () => {
     expect(['3 Axis Mill', '4 Axis Mill', '5 Axis Mill', 'MillTurn', '3 Axis Lathe'].map((station) => calcs[station]?.name)).toEqual(Array(5).fill('Machining - Milling'));
   });

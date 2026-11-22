@@ -28,6 +28,11 @@ export interface SpecField {
   band?: { column: string; input: string };
   default?: number;
   formula?: string;
+  /**
+   * Where a default the reference data has no value for comes from (a published source, named). Kept in the spec and written into the header of
+   * the migration that ships the calculator; the database has no column for it, so the calculator's description says it too.
+   */
+  note?: string;
 }
 
 /** An operation written as this in the spec is the station itself: the calculator prices the machine's own line ("3 Axis Mill"). */
