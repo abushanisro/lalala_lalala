@@ -54,6 +54,14 @@ ALL_FAMILIES: FrozenSet[str] = frozenset({
 # a machined part: the geometry decides milled, turned or mill-turn, never another process (the backend derives its blank from it).
 TWO_MODEL_HINT = "two_model"
 
+# A machining process that is not one family (Machining: milled, turned or mill-turn; any process costed as all of them): a hint, not a
+# family. The part is machined, and the geometry picks the machining family: a shaft whose Process is Machining is analysed as the turned
+# part it is, not forced to milled.
+MACHINED_HINT = "machined"
+
+# The hints that say only "this part is machined": a geometric machining family stands, any other family is analysed as milled.
+MACHINED_HINTS: FrozenSet[str] = frozenset({TWO_MODEL_HINT, MACHINED_HINT})
+
 # Families measured along one die (or press) direction by forging/feature_extractor.py.
 DIE_DIRECTION_FAMILIES: FrozenSet[str] = frozenset({FORGED, POWDER_METAL})
 

@@ -1,6 +1,6 @@
 # CAD Engine — Architecture
 
-Current state first (updated 2026-10-29); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
+Current state first (updated 2026-11-22); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
 
 ## How a request flows
 
@@ -88,12 +88,24 @@ cad-engine/
                                        not CNC" architecture mandate)
     feature_models.py            — MachiningFeatureType/MachiningFeature/MachiningFeatureTree
                                     data shapes (own module since the same rename)
+    stock_envelope.py            — what every machined part is measured for its raw stock ("stock" in machining_features, stk_v1): the
+                                   axis the stock runs along (the turning axis when round bar about it is the smallest stock, else the
+                                   longest side of the part's tightest box), the length, the round, rectangle and hexagon around the
+                                   part seen along it, a through bore on its centre line (round tube), the end faces the saw cuts leave
+                                   and the faces already lying on each stock's surface; null when it could not be measured
   shared/                        — cross-domain, not owned by one manufacturing family
     machining_geometry.py        — hole/cone/counterbore classification + cylinder
                                     collection primitives, extracted out of Machining
                                     (2026-09-19) since Sheet Metal genuinely depends
-                                    on them directly — see below
+                                    on them directly — see below; the turning axis (the
+                                    direction a part's outer cylinders cover the most area
+                                    along) and whether the part lies within its largest
+                                    turned diameter, which the family classifier reads
+    planar_outline.py            — closed 2D outlines: area, hull, smallest rectangle and circle,
+                                    simplification, the regular-hexagon test (bar and tube sections,
+                                    roll-formed profiles, the machining stock envelope)
     component_feature_analyzer.py — ComponentFeatureAnalyzer + detect_part_family()
+    solid_measures.py            — volume, surface area, bounding box; the principal axes of inertia
     assembly.py / assembly_report.py — STEP assembly structure + the /analyze/assembly result
     part_analysis.py             — analyze_part() (the body of /analyze/geometry) + ComponentFeatureCache
     analysis_gate.py             — concurrency gate + hung-request watchdog
@@ -182,6 +194,14 @@ section frame) and `bar_tube.section` (`classify_section`, `min_area_rect`) at m
 `cut_section`, `surface_samples`, `surface_info`, `_arc_from_group`, `_end_kind` and `STOCK_FRACTION` inside its functions (that
 module pulls in the forging and injection-molding recognition modules, so a sheet part that is not a profile never imports it).
 These are geometry primitives, not bar-and-tube costing; if a third domain needs them they belong in `shared/`.
+
+**2026-11-22, a third domain:** the machining stock envelope (`machining/stock_envelope.py`) measures the round, rectangle and hexagon
+around a part seen along its axis, the same outline geometry a bar's section is classified with. The pure 2D helpers it shares (`hull`,
+`min_area_rect`, `enclosing_circle_diameter`, `simplify`, the regular-hexagon test, with `area`, `perimeter` and `centroid`) moved to
+`shared/planar_outline.py`, and the principal axes of inertia to `shared/solid_measures.py`; `bar_tube/section.py` and
+`bar_tube/feature_extractor.py` import them from there under the names they had, so bar and tube and roll forming read them unchanged.
+Machining does not import `bar_tube`. The 3D primitives roll forming takes from `bar_tube` (`centreline`, `cut_section`, `surface_info`)
+are still used by those two domains only, and stay.
 
 ## Verification performed (no OCC available in the refactor environment)
 

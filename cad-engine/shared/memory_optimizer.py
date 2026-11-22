@@ -37,8 +37,9 @@ from OCC.Core.BRep import BRep_Tool  # type: ignore
 from OCC.Core.TopLoc import TopLoc_Location  # type: ignore
 from OCC.Core.Standard import Standard_Failure  # type: ignore
 
+from shared.component_feature_analyzer import SHEET_SHELL_MAX_FILL
 from shared.error_reporting import report_failure
-from shared.part_family import ADDITIVE, ALL_FAMILIES, BAR_TUBE, ROTO_BLOW, CASTING_FAMILY_DOMAIN, COMPOSITE, MACHINING_FAMILIES, TWO_MODEL_HINT, DIE_DIRECTION_FAMILIES, MILLED, PLASTIC_MOLDED, SHEET_METAL
+from shared.part_family import ADDITIVE, ALL_FAMILIES, BAR_TUBE, ROTO_BLOW, CASTING_FAMILY_DOMAIN, COMPOSITE, MACHINING_FAMILIES, MACHINED_HINT, MACHINED_HINTS, DIE_DIRECTION_FAMILIES, MILLED, PLASTIC_MOLDED, SHEET_METAL
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ def smf_override_verdict(gauge_mm: float, gauge_dominance: float, dims: List[flo
         return None
     fill_ratio = volume_mm3 / (pos[0] * pos[1] * pos[2])
     min_bbox = min(pos)
-    if fill_ratio >= 0.15 or not (0 < gauge_mm < min_bbox * 0.45):
+    if fill_ratio >= SHEET_SHELL_MAX_FILL or not (0 < gauge_mm < min_bbox * 0.45):
         return None
     if gauge_dominance >= SHEET_GAUGE_DOMINANCE_MIN:
         return True, (
@@ -193,7 +194,7 @@ class AdvancedCADMemoryOptimizer:
     """
     
     VERSION = "2.2.0"
-    CACHE_VERSION = "geo_v79"  # bumped 2026-11-22: (55) the roll-forming measurement (rf_v3) takes the web of an open strip as its middle (the flat with the fewest bends to its farther edge; was its widest flat), so a channel deeper than its web has both bends at level 1, and gives each cross-section bend its fold direction (+1 / -1 against the first bend listed). Prior: geo_v78 bumped 2026-11-22: (54) the roll-forming measurement (rf_v2) also measures profiles modelled without bend radii (each sharp corner a bend of radius 0, "sharp") and tubes with no flat (a round tube is two half turns meeting at the seam, its wall read from its concentric skins; an oval ring of arcs), and a closed section carries "tube" (outer diameter or sizes, wall); it is measured for flat-looking parts too (a round tube reads as flat to the extractor's thickness). Prior: geo_v77 bumped 2026-11-22: (53) every single-body sheet-metal part is measured for roll forming (sheet_metal/features/roll_form.py, "roll_form", rf_v1: the long axis and length, whether it is one section along its length, the section, the strip width, the cross-section bends in order across the strip with the flat before each and their level, the curve along the length, the punched features with their stations, the end cuts); null when the part is not a profile. Prior: geo_v76 bumped 2026-11-21: (52) every sheet-metal part is measured for hydroforming (sheet_metal/features/hydroform.py, "hydroform": press axis, forming depth, plan, projected and developed area, the drawn form, the blank, straight and curved flanges, holes); a drawn part's flat pattern is its developed sheet (was its bottom face alone) laid out as an equal-area blank; the drawn region stops at a hole's bore (the hole is kept); a drawn cup's walls are no longer counted as holes. Prior: geo_v75 bumped 2026-11-21: (51) a blow or roto molded part (family_hint roto_blow) is measured as a hollow shell: its wall, the air it closes in, its spout, parting line, perimeter and envelope, holes and voids (roto_blow/feature_extractor.py). Prior: geo_v74 bumped 2026-11-21: (50) an additive part lists the voids cleaning clears (additive/voids.py: pockets, ring pockets, enclosed cavities, non-round holes, each with its volume and depth) and names a grooved bore RingedHole. Prior: geo_v73 bumped 2026-11-19: (49) a bar and tube part (family_hint bar_tube) is measured as a section swept along a centreline: stock form and section, bends (CLR, angle, straights, clock angle), developed length, holes, cutouts, end cuts and end forms; a flat part as cut plate (bar_tube/feature_extractor.py). Prior: geo_v72 bumped 2026-11-18: (48) an additive part (family_hint additive) is measured for its build: the build direction of least support, its height, footprint, overhang, support volume and plate contact (additive/feature_extractor.py). Prior: geo_v71 bumped 2026-11-17: (47) a composite laminate records the faces behind the tool area, trim length, skins, height and footprint (feature_graph_v2.measurements) for the calculator eye. Prior: geo_v70 bumped 2026-11-17: (45) forging, powder metal and casting analyses record the faces behind the projected area, parting line, depth, plan and volume (feature_graph_v2.measurements) for the calculator eye. Prior: geo_v69 bumped 2026-11-17: (46) a forging (and powder metal) analysis names a stepped bore MultiStepHole "stepped", the catalog variant the machining and die casting analyses emit (forging.feature_extractor.hole_features), so machining after forging prices it. Prior: geo_v67 bumped 2026-11-17: (44) a forging (and powder metal) analysis lists every face as a feature (forging.feature_extractor.face_features: voids, planar faces, curved walls and surfaces, sharp edges) for the process tree and the 3D highlight. Prior: geo_v66 bumped 2026-11-17: (43) a powder metal part (family_hint powder_metal) is measured along its press direction by the forging measurements. Prior: geo_v65 bumped 2026-11-17: (42) a forging analysis lists its holes as hole features (forging.feature_extractor.hole_features), so the tolerances on them and the machining after forging are read as for every other process. Prior: geo_v64 bumped 2026-11-16: (41) a casting's wall is measured from where the ray enters the metal (shared.casting_geometry.wall_thickness_profile): a ray cast from the meshed wall of a bore crossed the bore's own surface first and read as a wall a few microns thick (Cannula Holder bottom, wall_thickness_min_mm 0.001). Prior: geo_v63 bumped 2026-11-16: (40) axial bores carry distance_from_axis_mm (as cross holes do), for the backend's live-tooling check. Prior: geo_v62 bumped 2026-11-16: (39) detect_part_family() needs a turned outer diameter (turned_od_count, shared.machining_geometry.turned_diameter_count) for turned / mill_turn: a block whose holes share one axis (R_M-0230-032 lead nut housing) was mill_turn, now milled. Prior: geo_v61 bumped 2026-11-14: (38) a machining pocket / slot / keyway is a floor with a wall rising
+    CACHE_VERSION = "geo_v80"  # bumped 2026-11-22: (56) the turning axis is the direction the part's outer (convex) cylindrical faces cover the most area along (shared.machining_geometry.dominant_cylinder_axis; was the direction most cylindrical faces share, so a shaft's cross holes outvoted its turned diameters: Lead Screw side shaft read as turned about its cross holes, no turned diameter, milled), and a part lying wholly within its largest turned outer diameter, unless hollow enough to be a sheet shell, is turned or mill-turn whatever its box's proportions (detect_part_family within_turned_od, shared.machining_geometry.turned_envelope: a shaft between 1.25 and 2.5 diameters long is neither a disc nor a rod to the bounding-box gates) and, when at least as long as that diameter, is not read as flat by the sheet-metal gates. Prior: geo_v79 bumped 2026-11-22: (55) the roll-forming measurement (rf_v3) takes the web of an open strip as its middle (the flat with the fewest bends to its farther edge; was its widest flat), so a channel deeper than its web has both bends at level 1, and gives each cross-section bend its fold direction (+1 / -1 against the first bend listed). Prior: geo_v78 bumped 2026-11-22: (54) the roll-forming measurement (rf_v2) also measures profiles modelled without bend radii (each sharp corner a bend of radius 0, "sharp") and tubes with no flat (a round tube is two half turns meeting at the seam, its wall read from its concentric skins; an oval ring of arcs), and a closed section carries "tube" (outer diameter or sizes, wall); it is measured for flat-looking parts too (a round tube reads as flat to the extractor's thickness). Prior: geo_v77 bumped 2026-11-22: (53) every single-body sheet-metal part is measured for roll forming (sheet_metal/features/roll_form.py, "roll_form", rf_v1: the long axis and length, whether it is one section along its length, the section, the strip width, the cross-section bends in order across the strip with the flat before each and their level, the curve along the length, the punched features with their stations, the end cuts); null when the part is not a profile. Prior: geo_v76 bumped 2026-11-21: (52) every sheet-metal part is measured for hydroforming (sheet_metal/features/hydroform.py, "hydroform": press axis, forming depth, plan, projected and developed area, the drawn form, the blank, straight and curved flanges, holes); a drawn part's flat pattern is its developed sheet (was its bottom face alone) laid out as an equal-area blank; the drawn region stops at a hole's bore (the hole is kept); a drawn cup's walls are no longer counted as holes. Prior: geo_v75 bumped 2026-11-21: (51) a blow or roto molded part (family_hint roto_blow) is measured as a hollow shell: its wall, the air it closes in, its spout, parting line, perimeter and envelope, holes and voids (roto_blow/feature_extractor.py). Prior: geo_v74 bumped 2026-11-21: (50) an additive part lists the voids cleaning clears (additive/voids.py: pockets, ring pockets, enclosed cavities, non-round holes, each with its volume and depth) and names a grooved bore RingedHole. Prior: geo_v73 bumped 2026-11-19: (49) a bar and tube part (family_hint bar_tube) is measured as a section swept along a centreline: stock form and section, bends (CLR, angle, straights, clock angle), developed length, holes, cutouts, end cuts and end forms; a flat part as cut plate (bar_tube/feature_extractor.py). Prior: geo_v72 bumped 2026-11-18: (48) an additive part (family_hint additive) is measured for its build: the build direction of least support, its height, footprint, overhang, support volume and plate contact (additive/feature_extractor.py). Prior: geo_v71 bumped 2026-11-17: (47) a composite laminate records the faces behind the tool area, trim length, skins, height and footprint (feature_graph_v2.measurements) for the calculator eye. Prior: geo_v70 bumped 2026-11-17: (45) forging, powder metal and casting analyses record the faces behind the projected area, parting line, depth, plan and volume (feature_graph_v2.measurements) for the calculator eye. Prior: geo_v69 bumped 2026-11-17: (46) a forging (and powder metal) analysis names a stepped bore MultiStepHole "stepped", the catalog variant the machining and die casting analyses emit (forging.feature_extractor.hole_features), so machining after forging prices it. Prior: geo_v67 bumped 2026-11-17: (44) a forging (and powder metal) analysis lists every face as a feature (forging.feature_extractor.face_features: voids, planar faces, curved walls and surfaces, sharp edges) for the process tree and the 3D highlight. Prior: geo_v66 bumped 2026-11-17: (43) a powder metal part (family_hint powder_metal) is measured along its press direction by the forging measurements. Prior: geo_v65 bumped 2026-11-17: (42) a forging analysis lists its holes as hole features (forging.feature_extractor.hole_features), so the tolerances on them and the machining after forging are read as for every other process. Prior: geo_v64 bumped 2026-11-16: (41) a casting's wall is measured from where the ray enters the metal (shared.casting_geometry.wall_thickness_profile): a ray cast from the meshed wall of a bore crossed the bore's own surface first and read as a wall a few microns thick (Cannula Holder bottom, wall_thickness_min_mm 0.001). Prior: geo_v63 bumped 2026-11-16: (40) axial bores carry distance_from_axis_mm (as cross holes do), for the backend's live-tooling check. Prior: geo_v62 bumped 2026-11-16: (39) detect_part_family() needs a turned outer diameter (turned_od_count, shared.machining_geometry.turned_diameter_count) for turned / mill_turn: a block whose holes share one axis (R_M-0230-032 lead nut housing) was mill_turn, now milled. Prior: geo_v61 bumped 2026-11-14: (38) a machining pocket / slot / keyway is a floor with a wall rising
     # from it (machining/recessed_floor.py): rib tops, boss tops and hole bottoms are no longer pockets; its occurrence
     # carries the measured depth_mm, walled_fraction and width_confined, and material_removed_mm3 is floor area x depth.
     # Previous: geo_v60, 2026-11-14: (37) machining feature_graph_v2 occurrences carry tool_axis /
@@ -377,7 +378,10 @@ class AdvancedCADMemoryOptimizer:
                 only path that ever reaches 'die_cast' today, since no
                 automatic geometric die-cast classifier exists yet (building
                 one is itself a routing-adjacent inference, deliberately
-                deferred). Any other/unrecognized value is ignored and the
+                deferred). "machined" and "two_model" (shared.part_family
+                MACHINED_HINTS) are not families: the part is analysed as a
+                machined part, the geometry picking milled, turned or
+                mill-turn. Any other/unrecognized value is ignored and the
                 real classifier chain runs unchanged.
 
         Returns:
@@ -603,13 +607,18 @@ class AdvancedCADMemoryOptimizer:
             except Exception as e:
                 logger.warning(f"[mfg_intel] thin_wall_ratio computation failed: {e}")
             # The part's turned outer diameters: a lathe turns about one; a block whose holes merely share an axis has none
-            # (shared.machining_geometry.turned_diameter_count). None when it could not be measured: the classifier then does not use it.
+            # (shared.machining_geometry.turning_axis). None when it could not be measured: the classifier then does not use it.
+            # And whether the part lies within the largest of them (turned_envelope): then it was cut from round bar and turned.
+            turned_od_count = None
+            turned_od_envelope = None
             try:
-                from shared.machining_geometry import turned_diameter_count  # type: ignore
-                turned_od_count = turned_diameter_count(shape)
+                from shared.machining_geometry import turned_envelope, turning_axis  # type: ignore
+                _turning = turning_axis(shape)
+                if _turning is not None:
+                    turned_od_count = len(_turning["diameters"])
+                    turned_od_envelope = turned_envelope(shape, _turning)
             except Exception as e:
-                logger.warning(f"[mfg_intel] turned_od_count computation failed: {e}")
-                turned_od_count = None
+                logger.warning(f"[mfg_intel] turned outer diameter measurement failed: {e}")
             detected_family, family_confidence, classification_reasons = detect_part_family(
                 dims_list,
                 holes.get('count', 0),
@@ -626,6 +635,7 @@ class AdvancedCADMemoryOptimizer:
                 # back to pocket_count when draft isn't available.
                 volume_mm3=volume_mm3,
                 turned_od_count=turned_od_count,
+                within_turned_od=None if turned_od_envelope is None else bool(turned_od_envelope["within"]),
             )
 
             # ── Post-classification SMF cross-check ───────────────────────────
@@ -730,11 +740,16 @@ class AdvancedCADMemoryOptimizer:
             # no veto silently overrules the user; the geometry's own verdict is reported beside it. Only a
             # real platform family is honored; any other string (typo, stale client, unrecognized value) is
             # ignored rather than faked into a family that doesn't exist.
-            # 2-Model Machining: the part is machined, whatever else the geometry alone would read. A geometric machining family stands
-            # (milled, turned, mill-turn); any other is milled, the general machining family, and said so.
-            if family_hint == TWO_MODEL_HINT and detected_family not in MACHINING_FAMILIES:
+            # A machining process (hint machined: Machining, or any process costed as every machining family) and 2-Model Machining: the
+            # part is machined, whatever else the geometry alone would read. A geometric machining family stands (milled, turned,
+            # mill-turn: the geometry picks among them); any other is milled, the general machining family, and said so.
+            if family_hint in MACHINED_HINTS and detected_family not in MACHINING_FAMILIES:
+                _machined_because = (
+                    "the part's Process is a machining process" if family_hint == MACHINED_HINT
+                    else "a 2-Model Machining part is machined"
+                )
                 classification_reasons = [
-                    f"family_hint={TWO_MODEL_HINT}: a 2-Model Machining part is machined, analysed as {MILLED}",
+                    f"family_hint={family_hint}: {_machined_because}, analysed as {MILLED}",
                     f"geometry alone reads {geometric_family}" + (f": {'; '.join(classification_reasons)}" if classification_reasons else ""),
                 ]
                 detected_family = MILLED
@@ -765,6 +780,8 @@ class AdvancedCADMemoryOptimizer:
                     'secondary_features_count': secondary_features_count,
                     'large_cyl_count':        large_cyl_count,
                     'turned_od_count':        turned_od_count,
+                    'largest_turned_od_mm':   (turned_od_envelope or {}).get('largest_turned_od_mm'),
+                    'swing_diameter_mm':      (turned_od_envelope or {}).get('swing_diameter_mm'),
                     'pocket_count':           pocket_count,
                     'thin_wall_ratio':        thin_wall_ratio,
                     'classification_version': 'v6',

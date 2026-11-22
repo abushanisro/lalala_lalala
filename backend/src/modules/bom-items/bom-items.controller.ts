@@ -165,10 +165,10 @@ export class BOMItemsController {
     @Query('location') location?: string,
     // Create BOM Item's process dropdown: a manual, disclosed family override
     // for when auto-detection gets it wrong or doesn't run at all. Passed
-    // through unvalidated -- cad-engine's own ALL_FAMILIES check (shared/
-    // memory_optimizer.py) is the single source of truth for which values are
-    // real and silently ignores anything else, so there is nothing to
-    // duplicate or fabricate here.
+    // through unvalidated -- cad-engine's own check (shared/memory_optimizer.py:
+    // a platform family, or the "machined" / "two_model" hints) is the single
+    // source of truth for which values are real and silently ignores anything
+    // else, so there is nothing to duplicate or fabricate here.
     @Body('familyHint') familyHint?: string,
   ): Promise<AutoFillResponseDto> {
     if (!file) {

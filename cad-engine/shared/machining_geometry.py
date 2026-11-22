@@ -547,28 +547,61 @@ def collect_cylinders(
     return results
 
 
+# Two cylinder axes within this angle run the same way: far above export noise, far below two axes meant to differ.
+PARALLEL_AXIS_TOLERANCE_DEG = 0.5
+
+
 def dominant_cylinder_axis(shape) -> Optional[Tuple[float, float, float]]:
     """
-    The part's dominant cylinder axis: each cylindrical face votes for its axis direction (count, not radius, weighted; near-parallel axes
-    snap to one key), the plurality wins. None when the part has no cylindrical face. The machining recognizer's turning axis.
+    The part's dominant cylinder axis, the machining recognizer's turning axis: the direction its outer (convex) cylindrical faces cover the
+    most area along. A lathe turns outer diameters, so they decide; the holes (concave faces) decide only between directions the outer faces
+    cover equally, and alone on a part with no outer cylinder. Area, not face count: a shaft's few turned diameters outweigh the many small
+    faces of its cross holes (Lead Screw side shaft: three diameters and a bore along Y, four cross-hole faces along Z, read as turned about Z).
+    The direction is the widest face's own, signed so its first component that is not zero is positive. None when the part has no analytic
+    cylindrical face.
     """
-    from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
     from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
+    from OCC.Core.BRepGProp import brepgprop  # type: ignore
+    from OCC.Core.GProp import GProp_GProps  # type: ignore
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
     from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
     from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+    from shared.bspline_cylinder import face_is_internal
 
-    votes: Dict[Tuple[float, float, float], int] = {}
+    parallel = math.cos(math.radians(PARALLEL_AXIS_TOLERANCE_DEG))
+    # One entry per direction: [its widest face's direction, that face's area, outer area, inner area].
+    directions: List[List[Any]] = []
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
-        surf = BRepAdaptor_Surface(exp.Current())
+        face = exp.Current()
+        surf = BRepAdaptor_Surface(face)
         if surf.GetType() == GeomAbs_Cylinder:
-            d = surf.Cylinder().Axis().Direction()
-            key = (round(abs(d.X()), 2), round(abs(d.Y()), 2), round(abs(d.Z()), 2))
-            votes[key] = votes.get(key, 0) + 1
+            cyl = surf.Cylinder()
+            d, loc = cyl.Axis().Direction(), cyl.Location()
+            axis = _one_way((d.X(), d.Y(), d.Z()))
+            props = GProp_GProps()
+            brepgprop.SurfaceProperties(face, props)
+            area = float(props.Mass())
+            inner = face_is_internal(face, (loc.X(), loc.Y(), loc.Z()), axis)
+            entry = next((e for e in directions if abs(e[0][0] * axis[0] + e[0][1] * axis[1] + e[0][2] * axis[2]) >= parallel), None)
+            if entry is None:
+                entry = [axis, area, 0.0, 0.0]
+                directions.append(entry)
+            elif area > entry[1]:
+                entry[0], entry[1] = axis, area
+            entry[3 if inner else 2] += area
         exp.Next()
-    if not votes:
+    if not directions:
         return None
-    return max(votes, key=lambda k: votes[k])
+    return max(directions, key=lambda e: (e[2], e[3]))[0]
+
+
+def _one_way(axis: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """The same axis as a unit vector with one sign (its first component that is not zero is positive): an axis has two names, this picks one."""
+    n = math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) or 1.0
+    v = [round(c / n, 9) + 0.0 for c in axis]  # + 0.0: a rounded -0.0 becomes 0.0
+    sign = next((1.0 if c > 0 else -1.0 for c in v if c != 0.0), 1.0)
+    return (v[0] * sign + 0.0, v[1] * sign + 0.0, v[2] * sign + 0.0)
 
 
 def turned_diameter_count(shape) -> Optional[int]:
@@ -580,7 +613,98 @@ def turned_diameter_count(shape) -> Optional[int]:
     None when the part has no analytic cylinder to find its axis by (an export that writes every face as a B-spline): not measured, so the
     classifier does not use it, rather than reading a turned part as having no diameter.
     """
+    line = turning_axis(shape)
+    return None if line is None else len(line["diameters"])
+
+
+# A surface lies on the part's envelope when it is this close to it: the model's own precision (as COAXIAL_TOLERANCE_MM) plus the rounding
+# an export carries, which grows with the size.
+ENVELOPE_TOLERANCE_MM = 0.01
+ENVELOPE_TOLERANCE_RATIO = 1e-4
+
+
+def envelope_tolerance(size_mm: float) -> float:
+    """How far from an envelope of this size a surface may be and still lie on it."""
+    return ENVELOPE_TOLERANCE_MM + ENVELOPE_TOLERANCE_RATIO * abs(size_mm)
+
+
+def mesh_nodes(shape) -> List[Tuple[float, float, float]]:
+    """Every node of the shape's mesh, in model coordinates. Nodes lie on the surfaces, and every corner of the part is one. A shape that
+    was never meshed is meshed as the analysis meshes it (shared/memory_optimizer.py), so calling this earlier changes nothing later."""
+    from OCC.Core.BRep import BRep_Tool  # type: ignore
+    from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+    from OCC.Core.TopLoc import TopLoc_Location  # type: ignore
+    from OCC.Core.TopoDS import topods  # type: ignore
+
+    def collect() -> List[Tuple[float, float, float]]:
+        nodes: List[Tuple[float, float, float]] = []
+        exp = TopExp_Explorer(shape, TopAbs_FACE)
+        while exp.More():
+            location = TopLoc_Location()
+            tri = BRep_Tool.Triangulation(topods.Face(exp.Current()), location)
+            if tri is not None:
+                transform = location.Transformation()
+                for i in range(1, tri.NbNodes() + 1):
+                    p = tri.Node(i).Transformed(transform)
+                    nodes.append((float(p.X()), float(p.Y()), float(p.Z())))
+            exp.Next()
+        return nodes
+
+    nodes = collect()
+    if not nodes:
+        BRepMesh_IncrementalMesh(shape, 0.1, False, 0.5, True).Perform()
+        nodes = collect()
+    return nodes
+
+
+def swing_radius(nodes: List[Tuple[float, float, float]], point: Tuple[float, float, float], direction: Tuple[float, float, float]) -> float:
+    """The part's reach from a line (its farthest mesh node): the radius of the smallest round bar, centred on the line, the part is cut from."""
+    px, py, pz = point
+    return max((point_to_axis_distance((x - px, y - py, z - pz), direction) for x, y, z in nodes), default=0.0)
+
+
+def turning_axis(shape) -> Optional[Dict[str, Any]]:
+    """
+    The line the part is turned about and what is turned on it: the dominant cylinder axis, placed on the axis of the part's largest turned
+    outer diameter (collect_cylinders' external_diameter). None when the part has no analytic cylinder to find the axis by.
+
+      direction            the dominant cylinder axis (unit vector)
+      diameters            every turned outer diameter face, as collect_cylinders lists it; empty when the part has none
+      point                a point on the line: the largest turned diameter's own axis; None when the part has no turned diameter
+      largest_radius_mm    that diameter's radius; None when the part has no turned diameter
+    """
     axis = dominant_cylinder_axis(shape)
     if axis is None:
         return None
-    return sum(1 for c in collect_cylinders(shape, axis, part_bounding_box(shape)) if c["kind"] == "external_diameter")
+    turned = [c for c in collect_cylinders(shape, axis, part_bounding_box(shape)) if c["kind"] == "external_diameter"]
+    largest = max(turned, key=lambda c: c["radius"]) if turned else None
+    return {
+        "direction": axis,
+        "diameters": turned,
+        "point": tuple(largest["centroid"]) if largest else None,
+        "largest_radius_mm": float(largest["radius"]) if largest else None,
+    }
+
+
+def turned_envelope(shape, line: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    The part's largest turned outer diameter against its swing about the turning axis. A part that lies wholly within its largest turned
+    diameter was cut from round bar of that diameter and turned: what the family classifier takes as proof of a turned part, whatever the
+    proportions of its box (component_feature_analyzer.detect_part_family). None when the part has no turned outer diameter. `line` is the
+    part's turning_axis() when the caller already has it.
+
+      largest_turned_od_mm, swing_diameter_mm    the two diameters
+      within                                     the swing is no larger than the turned diameter (to envelope_tolerance)
+    """
+    line = line if line is not None else turning_axis(shape)
+    if line is None or not line["diameters"]:
+        return None
+    radius = line["largest_radius_mm"]
+    swing = swing_radius(mesh_nodes(shape), line["point"], line["direction"])
+    return {
+        "largest_turned_od_mm": round(2.0 * radius, 4),
+        "swing_diameter_mm": round(2.0 * swing, 4),
+        "within": swing <= radius + envelope_tolerance(2.0 * radius),
+    }
