@@ -172,11 +172,30 @@ def test_classify_prismatic_turned_keyway_carries_length_mm():
     assert params["length_mm"] == pytest.approx(40.0)
 
 
+def _floor_across_the_axis(long_direction, **over):
+    """A recess floor facing across a turning axis along Z, as the collector hands it over: 5 wide, 12 long, walled on both sides."""
+    return {"dims": [2.0, 5.0, 12.0], "normal": (1, 0, 0), "centroid": (1.0, 1.0, 1.0), "long_direction": long_direction,
+            "area_mm2": 60.0, "walled_fraction": 0.706, "width_confined": True, **over}
+
+
 def test_classify_prismatic_turned_radial_slot():
-    pocket = {"dims": [2.0, 5.0, 30.0], "normal": (1, 0, 0), "centroid": (1.0, 1.0, 1.0)}
-    ftype, variant, params = _classify_prismatic_turned(pocket, main_axis=(0, 0, 1))
+    # Long side across the axis.
+    ftype, variant, params = _classify_prismatic_turned(_floor_across_the_axis((0, 1, 0)), main_axis=(0, 0, 1))
     assert (ftype, variant) == ("Slot", "radial")
     assert params["centroid"] == (1.0, 1.0, 1.0)
+    assert params["walled_fraction"] == 0.706 and params["width_confined"] is True
+
+
+def test_classify_prismatic_turned_floor_across_the_axis_is_a_keyway_when_its_long_side_runs_along_it():
+    # 12 / 5 = 2.4: a keyway is named by its direction, whatever its proportions.
+    ftype, variant, params = _classify_prismatic_turned(_floor_across_the_axis((0, 0, 1)), main_axis=(0, 0, 1))
+    assert (ftype, variant) == ("Keyway", "default")
+    assert (params["length_mm"], params["width_mm"], params["depth_mm"]) == (12.0, 5.0, 2.0)
+    assert (params["area_mm2"], params["walled_fraction"], params["width_confined"]) == (60.0, 0.706, True)
+
+
+def test_classify_prismatic_turned_open_flat_across_the_axis_is_not_a_channel():
+    assert _classify_prismatic_turned(_floor_across_the_axis((0, 0, 1), width_confined=False), main_axis=(0, 0, 1)) is None
 
 
 # ── _extract_diam_depth ──────────────────────────────────────────────────────

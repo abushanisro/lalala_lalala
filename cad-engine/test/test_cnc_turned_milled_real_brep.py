@@ -13,19 +13,21 @@ assertions, not guessed. Real face_ids are asserted non-empty everywhere a
 feature is checked, proving 3D-highlight data is actually produced.
 
 Known, disclosed gap surfaced while building this file (not fixed here --
-see the machining feature-extraction plan for the full writeup): a
-perpendicular-to-axis floor face (the real shape of a genuine "slot" on a
-milled part or Slot/radial on a turned part) never reaches
-_collect_prismatic_pockets' classification step at all -- that collector's
-own axis-alignment prefilter (dot_with_axis > 0.85) only ever admits
-axis-PARALLEL floor faces, so 'slot' (milled) and 'radial_slot' (turned) are
-effectively unreachable given the current collection filter, regardless of
-real geometry. Confirmed directly: a real full-height side notch on a milled
-box, and a real radial notch cut into a turned shaft's OD, both produce zero
-prismatic features. Not attempted here -- fixing it means broadening the
+see the machining feature-extraction plan for the full writeup): on a milled
+part, a perpendicular-to-axis floor face (the real shape of a genuine "slot")
+never reaches _collect_prismatic_pockets' classification step at all -- that
+collector's own axis-alignment prefilter (dot_with_axis > 0.85) only ever
+admits axis-PARALLEL floor faces, so 'slot' (milled) is effectively
+unreachable given the current collection filter, regardless of real geometry.
+Confirmed directly: a real full-height side notch on a milled box produces
+zero prismatic features. Not attempted here -- fixing it means broadening the
 collector to also gather perpendicular-normal candidates, which needs the
 same real containment/adjacency work Phase 3's face classification already
 requires, not a Phase 2 test-writing patch.
+
+Closed 2026-11-22 for turned and mill-turn parts: the collector also gathers
+the floors that face across the turning axis, so a keyway or a radial slot
+cut into a turned diameter or a bore is recognised (test_turned_keyway.py).
 """
 import math
 

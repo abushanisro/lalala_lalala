@@ -16,7 +16,7 @@ box. An occurrence whose faces cannot be measured gets no extent_mm.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ def _faces_by_ordinal(shape: Any) -> List[Any]:
     return faces
 
 
-def faces_extents_mm(faces: Iterable[Any]) -> Optional[List[float]]:
-    """The three sides (mm, longest first) of the oriented bounding box around the given faces."""
+def faces_box(faces: Iterable[Any]) -> Optional[List[Tuple[float, Tuple[float, float, float]]]]:
+    """The three sides of the oriented bounding box around the given faces, longest first: each its length (mm) and the direction it runs in."""
     from OCC.Core.BRep import BRep_Builder  # type: ignore
     from OCC.Core.BRepBndLib import brepbndlib  # type: ignore
     from OCC.Core.Bnd import Bnd_OBB  # type: ignore
@@ -61,7 +61,14 @@ def faces_extents_mm(faces: Iterable[Any]) -> Optional[List[float]]:
     brepbndlib.AddOBB(compound, obb, True, True, False)
     if obb.IsVoid():
         return None
-    return sorted((2.0 * obb.XHSize(), 2.0 * obb.YHSize(), 2.0 * obb.ZHSize()), reverse=True)
+    sides = ((obb.XHSize(), obb.XDirection()), (obb.YHSize(), obb.YDirection()), (obb.ZHSize(), obb.ZDirection()))
+    return sorted(((2.0 * half, (d.X(), d.Y(), d.Z())) for half, d in sides), key=lambda side: side[0], reverse=True)
+
+
+def faces_extents_mm(faces: Iterable[Any]) -> Optional[List[float]]:
+    """The three sides (mm, longest first) of the oriented bounding box around the given faces."""
+    box = faces_box(faces)
+    return [length for length, _direction in box] if box else None
 
 
 def faces_extent_mm(faces: Iterable[Any]) -> Optional[float]:
