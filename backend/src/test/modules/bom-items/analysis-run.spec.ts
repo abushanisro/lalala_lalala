@@ -49,6 +49,8 @@ describe('the family hint a chosen Process sends the cad-engine', () => {
 
   it('is "machined" for Machining, so the geometry picks the machining family; a process costed as one family still names it', () => {
     expect(hint('Machining')).toBe('machined');
+    // Stock Machining is costed as the same three families, so it is analysed the same way.
+    expect(hint('Stock Machining')).toBe('machined');
     expect(hint('Multi-Spindle Machining')).toBe('turned');
     expect(hint('2-Model Machining')).toBe('two_model');
     // A shaft analysed under it is stored as turned or mill-turn, and that is the Machining part's own analysis.

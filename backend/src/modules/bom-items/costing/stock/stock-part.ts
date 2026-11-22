@@ -2,13 +2,9 @@
 // measures (machining/stock_envelope.py, the analysis summary's machiningStock), or, for an analysis made before that measurement, the
 // part's bounding box. Also the faces the measurement names: the two ends, where the saw's cuts lie, and the faces lying on the stock's own
 // surface, which are left as supplied where the chosen stock carries no allowance. Pure.
-import type { StockOption, StockPart } from './stock-selection';
+import { MACHINING_STOCK_EXTRACTION_VERSION, type MachiningStockSummary } from './stock-envelope';
 
-/**
- * The version of the measurement this reads (cad-engine machining/stock_envelope.py VERSION). Defined here until the measurement's own
- * module (stock-envelope.ts, which arrives with the cad-engine change) holds it: the two are made one when the branches meet.
- */
-export const MACHINING_STOCK_VERSION = 'stk_v1';
+import type { StockOption, StockPart } from './stock-selection';
 
 /** A face lying on the stock's surface: its id (the analysis's face ordinal), what the reference's catalog calls it, and its area. */
 export interface StockSurfaceFace {
@@ -31,7 +27,7 @@ export const NO_STOCK_FACES: StockFaces = { endFaceIds: [], surface: { round: []
 
 export interface StockPartInput {
   /** The analysis summary's machiningStock: absent for an analysis made before the measurement, null when the part could not be measured. */
-  machiningStock: unknown;
+  machiningStock: MachiningStockSummary | null | undefined;
   family: StockPart['family'];
   /** The part's bounding box (mm) and volume (mm³). */
   box: { length: number; width: number; height: number };
@@ -53,6 +49,8 @@ const bag = (v: unknown): Bag | null => (v != null && typeof v === 'object' && !
 const snake = (key: string) => key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 /** A key in either spelling: the summary's own keys are camelCase, the objects inside are as the cad-engine writes them. */
 const read = (o: Bag | null, key: string): unknown => (o == null ? undefined : o[key] ?? o[snake(key)]);
+/** The measurement's version, under any of the names it is stored by (as analysis-status.ts reads it to tell a stale analysis). */
+const versionOf = (m: Bag | null): unknown => read(m, 'extractionVersion') ?? m?.version;
 const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
 const ids = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => Number.isInteger(x)) : []);
 
@@ -74,7 +72,7 @@ function surfaceFaces(v: unknown): StockSurfaceFace[] {
 /** The measured part, or null when the value is not this version's measurement or lacks a size. */
 function measured(input: StockPartInput): { part: StockPart; faces: StockFaces } | null {
   const m = bag(input.machiningStock);
-  if (!m || read(m, 'extractionVersion') !== MACHINING_STOCK_VERSION) return null;
+  if (!m || versionOf(m) !== MACHINING_STOCK_EXTRACTION_VERSION) return null;
   const lengthMm = positive(read(m, 'lengthMm'));
   const roundOdMm = positive(read(bag(read(m, 'round')), 'odMm'));
   const rect = bag(read(m, 'rect'));
@@ -121,10 +119,10 @@ function fromBox(input: StockPartInput): StockPart | null {
 export function stockPartOf(input: StockPartInput): StockPartResult {
   const fromCad = measured(input);
   if (fromCad) return { ...fromCad, note: null };
-  const version = read(bag(input.machiningStock), 'extractionVersion');
+  const version = versionOf(bag(input.machiningStock));
   const why = input.machiningStock === undefined ? 'its analysis was made before the stock measurement'
     : input.machiningStock === null ? 'the cad-engine could not measure its stock'
-      : version !== MACHINING_STOCK_VERSION ? `its stock measurement is version ${typeof version === 'string' ? version : 'unknown'}, not ${MACHINING_STOCK_VERSION}`
+      : version !== MACHINING_STOCK_EXTRACTION_VERSION ? `its stock measurement is version ${typeof version === 'string' ? version : 'unknown'}, not ${MACHINING_STOCK_EXTRACTION_VERSION}`
         : 'its stock measurement holds no size';
   return {
     part: fromBox(input), faces: NO_STOCK_FACES,

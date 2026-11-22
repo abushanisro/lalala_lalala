@@ -4,7 +4,10 @@
 // writes them.
 import { realStockMachiningReference } from './stock-test-data';
 import { withoutAsSuppliedFaces } from '../../../../../modules/bom-items/costing/machining/operation/as-supplied-faces';
-import { asSuppliedFaces, MACHINING_STOCK_VERSION, NO_STOCK_FACES, stockPartOf, type StockFaces } from '../../../../../modules/bom-items/costing/stock/stock-part';
+import { predatesProcessMeasurement } from '../../../../../modules/bom-items/analysis-status';
+import { MACHINING_STOCK_EXTRACTION_VERSION } from '../../../../../modules/bom-items/costing/stock/stock-envelope';
+import { asSuppliedFaces, NO_STOCK_FACES, stockPartOf, type StockFaces } from '../../../../../modules/bom-items/costing/stock/stock-part';
+import { machiningStock } from '../../../../../modules/bom-items/services/auto-fill.service';
 import { stockReference } from '../../../../../modules/bom-items/costing/stock/stock-reference';
 import { selectStock, type StockPart, type StockSettings } from '../../../../../modules/bom-items/costing/stock/stock-selection';
 
@@ -49,7 +52,7 @@ describe('a measured part', () => {
 
   it('reads a key in either spelling, and a hexagon\'s width across flats', () => {
     const snake = {
-      extraction_version: MACHINING_STOCK_VERSION, length_mm: 40, round: { odMm: 27.713 }, rect: { widthMm: 24, heightMm: 27.713 }, hex: { acrossFlatsMm: 24 }, bore: null,
+      extraction_version: MACHINING_STOCK_EXTRACTION_VERSION, length_mm: 40, round: { odMm: 27.713 }, rect: { widthMm: 24, heightMm: 27.713 }, hex: { acrossFlatsMm: 24 }, bore: null,
       end_faces: { min: [1], max: [2] }, stock_surface: { round: [], rect: [], hex: [{ faceId: 3, kind: 'PlanarFace', areaMm2: 554 }, { face_id: 4, kind: 'PlanarFace', area_mm2: 554 }] },
     };
     const { part, faces } = stockPartOf({ machiningStock: snake, family: 'milled', box: { length: 40, width: 27.713, height: 24 }, volumeMm3: 18000 });
@@ -57,6 +60,29 @@ describe('a measured part', () => {
     expect(part).toMatchObject({ source: 'measured', lengthMm: 40, roundOdMm: 27.713, widthMm: 27.713, heightMm: 24, hexAcrossFlatsMm: 24 });
     expect(faces.endFaceIds).toEqual([1, 2]);
     expect(faces.surface.hex.map((f) => f.faceId)).toEqual([3, 4]);
+  });
+});
+
+describe('the measurement as the analysis stores it', () => {
+  // The cad-engine's own "stock" result for the Lead Screw side shaft (machining/stock_envelope.py), as auto-fill writes it to the summary.
+  const engine = {
+    version: 'stk_v1', axis: [0, 1, 0], axis_source: 'turned', length_mm: 32.0, round: { od_mm: 14.0 }, rect: { width_mm: 14.0, height_mm: 14.0, angle_deg: 158.886 },
+    hex: null, bore: { diameter_mm: 6.0 }, end_faces: { min: [5], max: [22] },
+    stock_surface: { round: [{ face_id: 9, kind: 'CurvedWall', area_mm2: 334.876 }], rect: [], hex: [] },
+  };
+
+  it('what auto-fill stores is what the stock model reads, and what the analysis status calls current', () => {
+    const stored = machiningStock(engine);
+    expect(stored).toEqual(SHAFT);
+    expect(stockPartOf({ machiningStock: stored, family: 'mill_turn', box: SHAFT_BOX, volumeMm3: 2646.02 }).part).toMatchObject({ source: 'measured', lengthMm: 32, roundOdMm: 14, boreMm: 6 });
+    expect(predatesProcessMeasurement({ machiningStock: stored }, 'Stock Machining', 'mill_turn')).toBe(false);
+  });
+
+  it('an analysis the status calls stale is one the stock model reads off the bounding box: no key, or another version', () => {
+    for (const summary of [{}, { machiningStock: { ...SHAFT, extractionVersion: 'stk_v0' } }]) {
+      expect(predatesProcessMeasurement(summary, 'Stock Machining', 'milled')).toBe(true);
+      expect(stockPartOf({ machiningStock: (summary as { machiningStock?: Record<string, unknown> }).machiningStock, family: 'milled', box: SHAFT_BOX, volumeMm3: 2646.02 }).part!.source).toBe('bounding box');
+    }
   });
 });
 
