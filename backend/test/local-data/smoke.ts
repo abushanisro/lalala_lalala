@@ -118,6 +118,14 @@ async function main(): Promise<void> {
     must(JSON.stringify(rows.map((r) => [r.process_name, r.machine_class])) === JSON.stringify([['Band Saw', 'band_saw'], ['Material Stock', 'stock_machining_material_stock'], ['User-Defined Process', null]]),
       `catalog rows ${JSON.stringify(rows)}`);
   });
+  await check('migration 1115 classed the two Stock Machining catalog mappings, and 1116 bound each to its calculator and made it active', async () => {
+    const q = encodeURIComponent('Stock Machining');
+    const rows = await (await api(`/process_calculator_mappings?process_group=eq.${q}&select=operation,machine_class,calculator_name,is_active&order=operation`, minter.forService())).json() as
+      { operation: string; machine_class: string | null; calculator_name: string | null; is_active: boolean }[];
+    must(JSON.stringify(rows.map((r) => [r.operation, r.machine_class, r.calculator_name, r.is_active])) === JSON.stringify([
+      ['Band Saw', 'band_saw', 'Stock Machining - Band Saw', true], ['Material Stock', 'stock_machining_material_stock', 'Stock Machining - Material Stock', true]]),
+      `rows ${JSON.stringify(rows)}`);
+  });
   await check('the carried user directory is readable through migration 932 (same id as the source)', async () => {
     const res = await api('/rpc/directory_find_by_email', minter.forService(), { method: 'POST', body: JSON.stringify({ p_email: 'Alice@Example.com' }) });
     must(res.ok && (await res.json()) === '11111111-1111-4111-8111-111111111111', `HTTP ${res.status}`);

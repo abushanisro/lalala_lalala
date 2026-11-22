@@ -1,10 +1,14 @@
 // The stock bought for a Stock Machining part and the band saw that cuts it (stock-machining-route.ts), on memory/Stock Maching's own
 // tables, saws and materials. Expected values are worked out by hand in the comments from the files' numbers.
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
 import { bandSaws, realStockMachiningReference, stockMaterial } from '../stock/stock-test-data';
 import { sawBundle, sawFit, sawHandlingRow, sawRateRow } from '../../../../../modules/bom-items/costing/stock/band-saw';
 import { stockReference } from '../../../../../modules/bom-items/costing/stock/stock-reference';
 import { selectStock, type StockForm, type StockPart, type StockSettings } from '../../../../../modules/bom-items/costing/stock/stock-selection';
 import { loadStockMachiningCalculatorSpec, stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
+import { buildStockMachiningCalculatorsMigrationSql } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculators-migration';
 import {
   buildStockMachiningQuote, STOCK_MACHINING_PROCESS_GROUP, type StockMachiningInput, type StockMachiningMaterial,
 } from '../../../../../modules/bom-items/costing/stock-machining/stock-machining-route';
@@ -43,6 +47,10 @@ describe('the Stock Machining calculators', () => {
       'Stock Machining - Plate Stock', 'Stock Machining - Band Saw', 'Stock Machining - Scrap Credit']);
     // The two catalog processes of memory/Stock Maching each have their calculator; the rest are helpers.
     expect(spec.calculators.flatMap((c) => c.operations)).toEqual(['Material Stock', 'Band Saw']);
+  });
+
+  it('are what migration 1116 creates (regenerate it after editing the spec)', () => {
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1116_stock_machining_calculators.sql'), 'utf8')).toBe(buildStockMachiningCalculatorsMigrationSql());
   });
 
   it('read only variables the staged data holds', () => {
