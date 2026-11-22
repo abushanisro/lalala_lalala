@@ -132,11 +132,25 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
   it('turns over the CAD axial length (3.0 mm), not the bounding-box long side (17.6 mm)', () => {
     const trace = line('Finish Turning').calculationTrace!;
     expect(trace.find((s) => s.fieldName === 'Turned Length')).toMatchObject({ value: 3, source: expect.stringContaining('turning axis') });
-    const rough = line('Rough Turning').calculationTrace!;
-    expect(rough.find((s) => s.fieldName === 'Bar Diameter')).toMatchObject({ value: 20, source: expect.stringContaining('Ø20 round bar') });
-    // Both turning lines are evaluated by their database calculators.
-    expect(line('Rough Turning').calculatorId).toBe('Machining - Rough Turning');
     expect(line('Finish Turning').calculatorId).toBe('Machining - Finish Turning');
+  });
+
+  it('the Ø20 bar leaves no rough pass: no Rough Turning line, and that is not a data gap', () => {
+    // Radial stock (20 - 17.6) / 2 = 1.2 mm: the 0.8 mm finish pass and 0.4 mm, which rounds to no rough pass (0.4 / 1.3).
+    expect(line('Rough Turning')).toBeUndefined();
+    expect(findRouteDataGaps(result.processLines).filter((g) => g.process.includes('Turning'))).toEqual([]);
+  });
+
+  it('a larger bar is rough turned from its own diameter, by the database calculator', () => {
+    // Ø25 bar: radial stock 3.7 mm; rough stock 2.9 mm; round(2.9 / 1.3) = 2 passes.
+    const larger = computeTurningCostSummary(
+      input({ blankResult: { form: 'round_bar', sizeLabel: 'Ø25 round bar', billetVolMm3: Math.PI * 12.5 ** 2 * 8, utilizationPct: 30, barDiameterMm: 25 } }),
+      mc('2_axis_bar_feed_lathe_with_sub_spindle'),
+    );
+    const rough = larger.processLines.find((l) => l.process === 'Rough Turning')!;
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Bar Diameter')).toMatchObject({ value: 25, source: expect.stringContaining('Ø25 round bar') });
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 2 });
+    expect(rough.calculatorId).toBe('Machining - Rough Turning');
   });
 
   it('drills the Ø4 hole to its real 3.029 mm CAD depth', () => {
@@ -153,9 +167,10 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     expect(parting.cycleTimeMin).toBeGreaterThan(0);
   });
 
-  it('the setup folded into Rough Turning names the machine record it came from', () => {
-    const trace = line('Rough Turning').calculationTrace!;
+  it('the setup folded into the first turning line (Finish Turning here) names the machine record it came from', () => {
+    const trace = line('Finish Turning').calculationTrace!;
     expect(trace.find((s) => s.fieldName === 'Setup time')).toMatchObject({ value: 15, source: expect.stringContaining('setup_time_hr') });
+    expect(result.processLines.filter((l) => l.setupTimeSource === 'machine').map((l) => l.process)).toEqual(['Finish Turning']);
   });
 
   it('a part analysed before edge measurement shows the deburring gap, not an estimate', () => {
