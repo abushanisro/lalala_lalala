@@ -8,6 +8,7 @@ import {
   Bar,
   CartesianGrid,
   Cell,
+  DefaultZIndexes,
   PieChart,
   Pie,
   ResponsiveContainer,
@@ -337,7 +338,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={70} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v) => [`$${Number(v).toFixed(0)}`, "Total Cost"]} />
-                <Bar dataKey="cost" fill="hsl(var(--chart-4))" radius={[4, 4, 0, 0]} />
+                {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+                <Bar dataKey="cost" fill="hsl(var(--chart-4))" radius={[4, 4, 0, 0]} zIndex={DefaultZIndexes.axis + 1} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
@@ -373,6 +375,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                   stroke="hsl(160, 60%, 40%)"
                   fill="hsl(160, 60%, 40%)"
                   fillOpacity={0.6}
+                  // recharts 3 draws the axes and the hover line over the area; recharts 2 drew both behind it.
+                  zIndex={DefaultZIndexes.cursorLine + 1}
                 />
               </AreaChart>
             </ResponsiveContainer>

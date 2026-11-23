@@ -16,6 +16,7 @@ import {
   AreaChart,
   Area,
   ComposedChart,
+  DefaultZIndexes,
   Legend,
   Rectangle,
   type BarShapeProps,
@@ -198,6 +199,8 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
   );
 }
 
+const TREND_X_PADDING = { left: 4, right: 4 };
+
 // New comprehensive analytics charts
 export function ProjectTrendChart({ projects }: { projects: any[] }) {
   // recharts 3 replays the area's animation, hiding the end marker meanwhile, whenever it is handed a new data array, even one
@@ -224,9 +227,9 @@ export function ProjectTrendChart({ projects }: { projects: any[] }) {
     });
   }, [projects]);
 
-  const firstDay = trendData[0]?.date;
   const lastIndex = trendData.length - 1;
-  const lastDay = trendData[lastIndex]?.date;
+  // Rebuilt with the rows only: a new ticks array is a new axis to recharts 3, which replays the animation as well.
+  const edgeTicks = useMemo(() => [trendData[0]?.date ?? 0, trendData[trendData.length - 1]?.date ?? 0], [trendData]);
 
   return (
     <div className="h-64">
@@ -241,11 +244,11 @@ export function ProjectTrendChart({ projects }: { projects: any[] }) {
           <CartesianGrid horizontal={false} vertical={false} />
           <XAxis
             dataKey="date"
-            ticks={[firstDay ?? 0, lastDay ?? 0]}
+            ticks={edgeTicks}
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
             axisLine={false}
             tickLine={false}
-            padding={{ left: 4, right: 4 }}
+            padding={TREND_X_PADDING}
           />
           <YAxis hide />
           <Tooltip
@@ -267,6 +270,8 @@ export function ProjectTrendChart({ projects }: { projects: any[] }) {
             name="New Projects"
             dot={false}
             activeDot={{ r: 4 }}
+            // recharts 3 draws the hover line over the area; recharts 2 drew it behind.
+            zIndex={DefaultZIndexes.cursorLine + 1}
             label={(props: LabelProps) =>
               props.index === lastIndex && typeof props.x === 'number' && typeof props.y === 'number' ? (
                 <g key="end-marker">
@@ -497,7 +502,8 @@ export function CostSavingsChart({ projects }: { projects: any[] }) {
               }
               return [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name];
             }}
-            labelFormatter={(label) => `Project: ${label}`}
+            // recharts 3 types the label as any React node, so it is placed as a child rather than turned into a string.
+            labelFormatter={(label) => <>Project: {label}</>}
           />
           <Bar 
             dataKey="savings" 

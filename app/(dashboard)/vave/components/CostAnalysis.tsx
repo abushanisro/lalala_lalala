@@ -151,7 +151,8 @@ function WaterfallView({ items }: { items: VaveBomItem[] }) {
           <XAxis dataKey="name" tick={AXIS_TICK} />
           <YAxis tickFormatter={fmtUSD} tick={AXIS_TICK} />
           <Tooltip {...TOOLTIP_STYLE} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
-          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]}>
+          {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]} zIndex={DefaultZIndexes.axis + 1}>
             {data.map((_, i) => {
               const colors = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)'];
               // The index is always inside the palette; recharts 3 no longer takes an undefined fill.

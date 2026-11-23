@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Text, type BaseTickContentProps } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Text, DefaultZIndexes, type BaseTickContentProps } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -176,9 +176,10 @@ export function ComplexityTab({ bomMetrics }: Props) {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip itemSorter={keepSeriesOrder} />
-                <Bar dataKey="assemblyParts" stackId="a" fill="hsl(var(--chart-4))" name="Assembly Parts" />
-                <Bar dataKey="subAssemblyParts" stackId="a" fill="hsl(var(--chart-3))" name="Sub-Assembly Parts" />
-                <Bar dataKey="childParts" stackId="a" fill="hsl(var(--chart-1))" name="Child Parts" />
+                {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+                <Bar dataKey="assemblyParts" stackId="a" fill="hsl(var(--chart-4))" name="Assembly Parts" zIndex={DefaultZIndexes.axis + 1} />
+                <Bar dataKey="subAssemblyParts" stackId="a" fill="hsl(var(--chart-3))" name="Sub-Assembly Parts" zIndex={DefaultZIndexes.axis + 1} />
+                <Bar dataKey="childParts" stackId="a" fill="hsl(var(--chart-1))" name="Child Parts" zIndex={DefaultZIndexes.axis + 1} />
               </BarChart>
             </ResponsiveContainer>
           </div>
