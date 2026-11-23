@@ -156,6 +156,9 @@ _RADIAL_FLOOR_MAX_DOT = 0.15
 # recessed-floor rise tolerance (recessed_floor._RISE_TOL_MM). A plane that only touches the round is not a cut.
 _TURNED_FLAT_TOL_MM = 0.02
 
+# A flat spans the round it is cut into: it is as wide as the round's chord at its plane, to within this.
+_TURNED_FLAT_CHORD_TOL_MM = 0.05
+
 
 def _is_bore(f: MachiningFeature) -> bool:
     """An individual axial bore (not a cross hole or an already-grouped pattern)."""
@@ -1103,10 +1106,10 @@ class MachiningFeatureRecognizer:
 
         turned_radii (face ordinal -> radius of the part's turned diameters): a floor facing across the
         axis that meets one of them in an outside corner, the round falling away from its edge, lies
-        inside it and has the axis behind it is a flat milled into that diameter (a wrench flat, a D
-        flat, a tang). It is collected with or without a wall standing on it (a flat along the whole
-        shaft has none) and carries turned_radius_mm, the largest such diameter's radius, and
-        axis_distance_mm, how far its plane stands from the turning axis.
+        inside it and has the axis behind it may be a flat milled into that diameter (a wrench flat, a
+        D flat, a tang; _classify_turned_flat decides). It is collected with or without a wall standing
+        on it (a flat along the whole shaft has none) and carries turned_radius_mm, the largest such
+        diameter's radius, and axis_distance_mm, how far its plane stands from the turning axis.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1478,9 +1481,9 @@ def _classify_prismatic_turned(
     radial slots (perpendicular) or flats.
 
     A channel is a floor with walls standing on both sides of its width. A floor that
-    is not one (a wall at its ends, on one side, or none) and is cut into a turned
-    diameter is a flat milled on it (_classify_turned_flat); any other is left out, as
-    every generic pocket on a turned part is.
+    is not one and spans a turned diameter it is cut into is a flat milled on it
+    (_classify_turned_flat); any other is left out, as every generic pocket on a turned
+    part is.
 
     A floor that faces across the axis (milled into a turned diameter or a bore) is
     named by the direction of its long side, not by its normal: Keyway when it runs
@@ -1530,9 +1533,12 @@ def _classify_turned_flat(
 ) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
     """
     A flat milled on a turned diameter: a floor facing across the turning axis, cut into the diameter it meets in an
-    outside corner and walled on at most one side of its width (a wrench flat, a D flat at a shaft end, either face of a
-    tang, a flat along the whole shaft). None for an open floor cut into no turned diameter. The catalog names the
-    feature Flat and gives it no variant.
+    outside corner and spanning it, as wide as its chord (the round falls away on both sides of it), walled at most at
+    its ends (a wrench flat, a D flat at a shaft end, either face of a tang, a flat along the whole shaft). The catalog
+    names the feature Flat and gives it no variant.
+
+    None for an open floor cut into no turned diameter, and for one narrower than the chord: a bevel along the edge of
+    a keyway or a slot meets the round on one side only (Lead Screw side shaft: the 0.28 mm chamfers along its keyway).
 
     It carries what it is costed from: its length along the axis and its width across it (the chord), its depth below
     the diameter it is cut into and that diameter, the floor's area and walled_fraction (the share of its outline that
@@ -1545,11 +1551,15 @@ def _classify_turned_flat(
     ax, ay, az = main_axis
     lx, ly, lz = pocket["long_direction"]
     along_axis = abs(lx * ax + ly * ay + lz * az) > 0.5
+    width = mid if along_axis else long
+    distance = pocket["axis_distance_mm"]
+    if width < 2.0 * math.sqrt(max(radius * radius - distance * distance, 0.0)) - _TURNED_FLAT_CHORD_TOL_MM:
+        return None
     return "Flat", "default", {
         "length_mm": round(long if along_axis else mid, 3),
-        "width_mm": round(mid if along_axis else long, 3),
+        "width_mm": round(width, 3),
         # Below the round it is cut into, not the height of its tallest wall: a flat cut up to a shoulder is no deeper for it.
-        "depth_mm": round(radius - pocket["axis_distance_mm"], 3),
+        "depth_mm": round(radius - distance, 3),
         "diameter_mm": round(2.0 * radius, 3),
         "area_mm2": round(pocket["area_mm2"], 3),
         "walled_fraction": round(pocket["walled_fraction"], 3),

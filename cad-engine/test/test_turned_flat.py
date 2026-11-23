@@ -1,7 +1,7 @@
 """
 A flat milled on a turned diameter is a Flat (machining_feature_recognizer._classify_turned_flat): a floor facing across the turning axis that
-meets a turned diameter in an outside corner, lies inside it with the axis behind it, and is walled on at most one side of its width. Since
-geo_v83 such a floor had no feature at all, so a flat was not costed.
+meets a turned diameter in an outside corner, lies inside it with the axis behind it, spans it (as wide as its chord) and is walled at most
+at its ends. Since geo_v83 such a floor had no feature at all, so a flat was not costed.
 
 Every part here is read as an upload is (shared.part_analysis.analyze_part on a STEP file: the shape is meshed before anything is measured),
 and each flat carries its length along the axis, its width (the chord), its depth below the diameter it is cut into, that diameter, its
@@ -37,6 +37,30 @@ def _segment(r, d):
     return r * r * math.acos(d / r) - d * math.sqrt(r * r - d * d)
 
 
+def _keyway_with_chamfered_edges(size=0.3):
+    """A keyway 5 wide, 20 long, 3 deep in the top of the Ø16, its two long top edges chamfered: as on the Lead Screw side shaft, whose
+    0.28 mm chamfers face across the axis, have the axis behind them and meet the round, on one side only."""
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+    from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeChamfer
+    from OCC.Core.GeomAbs import GeomAbs_Line
+    from OCC.Core.TopAbs import TopAbs_EDGE
+    from OCC.Core.TopExp import TopExp_Explorer
+    shape = P.cut(_shaft(), P.box((10, -2.5, 5), (20, 5, 20)))
+    chamfer, sides = BRepFilletAPI_MakeChamfer(shape), set()
+    exp = TopExp_Explorer(shape, TopAbs_EDGE)
+    while exp.More():
+        curve = BRepAdaptor_Curve(exp.Current())
+        a, b = curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter())
+        # The keyway's long top edges: lines along the shaft where its side walls (y = +/-2.5) meet the round.
+        if curve.GetType() == GeomAbs_Line and abs(a.Y() - b.Y()) < 1e-6 and abs(abs(a.Y()) - 2.5) < 1e-6 and a.Z() > 7 and round(a.Y(), 3) not in sides:
+            sides.add(round(a.Y(), 3))
+            chamfer.Add(size, exp.Current())
+        exp.Next()
+    chamfer.Build()
+    assert chamfer.IsDone() and len(sides) == 2
+    return chamfer.Shape()
+
+
 # Two wrench flats 6 from the axis, 20 long in the middle of the Ø16; a D flat 5 from the axis, 15 long from the end face; a tang, two flats
 # 2 from the axis leaving a tongue 4 thick, 5 long; a D shaft, a Ø20 x 50 with a flat 7 from the axis along its whole length (no wall).
 PARTS = {
@@ -46,6 +70,7 @@ PARTS = {
     "D shaft": lambda: P.cut(P.cylinder((0, 0, 0), (1, 0, 0), 20.0, 50.0), P.box((-1, -20, 7), (52, 40, 20))),
     "keyway": _shaft_with_keyway,
     "drive slot": lambda: P.cut(_shaft(), P.box((-1, -1.5, -20), (5, 3, 40))),
+    "chamfered keyway": _keyway_with_chamfered_edges,
 }
 
 
@@ -184,3 +209,11 @@ def test_a_drive_slot_is_still_one_radial_slot_and_no_flat(analysed):
     assert (slot["params"]["width_mm"], slot["params"]["depth_mm"]) == (pytest.approx(3.0, abs=0.01), pytest.approx(4.0, abs=0.01))
     assert [_surfaces(shape)[i] for i in slot["face_ids"]] == [("plane", (1.0, 0.0, 0.0))]
     assert _of(mf, "Flat") == [] and _of(mf, "Keyway") == []
+
+
+def test_the_chamfers_along_a_keyways_edges_are_no_flats(analysed):
+    # Each chamfer is 0.35 wide where a flat at its plane would span a chord of 7: it meets the round on one side only.
+    mf, _shape = analysed["chamfered keyway"]
+    (keyway,) = _of(mf, "Keyway")
+    assert (keyway["params"]["length_mm"], keyway["params"]["width_mm"]) == (pytest.approx(20.0, abs=0.01), pytest.approx(5.0, abs=0.01))
+    assert _of(mf, "Flat") == [] and _of(mf, "Slot") == []
