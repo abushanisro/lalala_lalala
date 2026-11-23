@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { StockMachiningSection } from '@/components/costing/StockMachiningSection';
 import type { StockMachiningSummary } from '@/lib/costing/stock-machining-view';
 
-import { SHAFT_INDIA, SHAFT_USA_AS_SUPPLIED, STIFFNER_PLATE, STIFFNER_TUBE_ASKED } from '../fixtures/stock-machining-quotes';
+import {
+  SHAFT_INDIA, SHAFT_USA_AS_SUPPLIED, STIFFNER_NO_OUTLINE, STIFFNER_PERIMETER_MILLED, STIFFNER_PLATE, STIFFNER_PLATE_CUT, STIFFNER_PLATE_ROUGHING, STIFFNER_ROUGHING,
+  STIFFNER_TUBE_ASKED,
+} from '../fixtures/stock-machining-quotes';
 
 const panel = (s: StockMachiningSummary | null, overrides: Record<string, unknown> = {}, highlight = true, sawCosted = true) =>
   renderToStaticMarkup(createElement(StockMachiningSection, {
@@ -101,6 +104,67 @@ describe('the Stock Machining section of the Cost Guide', () => {
     const missing = panel({ ...SHAFT_INDIA, saw: null, sawMissing: 'HR Rates has no band saws' });
     expect(missing).toContain('<span class="text-amber-600 dark:text-amber-400">HR Rates has no band saws');
     expect(panel(SHAFT_USA_AS_SUPPLIED)).toContain('<span class="text-muted-foreground">A bar-fed lathe takes the whole bar');
+  });
+
+  it('bar stock has one roughing technique: no Roughing row', () => {
+    expect(panel(SHAFT_INDIA)).not.toContain('Roughing');
+    expect(panel(STIFFNER_PLATE, { stockForm: 'plate' })).not.toContain('Roughing');
+  });
+
+  it('plate stock lists the three roughing techniques, each with its cost, its yield and the bulk it leaves, and a pick', () => {
+    const out = panel(STIFFNER_PLATE_ROUGHING, { stockForm: 'plate' });
+    expect(out).toContain('>Roughing<');
+    expect(out).toContain('All Bulk Milling · $2.37 plate + $0.44 Band Saw');
+    expect(out).toContain('45 per plate · 56,074.51 mm³ left for the mill');
+    expect(out).toContain('Perimeter Milling with Drop-off · $2.67 plate + $2.85 Perimeter Milling');
+    expect(out).toContain('40 per plate · 24,268.95 mm³ left for the mill');
+    expect(out).toContain('Plate Cutting with Drop-off · $2.37 plate + $1.46 Waterjet Cut');
+    // Every cutting process: the priced ones with their nest and cost, the others with why.
+    expect(out).toContain('Laser Cut · 35 per plate · $3.05 plate + $1.64 cut');
+    expect(out).toContain('Waterjet Cut (quoted) · 45 per plate · $2.37 plate + $1.46 cut');
+    expect(out).toContain('Plasma Cut: sm_reference_data nestingCutRate PlasmaCut holds no feed data');
+    // Three other stock forms and two other techniques can be picked; the quoted form and the quoted technique are marked.
+    expect(out.match(/>Use</g)).toHaveLength(5);
+    expect(out.match(/>Quoted</g)).toHaveLength(2);
+    expect(out).toContain('title="Quote the part with Perimeter Milling with Drop-off"');
+    // Auto is the data's default: there is no way back to offer.
+    expect(out).not.toContain('Back to Auto (All Bulk Milling)');
+  });
+
+  it('a technique set here is quoted, with the way back to Auto; the plate then makes outlines and nothing is sawn', () => {
+    const out = panel(STIFFNER_PERIMETER_MILLED, { stockForm: 'plate', stockRoughingTechnique: 'perimeter_milling_dropoff' });
+    expect(out).toContain('1/2&quot; plate, 159.5 x 42 mm outline</span>');
+    expect(out).toContain('159.5 × 42 × 12.7 mm');
+    expect(out).toContain('10 mm cutter width between parts and to the plate&#x27;s edge');
+    expect(out).toContain('40 outlines per 914.4 × 457.2 mm plate');
+    expect(out).toContain('Back to Auto (All Bulk Milling)');
+    // The saw's absence is a note, not something missing, also for a Stock Machining part.
+    expect(out).toContain('<span class="text-muted-foreground">The plate is loaded on the mill whole and the mill cuts each part out of it: no band saw cuts it.');
+    expect(out).not.toContain('text-amber-600 dark:text-amber-400">The plate is loaded');
+    const cut = panel(STIFFNER_PLATE_CUT, { stockForm: 'plate', stockRoughingTechnique: 'plate_cutting_dropoff' });
+    expect(cut).toContain('45 cut blanks per 914.4 × 457.2 mm plate');
+    expect(cut).toContain('5.08 mm between cut parts');
+    expect(cut).toContain('<span class="text-muted-foreground">A plate cutting process cuts each part out of the plate: no band saw cuts it.');
+  });
+
+  it('a technique that cannot be used is listed with why and no pick, and the quote says what it priced instead', () => {
+    const out = panel(STIFFNER_NO_OUTLINE, { stockForm: 'plate', stockRoughingTechnique: 'perimeter_milling_dropoff' });
+    expect(out.match(/press Refresh analysis to measure the plate outline</g)).toHaveLength(2);
+    expect(out).toContain('text-amber-600 dark:text-amber-400 leading-snug">The Cost Guide&#x27;s roughing technique, Perimeter Milling with Drop-off, is not available');
+    // Only the three other stock forms can be picked: neither drop-off technique.
+    expect(out.match(/>Use</g)).toHaveLength(3);
+    expect(out).toContain('Back to Auto (All Bulk Milling)');
+  });
+
+  it('a Machining part\'s sawn blank is priced by its plate alone: the saw is not costed', () => {
+    const machining = {
+      ...STIFFNER_PLATE_ROUGHING, saw: null, sawMissing: SAW_NOT_COSTED,
+      roughing: { ...STIFFNER_ROUGHING, options: STIFFNER_ROUGHING.options.map((o) => (o.technique === 'all_bulk_milling'
+        ? { ...o, separation: { process: 'Band Saw', machineClass: 'band_saw', machineName: null, cost: null, timeSec: null } } : o)) },
+    };
+    const out = panel(machining, { stockForm: 'plate' }, true, false);
+    expect(out).toContain('All Bulk Milling · $2.37 plate<');
+    expect(out).toContain('Perimeter Milling with Drop-off · $2.67 plate + $2.85 Perimeter Milling');
   });
 
   it('says so when no side is as supplied, when the envelope is the bounding box, and when the stock is not chosen', () => {
