@@ -90,7 +90,7 @@
     "helmet": "^8.3.0",
     "jose": "^5.10.0",
     "mathjs": "^15.1.0",
-    "nodemailer": "^10.6.0",
+    "nodemailer": "^10.6.1",
     "pdf-lib": "^1.17.1",
     "pdf2pic": "^3.2.0",
     "pg": "^8.23.1",
@@ -104,7 +104,7 @@
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "@nestjs/cli": "^12.0.13",
+    "@nestjs/cli": "^12.0.14",
     "@nestjs/schematics": "^11.1.0",
     "@nestjs/testing": "^11.2.11",
     "@opentelemetry/context-async-hooks": "3.1.1",
