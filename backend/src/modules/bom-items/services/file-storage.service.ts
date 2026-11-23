@@ -215,6 +215,14 @@ export class FileStorageService {
     }
   }
 
+  /**
+   * The bytes of a stored file, or null when nothing is stored at the path (a row can name a file this environment never received:
+   * an item carried over from another database). Any other failure throws. Read straight from the store: no signed URL round trip.
+   */
+  async download(storagePath: string): Promise<Buffer | null> {
+    return this.store.get(this.BUCKET_NAME, storagePath);
+  }
+
   /** The names directly under a folder of the bucket. A listing that fails is an empty list (callers fall back). */
   async listFiles(directoryPath: string): Promise<string[]> {
     try {
