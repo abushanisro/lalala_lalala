@@ -382,7 +382,7 @@ services:
   # anon/authenticated/service_role and (migration 951) cad_runner, the runner's role. ---
   postgrest:
     <<: *hardened
-    image: postgrest/postgrest@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc
+    image: postgrest/postgrest@sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7
     # PID 1 ignores the stop signal: without an init process a Docker shutdown left it exited 255 and not restarted (stage, 2026-11-17).
     init: true
     user: "10004:10004"
