@@ -5,12 +5,12 @@ import { promisify } from 'node:util';
 import { PACKAGE_CLASS_LOOKUP } from '../domain/lookups/package-class-lookup.generated';
 import { PLACEMENT_LAYERS } from '../domain/lookups/placement-layers.generated';
 
-import type { BoardPreview } from '../infrastructure/ecad/ecad-engine.client';
+import type { BoardPreview } from '../infrastructure/cad-engine/board-extraction.client';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-// The renderVersion the platform expects from the engine. Bump it together with RENDER_VERSION in ecad-engine/extraction/render.py
+// The renderVersion the platform expects from the engine. Bump it together with RENDER_VERSION in cad-engine/pcb/extraction/render.py
 // when the preview's shape or drawing changes: a stored preview with an older value is stale and is re-rendered.
 export const EXPECTED_RENDER_VERSION = '2';
 // The shape of the stored envelope itself.

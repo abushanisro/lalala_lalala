@@ -10,7 +10,7 @@ This is the audit only. No test system was added or changed to produce it.
 | Unit: backend | `cd backend && npx jest` | **360 suites, 4,358 tests pass** | Yes (Backend) |
 | Unit: frontend | `npx vitest run` | 138 files, 1,087 tests pass (run 2026-11-10 before #322) | Yes (Frontend) |
 | Unit: CAD engine | `pytest` in the engine image (native arm64, OCCT 7.8.1.1) | **549 pass, 1 skipped** | **No**: CI only builds the image |
-| Unit: ECAD engine | `python -I -m pytest` | pass | Yes |
+| Unit: board-file parsers (`cad-engine/pcb`) | `python -m pytest pcb/tests` in cad-engine, plain Python 3.12 | pass | Yes ("Electronics extraction engine (Python)") |
 | Unit: Rust core, C++ workers | cargo test; hand-worked checks run in the image build | pass | Yes (x86 and ARM) |
 | Integration | `test:sql`, `test:postgrest`, `test:baseline`, `test:schema-drift`, `test:boot`, `test:local`, S3 | all exit 0 | Yes |
 | Smoke | `test:boot`, `test:local` smoke; live on stage: `/api/health/ready` 200, tunnel healthy, queue up past 5 minutes | pass | CI part yes; the stage part is manual |

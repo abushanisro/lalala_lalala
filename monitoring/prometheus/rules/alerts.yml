@@ -29,7 +29,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.engine }}-engine does not answer /ready"
-          response: "CAD/ECAD uploads will fail or retry. Check the engine container, its memory limit (about 16 MB per MB of STEP) and /ready's reason code."
+          response: "CAD and board-file uploads will fail or retry. Check the engine container, its memory limit (about 16 MB per MB of STEP) and /ready's reason code."
 
       - alert: BackendTelemetryMissing
         expr: probe_success{job="probe-live"} == 1 and on() absent_over_time(target_info{job="mithran-backend"}[10m])

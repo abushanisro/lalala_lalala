@@ -28,7 +28,7 @@ case "$STAGE_DIR" in */emithran-stage-run) ;; *) echo "STAGE_DIR must end in /em
 # the file must really be staging's: a production file here would build the wrong public settings and migrate the wrong database
 grep -q '^APP_ENV=stage$' "$ENV_FILE" || { echo "$ENV_FILE does not say APP_ENV=stage: refusing (nothing was changed)" >&2; exit 2; }
 command -v docker >/dev/null && docker info >/dev/null 2>&1 || { echo "Docker is not running" >&2; exit 2; }
-P=emithran-stage; services="backend frontend cad-engine ecad-engine"
+P=emithran-stage; services="backend frontend cad-engine"
 # The sand-casting worker runs when the settings name its socket (CASTING_WORKER_SOCKET, casting-worker/README.md): its compose profile is
 # enabled and it is built, tagged for rollback and recreated with the other services. Without the setting casting analyses are not waited for.
 profile=; if grep -qE '^CASTING_WORKER_SOCKET=.+' "$ENV_FILE"; then profile="--profile sand-casting"; services="$services casting-worker"; fi

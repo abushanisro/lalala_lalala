@@ -1,5 +1,5 @@
 // The versioned feature-graph contract. Engines read these types only, never the raw
-// upload. The canonical definition is the JSON Schema in ecad-engine/contract/schemas;
+// upload. The canonical definition is the JSON Schema in cad-engine/pcb/contract/schemas;
 // these interfaces mirror it and a fixture spec keeps the two honest.
 
 // The version the extractor emits. 1.2 added `fabrication`; 1.3 added `copper`, `connectivity` and the spacing,

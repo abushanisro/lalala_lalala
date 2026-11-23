@@ -237,16 +237,6 @@ class EnvironmentVariables {
   @IsIn(['true', 'false'])
   SESSION_IDLE_TIMEOUT_ENABLED: string = 'true';
 
-  // Electronics extraction engine (ecad-engine): base URL and API key. Unset: board-set uploads fail with a clear
-  // extraction_unavailable error; nothing is guessed.
-  @IsString()
-  @IsOptional()
-  ECAD_ENGINE_URL: string = '';
-
-  @IsString()
-  @IsOptional()
-  ECAD_ENGINE_API_KEY: string = '';
-
   @IsString()
   @IsOptional()
   ADMIN_FALLBACK_EMAIL: string = '';

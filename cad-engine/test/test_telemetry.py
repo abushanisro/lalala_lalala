@@ -1,7 +1,4 @@
-"""Engine telemetry: continues the caller's trace, records bounded stages, leaks nothing, never hurts a request.
-
-Identical in cad-engine (test/test_telemetry.py) and ecad-engine (tests/): the module under test is the same file.
-"""
+"""Engine telemetry: continues the caller's trace, records bounded stages, leaks nothing, never hurts a request."""
 import io
 import json
 import logging
@@ -18,12 +15,9 @@ from fastapi.testclient import TestClient
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-try:
-    import telemetry  # ecad-engine
-    MODULE, CWD = "telemetry", Path(telemetry.__file__).resolve().parent
-except ImportError:  # cad-engine keeps it in shared/
-    from shared import telemetry
-    MODULE, CWD = "shared.telemetry", Path(telemetry.__file__).resolve().parent.parent
+from shared import telemetry
+
+MODULE, CWD = "shared.telemetry", Path(telemetry.__file__).resolve().parent.parent
 
 UPSTREAM_TRACE = "0af7651916cd43dd8448eb211c80319c"
 UPSTREAM_SPAN = "b7ad6b7169203331"
@@ -392,7 +386,6 @@ def test_the_real_app_starts_with_telemetry_on_a_dead_collector_and_still_answer
         **os.environ,
         "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:1",  # connection refused
         "OTEL_TRACES_SAMPLER_ARG": "1",
-        "ECAD_ENGINE_API_KEY": "test-key",
         "CAD_ENGINE_API_KEY": "test-key",
         "NODE_ENV": "development",
         "TEMP_DIR": tempfile.mkdtemp(),

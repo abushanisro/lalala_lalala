@@ -63,7 +63,6 @@ export class HealthController {
     return this.health.check([
       () => this.databaseIndicator.isReachable('database'),
       () => this.engineIndicator.check('cad_engine', 'CAD_ENGINE_URL', '/ready'),
-      () => this.engineIndicator.check('ecad_engine', 'ECAD_ENGINE_URL', '/ready'),
       () => this.queueIndicator.check('electronics_queue'),
       () => this.castingWorkerIndicator.check('casting_worker'),
     ]);

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 
 import { PreviewArtifactService } from './preview-artifact.service';
-import { ExtractionRejected, ExtractionUnavailable } from '../infrastructure/ecad/ecad-engine.client';
+import { ExtractionRejected, ExtractionUnavailable } from '../infrastructure/cad-engine/board-extraction.client';
 import { ElectronicsRepository } from '../infrastructure/repositories/electronics.repository';
 
 import type { ServedPreview } from './preview-artifact';

@@ -1,6 +1,6 @@
 import { PreviewArtifactService } from './preview-artifact.service';
 import { EXPECTED_RENDER_VERSION, PREVIEW_ARTIFACT_VERSION, encodeArtifact, previewInputsKey, type PreviewArtifact } from './preview-artifact';
-import { ExtractionUnavailable } from '../infrastructure/ecad/ecad-engine.client';
+import { ExtractionUnavailable } from '../infrastructure/cad-engine/board-extraction.client';
 import { previewArtifactPathFor } from '../infrastructure/storage/electronics-file-store';
 
 import type { UploadRow } from '../infrastructure/repositories/electronics.repository';

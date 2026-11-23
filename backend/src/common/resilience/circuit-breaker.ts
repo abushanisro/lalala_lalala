@@ -1,4 +1,4 @@
-// A circuit breaker for calls to an external service (the Python CAD and ECAD engines). After `failureThreshold`
+// A circuit breaker for calls to an external service (the Python CAD engine). After `failureThreshold`
 // consecutive failures the breaker opens and every call fails at once with CircuitOpenError, instead of each request
 // waiting out the full timeout while the service is down. After `openMs` one trial call is let through (half-open):
 // success closes the breaker, failure opens it again.
@@ -127,4 +127,3 @@ export function isServiceUnavailable(error: unknown): boolean {
 }
 
 export const CAD_ENGINE = 'cad-engine';
-export const ECAD_ENGINE = 'ecad-engine';

@@ -29,7 +29,6 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=288
       CAD_ENGINE_URL: http://host.docker.internal:5055
-      ECAD_ENGINE_URL: http://host.docker.internal:5100
       HEAVY_WORK_MAX_CONCURRENT: "1"
     deploy:
       resources:

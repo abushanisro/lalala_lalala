@@ -22,6 +22,8 @@ class AppConfig:
     cors_origins: List[str]
     max_file_size_bytes: int
     rate_limit_per_minute: int
+    # Files in one board set (Gerber layers, drill file and report, Pick Place, BOM workbook) sent to /extract/board
+    max_board_files: int
 
     # Heavy OCC requests running at once, and how long one waits for a slot before a 503
     max_concurrent_analyses: int
@@ -71,6 +73,7 @@ class AppConfig:
             cors_origins=cors_origins,
             max_file_size_bytes=max_file_size_bytes,
             rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
+            max_board_files=int(os.getenv("MAX_BOARD_FILES", "40")),
             max_concurrent_analyses=int(os.getenv("MAX_CONCURRENT_ANALYSES", "2")),
             queue_wait_seconds=int(os.getenv("QUEUE_WAIT_SECONDS", "30")),
             analysis_hard_limit_seconds=int(os.getenv("ANALYSIS_HARD_LIMIT_SECONDS", "900")),
@@ -95,6 +98,9 @@ class AppConfig:
         
         if self.rate_limit_per_minute < 1:
             raise ValueError("RATE_LIMIT_PER_MINUTE must be at least 1")
+
+        if not 1 <= self.max_board_files <= 200:
+            raise ValueError(f"MAX_BOARD_FILES must be between 1 and 200, got {self.max_board_files}")
         
         if self.max_concurrent_analyses < 1:
             raise ValueError("MAX_CONCURRENT_ANALYSES must be at least 1")

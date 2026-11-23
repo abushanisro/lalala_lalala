@@ -1,8 +1,5 @@
 """OpenTelemetry for a mithran Python engine: tracing, one bounded metric, log correlation. Off by default.
 
-Identical in cad-engine (shared/telemetry.py) and ecad-engine (telemetry.py): the two images have separate
-build contexts and cannot share a file, so a change here is made in both.
-
 Contract (the same one the NestJS backend keeps, backend/src/telemetry):
   * OFF unless OTEL_EXPORTER_OTLP_ENDPOINT is set. When off, nothing from opentelemetry is imported, stage() is a
     plain nullcontext, and logs are untouched. A bad value turns telemetry off with a warning; it never stops the engine.

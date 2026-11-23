@@ -15,7 +15,7 @@ rule `micro-deploy.sh` adds lets only Docker's private networks (172.16.0.0/12) 
 
 ## Build, ship, start (nothing public changes)
 ```
-DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -p emithran-amd64 -f docker-compose.prod.yml -f docker-compose.data.yml --env-file <env> build backend frontend ecad-engine cad-engine
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -p emithran-amd64 -f docker-compose.prod.yml -f docker-compose.data.yml --env-file <env> build backend frontend cad-engine
 export APP_HOST=<ip> ENGINE_HOST=<ip> ENGINE_PRIVATE_IP=<10.x>
 infra/oracle/micro-deploy.sh engines      # engine server
 infra/oracle/micro-deploy.sh app          # app server: Postgres, tunnel to the engines, images
@@ -23,7 +23,7 @@ infra/oracle/micro-db.sh                  # rehearsal copy of the database + row
 ssh ubuntu@$APP_HOST 'cd /opt/emithran && docker compose -p emithran-prd -f docker-compose.prod.yml -f docker-compose.data.yml -f docker-compose.micro-app.yml --env-file env/prd.env up -d --no-build backend frontend'
 infra/oracle/micro-deploy.sh status
 ```
-Check: `GET /api/health/ready` inside the backend container answers 200 with database, cadEngine and ecadEngine "up".
+Check: `GET /api/health/ready` inside the backend container answers 200 with database and cadEngine "up".
 
 ## Releases (after the cutover, this replaces mac-prod.sh)
 `infra/oracle/micro-release.sh <git-ref>` (settings in `~/.emithran/micro.env`; `DRY_RUN=1` prints the plan after read-only checks). It builds the amd64

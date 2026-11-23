@@ -11,7 +11,7 @@ visitor ──► Cloudflare ──► cloudflared (outbound tunnel) ──► f
             WAF, rate limits,                              └► backend  ─┤                     Supabase, Cloudflare)
             Access (stage only)                                          │
                                                                          ▼   network "internal" (no internet, no host port)
-                                                            cad-engine, ecad-engine   ◄── parse untrusted uploaded files
+                                                            cad-engine                ◄── parses untrusted uploaded files
 backend / frontend ──► Supabase project for this environment (stage and prd are separate projects)
 ```
 

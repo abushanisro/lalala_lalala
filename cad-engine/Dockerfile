@@ -15,8 +15,9 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
 # Set working directory
 WORKDIR /app
 
-# Create conda environment with pythonocc-core
-RUN conda create -n cad-env python=3.11 -y && \
+# Create conda environment with pythonocc-core. Python 3.12: the board-file parser (gerbonara 1.6, pcb/) needs it, and
+# pythonocc-core 7.8.1.1 ships cp312 builds on conda-forge.
+RUN conda create -n cad-env python=3.12 -y && \
     conda install -n cad-env -c conda-forge pythonocc-core=7.8.1.1 -y && \
     conda clean -afy
 
