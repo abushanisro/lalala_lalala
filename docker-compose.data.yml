@@ -29,7 +29,7 @@ x-data-hardened: &data-hardened
 services:
   postgres:
     <<: *data-hardened
-    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:19-alpine@sha256:8b0ff4cdf221f0c53d7fcda681d3b461be725c492cd881c5ec9c0ad25023f188
     # The image's postgres user (uid 70) owns the data volume, so the entrypoint needs no root, no chown and no capabilities.
     user: "70:70"
     environment:
@@ -54,7 +54,7 @@ services:
 
   storage:
     <<: *data-hardened
-    image: chrislusf/seaweedfs@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
+    image: chrislusf/seaweedfs@sha256:4b42c212543a0acd4c0e675215ecdcaf62a186ef98def76c7e12701871222d15
     # The image's seaweed user (uid 1000) owns the data volume; started as it, the entrypoint needs no root and no capabilities.
     user: "1000:1000"
     command: ["server", "-s3", "-dir=/data", "-ip.bind=0.0.0.0"]

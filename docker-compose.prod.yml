@@ -28,7 +28,7 @@ services:
   # --- Ingress: the only way in. The tunnel is outbound-only; routes are set in the Cloudflare dashboard. ---
   cloudflared:
     <<: *hardened
-    image: cloudflare/cloudflared:2026.11.0@sha256:b94b96edf2c9c4360f8879c8580cfaa99077f19c849ec595ca2f711b27d4f344
+    image: cloudflare/cloudflared:2026.11.1@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
     command: tunnel --no-autoupdate --metrics 127.0.0.1:2000 run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN (from the Cloudflare tunnel) in the env file}
@@ -382,7 +382,7 @@ services:
   # anon/authenticated/service_role and (migration 951) cad_runner, the runner's role. ---
   postgrest:
     <<: *hardened
-    image: postgrest/postgrest@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc
+    image: postgrest/postgrest@sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7
     # PID 1 ignores the stop signal: without an init process a Docker shutdown left it exited 255 and not restarted (stage, 2026-11-17).
     init: true
     user: "10004:10004"

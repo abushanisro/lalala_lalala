@@ -15,18 +15,18 @@
 # project's conda environment) — re-run this service's own test/startup path
 # after upgrading, before deploying.
 # 0.162 lets starlette move to 1.x, which closes three HIGH advisories in the 0.41 line (request parsing).
-fastapi==0.162.5
+fastapi==0.165.0
 # FastAPI only says starlette>=0.46, so pin it: otherwise every rebuild could pick a different release.
 starlette==1.10.0
 uvicorn[standard]==0.34.0
-pydantic==2.14.3
+pydantic==2.14.4
 
 # File handling — python-multipart is never imported directly but is required
 # internally by FastAPI's Form/File/UploadFile parsing (used in main.py).
 # Every upload the engine receives is parsed by it, so it tracks the advisory
 # fixes: 0.0.31 closes all 8 open ones (arbitrary file write, header/preamble
 # DoS, querystring CPU DoS, parameter smuggling, negative Content-Length).
-python-multipart==0.0.33
+python-multipart==0.0.34
 
 # Telemetry (shared/telemetry.py): off unless OTEL_EXPORTER_OTLP_ENDPOINT is set. The SDK and API move together;
 # the FastAPI instrumentation is the matching 0.x (beta) release of the same train.
