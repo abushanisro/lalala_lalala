@@ -124,16 +124,14 @@ describe('the sequencer mills away the stock around the part', () => {
     expect(sequence([], AROUND)).toEqual([]);
   });
 
-  it('a turned diameter costed on a mill is still charged as its own Bulk Milling, after the stock\'s', () => {
-    // The ring states its cylinder (900 mm^3), which the sequencer bulk mills: it is counted among the features, so the stock's is the rest.
+  it('a turned diameter costed on a mill is milled out of the stock around the part, once: its own cylinder is not milled', () => {
+    // The ring states its cylinder (900 mm^3), which is the part's own material: nothing is taken off the stock for it, and no operation
+    // mills it. The stock around the part is the whole 3000 - 1600 = 1400 mm^3; x 1.3 / 1000 = 1.82 s (turned-diameter-on-a-mill.spec.ts).
     const ring = { id: 'Ring-outer_diameter_d14.0_c1', feature_type: 'Ring', variant: 'outer_diameter', diameter_mm: 14, occurrences: [{ depth_mm: 5.85, material_removed_mm3: 900 }] };
     const around = stockExcess({ pieceMm3: 3000, partMm3: 1600, featureRemovedMm3: featureRemovedVolumeMm3([ring]) });
-    expect(around.excessMm3).toBe(500);
+    expect(around.excessMm3).toBe(1400);
     const bulk = named(sequence([ring], around), 'Bulk Milling');
-    expect(bulk.map((o) => [o.source, o.featureIds, Math.round(o.timeSec * 1e6) / 1e6])).toEqual([
-      ['fixed', undefined, 0.65],
-      ['feature', ['Ring-outer_diameter_d14.0_c1'], 1.17],
-    ]);
+    expect(bulk.map((o) => [o.source, o.featureIds, Math.round(o.timeSec * 1e6) / 1e6])).toEqual([['fixed', undefined, 1.82]]);
   });
 });
 

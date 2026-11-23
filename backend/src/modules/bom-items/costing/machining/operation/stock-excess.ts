@@ -10,8 +10,9 @@
 // so no cubic millimetre is milled twice and none is skipped: what a feature's own operation removes is taken off, the rest is the bulk's.
 //
 // The volume a feature removes is its occurrences' material_removed_mm3, as the CAD engine states it (cad-engine
-// machining/machining_feature_recognizer.py, build_machining_feature_graph_v2). Every feature's is taken off, the features split out to
-// another machine too, because each stated volume is removed by an operation of the plan or on its own line:
+// machining/machining_feature_recognizer.py, build_machining_feature_graph_v2). Every feature's is taken off but a turned diameter's (see
+// below), the features split out to another machine too, because each stated volume is removed by an operation of the plan or on its own
+// line:
 //
 //   PocketV2, Slot straight / radial   floor area x depth. Rough Milling is timed on exactly this volume. A pocket that is rotary broached
 //                                      or chemically milled, and a slot wire cut after heat treatment, leaves on that process instead.
@@ -21,14 +22,20 @@
 //                                      the cylinder pi/4 x D^2 x depth. Drilling, Counterboring and Countersinking cut it (timed by the
 //                                      tool's feed); a deep hole leaves on the Gun Drilling or Deep Bore line.
 //   MultiStepHole stepped              the cylinders of its steps, drilled step by step.
-//   Ring outer_diameter                the cylinder pi/4 x D^2 x length of a turned diameter (a turned part's analysis). A mill has no
-//                                      operation for it, so the sequencer times that volume as Bulk Milling: the mill is charged for it
-//                                      there, once. It is the diameter's own solid, not stock, so a turned analysis costed on a mill can
-//                                      state more than its stock holds: that is the inconsistency reported below.
 //
 // These state 0, so nothing is taken off for them and what they remove stays in the bulk: a hole pattern, a chamfer, a rounded edge, a
 // toroidal groove, gear teeth, and the faces (PlanarFace, CurvedWall, CurvedSurface, Cutout), whose finishing and contouring passes
 // follow a surface. Facing is one pass at a fixed time and states no volume either.
+//
+// A turned diameter (Ring outer_diameter, in a turned part's analysis) states a volume that is not removed at all: the analysis writes
+// every diameter-and-length feature's cylinder, pi/4 x D^2 x length, which for a hole is what the drill takes out and for a turned
+// diameter is the diameter itself, the part's own material. Its removal is the stock round it, which no analysis can state: it depends
+// on the stock. A lathe turns that stock off, costed per diameter (turned-diameters.ts). When a mill makes the part (its family set to
+// milled, or a mill's route in the comparison) the same stock is milled off, and it is already in the difference above: the piece less
+// the part is everything round the diameters. So a turned diameter's stated volume is neither taken off nor milled (isTurnedDiameter).
+// Read as a removal it was milled as Bulk Milling of the part's own solid and taken off the stock: the real Lead Screw side shaft's
+// diameters state 3873.84 mm^3, more than the whole part (2646.02 mm^3: it is bored), so its features "removed" more than its piece
+// held, the volumes were reported as inconsistent, and none of the stock round the diameters was milled.
 //
 // A face the stock supplies finished needs no case of its own: the piece's volume is already the stock's.
 
@@ -48,10 +55,20 @@ export interface StockExcess {
   inconsistent: boolean;
 }
 
-/** The volume the part's features remove (mm^3): the material_removed_mm3 of every occurrence of every feature of the feature graph. */
+/** A turned outer diameter of the feature graph (Ring:outer_diameter): the volume it states is its own cylinder, not material removed. */
+export function isTurnedDiameter(feature: unknown): boolean {
+  const f = feature as { feature_type?: unknown; variant?: unknown } | null;
+  return f?.feature_type === 'Ring' && f.variant === 'outer_diameter';
+}
+
+/**
+ * The volume the part's features remove (mm^3): the material_removed_mm3 of every occurrence of every feature of the feature graph, a
+ * turned diameter apart (what it states is the part's own material).
+ */
 export function featureRemovedVolumeMm3(features: readonly unknown[] | null | undefined): number {
   let total = 0;
   for (const feature of features ?? []) {
+    if (isTurnedDiameter(feature)) continue;
     const occurrences = (feature as { occurrences?: unknown } | null)?.occurrences;
     for (const occurrence of Array.isArray(occurrences) ? occurrences : []) {
       const mm3 = Number((occurrence as { material_removed_mm3?: unknown } | null)?.material_removed_mm3);
