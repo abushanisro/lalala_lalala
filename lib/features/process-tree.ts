@@ -646,8 +646,9 @@ export function buildProcessTree(
     });
   }
 
-  // Stock Machining: the catalog's "Material Stock" step, first, with the faces left as the stock supplies them (the mill or lathe does not
-  // finish them). It has no cost line: the stock is the part's material. The Band Saw's own line follows, its StockTrim on the end faces.
+  // A machined part cut from the stock model's stock (the cost summary's stockMachining): the catalog's "Material Stock" step, first, with
+  // the faces left as the stock supplies them (the mill or lathe does not finish them). It has no cost line: the stock is the part's
+  // material. A Stock Machining part's Band Saw line follows, its StockTrim on the end faces.
   const stock = cost?.stockMachining?.stock;
   if (cost?.stockMachining && stock) {
     const supplied = materialStockFeatures(cost.stockMachining);

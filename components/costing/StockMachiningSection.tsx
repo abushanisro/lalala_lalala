@@ -11,6 +11,11 @@ import type { ReactNode } from 'react';
 
 interface Props {
   stockMachining: StockMachiningSummary | null | undefined;
+  /**
+   * Whether the part's Process costs sawing the stock to pieces: Stock Machining does. Any other machined part buys the same stock with no
+   * band saw on its quote, and the Band Saw row then gives the engine's reason as a note, not as something missing.
+   */
+  sawCosted: boolean;
   /** The summary's currency, for what each stock form costs a part. */
   currencySymbol: string;
   /** The part's scenario overrides (unset keys: the data's rule decides). */
@@ -64,12 +69,12 @@ function FlagSelect({ label, title, value, auto, on, off, onCommit }: {
 }
 
 /**
- * The Cost Guide's Stock Machining panel: the stock the part is cut from and why that form, the allowance left on it, the piece cut for one
- * part, what a bar or plate makes, the band saw's cycle, every other form that holds the part with its cost, and the stock rules that can be
- * set here over the data's. The faces left as the stock supplies them, and the saw's two cuts, are shown in the 3D view when clicked.
- * The mill's or lathe's own work is on the Cost tab.
+ * The Cost Guide's stock panel of a machined part: the stock the part is cut from and why that form, the allowance left on it, the piece
+ * cut for one part, what a bar or plate makes, the band saw's cycle (a Stock Machining part's; for any other machined part, why no saw is
+ * costed), every other form that holds the part with its cost, and the stock rules that can be set here over the data's. The faces left as
+ * the stock supplies them, and the two end cuts, are shown in the 3D view when clicked. The mill's or lathe's own work is on the Cost tab.
  */
-export function StockMachiningSection({ stockMachining: s, currencySymbol, overrides, onChange, onSelectHighlight }: Props) {
+export function StockMachiningSection({ stockMachining: s, sawCosted, currencySymbol, overrides, onChange, onSelectHighlight }: Props) {
   const set = stockMachiningOverridesOf(overrides);
   if (!s) return <p className="text-xs text-muted-foreground">The stock is not chosen yet: see the warning on the Cost tab.</p>;
   const stock = s.stock;
@@ -122,7 +127,8 @@ export function StockMachiningSection({ stockMachining: s, currencySymbol, overr
             <span className="block text-muted-foreground">{sawTimesLine(s.saw)}</span>
           </>
         ) : (
-          <span className={stock?.cutOff === 'parting' ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'}>{s.sawMissing ?? 'Not costed'}</span>
+          // Amber only where a saw should be costed and is not; a lathe that parts the piece off, or a Process that costs no saw, is a note.
+          <span className={sawCosted && stock?.cutOff !== 'parting' ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>{s.sawMissing ?? 'Not costed'}</span>
         )}
       </Field>
 

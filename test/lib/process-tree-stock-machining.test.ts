@@ -73,7 +73,19 @@ describe('buildProcessTree: a Stock Machining part', () => {
     expect(labels('op_1')).toEqual(['SimpleHole ×1']);
   });
 
-  it('adds no Material Stock step to a part that is not costed from stock', () => {
+  it('a Machining part is cut from the same stock: Material Stock first, with its stock details, and no Band Saw step', () => {
+    const plain = { ...item, scenarioOverrides: { processGroup: 'Machining' } } as unknown as BOMItem;
+    const tree = buildProcessTree(plain, fg, summary, 'India', undefined, cost({ ...SHAFT_INDIA, saw: null, sawMissing: 'Sawing the stock to pieces is not costed' }, [turning]));
+    const stepLabels = steps(tree);
+    expect(stepLabels).toHaveLength(1);
+    expect(stepLabels[0]).toMatch(/^Machining: Material Stock, /);
+    expect(stepLabels[0]).not.toContain('Band Saw');
+    expect(node(tree, 'op_material_stock').attrs).toEqual(node(buildProcessTree(item, fg, summary, 'India', undefined, cost(SHAFT_INDIA, [bandSaw, turning])), 'op_material_stock').attrs);
+    // The features no step claims stay on the machining step.
+    expect((findNode(tree, 'op_0')?.children ?? []).map((c) => c.label)).toEqual(['SimpleHole ×1']);
+  });
+
+  it('adds no Material Stock step to a part whose cost summary has no stock (a part of another family, or a stock that could not be chosen)', () => {
     const plain = { ...item, scenarioOverrides: { processGroup: 'Machining' } } as unknown as BOMItem;
     const tree = buildProcessTree(plain, fg, summary, 'India', undefined, cost(undefined, [turning]));
     expect(findNode(tree, 'op_material_stock')).toBeNull();

@@ -10,7 +10,10 @@ export type StockMachiningSaw = NonNullable<StockMachiningSummary['saw']>;
 /** The process group of a part machined from bar or plate (backend stock-machining-route.ts STOCK_MACHINING_PROCESS_GROUP). */
 export const STOCK_MACHINING_PROCESS_GROUP = 'Stock Machining';
 
-/** Whether an item is machined from stock: its Process is Stock Machining (the backend's isStockMachining). */
+/**
+ * Whether an item's Process is Stock Machining (the backend's isStockMachining): the one Process whose quote costs sawing the stock to
+ * pieces. Every machined part is cut from the same stock model's stock, so its cost summary carries the stock section either way.
+ */
 export function isStockMachiningItem(item: Pick<BOMItem, 'scenarioOverrides'> | null | undefined): boolean {
   return item?.scenarioOverrides?.processGroup === STOCK_MACHINING_PROCESS_GROUP;
 }

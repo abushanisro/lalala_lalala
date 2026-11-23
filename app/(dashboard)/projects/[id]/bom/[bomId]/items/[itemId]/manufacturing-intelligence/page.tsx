@@ -4611,10 +4611,13 @@ function CostGuidePanel({
               </Section>
             )}
 
-            {isStockMachiningItem(item) && (
-              <Section title="Stock Machining">
+            {/* Every machined part is cut from the stock model's stock, so the section follows the cost summary; a Stock Machining part's
+                also costs the band saw, and shows the section before its stock is chosen. */}
+            {(isStockMachiningItem(item) || cgpCostSummary?.stockMachining) && (
+              <Section title={isStockMachiningItem(item) ? 'Stock Machining' : 'Stock'}>
                 <StockMachiningSection
                   stockMachining={cgpCostSummary?.stockMachining}
+                  sawCosted={isStockMachiningItem(item)}
                   currencySymbol={cgpCostSummary?.currencySymbol ?? '$'}
                   overrides={item.scenarioOverrides}
                   onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}

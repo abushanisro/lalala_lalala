@@ -1267,8 +1267,9 @@ export interface CostSummaryDto {
     options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
   };
   /**
-   * Stock Machining: the stock bought for the part and the band saw that cuts it to pieces, before the Machining route cuts the part
-   * (backend StockMachiningBreakdown). Lengths in mm, masses in kg, times in s, money in the summary's currency.
+   * A machined part's stock (Machining and Stock Machining alike): the stock bought for the part and, for a Stock Machining part, the band
+   * saw that cuts it to pieces, before the Machining route cuts the part (backend StockMachiningBreakdown). Lengths in mm, masses in kg,
+   * times in s, money in the summary's currency.
    */
   stockMachining?: {
     /** The form the part's shape asks for, and why. */
@@ -1293,7 +1294,7 @@ export interface CostSummaryDto {
       machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
       cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
     } | null;
-    /** Why there is no saw: a bar-fed lathe parts the piece off, or what keeps the saw from being costed. */
+    /** Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing, or what keeps the saw from being costed. */
     sawMissing: string | null;
     scrapCredit: { enabled: boolean; percent: number | null; credit: number };
     partSource: 'measured' | 'bounding box';

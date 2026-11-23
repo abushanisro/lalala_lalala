@@ -7,10 +7,16 @@ import type { StockMachiningSummary } from '@/lib/costing/stock-machining-view';
 
 import { SHAFT_INDIA, SHAFT_USA_AS_SUPPLIED, STIFFNER_PLATE, STIFFNER_TUBE_ASKED } from '../fixtures/stock-machining-quotes';
 
-const panel = (s: StockMachiningSummary | null, overrides: Record<string, unknown> = {}, highlight = true) =>
+const panel = (s: StockMachiningSummary | null, overrides: Record<string, unknown> = {}, highlight = true, sawCosted = true) =>
   renderToStaticMarkup(createElement(StockMachiningSection, {
-    stockMachining: s, currencySymbol: '$', overrides, onChange: () => undefined, ...(highlight ? { onSelectHighlight: () => undefined } : {}),
+    stockMachining: s, sawCosted, currencySymbol: '$', overrides, onChange: () => undefined, ...(highlight ? { onSelectHighlight: () => undefined } : {}),
   }));
+
+// The same shaft as a part whose Process is Machining: the same stock, no band saw on its quote, and the engine's reason for that.
+const SAW_NOT_COSTED = "Sawing the stock to pieces is not costed: the machine is loaded with a piece cut to length. Set the part's Process to Stock Machining to cost the band saw.";
+const SHAFT_INDIA_MACHINING: StockMachiningSummary = {
+  ...SHAFT_INDIA, saw: null, sawMissing: SAW_NOT_COSTED, options: SHAFT_INDIA.options.map((o) => ({ ...o, sawCost: null })),
+};
 
 describe('the Stock Machining section of the Cost Guide', () => {
   it('shows the stock and why that form, its allowance, the piece, the yield, the saw and every other form with its cost', () => {
@@ -74,6 +80,27 @@ describe('the Stock Machining section of the Cost Guide', () => {
     expect(out).toContain('value="0"');
     // Without a 3D view to show them in, the counts are plain text.
     expect(panel(SHAFT_USA_AS_SUPPLIED, {}, false)).not.toContain('Click to highlight in the 3D view');
+  });
+
+  it('a Machining part: the same stock and settings, and in place of the saw the engine\'s reason, as a note', () => {
+    const out = panel(SHAFT_INDIA_MACHINING, {}, true, false);
+    expect(out).toContain('16 mm round bar</span> · needs Ø15.59 mm');
+    expect(out).toContain('172 pieces per 6096 mm bar');
+    expect(out).toContain('0.89 mm saw kerf between pieces · 152.4 mm bar end');
+    expect(out).toContain('<span class="text-muted-foreground">Sawing the stock to pieces is not costed');
+    expect(out).not.toContain('DoAll 3613-1 Vert');
+    // Each form is priced by its stock alone: no saw cost beside it.
+    expect(out).toContain('14 mm A/F hex bar · $0.05<');
+    expect(out).not.toContain(' saw<');
+    // The stock rules are set here as on a Stock Machining part.
+    for (const control of ['Allowance mm', 'Stock size', 'Bar end mm', 'Scrap credit']) expect(out).toContain(control);
+    expect(out.match(/>Use</g)).toHaveLength(6);
+  });
+
+  it('a saw that should be costed and is not is shown as missing; a lathe that parts the piece off is a note', () => {
+    const missing = panel({ ...SHAFT_INDIA, saw: null, sawMissing: 'HR Rates has no band saws' });
+    expect(missing).toContain('<span class="text-amber-600 dark:text-amber-400">HR Rates has no band saws');
+    expect(panel(SHAFT_USA_AS_SUPPLIED)).toContain('<span class="text-muted-foreground">A bar-fed lathe takes the whole bar');
   });
 
   it('says so when no side is as supplied, when the envelope is the bounding box, and when the stock is not chosen', () => {
