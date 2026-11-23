@@ -1,5 +1,5 @@
-// The stock bought for a Stock Machining part and the band saw that cuts it (stock-machining-route.ts), on memory/Stock Maching's own
-// tables, saws and materials. Expected values are worked out by hand in the comments from the files' numbers.
+// The stock bought for a machined part and, for a Stock Machining part, the band saw that cuts it (stock-machining-route.ts), on
+// memory/Stock Maching's own tables, saws and materials. Expected values are worked out by hand in the comments from the files' numbers.
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -31,7 +31,7 @@ function quote(part: StockPart, material: StockMachiningMaterial, over: Partial<
   return {
     option,
     q: buildStockMachiningQuote({
-      ref: REF, stock: STOCK, calculators: stockMachiningCalculatorsByName(), saws: bandSaws('USA'), part, option, material, cutOff: settings.cutOff,
+      ref: REF, stock: STOCK, calculators: stockMachiningCalculatorsByName(), saws: bandSaws('USA'), part, option, material, cutOff: settings.cutOff, sawCosted: true,
       remnant: { mm: settings.remnantMm, source: 'the end of a bar that makes no part' }, scrapCredit: false, batchSize: 25, costContext: ZERO, endFaceIds: [3, 9], ...rest,
     }),
   };
@@ -157,6 +157,35 @@ describe('a bar-fed lathe parts the piece off', () => {
     expect(option.cutWidthMm).toBe(2.5);
     expect(q.material.run!.outputs['Parts per Bar']).toBe(164);
     expect(q.material.costUsd).toBeCloseTo(((6096 * AREA * 2700) / 1e9 / 164) * 5.875, 9);
+  });
+});
+
+describe('a part whose Process does not cost the saw (any but Stock Machining)', () => {
+  it('buys the same stock at the same price, sawn to the same pieces: only the Band Saw line is left out', () => {
+    const costed = quote(SHAFT, AL).q;
+    const { q, option } = quote(SHAFT, AL, { sawCosted: false });
+    expect(q.lines).toEqual([]);
+    expect(q.saw).toBeNull();
+    // The piece is still cut to length by a saw: its kerf is in the bar's yield, 172 pieces, not the parting tool's 164.
+    expect(option.cutWidthMm).toBe(0.889);
+    expect(q.material.run!.outputs['Parts per Bar']).toBe(172);
+    expect(q.material).toEqual(costed.material);
+    expect(q.missing).toEqual([]);
+    // Nothing of the saw is on the quote: its own notes (how its cut is timed) go with its line.
+    expect(q.warnings).toEqual([]);
+  });
+
+  it('a stock no saw could cut is no gap of its quote: nothing of the saw is read', () => {
+    const { q } = quote({ ...SHAFT, roundOdMm: 2400, widthMm: 2400, heightMm: 2400, lengthMm: 100 }, STEEL, { sawCosted: false, saws: [] });
+    expect(q.lines).toEqual([]);
+    expect(q.missing).toEqual([]);
+  });
+
+  it('a plate blank is priced the same with no saw', () => {
+    const costed = quote(WIDE, STEEL_PLATE).q;
+    const q = quote(WIDE, STEEL_PLATE, { sawCosted: false }).q;
+    expect(q.lines).toEqual([]);
+    expect(q.material.costUsd).toBe(costed.material.costUsd);
   });
 });
 

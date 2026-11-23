@@ -178,12 +178,13 @@ export function resolveScenarioCavityCount(
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
-// ── Machining Stock Form (BlankOptimizerService's "Let eMithran Decide" override) ──
+// ── Machining Stock Form (the stock model's form, set by hand) ──
 //
 // Persisted scenario stock-form choice for machined parts, e.g. "Round Bar" picked explicitly over the
-// auto-decided candidate: the six forms the reference prices for machining stock (memory/Stock Maching
-// materials: round, hex, rectangular and square bar, plate, round tube) plus the explicit 'billet'. An
-// unrecognized value is treated the same as unset (auto-decide), never coerced into a form.
+// form the part's shape asks for (costing/stock/stock-selection.ts): the six forms the reference prices for
+// machining stock (memory/Stock Maching materials: round, hex, rectangular and square bar, plate, round tube)
+// plus the explicit 'billet'. An unrecognized value is treated the same as unset (auto-decide), never coerced
+// into a form.
 type ScenarioStockForm = 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'square_bar' | 'plate' | 'round_tube' | 'billet';
 const VALID_SCENARIO_STOCK_FORMS: ReadonlySet<string> = new Set(['round_bar', 'hex_bar', 'rectangular_bar', 'square_bar', 'plate', 'round_tube', 'billet']);
 

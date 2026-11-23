@@ -7,9 +7,10 @@ import type { BlankSpecDto } from '../../dto/blank-spec.dto';
  * Where a Raw Material record's Net/Gross Usage comes from.
  *
  * - `sheet_nesting`: the real per-part yield from the sheet-metal nesting engine.
- * - `stock_blank`: machining -- the weight of the stock the blank optimizer
- *   actually selected (stock volume x material density). The engine prices
- *   material on this same figure, so the record must agree with it.
+ * - `stock_blank`: machining -- the weight of the stock bought for one part
+ *   (the stock model's: the part's share of a whole bar or plate, x material
+ *   density). The engine prices material on this same figure, so the record
+ *   must agree with it.
  * - `casting_charge`: die casting -- Net is the part metal, Gross the metal
  *   charged (part x the alloy Yield Loss Factor), the same figures the engine
  *   prices material on (cost summary castingMetal).

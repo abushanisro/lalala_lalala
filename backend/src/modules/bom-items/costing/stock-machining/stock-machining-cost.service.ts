@@ -51,7 +51,7 @@ export function stockMachiningSettings(overrides: Record<string, unknown> | null
   };
 }
 
-/** The stock chosen for a part, for each way its piece is cut off. It rests on the part and the reference data alone: no material, no machine. */
+/** The stock chosen for a machined part, for each way its piece is cut off. It rests on the part and the reference data alone: no material, no machine. */
 export interface StockMachiningChoice {
   ref: SandReference;
   stock: StockReference;
@@ -109,7 +109,10 @@ export interface StockOptionCost {
   form: StockForm;
   sizeLabel: string | null;
   unavailable: string | null;
-  /** The stock bought per part and its sawing, in the location's currency; null where a figure is missing (and for the saw, when a lathe parts the piece off). */
+  /**
+   * The stock bought per part and its sawing, in the location's currency; null where a figure is missing (and for the saw, when a lathe parts
+   * the piece off or the saw is not costed).
+   */
   materialCost: number | null;
   sawCost: number | null;
   chosen: boolean;
@@ -121,7 +124,7 @@ export interface PricedStock {
   selection: StockSelection;
   /** The chosen stock's quote, in USD (the units of HR Rates and the reference data); null when no form holds the part. */
   quote: StockMachiningQuote | null;
-  /** The Band Saw line in the location's currency; none when a bar-fed lathe parts the piece off. */
+  /** The Band Saw line in the location's currency; none when a bar-fed lathe parts the piece off, or the saw is not costed. */
   lines: ProcessLineCost[];
   /** The stock bought per part, less the scrap credit when it is on, and that credit, in the location's currency. */
   materialCost: number | null;
@@ -134,6 +137,8 @@ export interface PricedStock {
 export function priceStockMachining(input: {
   choice: StockMachiningChoice;
   calculators: Readonly<Record<string, ReferenceCalculatorDef>>;
+  /** Whether the band saw is costed (a Stock Machining part's is), and the location's saws to cost it on. */
+  sawCosted: boolean;
   saws: readonly SandMachine[];
   material: StockMachiningMaterialInput;
   location: string;
@@ -147,7 +152,7 @@ export function priceStockMachining(input: {
   const quoteOf = (cutOff: StockCutOff, option: Parameters<typeof buildStockMachiningQuote>[0]['option']) => {
     const priceForm = stockPriceFormOf(option.form);
     return buildStockMachiningQuote({
-      ref: choice.ref, stock: choice.stock, calculators: input.calculators, saws: input.saws, part: choice.part, option, cutOff,
+      ref: choice.ref, stock: choice.stock, calculators: input.calculators, saws: input.saws, part: choice.part, option, cutOff, sawCosted: input.sawCosted,
       material: {
         name: material.name, cutCode: material.cutCode, densityKgM3: material.densityKgM3, scrapCostPercent: material.scrapCostPercent,
         pricePerKgUsd: priceForm ? material.pricePerKgUsd[priceForm] ?? null : null,
@@ -195,6 +200,8 @@ export interface StockMachiningCostRequest {
   accessToken: string;
   location: string;
   choice: StockMachiningChoice;
+  /** Whether the band saw is costed: the Stock Machining Process's quote has it, no other machined part's does. */
+  sawCosted: boolean;
   /** The material the quote prices: the names it goes by (Raw Materials name and grade), its density and each stock form's price (USD/kg). */
   material: { name: string; grade: string | null; densityKgM3: number | null; pricePerKgUsd: Partial<Record<StockPriceForm, number>> };
   batchSize: number;
@@ -213,9 +220,9 @@ export interface StockMachiningCostResult {
 }
 
 /**
- * The stock front end of a Stock Machining part: loads the staged memory/Stock Maching reference, chooses the part's stock by its rules
- * (stock/stock-selection.ts) and prices it and its sawing (stock-machining-route.ts) with the calculators (from the database) on the
- * location's band saws, in the location's currency. The machining of the part is the Machining route's.
+ * The stock front end of a machined part: loads the staged memory/Stock Maching reference, chooses the part's stock by its rules
+ * (stock/stock-selection.ts) and prices it (stock-machining-route.ts) with the calculators (from the database), in the location's
+ * currency; a Stock Machining part's sawing too, on the location's band saws. The machining of the part is the Machining route's.
  */
 @Injectable()
 export class StockMachiningCostService {
@@ -270,9 +277,10 @@ export class StockMachiningCostService {
 
   async price(req: StockMachiningCostRequest): Promise<StockMachiningCostResult> {
     const { choice } = req;
-    const [calculators, byClass, facts] = await Promise.all([
+    const [calculators, saws, facts] = await Promise.all([
       this.catalog.loadStockMachiningCalculators(req.accessToken),
-      this.machines.getMachinesByClass(req.client, [STOCK_MACHINING_CLASS.saw], req.location),
+      // The saws are read only for a quote that costs sawing.
+      req.sawCosted ? this.machines.getMachinesByClass(req.client, [STOCK_MACHINING_CLASS.saw], req.location).then((byClass) => byClass[STOCK_MACHINING_CLASS.saw] ?? []) : [],
       this.materialFacts(req.client, choice.ref, [req.material.name, req.material.grade]),
     ]);
     const absent = loadStockMachiningCalculatorSpec().calculators.filter((c) => !(c.name in calculators)).map((c) => c.name);
@@ -282,11 +290,10 @@ export class StockMachiningCostService {
         missing: [`the Stock Machining calculators are not in the database (run migration 1116): ${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', ...' : ''}`],
       };
     }
-    const saws = byClass[STOCK_MACHINING_CLASS.saw] ?? [];
     const warnings: string[] = [];
-    if (saws.length === 0) warnings.push(`HR Rates has no band saws (class ${STOCK_MACHINING_CLASS.saw}) for ${req.location}: the Band Saw is not costed.`);
+    if (req.sawCosted && saws.length === 0) warnings.push(`HR Rates has no band saws (class ${STOCK_MACHINING_CLASS.saw}) for ${req.location}: the Band Saw is not costed.`);
     const stock = priceStockMachining({
-      choice, calculators, saws, location: req.location, batchSize: req.batchSize, usdToLocal: req.usdToLocal, costContext: req.costContext,
+      choice, calculators, sawCosted: req.sawCosted, saws, location: req.location, batchSize: req.batchSize, usdToLocal: req.usdToLocal, costContext: req.costContext,
       material: { name: req.material.name, densityKgM3: req.material.densityKgM3, pricePerKgUsd: req.material.pricePerKgUsd, ...facts },
     });
     return { stock, material: facts, missing: [], warnings };

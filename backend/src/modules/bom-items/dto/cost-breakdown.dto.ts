@@ -614,7 +614,7 @@ export interface CostSummaryDto {
   setupCount?: number;  // CNC: number of machine setups (1 = 5-axis, 2 = 4-axis, 3 = 3-axis)
 
   // Blank stock selected for this part — visible in the Cost Guide Panel.
-  // CNC: round bar / rectangular bar / billet (from BlankOptimizerService).
+  // CNC: the stock the stock model chose (costing/stock): bar, plate, tube or billet; a multi-spindle's its own bar.
   // Sheet metal: flat blank area × thickness.
   blankSpec?: BlankSpecDto;
 
@@ -718,7 +718,10 @@ export interface CostSummaryDto {
   barTube?: BarTubeBreakdown;
   /** Multi-Spindle Machining: the bar, the machine and its station plan (the slowest station sets the cycle), the route quoted and every route. */
   multiSpindle?: MultiSpindleBreakdown;
-  /** Stock Machining: the stock the part is cut from (form, size, piece, yield), every other form priced beside it, and the band saw that cuts it. */
+  /**
+   * A machined part's stock (Machining and Stock Machining alike, one stock model): the stock the part is cut from (form, size, piece,
+   * yield), every other form priced beside it and, for a Stock Machining part, the band saw that cuts it.
+   */
   stockMachining?: StockMachiningBreakdown;
   /** Roto & Blow Molding: the shell (envelope, wall, inside, spout), its features' operations, parts per shot or arm, the route quoted and every route. */
   rotoBlow?: RotoBlowBreakdown;
@@ -1115,8 +1118,9 @@ export interface MultiSpindleBreakdown {
 }
 
 /**
- * A Stock Machining part's Cost Summary section (costing/stock, costing/stock-machining): the stock bought for it and the band saw that cuts
- * it to pieces, before the Machining route cuts the part. Lengths in mm, masses in kg, times in s, money in the summary's currency.
+ * A machined part's stock section of the Cost Summary (costing/stock, costing/stock-machining): the stock bought for it and, for a Stock
+ * Machining part, the band saw that cuts it to pieces, before the Machining route cuts the part. A part of any other Process buys the same
+ * stock; its sawing is not costed, and sawMissing says so. Lengths in mm, masses in kg, times in s, money in the summary's currency.
  */
 export interface StockMachiningBreakdown {
   /** The form the part's shape asks for (stock-selection.ts autoStockForm), and why. */
@@ -1151,14 +1155,17 @@ export interface StockMachiningBreakdown {
   } | null;
   /** Why the chosen stock is not the rule's or the Cost Guide's form, when it is not. */
   fallback: string | null;
-  /** Every form: its stock with what it costs a part (the stock bought, and its sawing), or why it is not offered. */
+  /** Every form: its stock with what it costs a part (the stock bought, and its sawing when the saw is costed), or why it is not offered. */
   options: { form: string; sizeLabel: string | null; unavailable: string | null; materialCost: number | null; sawCost: number | null; chosen: boolean }[];
   /** The saw that cuts the piece: its bundle (the bars cut at once, and what set it), the cutting rate and the cycle's parts. */
   saw: {
     machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
     cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
   } | null;
-  /** Why there is no saw: a bar-fed lathe parts the piece off, or what keeps the saw from being costed. Null with a saw. */
+  /**
+   * Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing (any but Stock Machining), or what keeps
+   * the saw from being costed. Null with a saw.
+   */
   sawMissing: string | null;
   /** The chips sold back: whether the credit is on (enableScrapMaterialCredit, or the Cost Guide's), the material's Scrap Cost Percent, and the credit taken per part. */
   scrapCredit: { enabled: boolean; percent: number | null; credit: number };

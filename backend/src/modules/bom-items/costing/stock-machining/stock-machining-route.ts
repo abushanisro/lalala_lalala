@@ -1,7 +1,10 @@
-// The stock front end of a Stock Machining part (memory/Stock Maching): the stock bought for it (Material Stock, as supplied) and the band
-// saw that cuts it to pieces, before the Machining route cuts the part. Every figure comes from a calculator (stock-machining-
-// calculators.json) seeded from the staged reference (2026-Stock-Machining), the stock chosen for the part (stock/stock-selection.ts) and
-// the saw (HR Rates class band_saw, migration 815). Pure: the caller loads the data and converts the currency.
+// The stock front end of a machined part (memory/Stock Maching): the stock bought for it (Material Stock, as supplied) and, for a Stock
+// Machining part, the band saw that cuts it to pieces, before the Machining route cuts the part. Every figure comes from a calculator
+// (stock-machining-calculators.json) seeded from the staged reference (2026-Stock-Machining), the stock chosen for the part
+// (stock/stock-selection.ts) and the saw (HR Rates class band_saw, migration 815). Pure: the caller loads the data and converts the currency.
+//
+// Every machined part buys its stock by these rules (user decision 2026-11-22: one stock model). Sawing it to pieces is what the Stock
+// Machining Process adds: only its quote has a Band Saw line (`sawCosted`).
 //
 // A bar-fed lathe takes the whole bar and parts each piece off, so its route has no Band Saw line (the reference's catalog gives Parting
 // to the bar-fed lathes only, and the saw's Stock Trim to every other machine).
@@ -67,6 +70,8 @@ export interface StockMachiningInput {
   material: StockMachiningMaterial;
   /** What cuts the piece off: the band saw, or a bar-fed lathe's parting tool (then no Band Saw line). */
   cutOff: StockCutOff;
+  /** Whether the quote costs the band saw: a Stock Machining part's does. Any other machined part buys the same stock, and its sawing is not costed. */
+  sawCosted: boolean;
   /** The bar end the stock was yielded with (mm), and where the value came from. */
   remnant: { mm: number; source: string };
   /** Whether the chips are sold back (enableScrapMaterialCredit, or the Cost Guide's). */
@@ -78,7 +83,7 @@ export interface StockMachiningInput {
 }
 
 export interface StockMachiningQuote {
-  /** The Band Saw line (a named gap when no saw can cut the stock); empty when a bar-fed lathe parts the piece off. */
+  /** The Band Saw line (a named gap when no saw can cut the stock); empty when a bar-fed lathe parts the piece off, or the saw is not costed. */
   lines: ProcessLineCost[];
   material: {
     /** The stock bought per part at the form's price, less the scrap credit when it is on (USD); null when a figure is missing. */
@@ -132,7 +137,7 @@ function sizeSeeds(inp: StockMachiningInput): Record<string, CalcSeed> {
   };
 }
 
-/** Prices the stock bought for the part and its sawing to pieces. */
+/** Prices the stock bought for the part and, when the saw is costed, its sawing to pieces. */
 export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachiningQuote {
   const { ref, stock, option, part, material } = inp;
   const kit = routeKit({
@@ -194,7 +199,7 @@ export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachini
   // ── The band saw ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   const lines: ProcessLineCost[] = [];
   let saw: StockMachiningQuote['saw'] = null;
-  if (inp.cutOff === 'saw') {
+  if (inp.sawCosted && inp.cutOff === 'saw') {
     const sawStock = sawStockOf(option);
     const plans = new Map<string, { bundle: SawBundle; rate: number; family: string; unloadS: number }>();
     const step = kit.step('Band Saw', (m: SandMachine) => {

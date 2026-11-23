@@ -11,8 +11,11 @@ import { resolveDrillingParams } from '../../../../../../modules/bom-items/costi
 import { resolvePartoffParams } from '../../../../../../modules/bom-items/costing/machining/lookup/partoff-table';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import { findRouteDataGaps } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
-import { requiredSection, roundBarCandidates, selectTurnedCandidate, type StockProfile } from '../../../../../../modules/bom-items/costing/sheet-metal/machine/blank-stock-candidates';
+import { stockReference } from '../../../../../../modules/bom-items/costing/stock/stock-reference';
+import { stockBlankResult } from '../../../../../../modules/bom-items/costing/stock-machining/stock-machining-cost-summary';
+import { chooseStockMachining } from '../../../../../../modules/bom-items/costing/stock-machining/stock-machining-cost.service';
 import { realDrillingTable, realHobbingReference, realPartoffTable } from '../real-reference-tables';
+import { realStockMachiningReference } from '../../stock/stock-test-data';
 
 // Machining cycle times from real inputs only — CAD geometry and the real
 // machining_reference_data tables (read here from the same source CSVs the
@@ -240,10 +243,9 @@ describe('lookup-table viewer: the row a machining input came from is identifiab
 });
 
 // The route comparison prices each lathe route with the same engine as the Cost tab. Its input once had no blank: the turning engine then
-// had no bar diameter, so every lathe route carried a "round-bar stock" data gap, no route was data-complete, and Apply on the R_M-0230-032
+// had no bar diameter, so every lathe route carried a bar stock data gap, no route was data-complete, and Apply on the R_M-0230-032
 // lead nut housing (30 x 24.5 x 21 mm, mill-turn) found "no route both feasible and fully costed" while the Cost tab priced it.
-describe('a lathe route is priced from the bar the blank optimizer chose (route comparison = Cost tab)', () => {
-  const bars: StockProfile[] = [25, 30, 35, 40, 45].map((d) => ({ form: 'round_bar', size_a_mm: d, size_b_mm: null }));
+describe('a lathe route is priced from the bar the stock model chose (route comparison = Cost tab)', () => {
   const leadNut = (blankResult?: unknown) => computeTurningCostSummary({
     volume: 5539.5, surfaceArea: 5563.39, maxLength: 30, maxWidth: 24.5, maxHeight: 21,
     holeCount: 0, holeGroups: [], pocketCount: 0,
@@ -258,16 +260,27 @@ describe('a lathe route is priced from the bar the blank optimizer chose (route 
     ...(blankResult ? { blankResult } : {}),
   } as any, mc('3_axis_bar_feed_lathe_with_sub_spindle'));
   const barGaps = (r: ReturnType<typeof leadNut>) =>
-    findRouteDataGaps(r.processLines).filter((g) => JSON.stringify(g).includes('round-bar stock'));
+    findRouteDataGaps(r.processLines).filter((g) => JSON.stringify(g).includes('bar stock for this part'));
 
-  it('without a blank, turning and parting are data gaps: the route cannot be recommended', () => {
-    expect(barGaps(leadNut()).length).toBeGreaterThan(0);
+  it('without a stock, turning and parting are data gaps and no material is costed: nothing is estimated in the stock\'s place', () => {
+    const r = leadNut();
+    expect(barGaps(r).map((g) => g.process)).toEqual(['Rough Turning', 'Parting']);
+    expect(barGaps(r).every((g) => g.reason.includes('no stock is chosen'))).toBe(true);
+    expect(r.materialCost).toBe(0);
   });
 
-  it('with the Ø30 bar the optimizer chooses for this part, the bar gaps are gone', () => {
-    const { minDiam } = requiredSection(24.5, 21, 1.23, true);
-    const bar = selectTurnedCandidate(roundBarCandidates(bars, minDiam, 35, 5539.5))!;
-    expect(bar.barDiameterMm).toBe(30);
-    expect(barGaps(leadNut({ form: bar.form, sizeLabel: bar.sizeLabel, billetVolMm3: bar.billetVolMm3, utilizationPct: bar.utilizationPct, barDiameterMm: bar.barDiameterMm }))).toEqual([]);
+  it('with the round bar the stock model chooses for this turned part, the bar gaps are gone', () => {
+    const ref = realStockMachiningReference();
+    const { choice } = chooseStockMachining({
+      ref, stock: stockReference(ref).reference!, location: 'India', overrides: {},
+      part: { machiningStock: undefined, family: 'turned', box: { length: 30, width: 24.5, height: 21 }, volumeMm3: 5539.5, turned: { diameterMm: 24.5, lengthMm: 30 } },
+    });
+    // The bar-fed lathe parts the piece off the bar: Ø24.5 with 5 % of it a side (1.225 mm) needs Ø26.95, the next metric size up.
+    const bar = stockBlankResult(choice!, 'parting')!;
+    expect(bar.form).toBe('round_bar');
+    expect(bar.barDiameterMm).toBeGreaterThanOrEqual(26.95);
+    const r = leadNut(bar);
+    expect(barGaps(r)).toEqual([]);
+    expect(r.materialCost).toBeGreaterThan(0);
   });
 });
