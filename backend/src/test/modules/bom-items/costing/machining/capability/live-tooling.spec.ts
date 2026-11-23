@@ -155,6 +155,31 @@ describe('liveToolingVerdict: can this lathe make what the part needs a live too
     });
   });
 
+  describe('flats: a flat milled on a turned diameter needs the live tool as a keyway does', () => {
+    // Two wrench flats on the shaft, as the CAD engine's feature_graph_v2 carries them (one group, an occurrence per flat).
+    const flats = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [{ material_removed_mm3: 290.12 }, { material_removed_mm3: 290.12 }] };
+    const work = { holes: [], milled: liveToolMilledFeatures([flats]) };
+
+    it('counts each flat', () => {
+      expect(work.milled).toEqual([{ type: 'Flat', count: 2 }]);
+      expect(liveToolMilledFeatures([shaftKeyway, radialSlots, flats])).toEqual([{ type: 'Keyway', count: 1 }, { type: 'Slot', count: 2 }, { type: 'Flat', count: 2 }]);
+    });
+
+    it('a machine with no live-tool spindle (0 kW) cannot, and says it cannot mill the flats', () => {
+      expect(liveToolingVerdict(work, noLiveTool, 'Mazak 6G')).toEqual({
+        capable: false,
+        warnings: ['Mazak 6G has no live-tool spindle (memory/Machining/machine): it cannot mill the part\'s 2 flats; a lathe with live tooling (C/Y axis) or a mill is needed.'],
+      });
+    });
+
+    it('a machine with one can; one whose live tooling is not on file is not ruled out, and says so', () => {
+      expect(liveToolingVerdict(work, liveTool, 'Miyano BNC-20')).toEqual({ capable: true, warnings: [] });
+      expect(liveToolingVerdict(work, notOnFile, 'Lathe X')).toEqual({
+        capable: true, warnings: ['Live tooling of Lathe X is not on file: whether it can mill the part\'s 2 flats is not checked.'],
+      });
+    });
+  });
+
   it('none: a part with no such hole, keyway or slot needs no live tooling on any machine', () => {
     for (const capability of [noLiveTool, liveTool, notOnFile, null]) {
       expect(liveToolingVerdict({ holes: [], milled: [] }, capability, 'Haas DS-30')).toEqual({ capable: true, warnings: [] });

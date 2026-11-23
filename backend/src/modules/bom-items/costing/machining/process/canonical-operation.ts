@@ -11,6 +11,11 @@
  * Compound catalog chains are labelled by the operation the catalog attaches
  * to the feature itself, e.g. a counterbore is the MultiStepHole of
  * "Multistep Holemaking//MultiStepHole:Counterboring//SimpleHole".
+ *
+ * An operation the catalog gives a feature only as a step of the machine's
+ * setup ("3 Axis Lathe:Setup:Rough Milling//Flat", which the generated
+ * vocabulary names "Setup:Rough Milling") is labelled by the operation itself,
+ * as the cost engine names it: "Rough Milling // Flat".
  */
 import { isTurnedFamily } from '../../../../../domain/part-family';
 import { isReferenceOperation } from '../../shared/reference-features.generated';
@@ -37,6 +42,10 @@ const MILLING_OPERATION_BY_FEATURE: Readonly<Record<string, string>> = {
   // lathes, MillTurn and Simultaneous Turning. The tolerance capability table links the operation to Milling (operation_capability_process,
   // migration 1120): that is the capability a keyway's tolerances are judged against (feature-tolerance.service.ts).
   'Keyway:default': 'Obround Slot Milling',
+  // A flat milled on a turned diameter (cad-engine _classify_turned_flat): the catalog's "Rough Milling//Flat", a step of the setup on the
+  // 3 axis lathes, MillTurn and the mills. It is the operation the cost engine mills a flat by (operation-sequencer.ts), and the tolerance
+  // capability table links it to Milling.
+  'Flat:default': 'Rough Milling',
   'Cutout:default': 'Perimeter Milling',
   'PlanarFace:default': 'Fine Finish Milling',
   'CurvedWall:default': 'Contouring',
@@ -56,7 +65,7 @@ const TURNING_OPERATION_BY_FEATURE: Readonly<Record<string, string>> = {
 for (const table of [MILLING_OPERATION_BY_FEATURE, TURNING_OPERATION_BY_FEATURE]) {
   for (const [key, operation] of Object.entries(table)) {
     const featureType = key.split(':')[0];
-    if (!isReferenceOperation('machining', featureType, operation)) {
+    if (!isReferenceOperation('machining', featureType, operation) && !isReferenceOperation('machining', featureType, `Setup:${operation}`)) {
       throw new Error(`canonical-operation: "${operation} // ${featureType}" is not in the reference machining catalog`);
     }
   }

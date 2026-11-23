@@ -15,14 +15,15 @@ interface CatalogFeature {
 }
 
 /**
- * True when `process` performs `operation` on `featureType`. Three forms of the same catalog fact:
+ * True when `process` performs `operation` on `featureType`. Four forms of the same catalog fact:
  *   "P:Op//F"            the operation itself;
  *   "P:Mill Op//F"       the live-tool name a turning machine's catalog gives the milled version (Mill Contouring);
+ *   "P:Setup:Op//F"      the operation as a step of the machine's setup (Setup:Rough Milling//Flat);
  *   "P:...:Op//F"        the operation as a step of a compound feature (Rounding//SimpleHole:Rounding//Edge).
  */
 function performs(catalog: ReadonlySet<string>, compound: readonly string[], process: string, operation: string, featureType: string): boolean {
   const op = `${operation}//${featureType}`;
-  return catalog.has(`${process}:${op}`) || catalog.has(`${process}:Mill ${op}`)
+  return catalog.has(`${process}:${op}`) || catalog.has(`${process}:Mill ${op}`) || catalog.has(`${process}:Setup:${op}`)
     || compound.some((k) => k.startsWith(`${process}:`) && k.endsWith(`:${op}`));
 }
 

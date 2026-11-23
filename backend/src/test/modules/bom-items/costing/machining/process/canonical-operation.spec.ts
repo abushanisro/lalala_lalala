@@ -35,6 +35,16 @@ describe('resolveCanonicalOperation', () => {
     }
   });
 
+  it('labels a flat on a turned diameter by the operation the cost engine mills it by, Rough Milling', () => {
+    for (const family of ['milling', 'turning'] as const) {
+      expect(resolveCanonicalOperation('Flat', 'default', family)).toBe('Rough Milling // Flat');
+    }
+    // The catalog gives it only as a step of the machine's setup ("3 Axis Lathe:Setup:Rough Milling//Flat"): the vocabulary's name for the
+    // operation carries the step, the label does not.
+    expect(isReferenceOperation('machining', 'Flat', 'Setup:Rough Milling')).toBe(true);
+    expect(isReferenceOperation('machining', 'Flat', 'Rough Milling')).toBe(false);
+  });
+
   it('treats a missing variant as "default"', () => {
     expect(resolveCanonicalOperation('PocketV2', undefined, 'milling')).toBe('Rough Milling // PocketV2');
   });

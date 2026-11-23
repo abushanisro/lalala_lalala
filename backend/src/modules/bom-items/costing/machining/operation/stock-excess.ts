@@ -18,6 +18,8 @@
 //                                      or chemically milled, and a slot wire cut after heat treatment, leaves on that process instead.
 //   Keyway                             floor area x depth. Obround Slot Milling cuts it (timed by its passes, not by its volume); a keyway
 //                                      the broach cuts leaves on the Keyway Broaching line.
+//   Flat                               the circular segment it cuts off the turned diameter, over its length. Rough Milling is timed on
+//                                      exactly this volume.
 //   SimpleHole through / blind / cross / threaded, MultiStepHole counterbore, Edge countersink
 //                                      the cylinder pi/4 x D^2 x depth. Drilling, Counterboring and Countersinking cut it (timed by the
 //                                      tool's feed); a deep hole leaves on the Gun Drilling or Deep Bore line.

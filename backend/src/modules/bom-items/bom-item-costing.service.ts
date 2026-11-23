@@ -1569,7 +1569,7 @@ export class BomItemCostingService {
    * operations with their times. ONE definition, used by the cost summary and by the route comparison, so the
    * applied route is priced on the same operations the Cost tab lists. A milled route's plan also mills away the
    * stock around the part (stock-excess.ts). A lathe route reads of it what the turning engine times no other way:
-   * the milling of the part's keyways and slots (latheMilling) and what the part needs a live tool for (liveTool).
+   * the milling of the part's keyways, slots and flats (latheMilling) and what the part needs a live tool for (liveTool).
    */
   private async machiningFeaturePlan(
     item: any, fg: any, grade: string | null, accessToken: string,
@@ -1687,10 +1687,10 @@ export class BomItemCostingService {
 
     // No feature graph, no sequence: the milled engine then mills the whole stock-to-part volume in bulk (its own fallback).
     const featureOps = allFeatureOps.length > 0 ? allFeatureOps : undefined;
-    // A lathe's milling: the sequencer's operations on the keyways and slots left to mill (lathe-milling.ts), each with the
+    // A lathe's milling: the sequencer's operations on the keyways, slots and flats left to mill (lathe-milling.ts), each with the
     // time its own calculator gave it (the drawing's adjustments above are the milled line's).
     const latheMilling = latheMillingOps(rawFeatureOps);
-    // What a lathe makes only with a live tool (live-tooling.ts): the cross and off-axis holes, and those same keyways and slots.
+    // What a lathe makes only with a live tool (live-tooling.ts): the cross and off-axis holes, and those same keyways, slots and flats.
     const liveTool: LiveToolWork = {
       holes: liveToolHoles(fg?.machining_features?.features), milled: liveToolMilledFeatures(chemSplit.filteredFeatures),
     };

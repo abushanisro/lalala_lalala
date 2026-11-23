@@ -77,6 +77,35 @@ describe('machiningCatalogCompatibility: what a machine can make, read from the 
     });
   });
 
+  describe('a flat, labelled as the analysis labels it (canonical-operation.ts)', () => {
+    // Two wrench flats on a turned diameter. The catalog gives "Rough Milling//Flat" as a step of the machine's setup:
+    // "3 Axis Lathe:Setup:Rough Milling//Flat".
+    const flats = (family: 'milling' | 'turning') =>
+      [{ id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', canonical_operation: resolveCanonicalOperation('Flat', 'default', family)!, occurrences: [{}, {}] }];
+
+    it.each(['3 Axis Mill', '4 Axis Mill', '5 Axis Mill', '3 Axis Lathe', 'MillTurn'])('%s mills them: the catalog gives it Rough Milling of a flat in its setup', (process) => {
+      for (const family of ['milling', 'turning'] as const) {
+        expect(machiningCatalogCompatibility(flats(family), CATALOG, process)).toMatchObject({ status: 'compatible', incompatibilities: [] });
+      }
+    });
+
+    it.each(['2 Axis Lathe', '2 Axis Bar Feed Lathe with Sub Spindle', '3 Axis Bar Feed Lathe with Sub Spindle', 'Simultaneous Turning'])(
+      '%s cannot: the catalog gives it no operation on a flat',
+      (process) => {
+        const v = machiningCatalogCompatibility(flats('turning'), CATALOG, process)!;
+        expect(v.incompatibilities).toEqual([expect.objectContaining({
+          featureType: 'Flat', count: 2, reason: `${process} has no "Rough Milling // Flat" operation in the machining catalog`,
+        })]);
+        expect(catalogGapSummary(process, flats('turning'), v.incompatibilities)).toBe(`${process} cannot make this part: the machining catalog gives it no Rough Milling (2 × Flat).`);
+      },
+    );
+
+    it('a step of the setup counts only as that machine\'s own step', () => {
+      expect(machiningCatalogCompatibility(flats('turning'), ['X:Setup:Rough Milling//Flat'], 'X')!.status).toBe('compatible');
+      expect(machiningCatalogCompatibility(flats('turning'), ['X:Setup:Rough Milling//Flat'], 'Y')!.status).toBe('incompatible');
+    });
+  });
+
   it('gives no verdict without a catalog or without a feature that states its operation', () => {
     expect(machiningCatalogCompatibility(PART, null, '3 Axis Mill')).toBeNull();
     expect(machiningCatalogCompatibility([{ feature_type: 'Edge' }], CATALOG, '3 Axis Mill')).toBeNull();

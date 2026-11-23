@@ -69,6 +69,15 @@ describe('checkLatheCapability: the envelope and the live tool, one verdict', ()
     expect(checkLatheCapability(mc('3_axis_bar_feed_lathe_with_sub_spindle'), both, liveTool)).toEqual({ overallCapable: true, machineCapabilityWarnings: [], liveToolWarnings: [] });
   });
 
+  it('flats alone rule a lathe with no live tool out (a 2-axis lathe), and a lathe with one makes them', () => {
+    const flats = { ...SHAFT, liveTool: { holes: [], milled: liveToolMilledFeatures([{ id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [{}, {}] }]) } };
+    expect(checkLatheCapability(mc('2_axis_lathe'), flats, lathe(LATHES[1]))).toMatchObject({
+      overallCapable: false,
+      liveToolWarnings: ['Mazak 6G has no live-tool spindle (memory/Machining/machine): it cannot mill the part\'s 2 flats; a lathe with live tooling (C/Y axis) or a mill is needed.'],
+    });
+    expect(checkLatheCapability(mc('3_axis_lathe'), flats, lathe(LATHES[3]))).toEqual({ overallCapable: true, machineCapabilityWarnings: [], liveToolWarnings: [] });
+  });
+
   it('a lathe too small for the part is not capable whatever its live tool, and both reasons are listed', () => {
     const small = { ...liveTool, capability: cap({ maxDiameterMm: 10, maxLengthMm: 500, liveToolingPowerKw: 0 }) };
     const verdict = checkLatheCapability(mc('2_axis_lathe'), { ...SHAFT, liveTool: { holes: CROSS_HOLES, milled: [] } }, small);
