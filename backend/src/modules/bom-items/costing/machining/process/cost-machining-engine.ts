@@ -2,7 +2,7 @@ import { latheMillingLines, type LatheMillingOp } from './lathe-milling';
 import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
 import { cylindersToTurn, type TurnedCylinder, type TurnedRing } from './turned-diameters';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
-import { resolveSetupMinutes, type SetupTimeResolution } from '../../shared/core/engine-kernel';
+import { findRouteDataGaps, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
 import { isRealHeatTreatmentCallout } from '../operation/wire-edm-routing';
 import {
@@ -585,15 +585,19 @@ function secondaryLine(
   warnings: string[],
   identity: Identity,
   extraMissing: string[] = [],
-  // false: the operation runs on a machine whose setup another line already
-  // charges (rotary broaching on the part's own machine) — no second setup.
+  // false: the operation runs on the part's own machine (rotary broaching, the
+  // part's loading and unloading), which is set up once — no second setup.
   ownSetup = true,
+  // With ownSetup false: that machine's setup, taken by this line when it is
+  // the machine's first with a cycle time (machineSetupOnce).
+  hostSetup?: TakeMachineSetup,
 ): ProcessLineCost {
   const gap = [...extraMissing, ...run.missing];
   if (gap.length > 0) warnings.push(`${process} not priced — missing real input: ${gap.join('; ')}.`);
   const runMin = (run.sec ?? 0) / 60;
   if (!ownSetup) {
-    return withRun(makeLine(process, 0, r2((runMin / 60) * rate.rate), runMin, rate, identity), run, [], extraMissing);
+    const setup = hostSetup?.(runMin) ?? null;
+    return withRun(makeLine(process, setup?.cost ?? 0, r2((runMin / 60) * rate.rate), runMin, rate, identity, setup?.disclosure), run, [], extraMissing);
   }
   const setupResolution = resolveSetupMinutes({
     process, machineSetupTimeHr: rate.setupTimeHr, machineName: rate.machineName,
@@ -633,6 +637,7 @@ function computeReamingLine(
   batchSize: number,
   warnings: string[],
   identity: Identity,
+  hostSetup?: TakeMachineSetup,
 ): ProcessLineCost {
   const g = smallestGroup(holeGroups);
   const seeds = { ...holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), ...reamingLookupSeeds({ matClass, reamTable }, { 'Hole Diameter': g.diameter_mm }).seeds };
@@ -640,10 +645,11 @@ function computeReamingLine(
   const gap = run.missing;
   if (gap.length > 0) warnings.push(`Reaming not priced — missing real input: ${gap.join('; ')}.`);
   const min = (run.sec ?? 0) / 60;
-  // Reaming runs on the part's primary machine (rate), whose real setup is
-  // already charged on that machine's own line — no separate coded reamer
-  // setup is added.
-  return withRun(makeLine('Reaming', 0, r2((min / 60) * rate.rate), min, rate, identity), run, []);
+  // Reaming runs on the part's primary machine (rate), which is set up once:
+  // no reamer setup of its own is added, and on a mill it carries the
+  // machine's setup when it is its first line with a cycle time (hostSetup).
+  const setup = hostSetup?.(min) ?? null;
+  return withRun(makeLine('Reaming', setup?.cost ?? 0, r2((min / 60) * rate.rate), min, rate, identity, setup?.disclosure), run, []);
 }
 
 // The finishing-process rules (capability-rules.ts), or null with one
@@ -758,6 +764,7 @@ function computeRotaryBroachingLine(
   machineClass: string,
   matClass: MaterialClass,
   warnings: string[],
+  hostSetup?: TakeMachineSetup,
 ): ProcessLineCost | null {
   const polygons = input.polygons ?? [];
   for (const p of polygons.filter((x) => x.kind === 'boss')) {
@@ -788,7 +795,7 @@ function computeRotaryBroachingLine(
     out.push({ label: `${label} broach`, run });
     return out;
   });
-  return secondaryLine('Rotary Broaching', sumRuns(runs, 'Rotary broaching cycle time'), { ...input.mhrRate, machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, [], false);
+  return secondaryLine('Rotary Broaching', sumRuns(runs, 'Rotary broaching cycle time'), { ...input.mhrRate, machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, [], false, hostSetup);
 }
 
 // ── Surface Grinding — every CAD planar face, same Ra trigger as the other
@@ -1017,7 +1024,7 @@ export function componentLoadRow(rows: any[] | null | undefined, weightKg: numbe
  * The row is chosen by the stock weight, the heavier of what is loaded and unloaded.
  */
 function computePartSetupLine(
-  input: MachiningCostInput, rate: MHRRateInput, stockWeightKg: number, warnings: string[],
+  input: MachiningCostInput, rate: MHRRateInput, stockWeightKg: number, warnings: string[], hostSetup: TakeMachineSetup,
 ): ProcessLineCost | null {
   const ps = input.partSetup;
   if (!ps) return null;
@@ -1040,7 +1047,7 @@ function computePartSetupLine(
   const run = runMachiningCalculator(input.machiningCalculators, 'Part Setup', seeds);
   const extraMissing = row ? [] : [`a componentLoadTime row for a ${r3(stockWeightKg)} kg, ${r2(maxDim)} mm part`];
   // On the part's own machine: no second setup, and the line is named for the operation, not the station.
-  return secondaryLine('Part Setup', run, { ...rate, hostMachineClass: rate.hostMachineClass ?? rate.machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, extraMissing, false);
+  return secondaryLine('Part Setup', run, { ...rate, hostMachineClass: rate.hostMachineClass ?? rate.machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, extraMissing, false, hostSetup);
 }
 
 function computeDeburringLine(
@@ -1160,6 +1167,38 @@ function holeSeeds(diameterMm: number, depthMm: number | null | undefined, count
   };
   if (depthMm != null && depthMm > 0) seeds['Hole Depth'] = withRef({ value: depthMm, source: 'CAD: hole depth' });
   return seeds;
+}
+
+/** A machine's setup as the line that carries it is charged it: its cost per part, and the setup time the line states. */
+interface MachineSetup {
+  cost: number;
+  disclosure: { setupTimeMin: number; setupTimeSource: SetupTimeResolution['source'] };
+}
+
+/**
+ * A line's request for its machine's setup: given its cycle time, it gets the
+ * setup when it is the machine's first line with one, and null otherwise.
+ */
+type TakeMachineSetup = (cycleMin: number, evenWithoutTime?: boolean) => MachineSetup | null;
+
+/**
+ * A machine is set up once for the batch, and the setup is charged on the first
+ * of its lines that has a cycle time: a line with no work does not carry it (a
+ * line of 0 s reads as "no cycle time was resolved" and the route as not fully
+ * costed). `evenWithoutTime` is for the line that stays on the route as a named
+ * gap: what cannot be priced still carries the setup. Lines ask in the order
+ * they are built; `charged` tells whether any took it.
+ */
+function machineSetupOnce(setup: MachineSetup): { take: TakeMachineSetup; charged: () => boolean } {
+  let charged = false;
+  return {
+    take: (cycleMin, evenWithoutTime = false) => {
+      if (charged || !(cycleMin > 0 || evenWithoutTime)) return null;
+      charged = true;
+      return setup;
+    },
+    charged: () => charged,
+  };
 }
 
 /** Where a resolved setup time came from, as trace steps (see resolveSetupMinutes). */
@@ -1602,7 +1641,8 @@ export function computeMillingCostSummary(
   // the whole job, real but not a distinct process step. Showing it as its
   // own peer row in the Manufacturing Process tree (with the same machine
   // repeated on every row) misrepresented it as a 44th operation. Folded
-  // into the first real line this machine produces (CNC Milling) instead —
+  // into the first line this machine produces that has a cycle time (CNC
+  // Milling, when it mills anything) instead —
   // the same convention every engine built later this session already uses
   // (Jig Boring/Cylindrical Grinding/Keyway Broaching/etc. each carry their
   // own setupCost + runCost on ONE line, never a separate "Setup" line).
@@ -1619,7 +1659,12 @@ export function computeMillingCostSummary(
   const setupMin = setupResolution.setupMin / Math.max(batchSize, 1);
   const fixtureCost = r2((input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1));
   const setupCostVal = r2((setupMin / 60) * mhrRate.rate) + fixtureCost;
-  const setupDisclosure = { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source };
+  // The mill's lines ask for its setup in the order they are built: the
+  // milling line, the part's loading and unloading (Part Setup), then the
+  // tapping, rotary broaching and reaming the mill does. The first with a
+  // cycle time carries it; milling that cannot be priced keeps its line as a
+  // named gap, which carries it (machineSetupOnce).
+  const millSetup = machineSetupOnce({ cost: setupCostVal, disclosure: { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source } });
 
   // ── CNC Milling (roughing + all hole operations on the same machine) ─────
   // When feature_graph_v2 data is available (featureOps), use per-feature cycle
@@ -1634,6 +1679,8 @@ export function computeMillingCostSummary(
 
   let cncMillingMin = 0;
   let millRun: CalcRun | null = null;
+  // Without feature data: what the bulk milling and the drilling lack of their real inputs.
+  const unpricedWithoutFeatures: string[] = [];
   if (Array.isArray(input.featureOps) && input.featureOps.length > 0) {
     // Root-caused live (2026-09-18): buildOperationSequence() (the feature
     // sequencer) emits its OWN "Tapping" entry for every tapped hole (real
@@ -1663,8 +1710,8 @@ export function computeMillingCostSummary(
         match: { table: 'tblMillingRemovalRate', row: { MaterialClass: matClass } },
       } } : {}),
     });
-    if (!input.blankResult) warnings.push('Bulk Milling not priced — missing real input: the stock the part is cut from.');
-    else if (materialRemovalMm3 > 0 && bulk.missing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulk.missing.join('; ')}.`);
+    const bulkMissing = !input.blankResult ? ['the stock the part is cut from'] : materialRemovalMm3 > 0 ? bulk.missing : [];
+    if (bulkMissing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulkMissing.join('; ')}.`);
     const roughingMin = materialRemovalMm3 > 0 ? (bulk.sec ?? 0) / 60 : 0;
 
     const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.drillingTable, input.machiningCalculators);
@@ -1672,10 +1719,19 @@ export function computeMillingCostSummary(
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
 
     cncMillingMin = roughingMin + drillingMin;
+    unpricedWithoutFeatures.push(...bulkMissing, ...drilling.missing);
   }
-  // Setup always folds into this line (even when cncMillingMin itself is 0
-  // and volume data is genuinely unavailable) so the real setup cost is
-  // never silently dropped — see setupDisclosure's own doc comment above.
+  // An operation the sequencer could not price leaves the line short of its time: the line is a named gap, so the
+  // route is not fully costed and cannot be applied at a total that silently leaves the operation out.
+  const unpricedOperations = [...new Set((input.featureOps ?? [])
+    .filter((o) => o.missing && !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
+    .map((o) => o.missing!))];
+  // What a line with no time at all lacks: the station's calculator or an operation's input; without feature data, the stock or the
+  // cutting data. A mill with nothing to mill (stock that holds no more than the part, no holes) lacks nothing.
+  const millLacks = cncMillingMin > 0 ? [] : [...(millRun?.missing ?? []), ...unpricedOperations, ...unpricedWithoutFeatures];
+  // The line is on the route when it has a time or names what it lacks: an unpriced mill line stays as a named gap,
+  // never dropped, and carries the setup; a mill with nothing to mill has no milling line, and its setup goes to the
+  // next of its lines that has a cycle time (it was charged on a line of 0 s, which read as a cycle time not resolved).
   // Named after the real, class-specific process (realProcessName — "3 Axis
   // Mill"/"4 Axis Mill"/"5 Axis Mill", per memory/machining/processes.csv),
   // not run through resolveOperationName -- it deliberately sums roughing +
@@ -1683,30 +1739,25 @@ export function computeMillingCostSummary(
   // Finish Milling split needs the power-limited MRR model, staged
   // variables.json + tblEngagementLengthPower, not yet built — a disclosed,
   // known-generic gap, not a fabricated name).
-  // An unpriced mill line stays on the route as a named gap; it is never dropped.
-  if (cncMillingMin > 0 || setupCostVal > 0 || millRun?.missing.length) {
+  if (cncMillingMin > 0 || millLacks.length > 0) {
+    const setup = millSetup.take(cncMillingMin, true);
     const millLine = makeLine(
-      realProcessName(machineClass), setupCostVal, r2((cncMillingMin / 60) * mhrRate.rate), cncMillingMin, mhrRate,
-      input.processIdentityByMachineClass, setupDisclosure,
+      realProcessName(machineClass), setup?.cost ?? 0, r2((cncMillingMin / 60) * mhrRate.rate), cncMillingMin, mhrRate,
+      input.processIdentityByMachineClass, setup?.disclosure,
     );
     if (millRun?.missing.length) warnings.push(`${millLine.process} not priced — missing real input: ${millRun.missing.join('; ')}.`);
     // The line's own steps (the operation groups), then each sequenced operation's calculator steps under its name.
     const operationSteps = (input.featureOps ?? [])
       .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
       .flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
-    // An operation the sequencer could not price leaves the line short of its time: the line is a named gap, so the
-    // route is not fully costed and cannot be applied at a total that silently leaves the operation out.
-    const unpricedOperations = [...new Set((input.featureOps ?? [])
-      .filter((o) => o.missing && !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
-      .map((o) => o.missing!))];
-    processLines.push(millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : millLine);
+    processLines.push(millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, [], millLacks));
   }
   if (cncMillingMin <= 0) {
     warnings.push('Volume data unavailable — milling time estimated at 0');
   }
 
   // ── Part Setup (load, unload, reorient: on the machine, in its setup) ─────
-  const partSetupLine = computePartSetupLine(input, mhrRate, billetWeightKg, warnings);
+  const partSetupLine = computePartSetupLine(input, mhrRate, billetWeightKg, warnings, millSetup.take);
   if (partSetupLine) processLines.push(partSetupLine);
 
   // ── Tapping ───────────────────────────────────────────────────────────────
@@ -1716,19 +1767,21 @@ export function computeMillingCostSummary(
   if (tapping.missing.length > 0) warnings.push(`Tapping not priced for: ${tapping.missing.join('; ')}.`);
   if (tappingMin > 0 || tapping.missing.length > 0) {
     // Tapping on the machining centre (hostMachineClass) shares that machine's
-    // setup, already charged on its own line. A dedicated tapping machine uses
-    // its own real setup_time_hr, or none — never a coded constant.
+    // setup: it carries it only when it is the machine's first line with a
+    // cycle time. A dedicated tapping machine uses its own real setup_time_hr,
+    // or none — never a coded constant.
+    const hostSetup = tappingRate.hostMachineClass ? millSetup.take(tappingMin) : null;
     const tapSetupResolution = tappingRate.hostMachineClass
       ? null
       : resolveSetupMinutes({ process: 'Tapping', machineSetupTimeHr: tappingRate.setupTimeHr, machineName: tappingRate.machineName });
     if (tapSetupResolution?.warning) warnings.push(tapSetupResolution.warning);
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
-    const tapSetup = r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
+    const tapSetup = hostSetup ? hostSetup.cost : r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
     const tapRun = r2((tappingMin / 60) * tappingRate.rate);
     processLines.push(withFeatureGroups(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
-      tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
+      hostSetup ? hostSetup.disclosure : tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
     ), tapping), tapping.groups));
   }
 
@@ -1768,7 +1821,7 @@ export function computeMillingCostSummary(
     batchSize, warnings, input.processIdentityByMachineClass,
   );
   if (surfaceGrindingLine) processLines.push(surfaceGrindingLine);
-  const rotaryBroachingLine = computeRotaryBroachingLine(input, machineClass, matClass, warnings);
+  const rotaryBroachingLine = computeRotaryBroachingLine(input, machineClass, matClass, warnings, millSetup.take);
   if (rotaryBroachingLine) processLines.push(rotaryBroachingLine);
 
   // ── Reaming (see computeReamCycleSec's own doc comment for why this is
@@ -1783,8 +1836,13 @@ export function computeMillingCostSummary(
     holeGroups.length > 0
   ) {
     processLines.push(computeReamingLine(
-      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
+      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass, millSetup.take,
     ));
+  }
+  // Nothing on the mill has a cycle time (nothing to mill, load, tap, broach or ream): no line carries its setup, so it is
+  // not charged, and the quote says so.
+  if (!millSetup.charged() && setupCostVal > 0) {
+    warnings.push(`${realProcessName(machineClass)}: setup not charged — nothing on the machine has a cycle time for this part.`);
   }
 
   // ── Gun Drilling / Deep Bore Machine (new — see deep-hole-routing.ts) ────
@@ -2087,18 +2145,17 @@ export function computeTurningCostSummary(
   // turning line is emitted only when it has a time or names what it lacks:
   // no roughing to do is not missing data. Turning that cannot be priced
   // keeps its Rough Turning gap line, which carries the setup.
-  let setupCharged = false;
+  const latheSetup = machineSetupOnce({ cost: setupCostVal, disclosure: setupDisclosure });
   const latheLine = (
     operation: string, min: number, run: LineRun,
     extraTrace: CalculationTraceStep[] = [], extraMissing: string[] = [], setupEvenWithoutTime = false,
   ): ProcessLineCost => {
-    const carriesSetup = !setupCharged && (min > 0 || setupEvenWithoutTime);
-    if (carriesSetup) setupCharged = true;
+    const setup = latheSetup.take(min, setupEvenWithoutTime);
     return withRun(makeLine(
       resolveOperationName(machineClass, operation, input.realOperationCategories, warnings),
-      carriesSetup ? setupCostVal : 0, r2((min / 60) * mhrRate.rate), min, mhrRate,
-      input.processIdentityByMachineClass, carriesSetup ? setupDisclosure : undefined,
-    ), run, carriesSetup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
+      setup?.cost ?? 0, r2((min / 60) * mhrRate.rate), min, mhrRate,
+      input.processIdentityByMachineClass, setup?.disclosure,
+    ), run, setup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
   };
   if (turningMissing.length > 0) warnings.push(`Turning not priced — missing real input: ${turningMissing.join('; ')}.`);
   if (roughTurningMin > 0 || turningMissing.length > 0 || rough.run.missing.length > 0) {
@@ -2212,7 +2269,7 @@ export function computeTurningCostSummary(
   // Nothing is turned, drilled or parted on the machine (a bar at the part's
   // own diameter, cut off by a saw): no line of these carries the setup, so
   // it is not charged, and the quote says so.
-  if (!setupCharged && setupCostVal > 0) {
+  if (!latheSetup.charged() && setupCostVal > 0) {
     warnings.push(`${realProcessName(machineClass)}: setup not charged — no turning, drilling or parting on the machine has a cycle time for this part.`);
   }
 
@@ -2435,8 +2492,14 @@ export function computeTurningCostSummary(
 
 // ── Route recommendation (single source of truth) ─────────────────────────────
 // Cost Summary and Route Comparison MUST agree on which machine class a part is
-// quoted on. Both call these two functions; neither carries its own heuristic.
-// Divergence here is a P0 — it reads as two different prices for the same part.
+// quoted on. Divergence here is a P0 — it reads as two different prices for the
+// same part. Neither carries a rule of its own: each states every route it
+// priced by the same facts (machiningRouteStanding, below), and the route is
+// chosen by the comparison's rule (engine-kernel selectRecommendedRoute; the
+// Cost tab through selectQuotedRoute, which adds the route Apply writes when
+// none is recommended). pickRecommendedRoute was here: the Cost tab's own rule
+// (the cheapest capable class, ties to fewer setups), which did not ask that
+// the route be fully costed and broke ties another way than the comparison.
 
 // The minimum milled machine class comes from the features' tool axes and the
 // reference setup rule: requiredMilledClassFromToolAxes (../setup-axis-rule).
@@ -2459,16 +2522,53 @@ export function meetsRequiredMilledClass(
   return rank >= requiredRank;
 }
 
-// Recommended route = lowest total cost among capable candidates; ties break to
-// fewer setups (less repositioning error), then to the earlier (simpler) class.
-// Falls back to the first candidate when nothing is capable — the caller is
-// expected to surface capability warnings alongside.
-export function pickRecommendedRoute<T extends { totalCost: number; capable: boolean; setupCount: number }>(
-  candidates: T[],
-): T {
-  const pool = candidates.filter((c) => c.capable);
-  const ranked = (pool.length > 0 ? pool : candidates).slice().sort(
-    (a, b) => a.totalCost - b.totalCost || a.setupCount - b.setupCount,
-  );
-  return ranked[0];
+/**
+ * True when HR Rates holds a machine of the class at the location. A class with
+ * none is priced at 0 per hour: it must never be the cheapest by that artefact
+ * (the live $0.00 quote of 2026-09-18), so it is not a route the part can be
+ * quoted on, in the Cost tab and in the comparison alike.
+ */
+export function hasMachineRate(rate: MHRRateInput): boolean {
+  return rate.source !== 'no_db_rate';
+}
+
+/** A machining route as the route ranking reads it (engine-kernel RankableRoute), with the gaps and lines the ranking of an unrecommended route reads. */
+export interface MachiningRouteStanding extends RankableRoute {
+  totalCost: number;
+  dataGaps: RouteDataGap[];
+  processLines: ProcessLineCost[];
+}
+
+/**
+ * What the route ranking reads of a machining route priced on one machine
+ * class. The Cost tab's candidates and the comparison's routes are both stated
+ * through this, so a route is judged on the same facts wherever it is ranked:
+ *
+ *   capable       the caller's verdict that the machine can make the part: its
+ *                 envelope, the live tool or the milled class the features
+ *                 need, a rate on file (hasMachineRate). It is the route's
+ *                 feasibility too: a machining route has no other.
+ *   fully costed  no line of the route is a data gap (findRouteDataGaps), on
+ *                 the lines as quoted (the stock's lines included).
+ *   compatible    what the operation catalog says of the machine for the part,
+ *                 where the caller reads it.
+ */
+export function machiningRouteStanding(
+  routeId: string,
+  cost: Pick<CostSummaryDto, 'processLines' | 'totalCost' | 'cycleTimes'>,
+  capable: boolean,
+  compatibility?: RouteCompatibilityVerdict | null,
+): MachiningRouteStanding {
+  const dataGaps = findRouteDataGaps(cost.processLines);
+  return {
+    routeId,
+    totalCost: cost.totalCost,
+    cycleTimes: { totalMin: cost.cycleTimes.totalMin },
+    capability: { overallCapable: capable },
+    isFeasible: capable,
+    dataComplete: dataGaps.length === 0,
+    dataGaps,
+    processLines: cost.processLines,
+    ...(compatibility !== undefined ? { compatibility } : {}),
+  };
 }

@@ -568,6 +568,18 @@ export function selectAppliableRoute<T extends RankableRoute & { dataGaps?: read
 }
 
 /**
+ * The route a part is quoted on, when the quote has to stand on one of several routes: the route the comparison recommends
+ * (selectRecommendedRoute, among the routes automatic routing may take: `recommendable`) or, when it recommends none, the route Apply then
+ * writes (selectAppliableRoute, over every route). A quote that prices its own candidate routes chooses by this, so the Cost tab, the
+ * comparison's recommendation and the applied route are one choice and not two rules that happen to agree. Null only for no route at all.
+ */
+export function selectQuotedRoute<T extends RankableRoute & { dataGaps?: readonly unknown[] | null; processLines?: readonly unknown[] | null }>(
+  routes: readonly T[], recommendable: (route: T) => boolean = () => true,
+): T | null {
+  return selectRecommendedRoute(routes.filter(recommendable)) ?? selectAppliableRoute(routes);
+}
+
+/**
  * Machine classes that form by ROLLING the sheet between rolls.
  * Derived from the registered engine classes, not maintained as prose.
  */

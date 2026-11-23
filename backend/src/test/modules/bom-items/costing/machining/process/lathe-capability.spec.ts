@@ -9,11 +9,11 @@ import { liveToolHoles, liveToolMilledFeatures, type LiveToolWork } from '../../
 import {
   checkLatheCapability,
   checkMachiningCapability,
-  pickRecommendedRoute,
+  machiningRouteStanding,
   type MachineClassId,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import { EMPTY_CAPABILITY, type MachineCapability } from '../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
-import { selectRecommendedRoute } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
+import { selectQuotedRoute, selectRecommendedRoute } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
 
 const mc = (s: string) => s as MachineClassId;
 const cap = (overrides: Partial<MachineCapability>): MachineCapability => ({ ...EMPTY_CAPABILITY, ...overrides });
@@ -82,15 +82,14 @@ describe('checkLatheCapability: the envelope and the live tool, one verdict', ()
 });
 
 describe('the Cost tab and the route comparison choose the same lathe', () => {
-  // Each asks checkLatheCapability, then picks the cheapest capable route by its own rule: the summary pickRecommendedRoute, the
-  // comparison selectRecommendedRoute (which also needs the route fully costed; every route here is).
+  // Each asks checkLatheCapability and states each route by the same facts (machiningRouteStanding); the comparison recommends by
+  // selectRecommendedRoute, and the summary quotes by selectQuotedRoute, which is that recommendation (quoted-route.spec.ts).
   const choose = (liveTool: LiveToolWork) => {
-    const routes = LATHES.map((l) => ({ ...l, capable: checkLatheCapability(mc(l.cls), { ...SHAFT, liveTool }, lathe(l)).overallCapable }));
-    const summary = pickRecommendedRoute(routes.map((r) => ({ cls: r.cls, totalCost: r.totalCost, capable: r.capable, setupCount: 1 }))).cls;
-    const comparison = selectRecommendedRoute(routes.map((r) => ({
-      routeId: r.cls, totalCost: r.totalCost, cycleTimes: { totalMin: 7 }, capability: { overallCapable: r.capable }, isFeasible: r.capable, dataComplete: true,
-    })))?.routeId;
-    return { summary, comparison };
+    const routes = LATHES.map((l) => machiningRouteStanding(l.cls, {
+      totalCost: l.totalCost, cycleTimes: { totalMin: 7 } as never,
+      processLines: [{ process: 'Rough Turning', cycleTimeMin: 0.01, setupTimeMin: 30 } as never],
+    }, checkLatheCapability(mc(l.cls), { ...SHAFT, liveTool }, lathe(l)).overallCapable));
+    return { summary: selectQuotedRoute(routes)?.routeId, comparison: selectRecommendedRoute(routes)?.routeId };
   };
 
   it('the shaft\'s cross holes: both pass over the two cheaper lathes with no live tool, for the 3-axis bar-feed lathe at 7.52', () => {
@@ -113,7 +112,7 @@ describe('the Cost tab and the route comparison choose the same lathe', () => {
   it('the cost summary and the turned route comparison both call checkLatheCapability, and neither the live-tool verdict directly', () => {
     const source = readFileSync(join(__dirname, '..', '..', '..', '..', '..', '..', 'modules', 'bom-items', 'bom-item-costing.service.ts'), 'utf8');
     const turnedRoutes = source.slice(source.indexOf('private async buildTurnedRoutes('));
-    const costSummary = source.slice(source.indexOf('const costedRoutes = candidateClasses.map('), source.indexOf('const recommended = pickRecommendedRoute(costedRoutes)'));
+    const costSummary = source.slice(source.indexOf('const costedRoutes = candidateClasses.map('), source.indexOf('const recommended = quotedMachiningRoute(costedRoutes)'));
     expect(costSummary).toContain('checkLatheCapability(');
     expect(turnedRoutes.slice(0, turnedRoutes.indexOf('\n  private ', 1))).toContain('checkLatheCapability(');
     expect(source).not.toContain('liveToolingVerdict');

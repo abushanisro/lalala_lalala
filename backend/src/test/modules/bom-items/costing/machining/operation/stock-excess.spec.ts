@@ -2,9 +2,9 @@
 //
 //   stock excess = piece volume - part volume - volume the part's features remove
 //
-// where the volume the features remove is the material_removed_mm3 of every occurrence of every feature. Every expected number below is
-// worked out by hand.
-import { featureRemovedVolumeMm3, stockExcess } from '../../../../../../modules/bom-items/costing/machining/operation/stock-excess';
+// where the volume the features remove is the material_removed_mm3 of every occurrence of every feature but a turned diameter, whose
+// stated volume is its own cylinder. Every expected number below is worked out by hand.
+import { featureRemovedVolumeMm3, isTurnedDiameter, stockExcess } from '../../../../../../modules/bom-items/costing/machining/operation/stock-excess';
 
 const feature = (feature_type: string, variant: string, ...removedMm3: (number | null | undefined)[]) =>
   ({ id: `${feature_type}-${variant}`, feature_type, variant, occurrences: removedMm3.map((material_removed_mm3) => ({ material_removed_mm3 })) });
@@ -20,9 +20,21 @@ describe('the volume a part\'s features remove', () => {
     expect(featureRemovedVolumeMm3(features)).toBeCloseTo(5738.87, 6);
   });
 
-  it('counts the features that leave on another machine, and a turned diameter the mill is charged for as Bulk Milling', () => {
-    // A deep hole (gun drilled), a slot (wire cut after heat treatment) and a turned diameter (its cylinder, 900): 2000 + 720 + 900.
-    expect(featureRemovedVolumeMm3([feature('SimpleHole', 'blind', 2000), feature('Slot', 'straight', 720), feature('Ring', 'outer_diameter', 900)])).toBe(3620);
+  it('counts the features that leave on another machine', () => {
+    // A deep hole (gun drilled) and a slot (wire cut after heat treatment): 2000 + 720.
+    expect(featureRemovedVolumeMm3([feature('SimpleHole', 'blind', 2000), feature('Slot', 'straight', 720)])).toBe(2720);
+  });
+
+  it('does not count a turned diameter: the cylinder it states is the part itself, not material removed', () => {
+    // A Ø14 diameter 5.85 mm long states pi/4 x 14^2 x 5.85 = 900.5 mm^3, the solid the part keeps.
+    const ring = feature('Ring', 'outer_diameter', 900.5);
+    expect(isTurnedDiameter(ring)).toBe(true);
+    expect(featureRemovedVolumeMm3([ring])).toBe(0);
+    expect(featureRemovedVolumeMm3([feature('SimpleHole', 'blind', 2000), ring, feature('Slot', 'straight', 720)])).toBe(2720);
+    // A groove in a turned diameter is another feature, and states 0 of its own.
+    expect(isTurnedDiameter(feature('Ring', 'groove', 0))).toBe(false);
+    expect(isTurnedDiameter(feature('SimpleHole', 'through', 282.74))).toBe(false);
+    expect(isTurnedDiameter(null)).toBe(false);
   });
 
   it('takes nothing off for a feature that states no volume: a face, an edge, a hole pattern', () => {
@@ -94,9 +106,6 @@ describe('the stock around a part', () => {
     expect(stockExcess({ pieceMm3: 16000, partMm3: 10000, featureRemovedMm3: 6450 })).toEqual({
       pieceMm3: 16000, partMm3: 10000, featureRemovedMm3: 6450, excessMm3: 0, inconsistent: true,
     });
-    // The shaft's turned analysis costed on a mill, from a 5/8" round bar: 6648.16 - 2646.02 - 5773.92 = -1771.78 mm^3 (its rings state
-    // their own cylinders, 3873.84 mm^3).
-    expect(stockExcess({ pieceMm3: 6648.16, partMm3: 2646.02, featureRemovedMm3: 5773.92 })).toMatchObject({ excessMm3: 0, inconsistent: true });
   });
 
   it('a part larger than its piece contradicts it too', () => {

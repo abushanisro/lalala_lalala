@@ -70,7 +70,7 @@ import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalc
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { nearestByDiameterThenHardness, MACHINING_MATERIAL } from '../lookup/machining-material-hardness';
-import type { StockExcess } from './stock-excess';
+import { isTurnedDiameter, type StockExcess } from './stock-excess';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
 // (computeDrillCycle / computeTapCycle)
@@ -622,10 +622,12 @@ export function buildOperationSequence(
         break;
 
       default:
-        // Ring:outer_diameter (turned OD -- costed by the turning engine, not
-        // here) and any feature with no milling case contribute their removed
+        // A turned outer diameter states its own cylinder, not material to
+        // remove (stock-excess.ts): a lathe turns the stock round it, and on a
+        // mill that stock is in the Bulk Milling of the stock around the part.
+        // Any other feature with no milling case contributes its removed
         // volume to "Bulk Milling", the real catalog's generic-removal op.
-        if (totalRemovedMm3 > 0) {
+        if (totalRemovedMm3 > 0 && !isTurnedDiameter(f)) {
           ops.push({ name: "Bulk Milling", ...volumeOp('Bulk Milling', totalRemovedMm3), source: "feature" });
         }
     }

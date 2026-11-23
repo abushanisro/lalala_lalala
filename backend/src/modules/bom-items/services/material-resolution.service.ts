@@ -1,4 +1,4 @@
-import { machiningStockPriceForm, STOCK_PRICE_FORMS, stockPriceOfForm, type StockPriceForm, type StockPriceRow } from '../costing/machining/stock-price';
+import { closestStockPrice, machiningStockPriceForm, REFERENCE_STOCK_PRICE_LOCATION, STOCK_PRICE_FORMS, stockPriceOfForm, type StockPrice, type StockPriceForm, type StockPriceRow } from '../costing/machining/stock-price';
 import type { MaterialClampProperties } from '../costing/plastic-molding/clamp-force';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../common/database/database.service';
@@ -132,6 +132,32 @@ export class MaterialResolutionService {
     const rows = (data ?? []) as StockPriceRow[];
     this.stockPrices.set(location, rows);
     return rows;
+  }
+
+  // The material type and density of the materials a location prices as stock, by their stock price name (raw_materials.grade): what
+  // the closest-material rule compares (closestStockPrice). Reference data, cached per location; none for the reference's own location.
+  private stockPriceMaterials = new Map<string, Map<string, { materialType: string | null; densityKgM3: number | null }>>();
+  private async loadStockPriceMaterials(client: ReturnType<DatabaseService['getClient']>, location: string, rows: readonly StockPriceRow[]) {
+    const hit = this.stockPriceMaterials.get(location);
+    if (hit) return hit;
+    const names = [...new Set(rows.map((r) => r.raw_material_name).filter((n): n is string => !!n))];
+    const out = new Map<string, { materialType: string | null; densityKgM3: number | null }>();
+    if (location === REFERENCE_STOCK_PRICE_LOCATION || names.length === 0) return out;
+    // A grade has a row in several process groups; the one read is the general catalog's (the row that prices India, cost_india), then
+    // the first group by name, so the same inputs always compare the same values.
+    const { data, error } = await client.from('raw_materials').select('grade, material_type, density_kg_m3, density, cost_india, material_group')
+      .in('grade', names).order('material_group').order('id');
+    if (error) return out;
+    type Row = { grade: string | null; material_type: string | null; density_kg_m3: unknown; density: unknown; cost_india: unknown };
+    const general = (r: Row) => Number(r.cost_india) > 0;
+    for (const r of ((data ?? []) as Row[]).sort((a, b) => Number(general(b)) - Number(general(a)))) {
+      const key = r.grade?.toLowerCase();
+      const density = Number(r.density_kg_m3) > 0 ? Number(r.density_kg_m3) : Number(r.density) > 0 ? Number(r.density) * 1000 : null;
+      if (!key || out.has(key) || density == null) continue;
+      out.set(key, { materialType: r.material_type ?? null, densityKgM3: density });
+    }
+    this.stockPriceMaterials.set(location, out);
+    return out;
   }
 
   private async checkMaterialCureTimeColumnAvailable(client: ReturnType<DatabaseService['getClient']>): Promise<boolean> {
@@ -608,6 +634,8 @@ export class MaterialResolutionService {
      * follows: the form's stock price when one is on file, else the material's own price. Empty when no row matched.
      */
     stockFormPricesPerKg: Partial<Record<StockPriceForm, number>>;
+    /** The material a form's price is borrowed from, where the location's stock prices do not hold this one (closestStockPrice). */
+    stockFormPriceBorrowedFrom: Partial<Record<StockPriceForm, string>>;
     // UTS/shear strength — resolved from the SAME raw_materials row density/cost
     // came from (same exact-then-tokenized match), so machine selection (press-
     // brake tonnage) and $ costing can never diverge onto two different material
@@ -700,8 +728,19 @@ export class MaterialResolutionService {
           // price at this location when one is on file (stock-price.ts), converted
           // at today's FX snapshot; else the material's raw_materials price.
           const locationStockPrices = await this.loadStockPrices(client, location);
-          const stock = stockPriceOfForm(locationStockPrices, best.material, priceForm, location);
-          if (stock) {
+          // A material the location's stock prices do not hold, where they are a partial copy of the reference's (India): its closest
+          // material's price in the same form, named (closestStockPrice).
+          const own = { name: best.materialGrade, grade: best.material, materialGroup: best.materialGroup, materialType: best.materialType, densityKgM3: best.densityKgM3 };
+          const properties = await this.loadStockPriceMaterials(client, location, locationStockPrices);
+          const stockPriceIn = (form: StockPriceForm | null): StockPrice | null =>
+            stockPriceOfForm(locationStockPrices, best.material, form, location) ?? closestStockPrice(locationStockPrices, own, form, location, properties);
+          const stock = stockPriceIn(priceForm);
+          if (stock?.borrowed) {
+            warnings.push(
+              `No ${stock.form.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}: priced as "${stock.borrowed.from}", `
+              + `its closest material priced there (${stock.borrowed.by}): ${stock.pricePerKg} ${stock.currencyCode}/kg (${stock.source}).`,
+            );
+          } else if (stock) {
             warnings.push(
               `Material priced on ${stock.form.replace('_', ' ')} stock for ${location}: ${stock.pricePerKg} ${stock.currencyCode}/kg (${stock.source}).`,
             );
@@ -709,14 +748,18 @@ export class MaterialResolutionService {
             warnings.push(`No ${priceForm.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
           }
           // A form's price: its stock price when one is on file, else the material's own.
-          const priceOf = (s: ReturnType<typeof stockPriceOfForm>) => (s
+          const priceOf = (s: StockPrice | null) => (s
             ? s.pricePerKg * rates.convertStrict(s.currencyCode, locCurrencyCode)
             : hasCost
               ? (best.locCost != null && best.locCost > 0 ? best.locCost : (best.indiaCost as number) * rates.convertStrict('INR', locCurrencyCode))
               : 0);
           return {
             materialCostPerKg: priceOf(stock),
-            stockFormPricesPerKg: Object.fromEntries(STOCK_PRICE_FORMS.map((f) => [f, priceOf(stockPriceOfForm(locationStockPrices, best.material, f, location))])),
+            stockFormPricesPerKg: Object.fromEntries(STOCK_PRICE_FORMS.map((f) => [f, priceOf(stockPriceIn(f))])),
+            stockFormPriceBorrowedFrom: Object.fromEntries(STOCK_PRICE_FORMS.flatMap((f) => {
+              const from = stockPriceIn(f)?.borrowed?.from;
+              return from ? [[f, from]] : [];
+            })),
             materialDensityKgM3: best.densityKgM3 as number,
             materialSource: 'db',
             utsMpa: strengths.utsMpa,
@@ -764,6 +807,7 @@ export class MaterialResolutionService {
     return {
       materialCostPerKg: 0,
       stockFormPricesPerKg: {},
+      stockFormPriceBorrowedFrom: {},
       materialDensityKgM3: 0,
       materialSource: 'default',
       utsMpa: notFoundFamilyUts,
