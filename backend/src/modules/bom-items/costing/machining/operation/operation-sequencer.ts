@@ -13,6 +13,9 @@
  * - TAP_CYCLE_SEC is imported from default-rates.ts.
  * - When feature_graph_v2 is absent or empty, the caller falls back to the old
  *   (billetVol − partVol) / MRR formula — no regression for legacy data.
+ * - The operations on the features do not remove the stock around the part: on a
+ *   milled route that is one Bulk Milling operation, of the stock excess the
+ *   caller gives (stock-excess.ts).
  *
  * ── Sheet-metal feature-driven routing backlog (see migration 381) ─────────
  * Sheet metal's Counterboring/Countersinking/PEM Insertion/Reaming/CMM Inspection/
@@ -64,6 +67,7 @@ import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalc
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { nearestByDiameterThenHardness, MACHINING_MATERIAL } from '../lookup/machining-material-hardness';
+import type { StockExcess } from './stock-excess';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
 // (computeDrillCycle / computeTapCycle)
@@ -303,6 +307,10 @@ function opOrderIndex(name: string): number {
  *   .getRoundingParams), resolved once for the whole part (no diameter axis
  *   in that table either); null/absent falls back to the previous flat
  *   constant, disclosed as such.
+ * @param stockAround  on a milled route, the stock around the part (stock-excess.ts):
+ *   what it holds beyond the part and its features is milled away by one Bulk
+ *   Milling operation. null/absent (a lathe's plan, a part with no stock chosen)
+ *   adds none.
  * @returns flat OperationLine[] sorted in manufacturing order, or [] if no features
  */
 export function buildOperationSequence(
@@ -321,6 +329,7 @@ export function buildOperationSequence(
   removalRateMm3PerMin: number | null = null,
   // The material's finishing cutter (tblMillingFinishing). Null = not on file: every finishing pass is a named gap.
   finishing: MillingFinishingRow | null = null,
+  stockAround: StockExcess | null = null,
 ): OperationLine[] {
   if (!Array.isArray(fgv2Features) || fgv2Features.length === 0) return [];
 
@@ -399,6 +408,22 @@ export function buildOperationSequence(
   };
 
   ops.push({ name: "Facing", ...calcOp(calculators, 'Facing', {}), source: "fixed" });
+
+  // The stock around the part: no operation on a feature below removes it, so it is milled away in bulk, at the material's removal rate.
+  if (stockAround && stockAround.excessMm3 > 0) {
+    const mm3 = (v: number) => Math.round(v * 100) / 100;
+    ops.push({
+      name: "Bulk Milling",
+      ...calcOp(calculators, 'Bulk Milling', {
+        'Removed Volume': {
+          value: stockAround.excessMm3,
+          source: `Stock around the part: the piece ${mm3(stockAround.pieceMm3)} mm^3 less the part ${mm3(stockAround.partMm3)} mm^3 and the ${mm3(stockAround.featureRemovedMm3)} mm^3 its features remove`,
+        },
+        ...mrrSeed,
+      }),
+      source: "fixed",
+    });
+  }
 
   for (const f of fgv2Features as any[]) {
     // feature_graph_v2 entries carry a reference catalog feature_type

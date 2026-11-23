@@ -83,6 +83,7 @@ import { engineRunsOf, inputsOfRun, type CalculatorInputsDto } from './costing/s
 import { BlankOptimizerService } from './costing/sheet-metal/machine/blank-optimizer.service';
 import { buildOperationSequence, injectDrawingIntelligence } from './costing/machining/operation/operation-sequencer';
 import type { OperationLine } from './costing/machining/operation/operation-sequencer';
+import { featureRemovedVolumeMm3, stockExcess } from './costing/machining/operation/stock-excess';
 import { splitDeepHoleOccurrences, resolveDeepHoleRules } from './costing/machining/operation/deep-hole-routing';
 import { broachWidthRangeMm, splitKeywayOccurrences } from './costing/machining/operation/keyway-routing';
 import { catalogGapSummary, machiningCatalogCompatibility } from './costing/machining/operation/catalog-compatibility';
@@ -1528,14 +1529,19 @@ export class BomItemCostingService {
    * The part's CAD features as machining work: the features that go to their own machine (deep holes, broached
    * keyways, wire EDM slots, rotary-broached and etched pockets) split out, and the rest sequenced into the milling
    * operations with their times. ONE definition, used by the cost summary and by the route comparison, so the
-   * applied route is priced on the same operations the Cost tab lists. A lathe route reads of it what the turning
-   * engine times no other way: the milling of the part's keyways and slots (latheMilling) and what the part needs a
-   * live tool for (liveTool).
+   * applied route is priced on the same operations the Cost tab lists. A milled route's plan also mills away the
+   * stock around the part (stock-excess.ts). A lathe route reads of it what the turning engine times no other way:
+   * the milling of the part's keyways and slots (latheMilling) and what the part needs a live tool for (liveTool).
    */
   private async machiningFeaturePlan(
     item: any, fg: any, grade: string | null, accessToken: string,
     /** The faces the part's stock supplies finished (a Stock Machining part: stock/stock-part.ts asSuppliedFaces): the mill does not finish them. */
     asSuppliedFaceIds: readonly number[] = [],
+    /**
+     * On a milled route, the volume of the piece the mill starts from (the route's stock, mm³). Absent on a lathe's plan (a lathe turns
+     * its stock off the diameters, costed per diameter) and for a part with no stock chosen: no stock is then milled away in bulk.
+     */
+    milledPieceMm3?: number,
   ) {
     const warnings: string[] = [];
     const matClass = detectMaterialClass(grade);
@@ -1546,6 +1552,18 @@ export class BomItemCostingService {
     );
     if (asSuppliedFaceIds.length > 0) {
       warnings.push(`${asSuppliedFaceIds.length} face(s) of the part lie on the stock's own surface, where the stock carries no allowance: they are left as supplied, and the mill does not finish them.`);
+    }
+    // The stock around the part, for the mill to remove in bulk: the piece less the part and less what every feature of the graph removes
+    // (the features split out below too: their own machines remove them).
+    const stockAround = milledPieceMm3 != null && milledPieceMm3 > 0
+      ? stockExcess({ pieceMm3: milledPieceMm3, partMm3: Number(item.volume) || 0, featureRemovedMm3: featureRemovedVolumeMm3(fgv2Features) })
+      : null;
+    if (stockAround?.inconsistent) {
+      const mm3 = (v: number) => Math.round(v).toLocaleString('en-US');
+      warnings.push(
+        `The part (${mm3(stockAround.partMm3)} mm³) and what its features are stated to remove (${mm3(stockAround.featureRemovedMm3)} mm³) come to more than its stock ` +
+        `piece holds (${mm3(stockAround.pieceMm3)} mm³): the volumes are inconsistent, and no Bulk Milling of the stock around the part is costed.`,
+      );
     }
     const [counterboreTable, chamferParams, roundingParams, drillingTable, tappingTable, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
       this.machiningLookup.getCounterboreTable(),
@@ -1601,6 +1619,7 @@ export class BomItemCostingService {
       tappingTable,
       await this.machiningLookup.getMillingRemovalRate(matClass),
       await this.machiningLookup.getMillingFinishing(matClass),
+      stockAround,
     );
     // Ops the sequencer could not price from real inputs (missing CAD
     // measurement or lookup row) — reported, never estimated.
@@ -1625,26 +1644,17 @@ export class BomItemCostingService {
       }`,
     );
 
-    // Safety net: if all machining ops (excluding Face Mill + Deburr) sum to < 30s,
-    // material_removed_mm3 is missing from the CAD engine response and the feature
-    // path would produce a wildly low cycle time. Fall back to bbox formula instead.
-    const featureMachiningTimeSec = allFeatureOps
-      .filter(o => o.name !== 'Face Mill' && o.name !== 'Deburr')
-      .reduce((s, o) => s + o.timeSec, 0);
-    const featureOps = (allFeatureOps.length > 0 && featureMachiningTimeSec >= 30)
-      ? allFeatureOps
-      : undefined;
+    // No feature graph, no sequence: the milled engine then mills the whole stock-to-part volume in bulk (its own fallback).
+    const featureOps = allFeatureOps.length > 0 ? allFeatureOps : undefined;
     // A lathe's milling: the sequencer's operations on the keyways and slots left to mill (lathe-milling.ts), each with the
-    // time its own calculator gave it (the drawing's adjustments above are the milled line's). Not under the safety net
-    // above, which guards the milled line's stock-removal fallback: a keyway is a few seconds, and on a lathe route
-    // nothing else prices it.
+    // time its own calculator gave it (the drawing's adjustments above are the milled line's).
     const latheMilling = latheMillingOps(rawFeatureOps);
     // What a lathe makes only with a live tool (live-tooling.ts): the cross and off-axis holes, and those same keyways and slots.
     const liveTool: LiveToolWork = {
       holes: liveToolHoles(fg?.machining_features?.features), milled: liveToolMilledFeatures(chemSplit.filteredFeatures),
     };
     return {
-      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, latheMilling, liveTool,
+      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool,
       heatTreatment, machinabilityRating,
     };
   }
@@ -2412,15 +2422,18 @@ export class BomItemCostingService {
         this.machiningLookup.getCapabilityRules(),
       ]);
       const machiningCalculators = await this.resolveMachiningCalculators(accessToken);
-      const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock?.asSuppliedFaceIds);
+      // A milled part is milled from the sawn piece, whatever mill makes it: its plan mills away the stock around the part. A turned
+      // part's routes here are lathes, which turn the stock off.
+      const featurePlan = await this.machiningFeaturePlan(
+        item, fg, grade, accessToken, stock?.asSuppliedFaceIds, family === 'milled' ? stock?.input('saw').blankResult?.billetVolMm3 : undefined,
+      );
       materialWarnings.push(...featurePlan.warnings);
-      const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureMachiningTimeSec, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
+      const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
 
       // Stage 4 pipeline log — confirms what the cost engine receives
       this.logger.debug(
         `[CNC cost] grade=${grade ?? 'null'} family=${family} stock=${stock?.input('saw').blankResult?.sizeLabel ?? 'none'} ` +
-        `featureOps=${featureOps?.length ?? 'bbox-fallback'} ` +
-        `machiningTimeSec=${featureMachiningTimeSec.toFixed(1)} threads=${JSON.stringify(threads)} ` +
+        `featureOps=${featureOps?.length ?? 'bbox-fallback'} threads=${JSON.stringify(threads)} ` +
         `surface=${surfaceCalloutOf(item) ?? 'none'}`,
       );
 
@@ -8756,7 +8769,8 @@ export class BomItemCostingService {
     // A mill cuts this part from milled stock, whatever the part's own family. The milling engine prices no parting, so the piece is sawn
     // whatever machine mills it (a bar-fed lathe milling with live tools included).
     const stock = await this.stockMachiningRoutes(item, fg, 'milled', { location, accessToken, batchSize, ...stockMaterial });
-    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds);
+    // Every route here mills that sawn piece: the plan mills away the stock around the part.
+    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds, stock.input('saw').blankResult?.billetVolMm3);
     comparisonWarnings.push(...featurePlan.warnings);
 
     const baseInput: Omit<MachiningCostInput, 'mhrRate' | 'tappingRate'> = {
