@@ -62,7 +62,7 @@ describe('machiningCatalogCompatibility: what a machine can make, read from the 
       },
     );
 
-    it.each(['2 Axis Lathe', '2 Axis Bar Feed Lathe with Sub Spindle'])('%s cannot: it has no live tool to mill a keyway with', (process) => {
+    it.each(['2 Axis Lathe', '2 Axis Bar Feed Lathe with Sub Spindle'])('%s cannot: the catalog gives it no milling operation for a keyway', (process) => {
       const v = machiningCatalogCompatibility(keyway('turning'), CATALOG, process)!;
       expect(v.incompatibilities).toEqual([expect.objectContaining({
         featureType: 'Keyway', count: 2, reason: `${process} has no "Obround Slot Milling // Keyway" operation in the machining catalog`,
