@@ -63,7 +63,6 @@ const lineOf = (lines: ProcessLineCost[], process: string) => lines.find((l) => 
 /** The lines on the mill itself (its own, and the operations it hosts), in order. */
 const onTheMill = (lines: ProcessLineCost[]) => lines.filter((l) => l.machineClass === MILL || l.hostMachineClass === MILL);
 const setupCarriers = (lines: ProcessLineCost[]) => onTheMill(lines).filter((l) => l.setupCost > 0).map((l) => l.process);
-const r2 = (n: number) => Math.round(n * 100) / 100;
 
 describe('the mill has milling to do: its milling line carries the setup, as it always did', () => {
   const result = cost(block());
@@ -74,10 +73,13 @@ describe('the mill has milling to do: its milling line carries the setup, as it 
     expect(milling.cycleTimeMin * 60).toBeCloseTo(15.6, 4);
     expect(milling).toMatchObject({ setupCost: SETUP_COST, runCost: 3.9, totalCost: 8.4, setupTimeMin: 30, setupTimeSource: 'machine' });
     expect(setupCarriers(result.processLines)).toEqual(['3 Axis Mill']);
-    // Part Setup: load 10 s + unload 10 s = 20 s at 900 per hour = 5.00, with no setup of its own.
-    expect(lineOf(result.processLines, 'Part Setup')).toMatchObject({ setupCost: 0, runCost: 5, totalCost: 5, setupTimeMin: 0, setupTimeSource: 'none' });
+    // Part Setup: load 10 s + unload 10 s = 20 s at 900 per hour = 5.00, with no setup of its own (closeTo: not rounded to cents).
+    const partSetup = lineOf(result.processLines, 'Part Setup');
+    expect(partSetup).toMatchObject({ setupCost: 0, setupTimeMin: 0, setupTimeSource: 'none' });
+    expect(partSetup?.runCost).toBeCloseTo(5, 10);
+    expect(partSetup?.totalCost).toBeCloseTo(5, 10);
     // The mill's share of the route: 8.40 + 5.00.
-    expect(r2(onTheMill(result.processLines).reduce((s, l) => s + l.totalCost, 0))).toBe(13.4);
+    expect(onTheMill(result.processLines).reduce((s, l) => s + l.totalCost, 0)).toBeCloseTo(13.4, 10);
     expect(result.warnings.some((w) => w.includes('setup not charged'))).toBe(false);
   });
 });
@@ -90,8 +92,11 @@ describe('the mill has nothing to mill (the stock holds no more than the part, a
     const { processLines, warnings } = cost(nothingToMill());
     expect(lineOf(processLines, '3 Axis Mill')).toBeUndefined();
     expect(onTheMill(processLines).map((l) => l.process)).toEqual(['Part Setup']);
-    // 20 s at 900 per hour = 5.00, and the mill's setup 4.50.
-    expect(lineOf(processLines, 'Part Setup')).toMatchObject({ setupCost: SETUP_COST, runCost: 5, totalCost: 9.5, setupTimeMin: 30, setupTimeSource: 'machine' });
+    // 20 s at 900 per hour = 5.00, and the mill's setup 4.50 (closeTo: not rounded to cents).
+    const partSetup = lineOf(processLines, 'Part Setup');
+    expect(partSetup).toMatchObject({ setupCost: SETUP_COST, setupTimeMin: 30, setupTimeSource: 'machine' });
+    expect(partSetup?.runCost).toBeCloseTo(5, 10);
+    expect(partSetup?.totalCost).toBeCloseTo(9.5, 10);
     expect(setupCarriers(processLines)).toEqual(['Part Setup']);
     // Nothing on the mill is a gap: the route is fully costed.
     expect(onTheMill(processLines).map(lineDataGap)).toEqual([null]);
@@ -104,7 +109,7 @@ describe('the mill has nothing to mill (the stock holds no more than the part, a
     expect(onTheMill(processLines).map((l) => l.process)).toEqual(['Tapping']);
     expect(tapping.cycleTimeMin).toBeGreaterThan(0);
     expect(tapping).toMatchObject({ setupCost: SETUP_COST, setupTimeMin: 30, setupTimeSource: 'machine' });
-    expect(tapping.totalCost).toBe(r2(SETUP_COST + tapping.runCost));
+    expect(tapping.totalCost).toBeCloseTo(SETUP_COST + tapping.runCost, 10);
     expect(lineDataGap(tapping)).toBeNull();
   });
 
@@ -128,7 +133,7 @@ describe('the mill has nothing to mill (the stock holds no more than the part, a
     const { processLines, warnings, totalProcessCost } = cost(nothingToMill({ partSetup: undefined }));
     expect(onTheMill(processLines)).toEqual([]);
     expect(warnings).toContain('3 Axis Mill: setup not charged — nothing on the machine has a cycle time for this part.');
-    expect(totalProcessCost).toBe(r2(processLines.reduce((s, l) => s + l.totalCost, 0)));
+    expect(totalProcessCost).toBe(processLines.reduce((s, l) => s + l.totalCost, 0));
   });
 });
 

@@ -597,14 +597,14 @@ function secondaryLine(
   const runMin = (run.sec ?? 0) / 60;
   if (!ownSetup) {
     const setup = hostSetup?.(runMin) ?? null;
-    return withRun(makeLine(process, setup?.cost ?? 0, r2((runMin / 60) * rate.rate), runMin, rate, identity, setup?.disclosure), run, [], extraMissing);
+    return withRun(makeLine(process, setup?.cost ?? 0, (runMin / 60) * rate.rate, runMin, rate, identity, setup?.disclosure), run, [], extraMissing);
   }
   const setupResolution = resolveSetupMinutes({
     process, machineSetupTimeHr: rate.setupTimeHr, machineName: rate.machineName,
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
-  const setupCost = r2((setupResolution.setupMin / Math.max(batchSize, 1) / 60) * rate.rate);
-  const runCost = r2((runMin / 60) * rate.rate);
+  const setupCost = (setupResolution.setupMin / Math.max(batchSize, 1) / 60) * rate.rate;
+  const runCost = (runMin / 60) * rate.rate;
   return withRun(
     makeLine(process, setupCost, runCost, runMin, rate, identity, { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source }),
     run, setupTraceSteps(setupResolution, rate.machineName, batchSize), extraMissing,
@@ -649,7 +649,7 @@ function computeReamingLine(
   // no reamer setup of its own is added, and on a mill it carries the
   // machine's setup when it is its first line with a cycle time (hostSetup).
   const setup = hostSetup?.(min) ?? null;
-  return withRun(makeLine('Reaming', setup?.cost ?? 0, r2((min / 60) * rate.rate), min, rate, identity, setup?.disclosure), run, []);
+  return withRun(makeLine('Reaming', setup?.cost ?? 0, (min / 60) * rate.rate, min, rate, identity, setup?.disclosure), run, []);
 }
 
 // The finishing-process rules (capability-rules.ts), or null with one
@@ -970,6 +970,9 @@ const MACHINE_ENVELOPE: Record<string, { l: number; w: number; h: number; maxWei
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// For minutes, percentages, weights and text only, never money. A line's money is per part and can be legitimately sub-cent
+// (a 0.4 s turning pass): rounded to cents it read $0.00, and lines rounded one by one did not add up to the part's cost.
+// Money is kept at full precision here, persisted at the columns' own precision, and rounded only where it is shown.
 function r2(n: number): number { return Math.round(n * 100) / 100; }
 function r3(n: number): number { return Math.round(n * 1000) / 1000; }
 
@@ -1081,9 +1084,9 @@ function computeDeburringLine(
   // Deburring is its own station: its own setup, resolved as Inspection's is.
   const setup = resolveSetupMinutes({ process: 'Deburring', machineSetupTimeHr: deburrRate.setupTimeHr, machineName: deburrRate.machineName });
   if (setup.warning) warnings.push(setup.warning);
-  const setupCost = r2((setup.setupMin / 60) * deburrRate.rate / Math.max(input.batchSize, 1));
+  const setupCost = (setup.setupMin / 60) * deburrRate.rate / Math.max(input.batchSize, 1);
   const line = withRun(
-    makeLine('Deburring', setupCost, r2((min / 60) * deburrRate.rate), min, deburrRate, input.processIdentityByMachineClass,
+    makeLine('Deburring', setupCost, (min / 60) * deburrRate.rate, min, deburrRate, input.processIdentityByMachineClass,
       { setupTimeMin: setup.setupMin, setupTimeSource: setup.source }),
     { ...run, missing }, setup.setupMin > 0 ? setupTraceSteps(setup, deburrRate.machineName, input.batchSize) : [],
   );
@@ -1288,18 +1291,20 @@ function makeLine(
   // the same minutes: the machine's own labour rate times its own operator count (HR Rates). A machine with no operator count or no labour rate on file charges
   // no labour, and missingOperatorLabourWarnings() says so; a count is never assumed.
   const labourPerHr = rate.operators != null && rate.labourRate != null ? rate.labourRate * rate.operators : 0;
+  // The labour is the machine's minutes again, read back from its unrounded cost: from a cost already rounded to cents it was rounded twice.
   const setupLabour = rate.rate > 0 ? (setupCost / rate.rate) * labourPerHr : 0;
   const runLabour = rate.rate > 0 ? (runCost / rate.rate) * labourPerHr : 0;
   return {
     process,
     ...(identity ? { processGroup: identity.processGroup, processRoute: identity.processRoute, operation: identity.operation } : {}),
     ...(hostClass ? { hostMachineClass: hostClass } : {}),
-    setupCost: r2(setupCost + setupLabour),
-    runCost: r2(runCost + runLabour),
-    totalCost: r2(setupCost + setupLabour + runCost + runLabour),
+    // Unrounded (see r2): the route's total is the sum of these, and Apply stores them as they are.
+    setupCost: setupCost + setupLabour,
+    runCost: runCost + runLabour,
+    totalCost: setupCost + setupLabour + runCost + runLabour,
     // The cycle's two parts, kept apart so the cost table need not guess the split.
-    machineCostPerPart: r2(runCost),
-    laborCostPerPart: r2(runLabour),
+    machineCostPerPart: runCost,
+    laborCostPerPart: runLabour,
     operators: rate.operators ?? null,
     // Four decimals (0.006 s): two decimals of a minute is 0.6 s, which turned
     // a real 2.63 s drilling cycle into a displayed 2.4 s.
@@ -1432,8 +1437,8 @@ function computeInspectionLine(
     machineName: inspectionRate.machineName,
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
-  const setupCost = r2((setupResolution.setupMin / 60) * inspectionRate.rate / batch);
-  const runCost = r2((cycleMin / 60) * inspectionRate.rate);
+  const setupCost = (setupResolution.setupMin / 60) * inspectionRate.rate / batch;
+  const runCost = (cycleMin / 60) * inspectionRate.rate;
   const line = withRun(makeLine('Inspection', setupCost, runCost, cycleMin, inspectionRate, processIdentityByMachineClass, {
     setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source,
   }), run, setupTraceSteps(setupResolution, inspectionRate.machineName, batchSize));
@@ -1604,7 +1609,7 @@ export function millingOperationsCost(
   const run = runMachiningCalculator(machiningCalculators, realProcessName(machineClass), millingSeeds(ops));
   if (run.sec == null) return null;
   const minutes = run.sec / 60;
-  return makeLine(realProcessName(machineClass), 0, r2((minutes / 60) * mhrRate.rate), minutes, mhrRate).runCost;
+  return makeLine(realProcessName(machineClass), 0, (minutes / 60) * mhrRate.rate, minutes, mhrRate).runCost;
 }
 
 /** Said on a quote whose part has no stock (input.blankResult): the engine prices no material and sizes no stock of its own. */
@@ -1640,7 +1645,9 @@ export function computeMillingCostSummary(
   // scrap adjustment (per-material Scrap Cost Percent) is a resale CREDIT,
   // applied only when enableScrapMaterialCredit is true — false in
   // memory/Machining, Stock Maching and Multi-Spindle Maching.
-  const materialCost = r2(stockWeightKg * materialCostPerKg);
+  // The weight is to the gram, as shown and as Apply writes it on the material record (grossWeightKg), so the record and the quote price the
+  // same weight; the money is not rounded (see r2).
+  const materialCost = stockWeightKg * materialCostPerKg;
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
   if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
@@ -1673,8 +1680,8 @@ export function computeMillingCostSummary(
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
   const setupMin = setupResolution.setupMin / Math.max(batchSize, 1);
-  const fixtureCost = r2((input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1));
-  const setupCostVal = r2((setupMin / 60) * mhrRate.rate) + fixtureCost;
+  const fixtureCost = (input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1);
+  const setupCostVal = (setupMin / 60) * mhrRate.rate + fixtureCost;
   // The mill's lines ask for its setup in the order they are built: the
   // milling line, the part's loading and unloading (Part Setup), then the
   // tapping, rotary broaching and reaming the mill does. The first with a
@@ -1758,7 +1765,7 @@ export function computeMillingCostSummary(
   if (cncMillingMin > 0 || millLacks.length > 0) {
     const setup = millSetup.take(cncMillingMin, true);
     const millLine = makeLine(
-      realProcessName(machineClass), setup?.cost ?? 0, r2((cncMillingMin / 60) * mhrRate.rate), cncMillingMin, mhrRate,
+      realProcessName(machineClass), setup?.cost ?? 0, (cncMillingMin / 60) * mhrRate.rate, cncMillingMin, mhrRate,
       input.processIdentityByMachineClass, setup?.disclosure,
     );
     if (millRun?.missing.length) warnings.push(`${millLine.process} not priced — missing real input: ${millRun.missing.join('; ')}.`);
@@ -1792,8 +1799,8 @@ export function computeMillingCostSummary(
       : resolveSetupMinutes({ process: 'Tapping', machineSetupTimeHr: tappingRate.setupTimeHr, machineName: tappingRate.machineName });
     if (tapSetupResolution?.warning) warnings.push(tapSetupResolution.warning);
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
-    const tapSetup = hostSetup ? hostSetup.cost : r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
-    const tapRun = r2((tappingMin / 60) * tappingRate.rate);
+    const tapSetup = hostSetup ? hostSetup.cost : (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
+    const tapRun = (tappingMin / 60) * tappingRate.rate;
     processLines.push(withFeatureGroups(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
@@ -1903,8 +1910,9 @@ export function computeMillingCostSummary(
   ));
 
   warnings.push(...missingOperatorLabourWarnings(processLines));
-  const totalProcessCost = r2(processLines.reduce((s, l) => s + l.totalCost, 0));
-  const totalCost = r2(materialCost + totalProcessCost);
+  // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
+  const totalProcessCost = processLines.reduce((s, l) => s + l.totalCost, 0);
+  const totalCost = materialCost + totalProcessCost;
   const totalMin = r2(processLines.reduce((s, l) => s + l.cycleTimeMin, 0));
 
   // Clamp to [0, 100]: >100% is physically impossible (billet smaller than part —
@@ -1999,7 +2007,7 @@ export function computeTurningCostSummary(
   // The stock bought per part: the piece itself, or its share of the whole bar when the stock model states one.
   const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : barWeightKg;
   // Stock weight x cost/kg — no markup (see the milling billet above).
-  const materialCost = r2(stockWeightKg * materialCostPerKg);
+  const materialCost = stockWeightKg * materialCostPerKg;
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
   if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
@@ -2022,8 +2030,8 @@ export function computeTurningCostSummary(
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
   const setupMin = setupResolution.setupMin / Math.max(batchSize, 1);
-  const fixtureCost = r2((input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1));
-  const setupCostVal = r2((setupMin / 60) * mhrRate.rate) + fixtureCost;
+  const fixtureCost = (input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1);
+  const setupCostVal = (setupMin / 60) * mhrRate.rate + fixtureCost;
   const setupDisclosure = { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source };
   const setupTrace = setupTraceSteps(setupResolution, mhrRate.machineName, batchSize);
 
@@ -2156,7 +2164,7 @@ export function computeTurningCostSummary(
       const indexCycleMin = (run.sec ?? 0) / 60;
       processLines.push(withRun(makeLine(
         resolveOperationName(machineClass, 'Index Transfer', input.realOperationCategories, warnings),
-        0, r2((indexCycleMin / 60) * mhrRate.rate), indexCycleMin, mhrRate, input.processIdentityByMachineClass,
+        0, (indexCycleMin / 60) * mhrRate.rate, indexCycleMin, mhrRate, input.processIdentityByMachineClass,
       ), run));
     }
   }
@@ -2174,7 +2182,7 @@ export function computeTurningCostSummary(
     const setup = latheSetup.take(min, setupEvenWithoutTime);
     return withRun(makeLine(
       resolveOperationName(machineClass, operation, input.realOperationCategories, warnings),
-      setup?.cost ?? 0, r2((min / 60) * mhrRate.rate), min, mhrRate,
+      setup?.cost ?? 0, (min / 60) * mhrRate.rate, min, mhrRate,
       input.processIdentityByMachineClass, setup?.disclosure,
     ), run, setup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
   };
@@ -2231,8 +2239,8 @@ export function computeTurningCostSummary(
       : resolveSetupMinutes({ process: 'Tapping', machineSetupTimeHr: tappingRate.setupTimeHr, machineName: tappingRate.machineName });
     if (tapSetupResolution?.warning) warnings.push(tapSetupResolution.warning);
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
-    const tapSetup = r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
-    const tapRun = r2((tappingMin / 60) * tappingRate.rate);
+    const tapSetup = (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
+    const tapRun = (tappingMin / 60) * tappingRate.rate;
     processLines.push(withFeatureGroups(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
@@ -2256,7 +2264,7 @@ export function computeTurningCostSummary(
     const run = runMachiningCalculator(input.machiningCalculators, 'Secondary Setup (Rechuck)', seeds);
     const rechuckMin = (run.sec ?? 0) / 60;
     processLines.push(withRun(
-      makeLine('Secondary Setup (Rechuck)', 0, r2((rechuckMin / 60) * mhrRate.rate), rechuckMin, mhrRate, input.processIdentityByMachineClass),
+      makeLine('Secondary Setup (Rechuck)', 0, (rechuckMin / 60) * mhrRate.rate, rechuckMin, mhrRate, input.processIdentityByMachineClass),
       run,
     ));
   }
@@ -2458,8 +2466,9 @@ export function computeTurningCostSummary(
   ));
 
   warnings.push(...missingOperatorLabourWarnings(processLines));
-  const totalProcessCost = r2(processLines.reduce((s, l) => s + l.totalCost, 0));
-  const totalCost = r2(materialCost + totalProcessCost);
+  // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
+  const totalProcessCost = processLines.reduce((s, l) => s + l.totalCost, 0);
+  const totalCost = materialCost + totalProcessCost;
   const totalMin = r2(processLines.reduce((s, l) => s + l.cycleTimeMin, 0));
 
   // Clamped for the same reason as the milled engine: >100% = impossible data

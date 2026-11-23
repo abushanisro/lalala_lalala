@@ -225,10 +225,10 @@ describe('a machining route\'s quote with its stock', () => {
     const sawLine = p.priced!.saw.lines[0];
     const quote = withStockMachining(engineCost(), p, 'saw');
     expect(quote.processLines.map((l) => l.process)).toEqual(['Band Saw', 'Rough Turning', 'Inspection']);
-    // Material 0.11128 -> 0.11. Process 1.00 + 0.50 + the saw.
-    expect(quote.materialCost).toBe(0.11);
-    expect(quote.totalProcessCost).toBe(r2(1.5 + sawLine.totalCost));
-    expect(quote.totalCost).toBe(r2(0.11 + quote.totalProcessCost));
+    // Material 0.11128, not rounded to cents. Process 1.00 + 0.50 + the saw.
+    expect(quote.materialCost).toBeCloseTo((BAR_KG / 172) * 5.875, 10);
+    expect(quote.totalProcessCost).toBeCloseTo(1.5 + sawLine.totalCost, 10);
+    expect(quote.totalCost).toBe(quote.materialCost + quote.totalProcessCost);
     expect(quote.grossWeightKg).toBe(0.019);
     expect(quote.cycleTimes.totalMin).toBe(r2(1.5 + sawLine.cycleTimeMin));
     expect(findRouteDataGaps(quote.processLines)).toEqual([]);
@@ -244,10 +244,10 @@ describe('a machining route\'s quote with its stock', () => {
   it('a bar-fed lathe: no Band Saw line; the material is the bar over its 164 parted pieces', () => {
     const quote = withStockMachining(engineCost(), plan(), 'parting');
     expect(quote.processLines.map((l) => l.process)).toEqual(['Rough Turning', 'Inspection']);
-    // 3.2578 kg / 164 x 5.875 = 0.1167 -> 0.12.
-    expect(quote.materialCost).toBe(0.12);
+    // 3.2578 kg / 164 x 5.875 = 0.1167, not rounded to cents.
+    expect(quote.materialCost).toBeCloseTo((BAR_KG / 164) * 5.875, 10);
     expect(quote.totalProcessCost).toBe(1.5);
-    expect(quote.totalCost).toBe(1.62);
+    expect(quote.totalCost).toBeCloseTo((BAR_KG / 164) * 5.875 + 1.5, 10);
     expect(quote.warnings).toContain(PARTED_OFF);
   });
 
@@ -291,15 +291,15 @@ describe('a Machining part\'s quote: the Stock Machining stock, and no band saw'
     const stockMachining = withStockMachining(engineCost(), plan(), 'saw');
     const machining = withStockMachining(engineCost(), machiningPlan(), 'saw');
     expect(machining.processLines.map((l) => l.process)).toEqual(['Rough Turning', 'Inspection']);
-    // The bar over its 172 sawn pieces at the round bar price, as the Stock Machining quote: 0.11128 -> 0.11.
+    // The bar over its 172 sawn pieces at the round bar price, as the Stock Machining quote: 0.11128, not rounded to cents.
     expect(machining.materialCost).toBe(stockMachining.materialCost);
-    expect(machining.materialCost).toBe(0.11);
+    expect(machining.materialCost).toBeCloseTo((BAR_KG / 172) * 5.875, 10);
     expect(machining.grossWeightKg).toBe(stockMachining.grossWeightKg);
     expect(machining.totalProcessCost).toBe(1.5);
-    expect(machining.totalCost).toBe(1.61);
+    expect(machining.totalCost).toBeCloseTo((BAR_KG / 172) * 5.875 + 1.5, 10);
     expect(machining.cycleTimes.totalMin).toBe(1.5);
     // The difference between the two quotes is the Band Saw line, and nothing else.
-    expect(r2(stockMachining.totalCost - machining.totalCost)).toBe(r2(stockMachining.processLines[0].totalCost));
+    expect(stockMachining.totalCost - machining.totalCost).toBeCloseTo(stockMachining.processLines[0].totalCost, 10);
     // A note, not a gap: the route is complete, and is recommended and applied as it stands.
     expect(findRouteDataGaps(machining.processLines)).toEqual([]);
     expect(machining.warnings.filter((w) => w === SAW_NOT_COSTED)).toHaveLength(1);

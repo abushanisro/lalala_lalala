@@ -94,9 +94,9 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
       { name: 'Rough Turning // Ring Ø12 x 18 mm', timeSec: expect.closeTo(0.8588, 4), featureType: 'Ring', count: 1, faceIds: [17] },
       { name: 'Rough Turning // Ring Ø12 x 5 mm', timeSec: expect.closeTo(0.4601, 4), featureType: 'Ring', count: 1, faceIds: [24] },
     ]);
-    // 1.4108 s at 900 per hour = 0.35, with the lathe's setup: 4.85.
-    expect(rough.runCost).toBe(0.35);
-    expect(rough.totalCost).toBe(4.85);
+    // 1.4108 s at 900 per hour = 0.3527 (not rounded to cents), with the lathe's setup.
+    expect(rough.runCost).toBeCloseTo(1.4108 * 900 / 3600, 4);
+    expect(rough.totalCost).toBeCloseTo(SETUP_COST + 1.4108 * 900 / 3600, 4);
   });
 
   it('finish turns all three, one pass each', () => {
@@ -111,8 +111,8 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
       { name: 'Finish Turning // Ring Ø12 x 18 mm', timeSec: expect.closeTo(0.7431, 4), featureType: 'Ring', count: 1, faceIds: [17] },
       { name: 'Finish Turning // Ring Ø12 x 5 mm', timeSec: expect.closeTo(0.3981, 4), featureType: 'Ring', count: 1, faceIds: [24] },
     ]);
-    // 1.6891 s at 900 per hour = 0.42.
-    expect(finish.totalCost).toBe(0.42);
+    // 1.6891 s at 900 per hour = 0.4223 (not rounded to cents).
+    expect(finish.totalCost).toBeCloseTo(1.6891 * 900 / 3600, 4);
   });
 
   it('the setup is on Rough Turning, once', () => {
