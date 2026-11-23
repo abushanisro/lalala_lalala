@@ -138,6 +138,15 @@ ALTER TABLE public.raw_materials ADD COLUMN density numeric(10,4), ADD COLUMN de
 -- Machining's and fails if Machining has none
 \i /migrations/879_process_material_groups.sql
 INSERT INTO public.raw_materials (name) VALUES ('Generic Nylon, Type 11 40% Glass');
+-- the price columns as the real database has them (migrations 069, 350), the two rows entered in local currency (422, 463) and the
+-- active INR budget rate (exchange_rates, 803): migration 1123 converts the two prices to USD per kg
+ALTER TABLE public.raw_materials ADD COLUMN grade varchar(255), ADD COLUMN cost numeric(10,4), ADD COLUMN cost_usa numeric(10,4),
+  ADD COLUMN cost_india numeric(10,4), ADD COLUMN cost_china numeric(10,4);
+INSERT INTO public.raw_materials (name, grade, cost, cost_usa, cost_india, cost_china) VALUES
+  ('304', 'SS304', 190, 3.40, 190, 3.00), ('Generic Aluminum, ANSI 6101', 'Generic Aluminum, ANSI 6101', NULL, 2.70, 296, 18.22);
+CREATE TABLE public.exchange_rates (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), from_currency text NOT NULL, to_currency text NOT NULL,
+  rate numeric NOT NULL, rate_type text NOT NULL, effective_date date NOT NULL, is_active boolean NOT NULL DEFAULT true);
+INSERT INTO public.exchange_rates (from_currency, to_currency, rate, rate_type, effective_date) VALUES ('USD', 'INR', 93.93, 'budget', '2026-11-16');
 -- a material of each group migration 855 fills: migrations 1104 and 1107 link Rapid Prototyping and Roto & Blow Molding to their own group
 -- and fail when the group holds no material
 INSERT INTO public.raw_materials (name, material_group) VALUES ('Accura 60', 'Rapid Prototyping'), ('HDPE, Blow Molding', 'Roto & Blow Molding');

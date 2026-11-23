@@ -142,6 +142,12 @@ async function main(): Promise<void> {
     const write = await api('/consumable_prices', bob, { method: 'POST', body: JSON.stringify({ consumable_type: 'garnet_abrasive', location: 'X', price_per_unit: 1 }) });
     must(write.status === 401 || write.status === 403, `a user's write answered HTTP ${write.status}`);
   });
+  await check('migration 1123 stated the two material prices entered in rupees and yuan in USD per kg, at the INR budget rate', async () => {
+    const rows = await (await api('/raw_materials?name=in.(304,%22Generic%20Aluminum%2C%20ANSI%206101%22)&select=name,cost,cost_usa,cost_india,cost_china&order=name', minter.forService())).json() as Record<string, number | string | null>[];
+    const n = (v: number | string | null | undefined) => (v == null ? null : Number(v));
+    const [ss304, al6101] = rows;
+    must(rows.length === 2 && n(ss304?.cost_india) === 2.0228 && n(ss304?.cost) === 3.4 && n(al6101?.cost_india) === 3.1513 && n(al6101?.cost_china) === 2.7, `rows ${JSON.stringify(rows)}`);
+  });
   await check('the data API refuses an anonymous request to a protected function', async () => {
     const res = await fetch(`${env.POSTGREST_URL}/rpc/link_identity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ p_provider: 'auth0', p_sub: 'x', p_email: 'alice@example.com', p_email_verified: true, p_connection: 'company-sso', p_trusted_connections: ['company-sso'] }) });
     must(res.status === 401 || res.status === 403 || res.status === 404, `HTTP ${res.status}`);
