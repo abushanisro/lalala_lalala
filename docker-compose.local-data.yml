@@ -8,7 +8,8 @@ name: emithran-local-data
 
 services:
   postgres:
-    # Major version 17, as docker-compose.data.yml: a newer major cannot open this volume without pg_upgrade (see the note there).
+    # Major version 17, as docker-compose.data.yml: a newer major cannot open this volume without pg_upgrade (see the note there, and
+    # docs/runbooks/postgres-major-upgrade.md for the move).
     image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     restart: unless-stopped
     environment:

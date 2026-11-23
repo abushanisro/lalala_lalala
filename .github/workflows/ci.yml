@@ -171,6 +171,9 @@ jobs:
         run: bash backend/scripts/check-migrations-immutable.sh "${{ github.base_ref }}"
       # Applies the migrations under test to a throwaway Postgres (pinned by digest) and runs their assertions.
       - run: bash backend/test/sql/run.sh
+      # The Postgres major upgrade on throwaway containers: the rehearsal, the cutover, the refusal to start empty and the way back
+      # (docs/runbooks/postgres-major-upgrade.md). Kept green so the procedure works on the day it is needed.
+      - run: bash backend/test/pg-major-upgrade/run.sh
 
   core:
     name: Assembly core (Rust)

@@ -3,7 +3,7 @@
 #   npm run test:postgrest        (from backend/)
 set -euo pipefail
 cd "$(dirname "$0")"
-PG_IMAGE="postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b"
+PG_IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b}"
 REST_IMAGE="postgrest/postgrest@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc"
 ID="pgrst-smoke-$$"
 cleanup() { docker rm -f "$ID-pg" "$ID-rest" >/dev/null 2>&1 || true; docker network rm "$ID" >/dev/null 2>&1 || true; }
