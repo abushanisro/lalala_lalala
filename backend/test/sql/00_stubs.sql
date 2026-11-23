@@ -32,8 +32,11 @@ CREATE TABLE public.fx_rate_snapshots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), provider text NOT NULL, base_currency text NOT NULL, quote_currency text NOT NULL,
   rate numeric NOT NULL, rate_date date NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE public.cad_analysis_history (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid NOT NULL, created_at timestamptz DEFAULT now());
+CREATE TABLE public.cad_analysis_history (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid NOT NULL, user_id uuid, created_at timestamptz DEFAULT now());
 CREATE TABLE public.cad_analysis_cache (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), expires_at timestamp, last_accessed timestamp DEFAULT now());
+-- the history as the real database has it: row-level security on, no policy, yet granted to signed-in users (migration 1122 gives it its policies)
+ALTER TABLE public.cad_analysis_history ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cad_analysis_history TO authenticated, service_role;
 -- the real one lives in migration 076
 CREATE FUNCTION public.cleanup_cad_analysis_cache() RETURNS integer LANGUAGE plpgsql AS $$
 DECLARE n integer; BEGIN
@@ -75,3 +78,15 @@ CREATE TABLE public.consumable_prices (
 INSERT INTO public.consumable_prices (consumable_type, location, price_per_unit) VALUES ('garnet_abrasive', '__default__', 0.55), ('garnet_abrasive', 'India', 0.48);
 ALTER TABLE public.consumable_prices ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.consumable_prices TO authenticated, service_role;
+-- production planning as the real database has it (migrations 065, 903): a subtask is its owner's, and the BOM items it needs sit in a
+-- table with row-level security on and no policy, which migration 1122 gives its policies
+CREATE TABLE public.process_subtasks (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), production_process_id uuid, user_id uuid NOT NULL);
+ALTER TABLE public.process_subtasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users manage own subtasks" ON public.process_subtasks USING (user_id = auth.uid());
+CREATE TABLE public.subtask_bom_requirements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), subtask_id uuid NOT NULL REFERENCES public.process_subtasks(id) ON DELETE CASCADE,
+  bom_item_id uuid NOT NULL REFERENCES public.bom_items(id) ON DELETE CASCADE, required_quantity numeric NOT NULL, unit varchar(20),
+  requirement_status varchar(20), created_by uuid NOT NULL, created_at timestamptz DEFAULT now(), UNIQUE (subtask_id, bom_item_id)
+);
+ALTER TABLE public.subtask_bom_requirements ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.process_subtasks, public.subtask_bom_requirements TO authenticated, service_role;

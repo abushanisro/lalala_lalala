@@ -219,6 +219,15 @@ printf 'ADMIN_FALLBACK_EMAIL=alice@example.com\nKEEP_ME=1\n' > "$TMP/.env"
 bash scripts/local-data.sh load "$TMP/baseline" 2>&1 | tail -4
 LOCAL_ENV_FILE="$TMP/.env" bash scripts/local-data.sh use >/dev/null
 fail=0
+# Every migration has run. New tables are granted to signed-in users by default (migration 930), so one that gets row-level security
+# and no policy is closed to everyone while it looks open: a read answers with nothing and nobody notices (migrations 1121, 1122).
+# A table is either given its policies or, when it is service-only, has its grants to signed-in users revoked.
+closed="$(docker compose -f ../docker-compose.local-data.yml exec -T postgres psql -U postgres -d postgres -At -c "
+  select coalesce(string_agg(c.relname, ', ' order by c.relname), '') from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relrowsecurity and not exists (select 1 from pg_policy p where p.polrelid = c.oid)
+    and (has_table_privilege('authenticated', c.oid, 'SELECT, INSERT, UPDATE, DELETE') or has_table_privilege('anon', c.oid, 'SELECT, INSERT, UPDATE, DELETE'))")"
+if [ -z "$closed" ]; then echo "ok   no table is granted to signed-in users and closed to everyone by row-level security without a policy"
+else echo "FAIL granted to signed-in users, with row-level security and no policy: $closed (add its policies, or revoke the grants if it is service-only)"; fail=1; fi
 for k in ALLOW_DEV_AUTH_BYPASS=true S3_FORCE_PATH_STYLE=true KEEP_ME=1; do grep -q "^$k$" "$TMP/.env" && echo "ok   .env has $k" || { echo "FAIL .env lacks $k"; fail=1; }; done
 npx ts-node -r tsconfig-paths/register -r reflect-metadata test/local-data/smoke.ts || fail=1
 # A process already on the backend's port would answer for it (with a stack that no longer exists): refuse to run beside one.
