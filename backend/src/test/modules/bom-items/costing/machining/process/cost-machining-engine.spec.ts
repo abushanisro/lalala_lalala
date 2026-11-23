@@ -504,17 +504,16 @@ describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)'
     const finishLine = result.processLines.find((l) => l.process === 'Finish Turning')!;
     expect(roughLine).toBeDefined();
     expect(finishLine).toBeDefined();
-    // partDiameterMm = max(20,20) = 20; barDiameterMm = 30 (by construction);
-    // radialStockMm = (30-20)/2 = 5mm. finishStockMm = min(0.8,5) = 0.8;
-    // roughStockMm = 5-0.8 = 4.2; numRoughPasses = round(4.2/1.3) = 3.
-    const diameterMm = 20;
-    const passTimeSec = (speedMPerMin: number, feedMmPerRev: number) => {
-      const rpm = (speedMPerMin * 1000) / (Math.PI * diameterMm);
+    // partDiameterMm = max(20,20) = 20; barDiameterMm = 30 (by construction). Timed as the Machining calculator workbook's Turning
+    // sheet times a cut: spindle speed from the diameter the cut starts at, the length of cut plus 10 mm, passes = stock / depth.
+    // The finish cut starts at 20 + 2 x 0.8 = 21.6 mm; roughing takes (30 - 21.6) / (2 x 1.3) = 3.23 passes from the bar.
+    const passTimeSec = (speedMPerMin: number, feedMmPerRev: number, startDiameterMm: number) => {
+      const rpm = (speedMPerMin * 1000) / (Math.PI * startDiameterMm);
       const feedMmPerMin = rpm * feedMmPerRev;
-      return (100 / feedMmPerMin) * 60;
+      return ((100 + 10) / feedMmPerMin) * 60;
     };
-    const expectedRoughSec = 3 * passTimeSec(250.4, 0.3625);
-    const expectedFinishSec = passTimeSec(333.1, 0.29);
+    const expectedRoughSec = ((30 - 21.6) / (2 * 1.3)) * passTimeSec(250.4, 0.3625, 30);
+    const expectedFinishSec = passTimeSec(333.1, 0.29, 21.6);
     expect(roughLine.cycleTimeMin).toBeCloseTo(expectedRoughSec / 60, 2);
     expect(finishLine.cycleTimeMin).toBeCloseTo(expectedFinishSec / 60, 2);
     // Setup folds into Rough Turning only, not Finish Turning. This fixture's
@@ -593,10 +592,9 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
     } as any);
   }
   const baselineRoughSec = (() => {
-    const diameterMm = 20;
-    const rpm = (250.4 * 1000) / (Math.PI * diameterMm);
+    const rpm = (250.4 * 1000) / (Math.PI * 30); // from the Ø30 bar the rough cut starts at
     const feedMmPerMin = rpm * 0.3625;
-    return 3 * ((100 / feedMmPerMin) * 60); // 3 real rough passes, same math as the OD Turning suite
+    return ((30 - 21.6) / (2 * 1.3)) * (((100 + 10) / feedMmPerMin) * 60); // 3.23 rough passes, same math as the OD Turning suite
   })();
 
   it('splits Rough Turning across the real number of stations when the real removal ratio crosses the real threshold', () => {
@@ -617,14 +615,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    const expectedUnsplitSec = (() => {
-      const diameterMm = 20;
-      const rpm = (250.4 * 1000) / (Math.PI * diameterMm);
-      const feedMmPerMin = rpm * 0.3625;
-      const numRoughPasses = Math.round((5 - 0.8) / 1.3); // radialStock=(30-20)/2=5; same real pass-count formula
-      return numRoughPasses * ((100 / feedMmPerMin) * 60);
-    })();
-    expect(roughLine.cycleTimeMin).toBeCloseTo(expectedUnsplitSec / 60, 2);
+    expect(roughLine.cycleTimeMin).toBeCloseTo(baselineRoughSec / 60, 2);
     expect(result.warnings.some((w) => w.includes('split across'))).toBe(false);
   });
 

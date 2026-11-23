@@ -263,6 +263,8 @@ export function finishTurningLookupSeeds(ctx: MachiningLookupContext): LookupSee
   return {
     missing: [],
     seeds: {
+      // The finish cut starts at the turned diameter plus its depth of cut on each side: the diameter its spindle speed is taken from.
+      'Finish Depth of Cut': lookupSeed(tp.finishCutDepthMm, `${src} finish_turning`, finish, 'cut_depth_mm'),
       'Finish Cutting Speed': lookupSeed(tp.finishCuttingSpeedMPerMin, `${src} finish_turning`, finish, 'cutting_speed_m_min'),
       'Finish Feed': lookupSeed(tp.finishFeedMmPerRev, `${src} finish_turning`, finish, 'feed_rate_mm_rev'),
     },
