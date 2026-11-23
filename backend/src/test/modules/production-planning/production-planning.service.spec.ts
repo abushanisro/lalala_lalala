@@ -1,4 +1,4 @@
-import { InternalServerErrorException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ProductionPlanningService } from '../../../modules/production-planning/production-planning.service';
 import { fakeClient, type Call, type Result } from '../../support/fake-db-client';
 
@@ -75,5 +75,35 @@ describe('ProductionPlanningService.createProductionLot', () => {
     await expect(service(client).createProductionLot(dto, OWNER)).rejects.toThrow(InternalServerErrorException);
     expect(calls.some(c => c.table === 'production_lots' && c.op === 'delete' && c.filters[0][1] === 'lot-1')).toBe(true);
     expect(calls.some(c => c.table === 'production_processes')).toBe(false);
+  });
+});
+
+describe('ProductionPlanningService.createProcessSubtask', () => {
+  const dto = {
+    productionProcessId: 'proc-1', taskName: 'Cut blanks', taskSequence: 1,
+    bomParts: [{ bom_item_id: 'item-1', required_quantity: 3, unit: 'pcs' }, { bom_item_id: 'item-2', required_quantity: 0, unit: 'pcs' }],
+  } as any;
+  const withSubtask = (requirements: Result) => (call: Call): Result => {
+    if (call.table === 'process_subtasks' && call.op === 'insert') return { data: { id: 'sub-1' }, error: null };
+    if (call.table === 'subtask_bom_requirements') return requirements;
+    return ownedProcess(call);
+  };
+
+  it('saves the BOM items the subtask needs, in the name of the user who created it', async () => {
+    const { client, calls } = fakeClient(withSubtask({ data: null, error: null }));
+    await expect(service(client).createProcessSubtask(dto, OWNER)).resolves.toEqual({ id: 'sub-1' });
+    const saved = calls.find(c => c.table === 'subtask_bom_requirements' && c.op === 'insert');
+    // a part with no quantity is not a requirement
+    expect(saved?.payload).toEqual([
+      { subtask_id: 'sub-1', bom_item_id: 'item-1', required_quantity: 3, unit: 'pcs', requirement_status: 'PENDING', created_by: OWNER },
+    ]);
+    expect(calls.some(c => c.table === 'process_subtasks' && c.op === 'delete')).toBe(false);
+  });
+
+  it('removes the subtask and fails when its requirements cannot be stored, instead of keeping a subtask without them', async () => {
+    const refused = { data: null, error: { message: 'new row violates row-level security policy for table "subtask_bom_requirements"' } };
+    const { client, calls } = fakeClient(withSubtask(refused));
+    await expect(service(client).createProcessSubtask(dto, OWNER)).rejects.toThrow(BadRequestException);
+    expect(calls.some(c => c.table === 'process_subtasks' && c.op === 'delete' && c.filters[0][1] === 'sub-1')).toBe(true);
   });
 });

@@ -1256,7 +1256,11 @@ export class ProductionPlanningService {
         );
 
       if (bomError) {
-        this.logger.warn(`BOM requirements partially failed: ${bomError.message}`);
+        // A subtask without the parts it needs is not the subtask the user asked for: remove it and report the failure, as a lot
+        // without its selected items is. This was logged and passed over, so every subtask lost its requirements unseen.
+        this.logger.error(`Failed to insert subtask BOM requirements: ${bomError.message}`, bomError);
+        await database.from('process_subtasks').delete().eq('id', subtask.id);
+        throw new BadRequestException(`Failed to save the subtask's BOM requirements: ${bomError.message}. The subtask was not created.`);
       }
     }
 
