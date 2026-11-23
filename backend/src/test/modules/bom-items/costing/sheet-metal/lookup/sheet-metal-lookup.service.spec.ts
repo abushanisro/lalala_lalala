@@ -453,3 +453,47 @@ describe('SheetMetalLookupService.getPartSpacingTable — both staging formats',
     expect(await new SheetMetalLookupService(fakeRows([])).getPartSpacingTable()).toBeNull();
   });
 });
+
+// tblWaterjetAbrasiveNozzle is staged two ways, as tblPartSpacing is. The table migration 531 promoted it into is in no
+// database built from the baseline, so the nozzle rate is read from the staged rows.
+describe('SheetMetalLookupService.getWaterjetNozzleCostPerHr — both staging formats', () => {
+  function fakeRows(rows: Array<{ raw: Record<string, unknown> }>) {
+    const asked: { table?: string; or?: string } = {};
+    const builder: any = {
+      from: (table: string) => { asked.table = table; return builder; },
+      select: () => builder, eq: () => builder,
+      or: (filter: string) => { asked.or = filter; return builder; },
+      then: (resolve: (v: { data: unknown; error: null }) => void) => resolve({ data: rows, error: null }),
+    };
+    return { db: { getPrivilegedClient: () => builder } as any, asked };
+  }
+  const nozzle = (type: string, cost: unknown, life: unknown) => ({ 'Nozzle Type': type, 'Nozzle Cost (USD)': cost, 'Nozzle Life (hr)': life });
+  const THREE = [nozzle('Low-Cost Composite Carbide', 50, 45), nozzle('Mid-Life Composite Carbide', 100, 85), nozzle('Premium Composite Carbide', 150, 125)];
+
+  it('reads the whole-table row (migration 830): the mid-life nozzle is 100 USD over 85 hours', async () => {
+    const { db, asked } = fakeRows([{ raw: { table_name: 'lookup_tables_combined__tblWaterjetAbrasiveNozzle', rows: THREE } }]);
+    const rate = await new SheetMetalLookupService(db).getWaterjetNozzleCostPerHr();
+    expect(rate.dataFound).toBe(true);
+    expect(rate.costPerHr).toBeCloseTo(100 / 85, 9);
+    expect(asked.table).toBe('sm_reference_data');
+    expect(asked.or).toBe('key.like.tblWaterjetAbrasiveNozzle:%,key.eq.lookup_tables_combined__tblWaterjetAbrasiveNozzle');
+  });
+
+  it('reads per-grade rows (migration 514), and the grade that was asked for', async () => {
+    const { db } = fakeRows(THREE.map((raw) => ({ raw })));
+    const rate = await new SheetMetalLookupService(db).getWaterjetNozzleCostPerHr('Premium Composite Carbide');
+    expect(rate).toEqual({ costPerHr: 150 / 125, dataFound: true });
+  });
+
+  it('reports a gap, never another grade, when the grade is not on file or the table is absent', async () => {
+    const other = fakeRows([{ raw: { rows: [THREE[0]!] } }]);
+    expect(await new SheetMetalLookupService(other.db).getWaterjetNozzleCostPerHr()).toEqual({ costPerHr: 0, dataFound: false });
+    expect(await new SheetMetalLookupService(fakeRows([]).db).getWaterjetNozzleCostPerHr()).toEqual({ costPerHr: 0, dataFound: false });
+  });
+
+  it('reports a gap when the row states no usable cost or life', async () => {
+    for (const bad of [nozzle('Mid-Life Composite Carbide', 100, 0), nozzle('Mid-Life Composite Carbide', null, 85), nozzle('Mid-Life Composite Carbide', 'n/a', 85)]) {
+      expect(await new SheetMetalLookupService(fakeRows([{ raw: bad }]).db).getWaterjetNozzleCostPerHr()).toEqual({ costPerHr: 0, dataFound: false });
+    }
+  });
+});

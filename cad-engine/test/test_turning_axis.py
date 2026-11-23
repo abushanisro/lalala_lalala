@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("OCC")
 
-from shared.machining_geometry import dominant_cylinder_axis, turned_diameter_count, turned_envelope, turning_axis  # noqa: E402
-from shared.part_family import MILL_TURN, MILLED  # noqa: E402
+from shared.machining_geometry import dominant_cylinder_axis, turned_diameter_count, turned_envelope, turning_axis, turning_line_point  # noqa: E402
+from shared.part_family import MILL_TURN, MILLED, TURNED_FAMILIES  # noqa: E402
 
 import machined_parts as P  # noqa: E402
 
@@ -91,3 +91,86 @@ def test_an_axis_off_the_model_axes_is_returned_as_it_is():
     assert turned_diameter_count(shaft) == 1
     # Either way round the cylinder was built, the axis has one name.
     assert dominant_cylinder_axis(P.cylinder((0, 0, 0), (-1, 1, 0), 10.0, 40.0)) == pytest.approx((s, -s, 0.0), abs=1e-9)
+
+
+# ── The line the part is turned about ───────────────────────────────────────
+# Located by the turned cylinders themselves (turning_line_point): the axis line the part's outer cylinders cover the most area about,
+# of those the part's centre of mass lies inside. The centre of the bounding box was taken for it. That centre moves with the mesh (the
+# analysis meshes the shape first, and the box of a meshed shape is read from the mesh's nodes) and leaves the axis of a part that is
+# not the same on both sides of it: a turned diameter then lay off the axis and was no turned diameter at all.
+
+
+def _stepped_shaft():
+    """Along X: Ø16 from 0 to 40, then Ø24 to 60."""
+    return P.fuse(P.cylinder((0, 0, 0), (1, 0, 0), 16.0, 40.0), P.cylinder((40, 0, 0), (1, 0, 0), 24.0, 20.0))
+
+
+def _ring_diameters(shape, family):
+    from machining.machining_feature_recognizer import MachiningFeatureRecognizer
+    tree = MachiningFeatureRecognizer().recognize(shape, family)
+    return sorted(f.params["diameter_mm"] for f in tree.features if f.type == "Ring" and f.variant == "outer_diameter")
+
+
+@pytest.mark.parametrize("build, diameters", [
+    (_stepped_shaft, [16.0, 24.0]),
+    (lambda: P.cylinder((0, 0, 0), (1, 0, 0), 30.0, 80.0), [30.0]),
+    (P.bushing, [30.0]),
+], ids=["stepped shaft", "cylinder", "bushing"])
+def test_a_plain_turned_part_is_turned_with_its_diameters_once_the_analysis_has_meshed_it(analysed, build, diameters):
+    # The analysis meshes the shape before anything is measured. The mesh's box sat 0.02 mm off these parts' axes: the stepped shaft
+    # and the bushing were milled and the cylinder was sheet metal, each with no turned diameter.
+    shape = build()
+    mi = analysed(shape)
+    assert mi["detected_family"] in TURNED_FAMILIES
+    assert mi["classification_signals"]["turned_od_count"] == len(diameters)
+    assert mi["classification_signals"]["largest_turned_od_mm"] == pytest.approx(max(diameters))
+    # Recognised on the shape as the analysis left it: meshed.
+    assert _ring_diameters(shape, mi["detected_family"]) == diameters
+
+
+def test_the_meshed_bushing_keeps_its_bore_on_the_axis(analysed):
+    from machining.machining_feature_recognizer import MachiningFeatureRecognizer
+    shape = P.bushing()
+    family = analysed(shape)["detected_family"]
+    (bore,) = [f for f in MachiningFeatureRecognizer().recognize(shape, family).features if f.type == "SimpleHole"]
+    assert (bore.variant, bore.params["diameter_mm"]) == ("through", 18.0)
+    assert bore.params["distance_from_axis_mm"] == 0.0
+
+
+def test_the_turning_line_is_the_shafts_own_axis():
+    point = turning_line_point(_stepped_shaft(), (1.0, 0.0, 0.0))
+    assert point[1] == pytest.approx(0.0, abs=1e-9) and point[2] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_shaft_with_a_flat_along_its_whole_length_keeps_its_turned_diameters():
+    # A D shaft, the flat 6 from the axis on both diameters: its box runs from -12 to 6, its centre 3 mm off the axis.
+    shaft = P.cut(_stepped_shaft(), P.box((-1, -20, 6), (62, 40, 20)))
+    line = turning_axis(shaft)
+    assert sorted(round(2 * c["radius"], 3) for c in line["diameters"]) == [16.0, 24.0]
+    assert line["point"][1] == pytest.approx(0.0, abs=1e-9) and line["point"][2] == pytest.approx(0.0, abs=1e-9)
+    assert _ring_diameters(shaft, "mill_turn") == [16.0, 24.0]
+
+
+def test_a_stepped_shaft_lying_askew_in_the_model_keeps_its_diameters_and_its_cross_holes_distance():
+    # Its box is not centred on its axis: the collar is at one end. A Ø3 cross hole passes 3 mm from the axis.
+    from machining.machining_feature_recognizer import MachiningFeatureRecognizer
+    shaft = P.cut(_stepped_shaft(), P.cylinder((20, -50, 3), (0, 1, 0), 3.0, 100.0))
+    askew = P.rotated(P.rotated(shaft, (0, 0, 1), 33.0), (1, 0, 0), 57.0)
+    assert turned_diameter_count(askew) == 2
+    tree = MachiningFeatureRecognizer().recognize(askew, "mill_turn")
+    assert sorted(f.params["diameter_mm"] for f in tree.features if f.type == "Ring") == [16.0, 24.0]
+    (cross,) = [f for f in tree.features if f.type == "SimpleHole" and f.variant == "cross"]
+    assert cross.params["distance_from_axis_mm"] == pytest.approx(3.0, abs=1e-6)
+
+
+def test_a_boss_beside_the_middle_of_a_block_is_not_a_turned_diameter():
+    # A Ø10 boss near a corner of an 80 x 50 x 30 block: the block is not centred in it, so no line is turned about.
+    part = P.fuse(P.box((0, 0, 0), (80, 50, 30)), P.cylinder((15, 12, 30), (0, 0, 1), 10.0, 8.0))
+    assert turning_line_point(part, (0.0, 0.0, 1.0)) is None
+    assert turned_diameter_count(part) == 0
+
+
+def test_a_hub_on_the_middle_of_a_plate_is_a_turned_diameter_on_its_own_axis():
+    point = turning_line_point(P.plate_with_hub(), (0.0, 0.0, 1.0))
+    assert point[0] == pytest.approx(0.0, abs=1e-9) and point[1] == pytest.approx(0.0, abs=1e-9)
+    assert turned_diameter_count(P.plate_with_hub()) == 1

@@ -4706,7 +4706,7 @@ export class BomItemCostingService {
         // legacy direct_rate interpretation on every row. Both halves are
         // needed, so they are added here and in the reader together.
         // calculator_id / calculator_version / calculator_run (migration 1097): the calculation behind each cycle, read back onto the line.
-        .select('op_nbr, machine_class, machine_name, mhr_id, operation, process_group, process_route, cycle_time, setup_time, direct_rate, setup_cost_per_part, total_cycle_cost_per_part, total_cost_per_part, currency, cost_currency_basis, batch_size, location, notes, line_hourly_rate, line_labour_rate, engine_version, setup_time_source, calculator_id, calculator_version, calculator_run')
+        .select('op_nbr, machine_class, machine_name, mhr_id, operation, process_group, process_route, cycle_time, setup_time, direct_rate, setup_cost_per_part, total_cycle_cost_per_part, total_cost_per_part, currency, cost_currency_basis, batch_size, location, notes, line_hourly_rate, line_labour_rate, engine_version, setup_time_source, charge_basis, calculator_id, calculator_version, calculator_run')
         .eq('bom_item_id', id)
         .eq('is_active', true);
       // No machine_class filter. It used to be
@@ -6850,7 +6850,7 @@ export class BomItemCostingService {
       this.smLookup.getWaterjetAbrasiveRate(),
       this.smLookup.getWaterjetAbrasiveRateForMachine(mhrRates.waterjet.machineName),
       this.smLookup.getHandlingAllowanceUsd('turret_punch', grossWeightKg),
-      this.smLookup.getWaterjetNozzleCostPerHr(),
+      this.waterjetNozzleRate(locInfo.code, rates),
     ]);
     // The specific selected machine's own real abrasive rate (machine_library.json,
     // via sm_reference_data) always wins over the generic pump-tier average when
@@ -7356,7 +7356,8 @@ export class BomItemCostingService {
         ? progressiveDieToolingDataGap(machineClass, progDieToolingResult)
         : null;
       const dataGaps = [...findRouteDataGaps(allLines), ...(progDieToolingGap ? [progDieToolingGap] : [])];
-      const totalProcessCost = r2(allLines.reduce((s, l) => s + l.totalCost, 0) + abrasiveCost);
+      // A waterjet's garnet is one of the lines (its engine's "Waterjet Abrasive" line): abrasiveCost only states it for display.
+      const totalProcessCost = r2(allLines.reduce((s, l) => s + l.totalCost, 0));
       const totalCost = r2(materialCost + totalProcessCost);
       const { totalCo2Kg, totalProcessEnergyKwh, wasteCostInr, sustainabilityScore } =
         computeSustainability(grade, materialCostPerKg, netWeightKg, grossWeightKg, batchSize, allLines);
@@ -9262,7 +9263,7 @@ export class BomItemCostingService {
           this.smLookup.getNumericVariables(['standardWaterjetCutLeadInAmount', 'waterjetCutTimeAdjustmentFactor']),
           this.smLookup.getWaterjetAbrasiveRate(),
           this.smLookup.getWaterjetAbrasiveRateForMachine(rate.machineName),
-          this.smLookup.getWaterjetNozzleCostPerHr(),
+          this.waterjetNozzleRate(locInfo.code, fx),
           this.resolveConsumablePrice(accessToken, 'garnet_abrasive', location, locInfo.code, fx),
         ]);
         const leadIn = vars.get('standardWaterjetCutLeadInAmount') ?? null;
@@ -9311,13 +9312,6 @@ export class BomItemCostingService {
       const lines = result.processLines.map((l) => (trace.length && l.calculatorId && !l.calculationTrace?.length ? { ...l, calculationTrace: trace } : l));
       // The machine the cut was priced on, selected for this plate: the line carries that selection, as a sheet part's cutting line does.
       this.attachMachineSelections(lines, { [cls]: rate });
-      // A waterjet's garnet is a cost of the cut that its engine states beside its lines: here it is a line of its own, as its nozzle wear is.
-      if (result.abrasiveCost > 0) {
-        lines.push({
-          process: 'Waterjet Abrasive', setupCost: 0, runCost: result.abrasiveCost, totalCost: result.abrasiveCost, cycleTimeMin: 0, hourlyRate: 0,
-          rateSource: 'consumable_allowance', machineClass: rate.machineClass, machineName: null, commodityCode: null,
-        });
-      }
       return { lines, machineClass: cls, machineName: rate.machineName ?? null, warnings: [...result.warnings, ...notes] };
     };
 
@@ -9621,6 +9615,12 @@ export class BomItemCostingService {
       if (data?.price_per_unit != null) return Number(data.price_per_unit) * rates.convertStrict('USD', currencyCode);
     }
     return null;
+  }
+
+  /** A waterjet nozzle's wear an hour in the quote's currency: the reference data states a nozzle's cost in USD, as it does a consumable's price. */
+  private async waterjetNozzleRate(currencyCode: string, rates: RateSnapshot): Promise<{ costPerHr: number; dataFound: boolean }> {
+    const usd = await this.smLookup.getWaterjetNozzleCostPerHr();
+    return usd.dataFound ? { ...usd, costPerHr: usd.costPerHr * rates.convertStrict('USD', currencyCode) } : usd;
   }
 
   // Evaluates one or more `calculated`-type fields on a real DB calculator

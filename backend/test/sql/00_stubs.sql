@@ -67,3 +67,11 @@ CREATE POLICY api_keys_user_select ON public.api_keys FOR SELECT USING (auth.uid
 CREATE POLICY api_keys_user_insert ON public.api_keys FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY api_keys_user_update ON public.api_keys FOR UPDATE USING (auth.uid() = user_id);
 CREATE POLICY api_keys_user_delete ON public.api_keys FOR DELETE USING (auth.uid() = user_id);
+-- the consumable prices as the real database has them (migration 362, then security switched on with no policy): 1121 adds the read policy
+CREATE TABLE public.consumable_prices (
+  id bigserial PRIMARY KEY, consumable_type text NOT NULL, location text NOT NULL DEFAULT '__default__',
+  price_per_unit numeric(10,4) NOT NULL, unit text NOT NULL DEFAULT 'kg', UNIQUE (consumable_type, location)
+);
+INSERT INTO public.consumable_prices (consumable_type, location, price_per_unit) VALUES ('garnet_abrasive', '__default__', 0.55), ('garnet_abrasive', 'India', 0.48);
+ALTER TABLE public.consumable_prices ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.consumable_prices TO authenticated, service_role;

@@ -1708,24 +1708,28 @@ export class SheetMetalLookupService {
   }
 
   // ── Waterjet nozzle-wear cost per hour ─────────────────────────────────────
-  // See migration 531 (closeout Plan Phase 2b). Defaults to the 'Mid-Life
-  // Composite Carbide' grade — the middle of the 3 real seeded options —
-  // until a per-shop nozzle-grade setting exists; disclosed via dataFound,
-  // never silently substituted for a genuinely missing table.
+  // tblWaterjetAbrasiveNozzle: what a nozzle costs (USD) and how long it lasts (hours), per grade.
+  // It is staged two ways from the same reference file, as tblPartSpacing is: one row per grade
+  // (migration 514, key 'tblWaterjetAbrasiveNozzle:...') and one row for the whole table
+  // (migration 830, raw.rows). A database may carry either, so both are read. The table migration
+  // 531 promoted these rows into is in no database built from the baseline: reading it priced no
+  // nozzle wear anywhere.
+  // Defaults to the 'Mid-Life Composite Carbide' grade, the middle of the three, until a per-shop
+  // nozzle grade setting exists. The rate is in USD an hour: the caller converts it to the quote's
+  // currency. A grade that is not on file is reported (dataFound), never substituted.
   @ReferenceMemo()
   async getWaterjetNozzleCostPerHr(nozzleGrade = 'Mid-Life Composite Carbide'): Promise<{ costPerHr: number; dataFound: boolean }> {
-    const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
-    const { data } = await db
-      .from('sm_waterjet_nozzle_rates')
-      .select('cost_usd, life_hours')
-      .eq('nozzle_grade', nozzleGrade)
-      .limit(1)
-      .maybeSingle();
-
-    if (!data || data.life_hours == null || Number(data.life_hours) <= 0) {
-      return { costPerHr: 0, dataFound: false };
-    }
-    return { costPerHr: Number(data.cost_usd) / Number(data.life_hours), dataFound: true };
+    const { data } = await this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared')
+      .from('sm_reference_data')
+      .select('raw')
+      .eq('category', 'lookup_table')
+      .or('key.like.tblWaterjetAbrasiveNozzle:%,key.eq.lookup_tables_combined__tblWaterjetAbrasiveNozzle');
+    const entries = (data ?? []).flatMap((r: any) => (Array.isArray(r.raw?.rows) ? r.raw.rows : [r.raw]));
+    const nozzle = entries.find((r: any) => r?.['Nozzle Type'] === nozzleGrade);
+    const costUsd = Number(nozzle?.['Nozzle Cost (USD)']);
+    const lifeHours = Number(nozzle?.['Nozzle Life (hr)']);
+    if (!(costUsd > 0) || !(lifeHours > 0)) return { costPerHr: 0, dataFound: false };
+    return { costPerHr: costUsd / lifeHours, dataFound: true };
   }
 
   // ── Manual deburring cycle-time rate ──────────────────────────────────────
