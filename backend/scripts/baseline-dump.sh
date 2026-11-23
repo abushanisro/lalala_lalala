@@ -18,7 +18,7 @@ schema_only=false
 [ "${1:-}" = "--schema-only" ] && { schema_only=true; shift; }
 source_url="${1:?usage: baseline-dump.sh [--schema-only] <source-connection-url> <output-dir>}"
 out="${2:?usage: baseline-dump.sh [--schema-only] <source-connection-url> <output-dir>}"
-IMAGE="postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b"
+IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b}"
 [ ! -e "$out" ] || { echo "refusing: $out already exists"; exit 1; }
 mkdir -p "$out"
 net=(); [ -z "${DOCKER_NETWORK:-}" ] || net=(--network "$DOCKER_NETWORK")

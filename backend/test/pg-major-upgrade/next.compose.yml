@@ -1,0 +1,46 @@
+# The data tier's Postgres AFTER the major upgrade: the three lines that change in docker-compose.data.yml (image, entrypoint, volumes)
+# and their volume, exactly as docs/runbooks/postgres-major-upgrade.md says to write them. test/pg-major-upgrade/run.sh runs this
+# definition, so what the runbook prescribes is what was tested.
+services:
+  postgres:
+    image: postgres:19-alpine@sha256:8b0ff4cdf221f0c53d7fcda681d3b461be725c492cd881c5ec9c0ad25023f188
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "70:70"
+    environment:
+      POSTGRES_PASSWORD: the-old-superuser-password
+    # Fails closed. A release that reaches an environment whose data was not moved yet would otherwise start an EMPTY Postgres on the
+    # new volume, and the site would come up with no data. While the Postgres 17 volume holds a database and the new one holds none,
+    # the server refuses to start; the data is untouched and the previous release brings the site back.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if [ -s /var/lib/postgresql-17/PG_VERSION ] && [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          echo "REFUSING TO START AN EMPTY DATABASE: this environment's data is still in the Postgres 17 volume." >&2
+          echo "Move it first with infra/oracle/pg-major-upgrade.sh cutover (docs/runbooks/postgres-major-upgrade.md), or deploy the previous release to go back." >&2
+          sleep 20
+          exit 78
+        fi
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=256MB"]
+    volumes:
+      # From 18 on the image keeps its data under /var/lib/postgresql/<major> and refuses a volume at the old .../data path.
+      - pgdata19:/var/lib/postgresql
+      # The Postgres 17 data, read-only: what the check above looks at, and the rollback. Dropped in a later release, once nobody needs it.
+      - pgdata:/var/lib/postgresql-17:ro
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata19:
+  pgdata:

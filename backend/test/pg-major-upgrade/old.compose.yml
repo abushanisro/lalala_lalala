@@ -1,0 +1,26 @@
+# The data tier's Postgres as docker-compose.data.yml runs it today: version 17, hardened, its data in `pgdata` at /var/lib/postgresql/data.
+# Only for test/pg-major-upgrade/run.sh, which upgrades a throwaway copy of this layout.
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "70:70"
+    environment:
+      POSTGRES_PASSWORD: the-old-superuser-password
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=256MB"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
