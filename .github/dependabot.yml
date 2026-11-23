@@ -24,6 +24,9 @@ updates:
       # Intelligence and Electronics layouts to it is a UI change to make and check on screen, not a weekly bump.
       - dependency-name: "react-resizable-panels"
         update-types: ["version-update:semver-major"]
+      # recharts 3 changed the types of Tooltip formatters, Cell and LabelList: the charts must be ported and looked at, not bumped.
+      - dependency-name: "recharts"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch: { update-types: [minor, patch] }
 
@@ -95,6 +98,11 @@ updates:
     target-branch: develop
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # A new Postgres major version cannot open the data volume the old one wrote (it needs pg_upgrade, and from 18 a different
+      # volume path), so it is a planned data migration, not an image bump. Minor and patch updates still come.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     target-branch: develop
