@@ -23,6 +23,9 @@ function rate(value: number, o: Partial<MHRRateInput> = {}): MHRRateInput {
   return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'X', ...o };
 }
 
+/** A billet of these sizes as the stock a part is cut from. The engine sizes no stock itself: the stock model chooses it (costing/stock). */
+const billet = (l: number, w: number, h: number) => ({ form: 'billet', sizeLabel: `${l}×${w}×${h} billet`, billetVolMm3: l * w * h, utilizationPct: null });
+
 function input(o: Partial<MachiningCostInput> = {}): MachiningCostInput {
   return {
     volume: 40_000, surfaceArea: 20_000, maxLength: 100, maxWidth: 50, maxHeight: 20,
@@ -53,20 +56,20 @@ describe('hand-calculated cost chain', () => {
     expect(cycle.sec).toBeCloseTo(expectedSec, 6);
   });
 
-  it('material: bbox billet + 2 x stock allowance per side, weight x price (no markup)', () => {
-    const bare = computeMillingCostSummary(input({ stockAllowancePerSideMm: 0 }), mc('3_axis_mill'));
+  it('material: the weight of the stock chosen for the part x price (no markup)', () => {
+    const bare = computeMillingCostSummary(input({ blankResult: billet(100, 50, 20) }), mc('3_axis_mill'));
     // 100 x 50 x 20 mm = 1e5 mm3 = 1e-4 m3 x 7850 = 0.785 kg x 80 = 62.80
     expect(bare.materialRemoval!.billetWeightKg).toBeCloseTo(0.785, 3);
     expect(bare.materialCost).toBeCloseTo(62.8, 2);
-    // 2 mm per side: 104 x 54 x 24 = 134 784 mm3 -> 1.058 kg (r3) x 80 = 84.64
-    const allowed = computeMillingCostSummary(input({ stockAllowancePerSideMm: 2 }), mc('3_axis_mill'));
+    // 2 mm of stock on each side: 104 x 54 x 24 = 134 784 mm3 -> 1.058 kg (r3) x 80 = 84.64
+    const allowed = computeMillingCostSummary(input({ blankResult: billet(104, 54, 24) }), mc('3_axis_mill'));
     expect(allowed.materialRemoval!.billetWeightKg).toBeCloseTo(1.058, 3);
     expect(allowed.materialCost).toBeCloseTo(84.64, 2);
   });
 
   it('setup: machine setup_time_hr x rate / batch, plus the fixture / batch; run = cycle x 1.15 x rate', () => {
     const result = computeMillingCostSummary(input({
-      stockAllowancePerSideMm: 0, batchSize: 10, fixtureUnitCostLocal: 100,
+      blankResult: billet(100, 50, 20), batchSize: 10, fixtureUnitCostLocal: 100,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
       featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }, { name: 'Tapping', timeSec: 999, source: 't' }],
     }), mc('3_axis_mill'));
@@ -117,7 +120,7 @@ describe('detectMaterialClass', () => {
 describe('regression: rotary broaching shares the part machine, so its setup is charged once', () => {
   it('the broaching line carries no second setup of the primary machine', () => {
     const result = computeMillingCostSummary(input({
-      stockAllowancePerSideMm: 0, batchSize: 10,
+      blankResult: billet(100, 50, 20), batchSize: 10,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
       featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }],
       drillingTable: DRILLING,
@@ -137,7 +140,7 @@ describe('regression: rotary broaching shares the part machine, so its setup is 
 
 // ── End to end: inputs -> real calculators -> cost summary ──────────────────
 const milled = (batchSize: number) => input({
-  batchSize, stockAllowancePerSideMm: 2, volume: 40_000,
+  batchSize, blankResult: billet(104, 54, 24), volume: 40_000,
   holeCount: 6, holeGroups: [{ diameter_mm: 8, count: 4, depth_mm: 20 }, { diameter_mm: 5, count: 2, depth_mm: 12 }],
   threads: [{ size: 'M6', count: 2, depthMm: 10 }],
   tightestToleranceMm: 0.1, sharpEdgeLengthMm: 900, deburrLinearSpeedMmPerSec: 5,

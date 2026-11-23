@@ -77,11 +77,12 @@ export interface BlankSpecDto {
   confidence?: ConfidenceLevel;
   // Machining only — set when the Cost Guide "Stock Form" override
   // (bom_items.scenario_overrides.stockForm) requested a specific form and
-  // BlankOptimizerService could not honor it with real stock_profiles data
-  // (no real size in the catalog is large enough), so `form` above is the
-  // billet fallback instead of the requested one. Absent whenever the
-  // requested form WAS honored, and always absent on the ordinary
-  // "Let eMithran Decide" auto-select path.
+  // the stock model (costing/stock) could not hold the part in it (no
+  // preferred size that large, a part longer than the bar, a tube for a part
+  // with no bore), so `form` above is the billet fallback instead of the
+  // requested one, and this says why. Absent whenever the requested form WAS
+  // honored, and always absent on the ordinary auto-select path. Also carries
+  // the note that the grade has no density yet (see densityKgM3 below).
   stockFormOverrideNote?: string;
   // Machining only -- the two inputs grossWeightKg above was computed from
   // (stockVolumeMm3 / 1e9 x densityKgM3), exposed so a UI can show the

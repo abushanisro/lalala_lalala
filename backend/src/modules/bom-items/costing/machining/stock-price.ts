@@ -2,10 +2,12 @@
 // location: material_stock_prices (migration 833; memory/Plastic Modeling/
 // machine/India/raw_material_stock_costs.csv). Pure; the caller loads the rows.
 //
-// The priced form is the stock the machining engine costs the material on:
-//   milled            -> plate      (billet: bounding box + reference allowance,
-//                                    cut from plate, the milled family's first
-//                                    preferred shape, material-shape-ranking.ts)
+// The priced form is the stock the material is costed on. A machined part's is
+// the form its stock model chose (stockPriceFormOf). Where the stock model does
+// not choose the stock (a multi-spindle's part; a part whose stock could not be
+// chosen) it is the family's own (machiningStockPriceForm):
+//   milled            -> plate      (the milled family's first preferred shape,
+//                                    material-shape-ranking.ts)
 //   turned, mill_turn -> round_bar  (bar stock, computeTurningCostSummary)
 // No price for that material, form and location = no stock price: the quote
 // keeps its raw_materials price and says a form price is not on file.
@@ -25,12 +27,12 @@ export interface StockPriceRow {
   source: string;
 }
 
-// A Stock Form chosen in the scenario is priced as that form (a billet is sawn from plate); with no choice the
-// family's own stock applies.
+// The form priced when the stock model has not chosen the stock: a Stock Form chosen in the scenario is priced as
+// that form (a billet is sawn from plate); with no choice the family's own stock applies.
 export function machiningStockPriceForm(family: string, chosenForm?: string | null): StockPriceForm | null {
   if (chosenForm && (family === 'milled' || isTurnedFamily(family))) {
-    // A billet is sawn from plate. A round tube cannot be sized yet (no bore from CAD), so the blank falls back
-    // to a billet (blank-stock-candidates.ts) and is priced as one.
+    // A billet is sawn from plate. A round tube is sized from the part's bore, which only the stock model reads:
+    // without its choice a tube is priced as the plate a billet is sawn from.
     return chosenForm === 'billet' || chosenForm === 'round_tube' ? 'plate' : (chosenForm as StockPriceForm);
   }
   if (family === 'milled') return 'plate';
@@ -40,7 +42,7 @@ export function machiningStockPriceForm(family: string, chosenForm?: string | nu
 
 /**
  * The form a stock the stock model chose (costing/stock) is priced as: the form itself, a billet as the plate it is sawn from. A tube is
- * priced as a tube here: the stock model sizes one from the part's bore, which the blank optimizer above cannot.
+ * priced as a tube: the stock model sizes one from the part's bore.
  */
 export function stockPriceFormOf(stockForm: string): StockPriceForm | null {
   if (stockForm === 'billet') return 'plate';

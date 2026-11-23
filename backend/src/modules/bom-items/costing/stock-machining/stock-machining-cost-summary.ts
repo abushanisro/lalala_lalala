@@ -1,11 +1,16 @@
-// A Stock Machining part's stock front end on a machining route's quote: the stock model's choice as the blank the machining engines start
-// from, the Band Saw line and the stock's material cost on the route, and the Cost Summary's section. Pure: the cost service chooses and
-// prices the stock (stock-machining-cost.service.ts); the machining engines price the cutting of the part.
+// A machined part's stock front end on a machining route's quote: the stock model's choice as the blank the machining engines start from,
+// the stock's material cost on the route, a Stock Machining part's Band Saw line, and the Cost Summary's section. Pure: the cost service
+// chooses and prices the stock (stock-machining-cost.service.ts); the machining engines price the cutting of the part.
+//
+// One stock model for every machined part (user decision 2026-11-22): a part whose Process is Machining buys the stock a Stock Machining
+// part buys, at the same price. Sawing it to pieces is what the Stock Machining Process adds, so only its quote has the Band Saw line
+// (StockMachiningPlan.sawCosted); any other quote says the sawing is not costed.
 //
 // What cannot be chosen or priced never stops the quote (the user's decision 2026-11-20: Apply never fails): it is a named, uncosted line,
-// which Apply writes as a $0 No Cost Feature with its reason.
+// which Apply writes as a $0 No Cost Feature with its reason. Nothing is estimated in its place.
 import { STOCK_MACHINING_CALC, STOCK_MACHINING_CLASS, STOCK_MACHINING_PROCESS_GROUP, type StockCutOff } from './stock-machining-route';
 import { runView } from '../casting/casting-calculator-seeds';
+import { stockPriceFormOf, type StockPriceForm } from '../machining/stock-price';
 import { asSuppliedFaces } from '../stock/stock-part';
 
 import type { PricedStock, StockMachiningChoice } from './stock-machining-cost.service';
@@ -23,14 +28,20 @@ export const STOCK_SIZE_SOURCE = 'Stock Machining stock (tblPreferredSizes)';
 /** Said on a route whose lathe parts the piece off the bar. */
 export const PARTED_OFF = 'A bar-fed lathe takes the whole bar and parts each piece off: no band saw cuts it.';
 
+/** Said on a route that starts from a sawn piece whose sawing the part's Process does not cost. A note, not a gap: the route is complete. */
+export const SAW_NOT_COSTED = 'Sawing the stock to pieces is not costed: the machine is loaded with a piece cut to length. Set the part\'s Process to '
+  + 'Stock Machining to cost the band saw.';
+
 /** The engine's own rules, which the reference data does not state, said once on the quote. */
 export const STOCK_RULES_DISCLOSED = 'Disclosed (the engine\'s rules, agreed 2026-11-22; the data states the allowance, snapping and plate rules and has none for '
   + 'these): the ends are faced (the piece is the part\'s length plus the allowance on each end); a bar makes floor((bar length - bar end) / (piece + cut '
   + 'width)) parts and each part carries its share of the whole bar; plate blanks are cut in a grid on the standard plate, a kerf apart; the saw\'s cut '
   + 'time is the area cut over the cutting rate, a bundle cut as one section.';
 
-/** A Stock Machining part's stock as its quote needs it: the choice, its pricing, and what kept either from being made. */
+/** A machined part's stock as its quote needs it: the choice, its pricing, and what kept either from being made. */
 export interface StockMachiningPlan {
+  /** Whether the quote costs the band saw: only a Stock Machining part's does. Every other machined part buys the same stock with no Band Saw line. */
+  sawCosted: boolean;
   /** Null when the stock could not be chosen (the reference is not staged, the part has no size). */
   choice: StockMachiningChoice | null;
   /** Null when the chosen stock could not be priced (the calculators are not in the database). */
@@ -53,9 +64,24 @@ export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutO
   return {
     form: o.form, sizeLabel: o.sizeLabel, billetVolMm3: o.blank.volumeMm3, utilizationPct: o.utilizationPct,
     ...(o.circumscribedMm != null ? { barDiameterMm: o.circumscribedMm } : {}),
-    purchasedVolMm3: o.purchasedVolumeMm3, sizeSource: STOCK_SIZE_SOURCE, stock: selection,
+    purchasedVolMm3: o.purchasedVolumeMm3, sizeSource: STOCK_SIZE_SOURCE,
     ...(selection.fallback && choice.settings.form ? { requestedFormUnavailable: { requested: choice.settings.form, reason: selection.fallback } } : {}),
   };
+}
+
+/**
+ * What a route's machining engine takes from the part's stock: the piece it starts from, what cut it off (a lathe loaded with a piece cut
+ * to length prices no Parting; a bar-fed lathe parts it off the bar) and the price per kg of the stock's form, in the currency the route
+ * is priced in. Empty when no stock is chosen: the engine then has no stock to price or cut, and the quote names the gap.
+ */
+export function stockEngineInput(
+  choice: StockMachiningChoice | null, cutOff: StockCutOff, pricesPerKg: Partial<Record<StockPriceForm, number>>,
+): { blankResult?: BlankResult; stockCutOff?: StockCutOff; materialCostPerKg?: number } {
+  const blank = choice ? stockBlankResult(choice, cutOff) : null;
+  if (!blank) return {};
+  const priceForm = stockPriceFormOf(blank.form);
+  const perKg = priceForm ? pricesPerKg[priceForm] : undefined;
+  return { blankResult: blank, stockCutOff: cutOff, ...(perKg != null ? { materialCostPerKg: perKg } : {}) };
 }
 
 /** A step of the stock front end that is not costed, named with why. */
@@ -69,20 +95,26 @@ function uncosted(process: 'Material Stock' | 'Band Saw', reason: string): Proce
   };
 }
 
-/** The lines the stock puts before a route's machining: the Band Saw (none when the lathe parts the piece off), or what is not costed. */
+/**
+ * The lines the stock puts before a route's machining: the Band Saw of a Stock Machining part (none when the lathe parts the piece off), or
+ * what is not costed. A part with no stock has no material either: nothing is estimated in the stock's place.
+ */
 function frontLines(plan: StockMachiningPlan, cutOff: StockCutOff): ProcessLineCost[] {
   const why = plan.missing.join('; ');
-  if (!plan.choice) return [uncosted('Material Stock', `The stock is not chosen by the Stock Machining rules: ${why || 'no stock model'}. The material is priced on the Machining blank.`)];
+  if (!plan.choice?.selection[cutOff].chosen) {
+    const reason = why || (plan.choice ? 'no stock form holds the part' : 'no stock model');
+    return [uncosted('Material Stock', `The stock is not chosen: ${reason}. Its material is not costed, and nothing is estimated in its place.`)];
+  }
   const priced = plan.priced?.[cutOff];
   if (priced?.quote) return priced.lines;
-  if (cutOff === 'parting') return [];
-  return [uncosted('Band Saw', `The band saw is not costed: ${why || 'no stock form holds the part'}.`)];
+  if (cutOff === 'parting' || !plan.sawCosted) return [];
+  return [uncosted('Band Saw', `The band saw is not costed: ${why || 'the stock is not priced'}.`)];
 }
 
 /**
- * A machining route's quote with its stock front end: the Band Saw line before the machining lines, and the stock bought per part (less the
- * scrap credit when it is on) as the material cost. The route's own material cost stands when the stock is not priced. `cutOff` is the
- * route's machine's (stockCutOffOf).
+ * A machining route's quote with its stock front end: a Stock Machining part's Band Saw line before the machining lines, and the stock
+ * bought per part (less the scrap credit when it is on) as the material cost. The route's own material cost (the engine's, on the same
+ * stock) stands when the stock's calculators did not price it. `cutOff` is the route's machine's (stockCutOffOf).
  */
 export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: StockMachiningPlan, cutOff: StockCutOff): T {
   const priced = plan.priced?.[cutOff] ?? null;
@@ -97,11 +129,12 @@ export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: Stoc
   } : {};
   const warnings = [
     ...cost.warnings, ...plan.warnings, ...(plan.choice?.notes ?? []),
-    ...(plan.missing.length ? [`Stock Machining: ${plan.missing.join('; ')}.`] : []),
+    ...(plan.missing.length ? [`Stock: ${plan.missing.join('; ')}.`] : []),
     ...(priced?.selection.fallback ? [priced.selection.fallback] : []),
     ...(quote?.warnings ?? []),
     ...(quote?.missing.length ? [`The stock is not priced: ${quote.missing.join('; ')}.`] : []),
     ...(quote && cutOff === 'parting' ? [PARTED_OFF] : []),
+    ...(quote && cutOff === 'saw' && !plan.sawCosted ? [SAW_NOT_COSTED] : []),
     ...(quote ? [STOCK_RULES_DISCLOSED] : []),
   ];
   return {
@@ -123,7 +156,7 @@ export function stockLabelOf(o: StockOption): string {
     : `${o.sizeLabel}, ${o.stock.partsPerStock} per ${r2(o.stock.lengthMm)} x ${r2(o.stock.widthMm ?? 0)} mm plate`;
 }
 
-/** The Cost Summary's Stock Machining section for the quoted route's cut-off; undefined when no stock was chosen. Money in the location's currency. */
+/** The Cost Summary's stock section (stockMachining) for the quoted route's cut-off; undefined when no stock was chosen. Money in the location's currency. */
 export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockCutOff, batchSize: number): StockMachiningBreakdown | undefined {
   const { choice } = plan;
   if (!choice) return undefined;
@@ -156,8 +189,9 @@ export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockC
     } : null,
     sawMissing: quote?.saw ? null
       : cutOff === 'parting' ? PARTED_OFF
-        : sawGap && 'reason' in sawGap ? sawGap.reason
-          : plan.missing.join('; ') || 'no stock form holds the part',
+        : !plan.sawCosted ? SAW_NOT_COSTED
+          : sawGap && 'reason' in sawGap ? sawGap.reason
+            : plan.missing.join('; ') || 'no stock form holds the part',
     scrapCredit: { enabled: choice.scrapCredit, percent: plan.scrapCostPercent, credit: priced?.scrapCredit ?? 0 },
     partSource: choice.part.source,
     asSuppliedFaceIds: o ? asSuppliedFaces(o, choice.part, choice.faces) : { curvedWall: [], planarFace: [] },

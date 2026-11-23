@@ -157,8 +157,8 @@ export function explainMaterialUsage(input_: ExplainMaterialUsageInput): Materia
         ...usage, scrap,
         net: partWeight(input_, usage.netUsage, 'part volume × material density (machining engine)'),
         gross: rule('Weight of the stock the part is cut from', blankSpec?.stockVolumeMm3 != null && blankSpec.densityKgM3 != null ? [
-          input('Stock', blankSpec.sizeLabel, null, `the smallest ${blankSpec.form.replace(/_/g, ' ')} that contains the part with its machining allowance`),
-          input('Stock Volume', blankSpec.stockVolumeMm3, 'mm³', 'volume of that stock'),
+          input('Stock', blankSpec.sizeLabel, null, `the ${blankSpec.form.replace(/_/g, ' ')} the part is cut from, with its machining allowance`),
+          input('Stock Volume', blankSpec.stockVolumeMm3, 'mm³', "the stock bought for one part: the part's share of a whole bar or plate"),
           input('Material Density', blankSpec.densityKgM3, 'kg/m³', "the material's row in the material library"),
           result(GROSS, usage.grossUsage, 'kg', '{Stock Volume} × {Material Density} ÷ 1,000,000,000'),
         ] : [

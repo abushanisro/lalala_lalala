@@ -596,8 +596,8 @@ export class MaterialResolutionService {
     /** The scenario's Stock Form choice (resolveScenarioStockForm): the stock form the material is priced on; unset = the family's own. */
     stockForm?: string | null;
     /**
-     * The exact stock form the material is priced on, when the stock model chose the stock (a Stock Machining part: stock-price.ts
-     * stockPriceFormOf). Unset: the family's own form, or the scenario's Stock Form as the blank optimizer can size it (machiningStockPriceForm).
+     * The exact stock form the material is priced on, when the stock model chose the stock (a machined part: stock-price.ts
+     * stockPriceFormOf). Unset: the scenario's Stock Form, else the family's own form (machiningStockPriceForm).
      */
     stockPriceForm?: StockPriceForm | null;
     warnings: string[];

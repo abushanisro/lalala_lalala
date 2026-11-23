@@ -79,7 +79,7 @@ describe('a stock the stock model chose is priced as its own form', () => {
     for (const form of STOCK_PRICE_FORMS) expect(stockPriceFormOf(form)).toBe(form);
     expect(stockPriceFormOf('billet')).toBe('plate');
     expect(stockPriceFormOf('round_tube')).toBe('round_tube');
-    // The blank optimizer cannot size a tube, so a Machining part's tube choice is still priced as the billet it falls back to.
+    // Where the stock model has not chosen the stock (a multi-spindle's part), a tube choice is priced as the plate a billet is sawn from.
     expect(machiningStockPriceForm('turned', 'round_tube')).toBe('plate');
     expect(stockPriceFormOf('i_beam')).toBeNull();
   });

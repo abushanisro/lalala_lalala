@@ -154,12 +154,12 @@ describe('resolveScenarioProductionLifeYears', () => {
 });
 
 // Root-caused live (2026-09-17): the Machining "Blank Stock" panel had no
-// way to force a specific stock form — it always trusted BlankOptimizerService's
-// auto-decide result, matching the reference USA Digital Factory tool's own
+// way to force a specific stock form — it always trusted the auto-decided
+// stock, matching the reference USA Digital Factory tool's own
 // "Let [system] Decide" default but missing its explicit Round Bar/Hex
 // Bar/Rectangular Bar/Billet override options entirely.
 describe('resolveScenarioStockForm', () => {
-  it('reads each real, sourced stock form BlankOptimizerService can honor', () => {
+  it('reads each real, sourced stock form the stock model can size', () => {
     expect(resolveScenarioStockForm({ stockForm: 'round_bar' })).toBe('round_bar');
     expect(resolveScenarioStockForm({ stockForm: 'hex_bar' })).toBe('hex_bar');
     expect(resolveScenarioStockForm({ stockForm: 'rectangular_bar' })).toBe('rectangular_bar');

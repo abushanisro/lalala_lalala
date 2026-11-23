@@ -8,6 +8,7 @@ import {
   meetsRequiredMilledClass,
   pickRecommendedRoute,
   checkMachiningCapability,
+  NO_STOCK_WARNING,
   type MachiningCostInput,
   type MachineClassId,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
@@ -28,7 +29,7 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(line.physicsGap?.gapType).toBe('unsupported_operation');
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
-import { realCapabilityRules, realDrillingTable, realGrindingParams, realKeywayBroachReference, realSurfaceGrindingParams, realTappingTable, realInspectionReference } from '../real-reference-tables';
+import { realCapabilityRules, realDrillingTable, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams, realTappingTable, realInspectionReference } from '../real-reference-tables';
 
 const TAPPING = realTappingTable();
 const INSPECTION = realInspectionReference();
@@ -44,20 +45,15 @@ import { EMPTY_CAPABILITY } from '../../../../../../modules/bom-items/costing/sh
 import type { MachineCapability } from '../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
 import { buildOperationSequence } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
+import { findRouteDataGaps } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
 import {
   shapeRankForFamily,
   isDiscouragedShapeForFamily,
 } from '../../../../../../modules/raw-materials/constants/material-shape-ranking';
-import { resolveStockAllowanceRule, stockAllowancePerSideMm } from '../../../../../../modules/bom-items/costing/machining/stock-allowance';
 
-// The reference stock-allowance rule, built from the real memory/Stock Maching
-// variables.csv values (percentStockAllowance 5, minStockAllowance 0.79375,
-// maxStockAllowance 3.175) through the same resolver production uses.
-const STOCK_RULE = resolveStockAllowanceRule([
-  { key: 'percentStockAllowance', value: '5' },
-  { key: 'minStockAllowance', value: '0.79375' },
-  { key: 'maxStockAllowance', value: '3.175' },
-]).rule!;
+// The stock a fixture part is cut from, unless the test states one: a billet of the part's own box. The engine sizes no stock itself (the
+// stock model chooses it, costing/stock), so every test that prices a part gives it one.
+const boxBillet = (l: number, w: number, h: number) => ({ form: 'billet', sizeLabel: `${l}×${w}×${h} billet`, billetVolMm3: l * w * h, utilizationPct: null });
 
 function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInput {
   return {
@@ -104,18 +100,16 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
     location: 'India',
     ...overrides,
   };
+  if (!('blankResult' in overrides)) input.blankResult = boxBillet(input.maxLength, input.maxWidth, input.maxHeight);
   // The removal rate of the part's material class, as tblMillingRemovalRate stages it (migration 1036), unless the test sets one.
   if (!('millingRemovalRateMm3PerMin' in overrides)) input.millingRemovalRateMm3PerMin = REMOVAL_RATE[detectMaterialClass(input.materialGrade)];
   return input;
 }
 
 describe('computeMillingCostSummary — billet and chip loss', () => {
-  it('adds the reference stock allowance per side to the billet', () => {
-    const perSide = stockAllowancePerSideMm(STOCK_RULE, { length: 83, width: 62, height: 32 }); // 5% of 62 = 3.1
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: perSide }), mc('3_axis_mill'));
-    const allow = 2 * perSide;
-    const expectedVol = (83 + allow) * (62 + allow) * (32 + allow);
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo((expectedVol / 1e9) * 2700, 3);
+  it('the billet is the stock chosen for the part', () => {
+    const result = computeMillingCostSummary(milledInput(), mc('3_axis_mill'));
+    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(((83 * 62 * 32) / 1e9) * 2700, 3);
   });
 
   it('clamps utilization at 100% and warns when CAD volume exceeds the billet', () => {
@@ -893,8 +887,8 @@ describe('Fix 1 — holeCount: feature-ops path uses correct count, not raw cyli
   });
 });
 
-describe('Fix 2 — blank optimizer: blankResult overrides bbox billet volume', () => {
-  it('uses blankResult billetVolMm3 when provided instead of computing from bbox', () => {
+describe('the stock the mill starts from is the stock chosen for the part (blankResult)', () => {
+  it('prices the material and the chip loss on its volume', () => {
     // The round bar (Ø30) gives a tighter blank than the full bbox billet
     const roundBarVol = Math.PI * 15 ** 2 * (83 + 5); // Ø30 × (L+5mm facing)
     const result = computeMillingCostSummary(
@@ -913,18 +907,26 @@ describe('Fix 2 — blank optimizer: blankResult overrides bbox billet volume', 
     expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(expectedBilletKg, 3);
   });
 
-  it('falls back to bbox billet when blankResult is absent', () => {
-    const perSide = stockAllowancePerSideMm(STOCK_RULE, { length: 83, width: 62, height: 32 });
-    const allow = 2 * perSide;
-    const bboxVol = (83 + allow) * (62 + allow) * (32 + allow);
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: perSide }), mc('3_axis_mill'));
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo((bboxVol / 1e9) * 2700, 3);
+  it('with no stock chosen nothing is estimated from the bounding box: no material is costed, and the quote says so', () => {
+    const result = computeMillingCostSummary(milledInput({ blankResult: undefined }), mc('3_axis_mill'));
+    expect(result.materialCost).toBe(0);
+    expect(result.grossWeightKg).toBe(0);
+    expect(result.materialRemoval!.billetWeightKg).toBe(0);
+    expect(result.warnings).toContain(NO_STOCK_WARNING);
+    // A part with no feature graph is roughed as one Bulk Milling of the stock less the part: with no stock that is not priced, and named.
+    expect(result.warnings).toContain('Bulk Milling not priced — missing real input: the stock the part is cut from.');
+    // A part with its features recognised is still timed from them: the quote is short of its stock only.
+    const featured = computeMillingCostSummary(milledInput({ blankResult: undefined, featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }] }), mc('3_axis_mill'));
+    expect(featured.materialCost).toBe(0);
+    expect(featured.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin).toBeGreaterThan(0);
   });
 
-  it('adds no allowance, and warns, when the reference rule is not staged', () => {
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: null }), mc('3_axis_mill'));
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(((83 * 62 * 32) / 1e9) * 2700, 3);
-    expect(result.warnings.some((w) => w.startsWith('Stock allowance not applied'))).toBe(true);
+  it('a lathe with no stock chosen has no bar: no material, and turning and parting name the gap', () => {
+    const result = computeTurningCostSummary(turnedInput({ blankResult: undefined, turningParams: REAL_TURNING_PARAMS, partoffTable: realPartoffTable() }), mc('2_axis_lathe'));
+    expect(result.materialCost).toBe(0);
+    expect(result.warnings).toContain(NO_STOCK_WARNING);
+    const gaps = findRouteDataGaps(result.processLines).filter((g) => g.reason.includes('no stock is chosen'));
+    expect(gaps.map((g) => g.process)).toEqual(['Rough Turning', 'Parting']);
   });
 });
 
@@ -2584,8 +2586,9 @@ describe('a blank cut from stock: the piece is machined, the stock bought is the
     const named = turned({ blankResult: { ...bar, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
     const sources = (r: typeof named) => JSON.stringify(r.processLines.find((l) => l.process === 'Rough Turning')!.calculationTrace);
     expect(sources(named)).toContain('Stock Machining stock (tblPreferredSizes): Ø30 round bar');
-    expect(sources(turned())).toContain('Blank optimizer: Ø30 round bar (stock_profiles)');
-    // A stock a lathe cannot turn from (a plate) is named as the stock model's, not the blank optimizer's.
+    // A stock that does not say what chose it (a multi-spindle's own bar) is still named as the stock chosen for the part.
+    expect(sources(turned())).toContain('The stock chosen for the part: Ø30 round bar');
+    // A stock a lathe cannot turn from (a plate) is named with why.
     const plate = turned({ blankResult: { form: 'plate', sizeLabel: '1" plate', billetVolMm3: pieceVol, utilizationPct: 50, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
     expect(plate.warnings.join(' ')).toContain('the stock chosen is 1" plate, which a lathe does not turn from');
   });

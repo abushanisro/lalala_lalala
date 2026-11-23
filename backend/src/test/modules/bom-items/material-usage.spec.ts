@@ -11,7 +11,7 @@ describe('deriveMaterialUsage (moved from the front end unchanged)', () => {
     expect(deriveMaterialUsage({ ...base, castingMetal: { partKg: 2, chargedKg: 2.5 } })).toMatchObject({ grossUsage: 2.5, netUsage: 2, scrapPct: 20, source: 'casting_charge' });
   });
 
-  it('machining: the stock the blank optimizer selected, only when it is real and at least as heavy as the part', () => {
+  it('machining: the stock bought for the part, only when it is real and at least as heavy as the part', () => {
     const blankSpec = { form: 'round_bar', grossWeightKg: 3, netWeightKg: 2 } as never;
     expect(deriveMaterialUsage({ ...base, blankSpec })).toMatchObject({ source: 'stock_blank', grossUsage: 3, netUsage: 2 });
     expect(isStockDrivenBlank({ form: 'round_bar', grossWeightKg: 1, netWeightKg: 2 })).toBe(false);

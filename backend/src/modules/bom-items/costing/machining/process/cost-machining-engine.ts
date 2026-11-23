@@ -112,8 +112,6 @@ export interface MachiningCostInput {
   // Digital Factory location — localizes fixture/tooling cost. Defaults to the
   // shared costing default so a missing value never silently prices in the wrong country.
   location?: string;
-  // Blank optimizer result — when provided, overrides the bounding-box billet volume.
-  // Improves material utilization from ~17% (raw bbox) to 55–65% (near-net stock).
   // Turned part geometry from CAD (BOMItemsService.resolveTurnedGeometry):
   // the largest turned outer diameter and the length along the turning axis,
   // each with the CAD source it came from, and every turned outer diameter the
@@ -129,31 +127,32 @@ export interface MachiningCostInput {
   } | null;
   // Real tblVirtualPartoffInsertCutData rows (MachiningLookupService.getPartoffTable()).
   partoffTable?: any[] | null;
+  /**
+   * The stock the part is cut from: a machined part's is the stock model's choice (costing/stock, stock-machining-cost-summary.ts
+   * stockBlankResult), a multi-spindle's its own bar. Absent: no stock is chosen. The engine then prices no material and turns, parts and
+   * loads nothing from a size of its own making: each is a named gap.
+   */
   blankResult?: {
-    form: string;          // 'round_bar' | 'rectangular_bar' | 'billet'
+    form: string;          // 'round_bar' | 'rectangular_bar' | 'billet' | ...
     sizeLabel: string;
-    billetVolMm3: number;  // pre-computed optimized blank volume
+    billetVolMm3: number;  // the piece the machine starts from
     utilizationPct: number | null;
-    barDiameterMm?: number; // real stock_profiles round-bar diameter
+    barDiameterMm?: number; // the circle round a bar's corners: what a lathe turns down from
     /**
      * The stock bought per part (mm³), when it is more than the piece the machine starts from: the piece's share of a whole bar or plate,
      * with the bar's end, the cuts and the nest's gaps (costing/stock). The material is priced on it; what is machined away, and the bar
      * a lathe turns down from, stay the piece's. Absent: the piece is what is bought.
      */
     purchasedVolMm3?: number;
-    /** What chose the stock, for a calculation's source text; absent = the blank optimizer (stock_profiles). */
+    /** What chose the stock, for a calculation's source text. */
     sizeSource?: string;
   };
   /**
-   * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = a band saw did, so the turning
-   * engine prices no Parting; 'parting' = the lathe parts it off the bar. Absent: the engine's own rule (a lathe always parts off).
+   * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = it is loaded as a piece cut to
+   * length, so the turning engine prices no Parting; 'parting' = the lathe parts it off the bar. Absent: the engine's own rule (a lathe
+   * always parts off).
    */
   stockCutOff?: 'saw' | 'parting';
-  // Per-side machining stock allowance from the reference rule
-  // (costing/machining/stock-allowance.ts, via BlankOptimizerService
-  // .stockAllowanceFor). Used only for the bounding-box billet when no
-  // blankResult is supplied; null = rule not staged (no allowance added).
-  stockAllowancePerSideMm?: number | null;
   // machinability_rating from raw_materials DB (75 = mild steel baseline).
   // Scales MRR: Al 6061 ≈ 150 → 2× faster; SS316 ≈ 35 → 0.47× slower.
   machinabilityRating?: number;
@@ -165,8 +164,8 @@ export interface MachiningCostInput {
   partSetup?: { loadTable: any[] | null; adjustmentFactor: number | null; repetitions: number | null; setups: number | null } | null;
   /** The material's milling removal rate (tblMillingRemovalRate, mm^3/min); null or unset = not on file. */
   millingRemovalRateMm3PerMin?: number | null;
-  // Feature volumes from feature_graph_v2 — enables per-feature cycle time instead
-  // of (billetVol − partVol) / MRR. When absent, falls back to the bbox formula.
+  // Feature volumes from feature_graph_v2 — enables per-feature cycle time. When absent, the whole
+  // stock-to-part volume is one Bulk Milling operation ((stock volume − part volume) / MRR).
   featureOps?: Array<{ name: string; timeSec: number; source: string; /** feature_graph_v2 ids of the features the operation is performed on. */ featureIds?: string[]; /** The steps of the calculator that timed the operation. */ trace?: CalculationTraceStep[]; /** The inputs the operation could not be priced without (its time is then 0). */ missing?: string }>;
   /**
    * The sequenced operations on the features a lathe mills with a live tool: the part's keyways that are not broached, and its slots
@@ -1538,6 +1537,9 @@ export function checkLatheCapability(
   };
 }
 
+/** Said on a quote whose part has no stock (input.blankResult): the engine prices no material and sizes no stock of its own. */
+export const NO_STOCK_WARNING = 'No stock is chosen for the part: its material is not costed, and nothing is estimated in its place.';
+
 // ── Milled cost summary ──────────────────────────────────────────────────
 
 export function computeMillingCostSummary(
@@ -1557,20 +1559,10 @@ export function computeMillingCostSummary(
   const matClass = detectMaterialClass(materialGrade);
   const location = input.location ?? '__default__';
 
-  // ── Billet ────────────────────────────────────────────────────────────────
-  // Prefer blank optimizer result (round bar / rectangular bar selected from stock
-  // profiles table) over the raw bounding-box billet. The optimizer raises material
-  // utilization from ~17% to 55–65% for typical prismatic/turned parts. Falls back
-  // to bbox + the reference per-side stock allowance when the optimizer was not called.
-  const allow = 2 * (input.stockAllowancePerSideMm ?? 0);
-  if (!input.blankResult && input.stockAllowancePerSideMm == null) {
-    warnings.push('Stock allowance not applied to the billet — the reference rule (percentStockAllowance / minStockAllowance / maxStockAllowance, memory/Stock Maching) is not staged.');
-  }
-  const rawBilletVol =
-    maxLength > 0 && maxWidth > 0 && maxHeight > 0
-      ? (maxLength + allow) * (maxWidth + allow) * (maxHeight + allow)
-      : 0;
-  const billetVolMm3 = input.blankResult?.billetVolMm3 ?? rawBilletVol;
+  // ── Stock ─────────────────────────────────────────────────────────────────
+  // The piece the mill starts from is the stock chosen for the part (input.blankResult). With none, nothing is estimated in its place:
+  // the material is not costed, and the quote says so.
+  const billetVolMm3 = input.blankResult?.billetVolMm3 ?? 0;
   const billetWeightKg = r3((billetVolMm3 / 1e9) * materialDensityKgM3);
   // The stock bought per part: the piece itself, or its share of the whole bar or plate when the stock model states one.
   const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : billetWeightKg;
@@ -1581,10 +1573,10 @@ export function computeMillingCostSummary(
   const materialCost = r2(stockWeightKg * materialCostPerKg);
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
-  if (billetVolMm3 === 0) warnings.push('Bounding box is zero — billet cost may be inaccurate');
+  if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
   if (volume > 0 && billetVolMm3 > 0 && volume > billetVolMm3) {
     warnings.push(
-      'CAD part volume exceeds the bounding-box billet — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
+      'CAD part volume exceeds the stock it is cut from — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
     );
   }
 
@@ -1619,7 +1611,7 @@ export function computeMillingCostSummary(
   // times from the operation sequencer — this is Fix 3 + Fix 4. The sequencer
   // already breaks out Drill, Tap, Pocket Rough/Finish per occurrence so we sum
   // all machining ops and bill them against the VMC rate.
-  // Fallback: (billetVol − partVol) / MRR × 1.3 for parts without feature data.
+  // Without feature data: one Bulk Milling operation on the stock volume less the part volume.
   //
   // machinabilityRating scales MRR: Al 6061 ≈ 150 (2× mild steel baseline of 75).
   const machinabilityFactor = (input.machinabilityRating ?? 75) / 75;
@@ -1643,8 +1635,8 @@ export function computeMillingCostSummary(
     millRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(input.featureOps));
     cncMillingMin = (millRun.sec ?? 0) / 60;
   } else {
-    // Bbox-subtraction fallback (used when CAD engine did not return feature_graph_v2)
-    // No feature graph: the whole stock-to-part volume is one Bulk Milling operation, timed by its calculator.
+    // No feature graph (the CAD engine did not return feature_graph_v2): the whole stock-to-part volume is one Bulk Milling operation,
+    // timed by its calculator.
     const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume);
     const rate = input.millingRemovalRateMm3PerMin;
     const bulk = runMachiningCalculator(input.machiningCalculators, 'Bulk Milling', {
@@ -1655,7 +1647,8 @@ export function computeMillingCostSummary(
         match: { table: 'tblMillingRemovalRate', row: { MaterialClass: matClass } },
       } } : {}),
     });
-    if (materialRemovalMm3 > 0 && bulk.missing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulk.missing.join('; ')}.`);
+    if (!input.blankResult) warnings.push('Bulk Milling not priced — missing real input: the stock the part is cut from.');
+    else if (materialRemovalMm3 > 0 && bulk.missing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulk.missing.join('; ')}.`);
     const roughingMin = materialRemovalMm3 > 0 ? (bulk.sec ?? 0) / 60 : 0;
 
     const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.drillingTable, input.machiningCalculators);
@@ -1909,13 +1902,9 @@ export function computeTurningCostSummary(
   const location = input.location ?? '__default__';
 
   // ── Bar stock ────────────────────────────────────────────────────────────
-  // Prefer blank optimizer result when available (Fix 2). For turned parts the
-  // optimizer selects a round bar that fits the part's cross-section with 3%
-  // clearance. Fallback: inscribed circle × 1.1 (original heuristic).
-  const fallbackDiamMm = Math.max(maxWidth, maxHeight) * 1.1;
-  const fallbackBarLenMm = maxLength * 1.1;
-  const fallbackBarVolMm3 = Math.PI * (fallbackDiamMm / 2) ** 2 * fallbackBarLenMm;
-  const barVolMm3 = input.blankResult?.billetVolMm3 ?? fallbackBarVolMm3;
+  // The piece the lathe starts from is the stock chosen for the part (input.blankResult). With none, nothing is estimated in its place:
+  // the material is not costed, turning and parting name the missing bar, and the quote says so.
+  const barVolMm3 = input.blankResult?.billetVolMm3 ?? 0;
   const barWeightKg = r3((barVolMm3 / 1e9) * materialDensityKgM3);
   // The stock bought per part: the piece itself, or its share of the whole bar when the stock model states one.
   const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : barWeightKg;
@@ -1923,6 +1912,7 @@ export function computeTurningCostSummary(
   const materialCost = r2(stockWeightKg * materialCostPerKg);
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
+  if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
   if (volume > 0 && barVolMm3 > 0 && volume > barVolMm3) {
     warnings.push(
       'CAD part volume exceeds the bar-stock volume — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
@@ -1962,19 +1952,15 @@ export function computeTurningCostSummary(
   const partLengthMm = turned?.lengthMm ?? maxLength;
   const partDiameterSource = turned?.diameterSource ?? 'CAD: bounding-box cross-section';
   const partLengthSource = turned?.lengthSource ?? 'CAD: bounding-box length';
-  // The real round-bar diameter the blank optimizer chose from stock_profiles.
-  // A non-round blank (billet, rectangular bar) has no bar diameter to turn
-  // from: turning and parting report that gap rather than inventing one.
+  // The diameter the lathe turns down from: the circle round the chosen bar's corners. A plate or a billet has none, and a part with no
+  // stock has no bar at all: turning and parting report that gap rather than inventing a diameter.
   const barDiameterMm = input.blankResult?.barDiameterMm ?? 0;
-  // The stock model names what chose the stock (sizeSource); with none it is the blank optimizer's stock_profiles row.
-  const stockSource = input.blankResult?.sizeSource;
-  const barDiameterSource = stockSource
-    ? `${stockSource}: ${input.blankResult?.sizeLabel ?? 'none'}`
-    : `Blank optimizer: ${input.blankResult?.sizeLabel ?? 'none'} (stock_profiles)`;
+  // What chose the stock (sizeSource), for the source text of a calculation that reads its size.
+  const barDiameterSource = `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: ${input.blankResult?.sizeLabel ?? 'none'}`;
   const barMissing = barDiameterMm > 0 ? null
-    : stockSource
-      ? `bar stock for this part (the stock chosen is ${input.blankResult?.sizeLabel ?? 'none'}, which a lathe does not turn from)`
-      : `round-bar stock for this part (blank optimizer chose ${input.blankResult?.sizeLabel ?? 'no blank'}, not a round bar)`;
+    : input.blankResult
+      ? `bar stock for this part (the stock chosen is ${input.blankResult.sizeLabel}, which a lathe does not turn from)`
+      : 'bar stock for this part (no stock is chosen)';
   // What the bar leaves to turn: every Ring smaller than the bar, or the one
   // fallback cylinder of a part analysed without Rings. A Ring at the bar's
   // own diameter is left as supplied (turned-diameters.ts).

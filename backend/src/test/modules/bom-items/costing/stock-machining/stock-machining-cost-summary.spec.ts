@@ -1,14 +1,15 @@
-// A Stock Machining part's stock front end as the costing service puts it on a machining route: the stock chosen from the staged rules and
-// the Cost Guide (stock-machining-cost.service.ts chooseStockMachining), priced for each cut-off with every other form beside it
-// (priceStockMachining), and laid on a machining route's quote (stock-machining-cost-summary.ts). On memory/Stock Maching's own tables,
-// saws and materials; expected values are worked out by hand in the comments from the files' numbers.
+// A machined part's stock front end as the costing service puts it on a machining route: the stock chosen from the staged rules and the
+// Cost Guide (stock-machining-cost.service.ts chooseStockMachining), priced for each cut-off with every other form beside it
+// (priceStockMachining), and laid on a machining route's quote (stock-machining-cost-summary.ts): with the Band Saw line for a Stock
+// Machining part, without it for any other machined part (one stock model, user decision 2026-11-22). On memory/Stock Maching's own
+// tables, saws and materials; expected values are worked out by hand in the comments from the files' numbers.
 import { bandSaws, realStockMachiningReference, stockMaterial } from '../stock/stock-test-data';
 import { findRouteDataGaps } from '../../../../../modules/bom-items/costing/shared/core/engine-kernel';
 import { stockReference } from '../../../../../modules/bom-items/costing/stock/stock-reference';
 import { BAR_END_REMNANT_SOURCE } from '../../../../../modules/bom-items/costing/stock/stock-research';
 import { stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
 import {
-  PARTED_OFF, STOCK_SIZE_SOURCE, stockBlankResult, stockLabelOf, stockMachiningBreakdown, withStockMachining, type StockMachiningPlan,
+  PARTED_OFF, SAW_NOT_COSTED, STOCK_SIZE_SOURCE, stockBlankResult, stockLabelOf, stockMachiningBreakdown, withStockMachining, type StockMachiningPlan,
 } from '../../../../../modules/bom-items/costing/stock-machining/stock-machining-cost-summary';
 import {
   chooseStockMachining, priceStockMachining, stockMachiningSettings, stockMaterialRow, type StockMachiningChoice, type StockMachiningMaterialInput,
@@ -48,15 +49,22 @@ const choose = (overrides: Record<string, unknown> = {}, location = 'USA', part:
   if (!choice) throw new Error(missing.join('; '));
   return choice;
 };
-function plan(overrides: Record<string, unknown> = {}, over: { usdToLocal?: number; batchSize?: number; location?: string; material?: Partial<StockMachiningMaterialInput> } = {}): StockMachiningPlan {
+/** The shaft's stock chosen and priced. `sawCosted`: a Stock Machining part's quote (the default here); false is any other machined part's. */
+function plan(
+  overrides: Record<string, unknown> = {},
+  over: { usdToLocal?: number; batchSize?: number; location?: string; material?: Partial<StockMachiningMaterialInput>; sawCosted?: boolean } = {},
+): StockMachiningPlan {
   const choice = choose(overrides, over.location);
   const material = { ...AL, ...(over.material ?? {}) };
+  const sawCosted = over.sawCosted ?? true;
   const priced = priceStockMachining({
-    choice, calculators: stockMachiningCalculatorsByName(), saws: bandSaws('USA'), material, location: over.location ?? 'USA',
+    choice, calculators: stockMachiningCalculatorsByName(), sawCosted, saws: sawCosted ? bandSaws('USA') : [], material, location: over.location ?? 'USA',
     batchSize: over.batchSize ?? 25, usdToLocal: over.usdToLocal ?? 1, costContext: ZERO,
   });
-  return { choice, priced, scrapCostPercent: material.scrapCostPercent, missing: [], warnings: [] };
+  return { sawCosted, choice, priced, scrapCostPercent: material.scrapCostPercent, missing: [], warnings: [] };
 }
+/** The stock of a part whose Process is Machining: the same stock, its sawing not costed. */
+const machiningPlan = (overrides: Record<string, unknown> = {}) => plan(overrides, { sawCosted: false });
 
 /** A lathe route's quote as the turning engine returns it: two lines at 1.00 and 0.50, the material the engine priced on the stock bought. */
 const line = (process: string, totalCost: number, cycleTimeMin: number): ProcessLineCost => ({
@@ -194,7 +202,6 @@ describe('the stock as the blank the machining engines start from', () => {
     expect(blank.billetVolMm3).toBeCloseTo(AREA * 33.5875, 6);
     expect(blank.purchasedVolMm3).toBeCloseTo((AREA * 6096) / 172, 6);
     expect(blank.utilizationPct).toBeCloseTo((2646 / ((AREA * 6096) / 172)) * 100, 9);
-    expect(blank.stock!.chosen!.form).toBe('round_bar');
     expect(stockBlankResult(choose(), 'parting')!.purchasedVolMm3).toBeCloseTo((AREA * 6096) / 164, 6);
   });
 
@@ -244,17 +251,25 @@ describe('a machining route\'s quote with its stock', () => {
     expect(quote.warnings).toContain(PARTED_OFF);
   });
 
-  it('a stock that could not be chosen is a named Material Stock gap on the route, whose own material stands: never a refusal', () => {
-    const quote = withStockMachining(engineCost(), { choice: null, priced: null, scrapCostPercent: null, missing: ['Stock Machining reference data is not staged (source version 2026-Stock-Machining, migration 1114)'], warnings: [] }, 'saw');
-    expect(quote.processLines[0]).toMatchObject({ process: 'Material Stock', processGroup: 'Stock Machining', totalCost: 0, physicsGap: { reason: expect.stringContaining('is not staged') } });
-    expect(quote.materialCost).toBe(0.11);
-    expect(quote.totalCost).toBe(1.61);
-    expect(findRouteDataGaps(quote.processLines).map((g) => g.process)).toEqual(['Material Stock']);
-    expect(quote.warnings).toContain('Stock Machining: Stock Machining reference data is not staged (source version 2026-Stock-Machining, migration 1114).');
+  it('a stock that could not be chosen is a named Material Stock gap on the route, and no material is costed: never a refusal', () => {
+    // With no stock the machining engine prices no material (it estimates none), and that stands.
+    const noStock = { ...engineCost(), materialCost: 0, grossWeightKg: 0, totalCost: 1.5 };
+    const unchosen = { choice: null, priced: null, scrapCostPercent: null, missing: ['Stock Machining reference data is not staged (source version 2026-Stock-Machining, migration 1114)'], warnings: [] };
+    for (const sawCosted of [true, false]) {
+      const quote = withStockMachining(noStock, { sawCosted, ...unchosen }, 'saw');
+      expect(quote.processLines.map((l) => l.process)).toEqual(['Material Stock', 'Rough Turning', 'Inspection']);
+      expect(quote.processLines[0]).toMatchObject({ process: 'Material Stock', processGroup: 'Stock Machining', totalCost: 0, physicsGap: { reason: expect.stringContaining('is not staged') } });
+      expect((quote.processLines[0].physicsGap as { reason: string }).reason).toContain('nothing is estimated in its place');
+      expect(quote.materialCost).toBe(0);
+      expect(quote.totalCost).toBe(1.5);
+      expect(findRouteDataGaps(quote.processLines).map((g) => g.process)).toEqual(['Material Stock']);
+      expect(quote.warnings).toContain('Stock: Stock Machining reference data is not staged (source version 2026-Stock-Machining, migration 1114).');
+      expect(quote.warnings).not.toContain(SAW_NOT_COSTED);
+    }
   });
 
   it('a stock chosen but not priced (its calculators are missing): a named Band Saw gap on a sawn route, nothing added on a parted one', () => {
-    const unpriced: StockMachiningPlan = { choice: choose(), priced: null, scrapCostPercent: null, missing: ['the Stock Machining calculators are not in the database (run migration 1116): Stock Machining - Material Stock'], warnings: [] };
+    const unpriced: StockMachiningPlan = { sawCosted: true, choice: choose(), priced: null, scrapCostPercent: null, missing: ['the Stock Machining calculators are not in the database (run migration 1116): Stock Machining - Material Stock'], warnings: [] };
     const sawn = withStockMachining(engineCost(), unpriced, 'saw');
     expect(sawn.processLines[0]).toMatchObject({ process: 'Band Saw', totalCost: 0, physicsGap: { reason: expect.stringContaining('run migration 1116') } });
     expect(sawn.materialCost).toBe(0.11);
@@ -267,6 +282,76 @@ describe('a machining route\'s quote with its stock', () => {
     expect(quote.processLines[0]).toMatchObject({ process: 'Band Saw', totalCost: 0, physicsGap: { reason: expect.stringContaining('its density') } });
     expect(quote.materialCost).toBe(0.11);
     expect(quote.warnings).toContain('The stock is not priced: Aluminum, ANSI 6061: its density.');
+  });
+});
+
+// One stock model (user decision 2026-11-22): a part whose Process is Machining is costed as a Stock Machining part, less the Band Saw.
+describe('a Machining part\'s quote: the Stock Machining stock, and no band saw', () => {
+  it('a sawn piece: the same stock bought as the material, no Band Saw line, and the quote says once that the sawing is not costed', () => {
+    const stockMachining = withStockMachining(engineCost(), plan(), 'saw');
+    const machining = withStockMachining(engineCost(), machiningPlan(), 'saw');
+    expect(machining.processLines.map((l) => l.process)).toEqual(['Rough Turning', 'Inspection']);
+    // The bar over its 172 sawn pieces at the round bar price, as the Stock Machining quote: 0.11128 -> 0.11.
+    expect(machining.materialCost).toBe(stockMachining.materialCost);
+    expect(machining.materialCost).toBe(0.11);
+    expect(machining.grossWeightKg).toBe(stockMachining.grossWeightKg);
+    expect(machining.totalProcessCost).toBe(1.5);
+    expect(machining.totalCost).toBe(1.61);
+    expect(machining.cycleTimes.totalMin).toBe(1.5);
+    // The difference between the two quotes is the Band Saw line, and nothing else.
+    expect(r2(stockMachining.totalCost - machining.totalCost)).toBe(r2(stockMachining.processLines[0].totalCost));
+    // A note, not a gap: the route is complete, and is recommended and applied as it stands.
+    expect(findRouteDataGaps(machining.processLines)).toEqual([]);
+    expect(machining.warnings.filter((w) => w === SAW_NOT_COSTED)).toHaveLength(1);
+    expect(machining.warnings).not.toContain(PARTED_OFF);
+    expect(stockMachining.warnings).not.toContain(SAW_NOT_COSTED);
+    expect(machining.calculatorRuns).toEqual(stockMachining.calculatorRuns);
+  });
+
+  it('a bar-fed lathe parts the piece off the same bar: the quote is the Stock Machining quote', () => {
+    expect(withStockMachining(engineCost(), machiningPlan(), 'parting')).toEqual(withStockMachining(engineCost(), plan(), 'parting'));
+  });
+
+  it('the Cost Guide\'s settings change its stock as they change a Stock Machining part\'s', () => {
+    for (const overrides of [{ stockForm: 'hex_bar' }, { stockAllowanceMm: 0, stockSnap: false }, { stockRemnantMm: 500 }, { stockScrapCredit: true }]) {
+      const stockMachining = plan(overrides).priced!.saw;
+      const machining = machiningPlan(overrides).priced!.saw;
+      expect(machining.selection).toEqual(stockMachining.selection);
+      expect(machining.materialCost).toBe(stockMachining.materialCost);
+      expect(machining.scrapCredit).toBe(stockMachining.scrapCredit);
+    }
+    // And each does change it: a hex bar, the stock at the part's own size, a longer bar end, the chips sold back.
+    const base = machiningPlan().priced!.saw;
+    expect(machiningPlan({ stockForm: 'hex_bar' }).priced!.saw.selection.chosen!.form).toBe('hex_bar');
+    expect(machiningPlan({ stockAllowanceMm: 0, stockSnap: false }).priced!.saw.selection.chosen).toMatchObject({ aMm: 14, allowancePerSideMm: 0, snapped: false });
+    // floor((6096 - 500) / (33.5875 + 0.889)) = 162 pieces a bar.
+    expect(machiningPlan({ stockRemnantMm: 500 }).priced!.saw.selection.chosen!.stock.partsPerStock).toBe(162);
+    expect(machiningPlan({ stockScrapCredit: true }).priced!.saw.materialCost).toBeLessThan(base.materialCost!);
+  });
+
+  it('its section of the Cost Summary: the same stock and forms, no saw, and why', () => {
+    const stockMachining = stockMachiningBreakdown(plan(), 'saw', 25)!;
+    const machining = stockMachiningBreakdown(machiningPlan(), 'saw', 25)!;
+    expect(machining.stock).toEqual(stockMachining.stock);
+    expect(machining.stock).toMatchObject({ sizeLabel: '5/8" round bar', cutOff: 'saw', cutWidthMm: 0.889, partsPerStock: 172 });
+    expect(machining.saw).toBeNull();
+    expect(machining.sawMissing).toBe(SAW_NOT_COSTED);
+    // Every form is priced as on the Stock Machining quote; none carries a saw cost.
+    expect(machining.options.map((o) => o.materialCost)).toEqual(stockMachining.options.map((o) => o.materialCost));
+    expect(machining.options.every((o) => o.sawCost === null)).toBe(true);
+    expect(machining.stockLabel).toBe('5/8" round bar, 33.59 mm piece, 172 per 6096 mm bar');
+    expect({ ...machining, saw: null, sawMissing: null, options: [] }).toEqual({ ...stockMachining, saw: null, sawMissing: null, options: [] });
+    // On a bar-fed lathe's route the section is the Stock Machining one: the lathe parts the piece off.
+    expect(stockMachiningBreakdown(machiningPlan(), 'parting', 25)).toEqual(stockMachiningBreakdown(plan(), 'parting', 25));
+  });
+
+  it('a stock chosen but not priced (its calculators are missing): no line is added, the engine\'s material on the same stock stands, and the quote says why', () => {
+    const unpriced: StockMachiningPlan = { sawCosted: false, choice: choose(), priced: null, scrapCostPercent: null, missing: ['the Stock Machining calculators are not in the database (run migration 1116)'], warnings: [] };
+    const quote = withStockMachining(engineCost(), unpriced, 'saw');
+    expect(quote.processLines.map((l) => l.process)).toEqual(['Rough Turning', 'Inspection']);
+    expect(quote.materialCost).toBe(0.11);
+    expect(quote.warnings).toContain('Stock: the Stock Machining calculators are not in the database (run migration 1116).');
+    expect(stockMachiningBreakdown(unpriced, 'saw', 25)!.sawMissing).toBe(SAW_NOT_COSTED);
   });
 });
 
@@ -329,8 +414,8 @@ describe('the Cost Summary\'s Stock Machining section', () => {
   });
 
   it('no stock chosen: no section; a stock chosen but not priced: its options without costs, and why the saw is missing', () => {
-    expect(stockMachiningBreakdown({ choice: null, priced: null, scrapCostPercent: null, missing: ['x'], warnings: [] }, 'saw', 25)).toBeUndefined();
-    const b = stockMachiningBreakdown({ choice: choose(), priced: null, scrapCostPercent: null, missing: ['the Stock Machining calculators are not in the database (run migration 1116)'], warnings: [] }, 'saw', 25)!;
+    expect(stockMachiningBreakdown({ sawCosted: true, choice: null, priced: null, scrapCostPercent: null, missing: ['x'], warnings: [] }, 'saw', 25)).toBeUndefined();
+    const b = stockMachiningBreakdown({ sawCosted: true, choice: choose(), priced: null, scrapCostPercent: null, missing: ['the Stock Machining calculators are not in the database (run migration 1116)'], warnings: [] }, 'saw', 25)!;
     expect(b.stock).toMatchObject({ sizeLabel: '5/8" round bar', purchasedKg: null });
     expect(b.options.find((o) => o.chosen)).toEqual({ form: 'round_bar', sizeLabel: '5/8" round bar', unavailable: null, materialCost: null, sawCost: null, chosen: true });
     expect(b.saw).toBeNull();

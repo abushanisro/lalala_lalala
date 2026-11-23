@@ -248,13 +248,13 @@ describe('turning that cannot be priced is still a gap line, with its reason and
     const { processLines, warnings } = cost(shaft({ blankResult: { form: 'billet', sizeLabel: '16 x 16 x 34 billet', billetVolMm3: 16 * 16 * 34, utilizationPct: 40 } }));
     const rough = lineOf(processLines, 'Rough Turning')!;
     expect(rough.cycleTimeMin).toBe(0);
-    expect(rough.physicsGap).toMatchObject({ gapType: 'unsupported_operation', reason: expect.stringContaining('round-bar stock for this part') });
+    expect(rough.physicsGap).toMatchObject({ gapType: 'unsupported_operation', reason: expect.stringContaining('bar stock for this part (the stock chosen is 16 x 16 x 34 billet, which a lathe does not turn from)') });
     expect(rough.confidence).toBe('unsupported');
     expect(rough.featureBreakdown).toBeUndefined();
-    expect(lineDataGap(rough)?.reason).toContain('round-bar stock');
+    expect(lineDataGap(rough)?.reason).toContain('bar stock for this part');
     expect(lineOf(processLines, 'Finish Turning')).toBeUndefined();
     expect(setupCarriers(processLines)).toEqual(['Rough Turning']);
-    expect(warnings.some((w) => w.includes('Turning not priced') && w.includes('round-bar stock'))).toBe(true);
+    expect(warnings.some((w) => w.includes('Turning not priced') && w.includes('bar stock for this part'))).toBe(true);
   });
 
   it('no tblGeneralTurning data for the material', () => {
