@@ -958,11 +958,19 @@ class MachiningFeatureRecognizer:
         return _collect_cylinders_fn(shape, main_axis, bbox)
 
     def _collect_cones(self, shape) -> List[Dict]:
+        """
+        The part's conical faces, for chamfer / countersink classification (shared classify_cone). Each carries
+        whether it is concave (the material is outside the cone: the wall of a hole's mouth; a convex cone is
+        cut on the outside of a diameter or a boss) and the faces that share an edge with it.
+        """
         from OCC.Core.GeomAbs import GeomAbs_Cone  # type: ignore
         from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
         from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-        from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_FORWARD  # type: ignore
+        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+        from shared.bspline_cylinder import face_is_internal
+        from shared.face_topology import FaceTopology
 
+        topology = None  # the face adjacency map, built for the first cone
         results = []
         face_idx = 0
         exp = TopExp_Explorer(shape, TopAbs_FACE)
@@ -979,14 +987,17 @@ class MachiningFeatureRecognizer:
                 # radii are r(v) = RefRadius + v * sin(SemiAngle) over its V range.
                 sin_a = math.sin(cone.SemiAngle())
                 radii = [ref_radius + v * sin_a for v in (surf.FirstVParameter(), surf.LastVParameter())]
-                is_reversed = face.Orientation() != TopAbs_FORWARD
+                d = cone.Axis().Direction()
+                if topology is None:
+                    topology = FaceTopology(shape)
                 results.append({
                     "half_angle_deg": half_angle_deg,
                     "ref_radius": ref_radius,
                     "min_radius": min(radii),
                     "max_radius": max(radii),
                     "centroid": (loc.X(), loc.Y(), loc.Z()),
-                    "is_reversed": is_reversed,
+                    "concave": face_is_internal(face, (loc.X(), loc.Y(), loc.Z()), (d.X(), d.Y(), d.Z())),
+                    "adjacent_faces": sorted(topology.neighbours(face_idx)),
                     "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
                 })
             face_idx += 1  # increment for EVERY face, not just cones

@@ -52,8 +52,9 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     # counterbore: 2 coaxial bores, large+shallow over small+deep.
     # stepped: 3+ coaxial bores of strictly decreasing diameter.
     "MultiStepHole": frozenset({"counterbore", "stepped"}),
-    # countersink: cone coaxial with a bore; chamfer: cone with no bore;
-    # round: convex toroidal blend.
+    # countersink: concave cone at the mouth of a bore (it touches the bore's
+    # wall and is wider than it); chamfer: any other cone (a convex cone is the
+    # chamfer of the diameter it is cut on); round: convex toroidal blend.
     "Edge": frozenset({"countersink", "chamfer", "round"}),
     # outer_diameter: external turned cylinder step; groove: concave annular
     # (toroidal) recess on a turned part.

@@ -116,9 +116,16 @@ def annotate_hole_depth(params: Dict, diameter_mm: float, depth_mm: float) -> No
 
 def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     """
-    A cone is a countersink if there is a coaxial cylinder immediately below it.
-    Otherwise it is a chamfer. Returns (Edge variant "countersink"|"chamfer",
+    A cone is a countersink when it is the mouth of a hole: a concave cone (the
+    material is outside it, as it is outside the hole) that touches the hole's
+    wall and is wider than the hole. Any other cone is a chamfer: a convex cone
+    is the chamfer of the diameter or the boss it is cut on, however near a
+    hole's axis it lies (the chamfer of a shoulder on a bored shaft is not a
+    countersink of the bore). Returns (Edge variant "countersink"|"chamfer",
     params, confidence).
+
+    cone: as _collect_cones lists it, with "concave" and "adjacent_faces" (the
+    faces that share an edge with it); cylinders: as collect_cylinders lists them.
     """
     cx, cy, cz = cone["centroid"]
     half_angle = cone["half_angle_deg"]
@@ -126,9 +133,12 @@ def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     # it; RefRadius alone can be the narrow end (see _collect_cones).
     ref_r = cone.get("max_radius", cone["ref_radius"])
 
-    # Check for coaxial adjacent cylinder (within 5 mm centroid proximity)
+    touching = set(cone["adjacent_faces"]) if cone["concave"] else set()
     for cyl in cylinders:
-        if cyl["kind"] in ("through_hole", "blind_hole"):
+        if cyl["kind"] in ("through_hole", "blind_hole") and touching & set(cyl["face_indices"]):
+            # The hole's stored origin must also lie within 5 mm of the cone's, as it always had to. That is not a measure of
+            # the part (the origin is wherever the CAD system put it), but without it every chamfered bore mouth reads as a
+            # countersink, and nothing here tells a broken edge from a screw seat yet.
             dcx, dcy, dcz = cyl["centroid"]
             dist = math.sqrt((cx - dcx) ** 2 + (cy - dcy) ** 2 + (cz - dcz) ** 2)
             if dist < 5.0 and cyl["radius"] < ref_r:
