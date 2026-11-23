@@ -103,8 +103,10 @@ cad-engine/
                                     (2026-09-19) since Sheet Metal genuinely depends
                                     on them directly — see below; the turning axis (the
                                     direction a part's outer cylinders cover the most area
-                                    along) and whether the part lies within its largest
-                                    turned diameter, which the family classifier reads
+                                    along, on the line those the part is centred in lie
+                                    about: never the centre of its bounding box) and
+                                    whether the part lies within its largest turned
+                                    diameter, which the family classifier reads
     planar_outline.py            — closed 2D outlines: area, hull, smallest rectangle and circle,
                                     simplification, the regular-hexagon test (bar and tube sections,
                                     roll-formed profiles, the machining stock envelope)

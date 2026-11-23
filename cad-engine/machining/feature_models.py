@@ -52,13 +52,16 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     # counterbore: 2 coaxial bores, large+shallow over small+deep.
     # stepped: 3+ coaxial bores of strictly decreasing diameter.
     "MultiStepHole": frozenset({"counterbore", "stepped"}),
-    # countersink: cone coaxial with a bore; chamfer: cone with no bore;
-    # round: convex toroidal blend.
+    # countersink: concave cone at the mouth of a bore (it touches the bore's
+    # wall and is wider than it); chamfer: any other cone (a convex cone is the
+    # chamfer of the diameter it is cut on); round: convex toroidal blend.
     "Edge": frozenset({"countersink", "chamfer", "round"}),
     # outer_diameter: external turned cylinder step; groove: concave annular
     # (toroidal) recess on a turned part.
     "Ring": frozenset({"outer_diameter", "groove"}),
-    # straight: elongated milled slot; radial: elongated slot on a turned OD;
+    # straight: elongated milled slot; radial: a slot on a turned part that runs
+    # across the turning axis (milled into a turned diameter or a bore, or across
+    # an end face or a shoulder);
     # groove: concave toroidal recess on a milled part (Groove Milling//Slot).
     "Slot": frozenset({"straight", "radial", "groove"}),
     "Keyway": frozenset({"default"}),

@@ -70,9 +70,9 @@ def _by_type(tree, ftype, variant=None):
 
 
 def _stepped_shaft_with_holes():
-    """OD1 (D40, z0-40) fused to OD2 (D25, z40-80); a coaxial blind hole
-    (D6, depth 20) from the top; a radial cross hole (D5) through OD2,
-    axially clear of the blind hole's floor."""
+    """OD1 (D40, z0-40) fused to OD2 (D25, z40-80); a coaxial bore (D6, z40-60)
+    inside OD2; a radial cross hole (D5) through OD2 at z50, which the bore
+    cuts in two."""
     cyl_a = BRepPrimAPI_MakeCylinder(20.0, 40.0).Shape()
     ax_b = gp_Ax2(gp_Pnt(0, 0, 40.0), gp_Dir(0, 0, 1))
     cyl_b = BRepPrimAPI_MakeCylinder(ax_b, 12.5, 40.0).Shape()
@@ -185,12 +185,14 @@ def test_stepped_shaft_yields_real_blind_hole_not_tapped():
 
 
 def test_stepped_shaft_yields_real_cross_hole():
+    # The Ø5 hole across OD2 is cut in two by the Ø6 bore it crosses: two radial holes on one line, half a turn apart round the axis.
+    # Their angle is that of each wall (it was that of the cylinder's origin, the same for both), so they are a pattern of two.
     tree = _recognize(_stepped_shaft_with_holes(), "turned")
-    crosses = _by_type(tree, "SimpleHole", "cross")
-    assert len(crosses) >= 1, "real radial through-hole must be detected"
-    for f in crosses:
-        assert f.params["diameter_mm"] == 5.0
-        assert f.face_ids
+    (pattern,) = _by_type(tree, "SimpleHole", "pcd_pattern")
+    assert pattern.params["hole_count"] == 2
+    assert pattern.params["hole_diameter_mm"] == 5.0
+    assert len(pattern.face_ids) == 2
+    assert _by_type(tree, "SimpleHole", "cross") == []
 
 
 def test_sleeve_yields_real_through_hole():
