@@ -316,7 +316,11 @@ interface StockRouteMaterial {
   usdToLocal: number;
   /** The request's exchange rates: a plate cutting machine's rate is converted with them, as every Sheet Metal machine's is. */
   fx: RateSnapshot;
-  material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
+  material: {
+    name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>>;
+    /** The material a form's price is borrowed from (resolveMaterialForFamily stockFormPriceBorrowedFrom). */
+    priceBorrowedFrom?: Partial<Record<StockPriceForm, string>>;
+  };
 }
 /**
  * Whether a part's Process is Stock Machining: the one Process whose quote costs sawing the stock to pieces (the Band Saw line). Every
@@ -2412,7 +2416,7 @@ export class BomItemCostingService {
       // Stock Machining part, the band saw. Null for a multi-spindle's part, whose bar is its own engine's.
       const stock = usesStockModel(item, family) ? await this.stockMachiningRoutes(item, fg, family as MachiningFamily, {
         location, accessToken, batchSize, usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
-        material: { name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
+        material: { name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom },
       }) : null;
       // The milling engine prices no parting, so a mill's piece is sawn; a lathe's is cut off as its class says (a bar-fed lathe parts it off the bar).
       const stockCutOffFor = (cls: string): StockCutOff => (family === 'milled' ? 'saw' : stockCutOffOf(cls));
@@ -6699,7 +6703,7 @@ export class BomItemCostingService {
       // What the part's stock is priced from, for every route builder below.
       const stockMaterial: StockRouteMaterial = {
         usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
-        material: { name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
+        material: { name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom },
       };
       if (family === 'milled') {
         return attachToRoutes(await this.buildMilledRoutes(
@@ -9112,8 +9116,11 @@ export class BomItemCostingService {
     usdToLocal: number;
     /** The request's exchange rates (a plate cutting machine's rate is converted with them). */
     fx: RateSnapshot;
-    /** The material the quote prices: its Raw Materials name, the grade asked for, its density, and each stock form's price per kg in the location's currency. */
-    material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
+    /**
+     * The material the quote prices: its Raw Materials name, the grade asked for, its density, each stock form's price per kg in the
+     * location's currency, and the material a form's price is borrowed from.
+     */
+    material: StockRouteMaterial['material'];
   }): Promise<{
     plan: StockMachiningPlan;
     asSuppliedFaceIds: number[];
@@ -9140,6 +9147,7 @@ export class BomItemCostingService {
         material: {
           name, grade: ctx.material.grade, densityKgM3: ctx.material.densityKgM3 > 0 ? ctx.material.densityKgM3 : null,
           pricePerKgUsd: Object.fromEntries(Object.entries(ctx.material.pricesPerKg).filter(([, v]) => v > 0).map(([form, v]) => [form, v / ctx.usdToLocal])),
+          priceBorrowedFrom: ctx.material.priceBorrowedFrom,
         },
         batchSize: ctx.batchSize, usdToLocal: ctx.usdToLocal, costContext: zeroCtx,
         ...(roughing ? { roughing } : {}),

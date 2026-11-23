@@ -117,6 +117,8 @@ export interface StockMachiningMaterialInput {
   scrapCostPercent: number | null;
   /** USD per kg of each stock form at the location (the form's stock price, else the material's own). */
   pricePerKgUsd: Partial<Record<StockPriceForm, number>>;
+  /** The material a form's price is borrowed from, where the location prices not this one in that form (stock-price closestStockPrice). */
+  priceBorrowedFrom?: Partial<Record<StockPriceForm, string>>;
 }
 
 export interface StockOptionCost {
@@ -243,7 +245,9 @@ export function priceStockMachining(input: {
       material: {
         name: material.name, cutCode: material.cutCode, densityKgM3: material.densityKgM3, scrapCostPercent: material.scrapCostPercent,
         pricePerKgUsd: priceForm ? material.pricePerKgUsd[priceForm] ?? null : null,
-        priceSource: `${material.name}: its ${STOCK_FORM_LABEL[priceForm ?? option.form]} price at ${input.location} (Raw Materials)`,
+        priceSource: priceForm && material.priceBorrowedFrom?.[priceForm]
+          ? `${material.name}: no ${STOCK_FORM_LABEL[priceForm]} price at ${input.location}, so that of ${material.priceBorrowedFrom[priceForm]}, its closest material priced there`
+          : `${material.name}: its ${STOCK_FORM_LABEL[priceForm ?? option.form]} price at ${input.location} (Raw Materials)`,
       },
       remnant: choice.remnant, scrapCredit: choice.scrapCredit, batchSize: input.batchSize, costContext: input.costContext, endFaceIds: choice.faces.endFaceIds,
     });
@@ -400,7 +404,7 @@ export interface StockMachiningCostRequest {
   /** Whether the band saw is costed: the Stock Machining Process's quote has it, no other machined part's does. */
   sawCosted: boolean;
   /** The material the quote prices: the names it goes by (Raw Materials name and grade), its density and each stock form's price (USD/kg). */
-  material: { name: string; grade: string | null; densityKgM3: number | null; pricePerKgUsd: Partial<Record<StockPriceForm, number>> };
+  material: { name: string; grade: string | null; densityKgM3: number | null; pricePerKgUsd: Partial<Record<StockPriceForm, number>>; priceBorrowedFrom?: Partial<Record<StockPriceForm, string>> };
   batchSize: number;
   /** USD -> the location's currency. */
   usdToLocal: number;
@@ -501,7 +505,7 @@ export class StockMachiningCostService {
     const roughing = req.roughing ? { cutter: req.roughing.cutter, cuts: cuts.length ? await req.roughing.priceCuts(cuts) : [] } : null;
     const stock = priceStockMachining({
       choice, calculators, sawCosted: req.sawCosted, saws, location: req.location, batchSize: req.batchSize, usdToLocal: req.usdToLocal, costContext: req.costContext,
-      material: { name: req.material.name, densityKgM3: req.material.densityKgM3, pricePerKgUsd: req.material.pricePerKgUsd, ...facts },
+      material: { name: req.material.name, densityKgM3: req.material.densityKgM3, pricePerKgUsd: req.material.pricePerKgUsd, priceBorrowedFrom: req.material.priceBorrowedFrom, ...facts },
       roughing,
     });
     return { stock, material: facts, missing: [], warnings };
