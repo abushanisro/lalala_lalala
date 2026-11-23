@@ -2,7 +2,7 @@ import { latheMillingLines, type LatheMillingOp } from './lathe-milling';
 import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
 import { cylindersToTurn, type TurnedCylinder, type TurnedRing } from './turned-diameters';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
-import { resolveSetupMinutes, type SetupTimeResolution } from '../../shared/core/engine-kernel';
+import { findRouteDataGaps, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
 import { isRealHeatTreatmentCallout } from '../operation/wire-edm-routing';
 import {
@@ -2492,8 +2492,14 @@ export function computeTurningCostSummary(
 
 // ── Route recommendation (single source of truth) ─────────────────────────────
 // Cost Summary and Route Comparison MUST agree on which machine class a part is
-// quoted on. Both call these two functions; neither carries its own heuristic.
-// Divergence here is a P0 — it reads as two different prices for the same part.
+// quoted on. Divergence here is a P0 — it reads as two different prices for the
+// same part. Neither carries a rule of its own: each states every route it
+// priced by the same facts (machiningRouteStanding, below), and the route is
+// chosen by the comparison's rule (engine-kernel selectRecommendedRoute; the
+// Cost tab through selectQuotedRoute, which adds the route Apply writes when
+// none is recommended). pickRecommendedRoute was here: the Cost tab's own rule
+// (the cheapest capable class, ties to fewer setups), which did not ask that
+// the route be fully costed and broke ties another way than the comparison.
 
 // The minimum milled machine class comes from the features' tool axes and the
 // reference setup rule: requiredMilledClassFromToolAxes (../setup-axis-rule).
@@ -2516,16 +2522,53 @@ export function meetsRequiredMilledClass(
   return rank >= requiredRank;
 }
 
-// Recommended route = lowest total cost among capable candidates; ties break to
-// fewer setups (less repositioning error), then to the earlier (simpler) class.
-// Falls back to the first candidate when nothing is capable — the caller is
-// expected to surface capability warnings alongside.
-export function pickRecommendedRoute<T extends { totalCost: number; capable: boolean; setupCount: number }>(
-  candidates: T[],
-): T {
-  const pool = candidates.filter((c) => c.capable);
-  const ranked = (pool.length > 0 ? pool : candidates).slice().sort(
-    (a, b) => a.totalCost - b.totalCost || a.setupCount - b.setupCount,
-  );
-  return ranked[0];
+/**
+ * True when HR Rates holds a machine of the class at the location. A class with
+ * none is priced at 0 per hour: it must never be the cheapest by that artefact
+ * (the live $0.00 quote of 2026-09-18), so it is not a route the part can be
+ * quoted on, in the Cost tab and in the comparison alike.
+ */
+export function hasMachineRate(rate: MHRRateInput): boolean {
+  return rate.source !== 'no_db_rate';
+}
+
+/** A machining route as the route ranking reads it (engine-kernel RankableRoute), with the gaps and lines the ranking of an unrecommended route reads. */
+export interface MachiningRouteStanding extends RankableRoute {
+  totalCost: number;
+  dataGaps: RouteDataGap[];
+  processLines: ProcessLineCost[];
+}
+
+/**
+ * What the route ranking reads of a machining route priced on one machine
+ * class. The Cost tab's candidates and the comparison's routes are both stated
+ * through this, so a route is judged on the same facts wherever it is ranked:
+ *
+ *   capable       the caller's verdict that the machine can make the part: its
+ *                 envelope, the live tool or the milled class the features
+ *                 need, a rate on file (hasMachineRate). It is the route's
+ *                 feasibility too: a machining route has no other.
+ *   fully costed  no line of the route is a data gap (findRouteDataGaps), on
+ *                 the lines as quoted (the stock's lines included).
+ *   compatible    what the operation catalog says of the machine for the part,
+ *                 where the caller reads it.
+ */
+export function machiningRouteStanding(
+  routeId: string,
+  cost: Pick<CostSummaryDto, 'processLines' | 'totalCost' | 'cycleTimes'>,
+  capable: boolean,
+  compatibility?: RouteCompatibilityVerdict | null,
+): MachiningRouteStanding {
+  const dataGaps = findRouteDataGaps(cost.processLines);
+  return {
+    routeId,
+    totalCost: cost.totalCost,
+    cycleTimes: { totalMin: cost.cycleTimes.totalMin },
+    capability: { overallCapable: capable },
+    isFeasible: capable,
+    dataComplete: dataGaps.length === 0,
+    dataGaps,
+    processLines: cost.processLines,
+    ...(compatibility !== undefined ? { compatibility } : {}),
+  };
 }

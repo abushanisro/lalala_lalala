@@ -58,10 +58,10 @@ import { resolveNetUsagePhysics } from './costing/sheet-metal/raw-material/sheet
 import {
   computeMillingCostSummary, computeTurningCostSummary, millingOperationsCost,
   checkMachiningCapability, checkLatheCapability, computeRouteComplexityScore,
-  meetsRequiredMilledClass, pickRecommendedRoute,
+  meetsRequiredMilledClass, hasMachineRate, machiningRouteStanding,
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
-import type { MachiningCostInput, MachineClassId } from './costing/machining/process/cost-machining-engine';
+import type { MachiningCostInput, MachineClassId, MachiningRouteStanding } from './costing/machining/process/cost-machining-engine';
 import { machiningFeatureCounts } from './costing/machining/operation/machining-feature-counts';
 import { requiredMilledClassFromToolAxes } from './costing/machining/setup-axis-rule';
 import { PlasticReferenceService } from './costing/plastic-molding/lookup/plastic-reference.service';
@@ -90,6 +90,7 @@ import { featureRemovedVolumeMm3, stockExcess } from './costing/machining/operat
 import { splitDeepHoleOccurrences, resolveDeepHoleRules } from './costing/machining/operation/deep-hole-routing';
 import { broachWidthRangeMm, splitKeywayOccurrences } from './costing/machining/operation/keyway-routing';
 import { catalogGapSummary, machiningCatalogCompatibility } from './costing/machining/operation/catalog-compatibility';
+import type { RouteCompatibility } from './costing/plastic-molding/operation/route-compatibility';
 import { splitWireEdmOccurrences } from './costing/machining/operation/wire-edm-routing';
 import { computeInjectionMoldedCostSummary } from './costing/plastic-molding/process/cost-injection-molding-engine';
 import { driverImpacts } from './costing/plastic-molding/cost-driver-sensitivity';
@@ -125,7 +126,7 @@ import {
   pressFormingRequirement, rollBendingRequirement, deburrSecPerMm,
 } from './costing/shared/capability/machine-selection/physics';
 import { sandCastingRoute } from './costing/casting/sand/sand-route-comparison';
-import { findRouteDataGaps, noCostFeatureLine, selectRecommendedRoute, shouldAddSeparatePressBrakeLine, rollBendingGeometryCapability, rolledFormNeedsRollBender,
+import { findRouteDataGaps, noCostFeatureLine, selectRecommendedRoute, selectQuotedRoute, shouldAddSeparatePressBrakeLine, rollBendingGeometryCapability, rolledFormNeedsRollBender,
   drawnShellNeedsDrawing, drawnShellFromFeatures, routeProducesBlank, cuttingFeatureCoverage, requiredCutFeatures, CUT_FEATURE_TYPES, preferRealRate,
   hardToolingVolumeCapability, isAutoRoutable, routesTakingSecondary, unpricedReason, r2 } from './costing/shared/core/engine-kernel';
 import { computeProgressiveDieToolingCost, progressiveDieToolingDataGap, buildProgressiveDieToolingLine } from './costing/sheet-metal/process/progressive-die-tooling-engine';
@@ -328,6 +329,18 @@ const isStockMachining = (item: { scenarioOverrides?: Record<string, unknown> | 
  */
 const usesStockModel = (item: { scenarioOverrides?: Record<string, unknown> | null }, family: string) =>
   isMachiningFamily(family) && !(family === 'turned' && isMultiSpindle(item));
+/**
+ * A route automatic routing may take: one its builder offers to it (autoRoutable: a 'Cut, then form and finish' route, never a
+ * single-operation forming route) that is a registered apply target (VALID_ROUTE_IDS). The comparison recommends among these only; why
+ * each restriction exists is told where the recommendation is made (attachToRoutes).
+ */
+const isRecommendable = (route: { routeId: string; autoRoutable?: boolean }) =>
+  route.autoRoutable !== false && (VALID_ROUTE_IDS as readonly string[]).includes(route.routeId);
+/**
+ * The machine class a machined part is quoted on, among the routes its cost summary priced: the route the comparison recommends over
+ * those same routes or, when it recommends none, the route Apply then writes (engine-kernel selectQuotedRoute).
+ */
+const quotedMachiningRoute = <T extends MachiningRouteStanding>(routes: readonly T[]): T | null => selectQuotedRoute(routes, isRecommendable);
 /** The Sheet Metal machine classes that cut a plate part's blank out of its plate (Plate Cutting with Drop-off). */
 type PlateCutClass = 'fiber_laser' | 'co2_laser' | 'plasma_cut' | 'oxyfuel_cut' | 'waterjet';
 /** The part's Process as the user chose it (scenarioOverrides.processGroup); null when none is chosen. */
@@ -2469,15 +2482,10 @@ export class BomItemCostingService {
       // Surface treatment is a shared secondary operation (appendSecondaryOperations), not an engine line.
       const surfaceTreatmentDbRate = null;
 
+      // Every class the part can be quoted on (primaryMachiningRates), and the stations its other lines run on.
+      const primaryRateByClass = this.primaryMachiningRates(mhrRates);
       const cncMachineClassesForIdentity = [
-        mhrRates.mill3ax.machineClass,
-        mhrRates.mill4ax.machineClass,
-        mhrRates.mill5ax.machineClass,
-        mhrRates.lathe2ax.machineClass,
-        mhrRates.lathe3ax.machineClass,
-        mhrRates.latheBarFeed2ax.machineClass,
-        mhrRates.latheBarFeed3ax.machineClass,
-
+        ...[...primaryRateByClass.values()].map((r) => r.machineClass),
         mhrRates.deburring.machineClass,
         mhrRates.inspection.machineClass,
         mhrRates.tapping.machineClass,
@@ -2620,11 +2628,9 @@ export class BomItemCostingService {
         return { ...this.normalizeCostSummaryToCurrency(msResult, rates, locInfo.code, item.scenarioOverrides), resolvedInputs: costingInputs };
       }
 
-      // Single source of truth with Route Comparison: cost every feasible route
-      // and quote on the recommended one (lowest total cost among capable
-      // candidates, gated by the class the part's features demand). The old
-      // difficulty-only pick here diverged from Route Comparison's lowest-cost
-      // badge — two prices for the same part is a P0 for quoting.
+      // Single source of truth with Route Comparison: every route the comparison prices for the part is priced here on the same machines
+      // (primaryMachiningRates, milledRouteMachines), stated by the same facts (machiningRouteStanding) and chosen by the same rule
+      // (quotedMachiningRoute): the Cost tab quotes the route the comparison recommends. Two prices for the same part is a P0 for quoting.
       const axisRequirement = requiredMilledClassFromToolAxes(
         fg?.feature_graph_v2?.features, (await this.machiningLookup.getSetupAxisRule()).rule,
       );
@@ -2632,22 +2638,11 @@ export class BomItemCostingService {
 
       // Discovered from the database (real mhr_records rows joined through
       // process_taxonomy.machining_route_role), not a fixed 3-member array —
-      // see machine-discovery.service.ts. primaryRateByClass is not a second
-      // hardcoded class list — it is just the lookup from a discovered class
-      // string to the rate resolveMHRRates already resolved for it.
-      const primaryRateByClass = new Map<string, MHRRateInput>([
-        ['3_axis_mill', mhrRates.mill3ax],
-        ['4_axis_mill', mhrRates.mill4ax],
-        ['5_axis_mill', mhrRates.mill5ax],
-        ['2_axis_lathe', mhrRates.lathe2ax],
-        ['3_axis_lathe', mhrRates.lathe3ax],
-        ['2_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed2ax],
-        ['3_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed3ax],
-        ['machining_millturn', mhrRates.machiningMillturn],
-      ]);
-      const discoveredPrimaryClasses = await this.machineDiscoveryService.getEligibleClasses(
-        family === 'milled' ? 'primary_milling' : 'primary_turning', location, accessToken,
-      );
+      // see machine-discovery.service.ts. A milled part's machines are the mills and the turning machines the operation catalog says
+      // make its every feature, each with that verdict; a turned part's are the turning machines.
+      const milledMachines = family === 'milled' ? await this.milledRouteMachines(fg, location, accessToken, primaryRateByClass) : null;
+      const discoveredPrimaryClasses = milledMachines ? milledMachines.discoveredMills
+        : await this.machineDiscoveryService.getEligibleClasses('primary_turning', location, accessToken);
       if (discoveredPrimaryClasses.length === 0) {
         throw new Error(
           `No primary ${family === 'milled' ? 'milling' : 'turning'} machine classes discovered for ` +
@@ -2656,12 +2651,11 @@ export class BomItemCostingService {
           'before Machining parts can be costed.',
         );
       }
-      const candidateClasses: Array<{ cls: MachineClassId; rate: MHRRateInput }> = discoveredPrimaryClasses
-        .filter((cls) => primaryRateByClass.has(cls))
-        .map((cls) => ({ cls: cls as MachineClassId, rate: primaryRateByClass.get(cls)! }));
+      const candidateClasses: Array<{ cls: MachineClassId; rate: MHRRateInput; compatibility?: RouteCompatibility | null }> = milledMachines
+        ? milledMachines.priced.map((m) => ({ cls: m.cls, rate: primaryRateByClass.get(m.cls)!, compatibility: m.compatibility }))
+        : discoveredPrimaryClasses.filter((cls) => primaryRateByClass.has(cls)).map((cls) => ({ cls: cls as MachineClassId, rate: primaryRateByClass.get(cls)! }));
 
-
-      const costedRoutes = candidateClasses.map(({ cls, rate }) => {
+      const costedRoutes = candidateClasses.map(({ cls, rate, compatibility }) => {
         const tappingRate = this.rates.inheritCncTappingRate(mhrRates.tapping, rate);
         const input: MachiningCostInput = { ...baseCncInput, ...(stock ? stock.input(stockCutOffFor(cls)) : {}), mhrRate: rate, tappingRate };
         const engineCost =
@@ -2688,21 +2682,22 @@ export class BomItemCostingService {
         // 'no_db_rate', rate = 0 — see makeDefault()) still passed the
         // geometric/complexity capability gate, so a route that is cheapest
         // ONLY because its price is an artefact of missing data would win
-        // pickRecommendedRoute's "lowest cost" sort and silently show as a
+        // the "lowest cost" pick and silently show as a
         // fully-priced $0 quote — the exact defect findRouteDataGaps'
         // own doc comment describes for missing physics data, just for a
         // missing RATE instead. A no_db_rate candidate is still costed and
         // returned (so its $0 lines and warnings are visible if a user picks
         // it manually) but never auto-recommended over a candidate that has
-        // a real rate.
-        const hasRealRate = rate.source !== 'no_db_rate';
+        // a real rate (hasMachineRate: the comparison's routes are held to it too).
+        const hasRealRate = hasMachineRate(rate);
         const capable =
           capability.overallCapable && hasRealRate &&
           (family !== 'milled' || meetsRequiredMilledClass(cls, requiredClass));
-        return { cls, cost, capable, hasRealRate, totalCost: cost.totalCost, setupCount: cost.setupCount ?? 1, liveToolWarnings: lathe?.liveToolWarnings ?? [] };
+        return { ...machiningRouteStanding(cls, cost, capable, compatibility), compatibility, cls, cost, hasRealRate, liveToolWarnings: lathe?.liveToolWarnings ?? [] };
       });
 
-      const recommended = pickRecommendedRoute(costedRoutes);
+      const recommended = quotedMachiningRoute(costedRoutes);
+      if (!recommended) throw new Error(`None of the ${family === 'milled' ? 'milling' : 'turning'} machine classes discovered for "${location}" (${discoveredPrimaryClasses.join(', ')}) is one the machining engines price.`);
       const cncResult = { ...recommended.cost, ...currencyMeta };
       // The stock of the quoted route: a bar-fed lathe's is the bar it parts the piece off, any other machine's the sawn piece.
       const quotedCutOff = stockCutOffFor(recommended.cls);
@@ -2716,12 +2711,15 @@ export class BomItemCostingService {
       } : undefined;
       const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize, roughingOnMill) : undefined;
       if (stockBreakdown) cncResult.stockMachining = stockBreakdown;
-      if (!recommended.capable) {
+      if (!recommended.isFeasible) {
         cncResult.warnings.push(
           !costedRoutes.some((r) => r.hasRealRate)
             ? 'No candidate machine class has a real MHR rate on file for this location — showing the least-incomplete option; add a machine rate to quote accurately.'
             : 'No costed route fully satisfies the part envelope/complexity — showing the closest option; review machine capability.',
         );
+      } else if (recommended.compatibility?.status === 'incompatible') {
+        // Every machine that can hold the part lacks an operation one of its features needs: the quote stands on the best there is, and says so.
+        cncResult.warnings.push(catalogGapSummary(this.humanizeMachineClass(recommended.cls), BomItemCostingService.catalogFeatures(fg), recommended.compatibility.incompatibilities));
       }
       // What the quoted lathe's live tool cannot make, or that its live tooling is not on file: said here as on its route in the comparison.
       cncResult.warnings.push(...recommended.liveToolWarnings);
@@ -6668,9 +6666,7 @@ export class BomItemCostingService {
         // Gating on VALID_ROUTE_IDS closes this for good: a route can never
         // be recommended unless it is also genuinely applyable, for any
         // current or future route id, not just these 3.
-        recommendedRouteId: selectRecommendedRoute(
-          normalized.routes.filter((r) => r.autoRoutable && VALID_ROUTE_IDS.includes(r.routeId)),
-        )?.routeId ?? null,
+        recommendedRouteId: selectRecommendedRoute(normalized.routes.filter(isRecommendable))?.routeId ?? null,
         // Every route incompatible: nothing is recommended and nothing is chosen in its place; the message says so.
         noCompatibleProcessMessage: noCompatibleProcess(normalized.routes) ? NO_COMPATIBLE_PROCESS_MESSAGE : null,
         resolvedInputs: costingInputs,
@@ -6735,9 +6731,11 @@ export class BomItemCostingService {
           routeJigBoreTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeKeywayBroach, routeWireEdmParams,
           accessToken,
         );
-        // Badges are awarded among the lathes; a mill route joins the ranking by its cost alone.
+        // Fastest and best quality are awarded among the lathes; a mill route joins the ranking by its cost alone, so lowest cost is
+        // decided again over all of them: it names the route the comparison recommends.
         turned.routes.push(...milled.routes.filter((r) => millable.has(r.routeId))
           .map((r) => ({ ...r, badges: { lowestCost: false, fastest: false, bestQuality: false } })));
+        BomItemCostingService.badgeLowestCost(turned.routes);
       }
       return attachToRoutes(turned);
     }
@@ -8695,6 +8693,12 @@ export class BomItemCostingService {
       .join(' ');
   }
 
+  /** A machining comparison's lowest-cost badge: on the route it recommends (selectRecommendedRoute over the recommendable routes), on none when it recommends none. */
+  private static badgeLowestCost(routes: RouteResultDto[]): void {
+    const recommended = selectRecommendedRoute(routes.filter(isRecommendable));
+    routes.forEach((r) => { r.badges.lowestCost = r === recommended; });
+  }
+
   /** The part's features as the operation catalog is checked against them. */
   private static catalogFeatures(fg: any): unknown[] | undefined {
     return (fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2)?.features as unknown[] | undefined;
@@ -8738,6 +8742,47 @@ export class BomItemCostingService {
     const features = BomItemCostingService.catalogFeatures(fg);
     const classes = await this.machineDiscoveryService.getEligibleClasses(role, location, accessToken);
     return classes.map((cls) => ({ cls, verdict: machiningCatalogCompatibility(features, catalog, stations[cls] ?? this.humanizeMachineClass(cls)) }));
+  }
+
+  /**
+   * The rate resolved for each machine class a machined part's route can be made on: the mills, the lathes, the mill-turn and the
+   * simultaneous turning centres. One map for the cost summary and both route comparisons, so a class one of them prices is a class
+   * the others can price: which of these a part's routes are is discovered (the location's machines, machine-discovery.service; the
+   * operation catalog, milledRouteMachines), never decided by which classes a caller happened to list. The cost summary kept a list
+   * of its own without simultaneous_turning: a route the comparison priced, and could recommend, was one the Cost tab could not quote.
+   */
+  private primaryMachiningRates(mhrRates: Awaited<ReturnType<typeof this.rates.resolveMHRRates>>): Map<string, MHRRateInput> {
+    return new Map<string, MHRRateInput>([
+      ['3_axis_mill', mhrRates.mill3ax],
+      ['4_axis_mill', mhrRates.mill4ax],
+      ['5_axis_mill', mhrRates.mill5ax],
+      ['2_axis_lathe', mhrRates.lathe2ax],
+      ['3_axis_lathe', mhrRates.lathe3ax],
+      ['2_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed2ax],
+      ['3_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed3ax],
+      ['machining_millturn', mhrRates.machiningMillturn],
+      ['simultaneous_turning', mhrRates.simultaneousTurning],
+    ]);
+  }
+
+  /**
+   * The machines a milled part's routes are priced on at a location, each with what the operation catalog says of it for this part
+   * (machiningVerdicts): every mill, and the turning machines the catalog gives every operation the part's features need (they mill
+   * it with live tools). `cannotMake` are the turning machines it rules out: the comparison lists them, and nothing prices them. The
+   * cost summary and the route comparison price this one set, so the Cost tab can quote any route the comparison can recommend.
+   */
+  private async milledRouteMachines(fg: any, location: string, accessToken: string, rates: ReadonlyMap<string, MHRRateInput>) {
+    const [mills, lathes] = await Promise.all([
+      this.machiningVerdicts('primary_milling', fg, location, accessToken),
+      this.machiningVerdicts('primary_turning', fg, location, accessToken),
+    ]);
+    const rated = lathes.filter((m) => rates.has(m.cls));
+    return {
+      discoveredMills: mills.map((m) => m.cls),
+      priced: [...mills.filter((m) => rates.has(m.cls)), ...rated.filter((m) => m.verdict?.status === 'compatible')]
+        .map((m) => ({ cls: m.cls as MachineClassId, compatibility: m.verdict })),
+      cannotMake: rated.flatMap((m) => (m.verdict?.status === 'incompatible' ? [{ cls: m.cls, compatibility: m.verdict }] : [])),
+    };
   }
 
   /** The machines of a role the catalog rules out for this part, each as a listed route. */
@@ -8882,47 +8927,19 @@ export class BomItemCostingService {
       wireEdmRate: mhrRates.wireEdm,
     };
 
-    // Discovered from the database, not a fixed 3-member array — see
-    // machine-discovery.service.ts. primaryRateByClass is the same lookup
-    // (discovered class string -> already-resolved rate), not a second
-    // hardcoded class list.
-    const primaryRateByClass = new Map<string, MHRRateInput>([
-      ['3_axis_mill', mhrRates.mill3ax],
-      ['4_axis_mill', mhrRates.mill4ax],
-      ['5_axis_mill', mhrRates.mill5ax],
-      // Turning machines with live tooling: offered for a milled part when the catalog says they make its features.
-      ['2_axis_lathe', mhrRates.lathe2ax],
-      ['3_axis_lathe', mhrRates.lathe3ax],
-      ['2_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed2ax],
-      ['3_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed3ax],
-      ['simultaneous_turning', mhrRates.simultaneousTurning],
-      ['machining_millturn', mhrRates.machiningMillturn],
-    ]);
-    const discoveredMilledClasses = await this.machineDiscoveryService.getEligibleClasses(
-      'primary_milling', location, accessToken,
-    );
-    if (discoveredMilledClasses.length === 0) {
+    // Discovered from the database, not a fixed 3-member array — see machine-discovery.service.ts. Every mill of the location is a
+    // candidate, and the turning machines the operation catalog gives every one of the part's operations (they mill it with live tools);
+    // the turning machines it rules out are listed with the operations they lack. The cost summary prices this same set
+    // (milledRouteMachines), so the route recommended here is one the Cost tab quotes.
+    const primaryRateByClass = this.primaryMachiningRates(mhrRates);
+    const machines = await this.milledRouteMachines(fg, location, accessToken, primaryRateByClass);
+    if (machines.discoveredMills.length === 0) {
       throw new Error(
         `No primary milling machine classes discovered for location "${location}" — ` +
         'process_taxonomy.machining_route_role (migration 780) and mhr_records.canonical_process_id ' +
         '(migration 781) must be run against the live database before Route Comparison can offer milling routes.',
       );
     }
-    // Every primary machine of the location is a candidate. What each can make is read from the reference
-    // operation catalog against the operation each CAD feature needs (catalog-compatibility.ts): a mill is
-    // costed; a turning machine is costed only when the catalog gives it every one of the part's operations,
-    // and is otherwise listed with the operations it lacks.
-    const stations = loadMachiningCalculatorSpec().stations;
-    const operationCatalog = await this.machiningLookup.getOperationCatalog();
-    const partFeatures = (fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2)?.features as unknown[] | undefined;
-    const compatibilityOf = (cls: string) => machiningCatalogCompatibility(partFeatures, operationCatalog, stations[cls] ?? cls);
-    const turningClasses = (await this.machineDiscoveryService.getEligibleClasses('primary_turning', location, accessToken))
-      .filter((cls) => primaryRateByClass.has(cls));
-    const milledMachineClasses: MachineClassId[] = [
-      ...discoveredMilledClasses.filter((cls) => primaryRateByClass.has(cls)),
-      ...turningClasses.filter((cls) => compatibilityOf(cls)?.status === 'compatible'),
-    ].map((cls) => cls as MachineClassId);
-    const cannotMake = turningClasses.filter((cls) => compatibilityOf(cls)?.status === 'incompatible');
 
     const pocketCount = machiningFeatureCounts(fg?.machining_features)?.pockets ?? 0;
     // Same feature gate the cost summary uses — a route below the class the
@@ -8934,7 +8951,7 @@ export class BomItemCostingService {
 
     const threadCount = baseInput.threads.reduce((s, t) => s + t.count, 0);
 
-    const routes: RouteResultDto[] = milledMachineClasses.map((mc) => {
+    const routes: RouteResultDto[] = machines.priced.map(({ cls: mc, compatibility }) => {
       const routeRate = primaryRateByClass.get(mc)!;
       const engineCost = computeMillingCostSummary(
         { ...baseInput, ...stock.input('saw'), mhrRate: routeRate, tappingRate: this.rates.inheritCncTappingRate(mhrRates.tapping, routeRate) },
@@ -8954,7 +8971,11 @@ export class BomItemCostingService {
         );
       }
       if (!requiredClass) capabilityWarnings.push(axisRequirement.reason);
-      const overallCapable = envelope.overallCapable && meetsClass;
+      // A class with no machine rate on file is priced at 0 per hour: never a route the part can be quoted on (hasMachineRate).
+      if (!hasMachineRate(routeRate)) capabilityWarnings.push(`HR Rates has no ${this.humanizeMachineClass(mc)} machine with a rate for ${location}.`);
+      const overallCapable = envelope.overallCapable && meetsClass && hasMachineRate(routeRate);
+      // Judged on the same facts as the Cost tab's candidate on this machine (machiningRouteStanding).
+      const standing = machiningRouteStanding(mc, cost, overallCapable, compatibility);
       const routeSetups = cost.setupCount ?? 1;
       return {
         routeId: mc as unknown as RouteId,
@@ -8966,9 +8987,9 @@ export class BomItemCostingService {
         materialCost: cost.materialCost,
         abrasiveCost: 0,
         totalProcessCost: cost.totalProcessCost,
-        isFeasible: overallCapable,
-        dataComplete: findRouteDataGaps(cost.processLines).length === 0,
-        dataGaps: findRouteDataGaps(cost.processLines),
+        isFeasible: standing.isFeasible,
+        dataComplete: standing.dataComplete,
+        dataGaps: standing.dataGaps,
         totalCost: cost.totalCost,
         cycleTimes: {
           cuttingMin:    cost.cycleTimes.laserMin,
@@ -9002,21 +9023,20 @@ export class BomItemCostingService {
         routeComplexityScore:      computeRouteComplexityScore(
           holeCount, pocketCount, threadCount, routeSetups, baseInput.gdtFeatureCount,
         ),
-        compatibility: compatibilityOf(mc),
+        compatibility,
       };
     });
     // Listed, never costed: the machine cannot make the part, and the reason is each operation it lacks.
-    for (const cls of cannotMake) routes.push(this.listedMachiningRoute(cls, compatibilityOf(cls)!, primaryRateByClass.get(cls)!.source, BomItemCostingService.catalogFeatures(fg)));
+    for (const { cls, compatibility } of machines.cannotMake) {
+      routes.push(this.listedMachiningRoute(cls, compatibility!, primaryRateByClass.get(cls)!.source, BomItemCostingService.catalogFeatures(fg)));
+    }
     routes.push(...await this.routerRoutes(fg, location, accessToken, routes[0]?.ratesSource ?? RATES_SOURCE_LABEL));
 
-    // Badges — only among capable routes. The lowest-cost capable route here is
-    // by construction the route getCostSummary quotes on (same pick function).
+    // Badges — only among capable routes. Lowest cost names the route the comparison recommends (badgeLowestCost), which is the
+    // route the Cost tab quotes.
     const capable = routes.filter((r) => r.capability.overallCapable);
+    BomItemCostingService.badgeLowestCost(routes);
     if (capable.length > 0) {
-      const recommended = pickRecommendedRoute(
-        routes.map((r) => ({ route: r, totalCost: r.totalCost ?? Infinity, capable: r.capability.overallCapable, setupCount: r.setupCount ?? 99 })),
-      ).route;
-      routes.forEach((r) => { r.badges.lowestCost = r.routeId === recommended.routeId; });
 
       // Fastest: minimum realized cycle time among capable routes — the
       // axis-count proxy this used to be (many pockets -> 5-axis, otherwise
@@ -9452,18 +9472,9 @@ export class BomItemCostingService {
       turningParams: turningParams ?? null,
     };
 
-    // Discovered from the database, not a fixed 3-member array — see
-    // machine-discovery.service.ts. primaryRateByClass is the same lookup
-    // (discovered class string -> already-resolved rate), not a second
-    // hardcoded class list.
-    const primaryRateByClass = new Map<string, MHRRateInput>([
-      ['2_axis_lathe', mhrRates.lathe2ax],
-      ['3_axis_lathe', mhrRates.lathe3ax],
-      ['2_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed2ax],
-      ['3_axis_bar_feed_lathe_with_sub_spindle', mhrRates.latheBarFeed3ax],
-      ['machining_millturn', mhrRates.machiningMillturn],
-      ['simultaneous_turning', mhrRates.simultaneousTurning],
-    ]);
+    // Discovered from the database, not a fixed 3-member array — see machine-discovery.service.ts: the location's turning machines,
+    // each at the rate the cost summary prices it at (primaryMachiningRates).
+    const primaryRateByClass = this.primaryMachiningRates(mhrRates);
     const discoveredTurnedClasses = await this.machineDiscoveryService.getEligibleClasses(
       'primary_turning', location, accessToken,
     );
@@ -9496,6 +9507,11 @@ export class BomItemCostingService {
         { maxLength, maxWidth, maxHeight, weightKg: finishedWeightKg, liveTool: featurePlan.liveTool },
         { name: routeRate.machineName ?? this.humanizeMachineClass(mc), capability: routeCandidate?.capability, capabilitySource: routeCandidate?.capabilitySource },
       );
+      // A class with no machine rate on file is priced at 0 per hour: never a route the part can be quoted on (hasMachineRate).
+      const capabilityWarnings = hasMachineRate(routeRate) ? capability.machineCapabilityWarnings
+        : [...capability.machineCapabilityWarnings, `HR Rates has no ${this.humanizeMachineClass(mc)} machine with a rate for ${location}.`];
+      // Judged on the same facts as the Cost tab's candidate on this machine (machiningRouteStanding).
+      const standing = machiningRouteStanding(mc, cost, capability.overallCapable && hasMachineRate(routeRate));
       const routeSetups = cost.setupCount ?? 1;
       return {
         routeId: mc as unknown as RouteId,
@@ -9507,9 +9523,9 @@ export class BomItemCostingService {
         materialCost: cost.materialCost,
         abrasiveCost: 0,
         totalProcessCost: cost.totalProcessCost,
-        isFeasible: capability.overallCapable,
-        dataComplete: findRouteDataGaps(cost.processLines).length === 0,
-        dataGaps: findRouteDataGaps(cost.processLines),
+        isFeasible: standing.isFeasible,
+        dataComplete: standing.dataComplete,
+        dataGaps: standing.dataGaps,
         totalCost: cost.totalCost,
         cycleTimes: {
           cuttingMin:    cost.cycleTimes.laserMin,
@@ -9522,11 +9538,11 @@ export class BomItemCostingService {
         capability: {
           cuttingCapable:    capability.overallCapable,
           pressBrakeCapable: true,
-          overallCapable:    capability.overallCapable,
-          confidence:        capability.overallCapable ? 'high' : 'low',
+          overallCapable:    standing.capability.overallCapable,
+          confidence:        standing.capability.overallCapable ? 'high' : 'low',
           estimatedTonnage:  null,
           reasonCodes:       [],
-          warnings:          capability.machineCapabilityWarnings,
+          warnings:          capabilityWarnings,
         },
         warnings: cost.warnings,
         ratesSource: cost.ratesSource,
@@ -9539,7 +9555,7 @@ export class BomItemCostingService {
             }
           : undefined,
         setupCount:                routeSetups,
-        machineCapabilityWarnings: capability.machineCapabilityWarnings,
+        machineCapabilityWarnings: capabilityWarnings,
         routeComplexityScore:      computeRouteComplexityScore(
           holeCount, 0, threadCount, routeSetups, baseInput.gdtFeatureCount,
         ),
@@ -9552,13 +9568,10 @@ export class BomItemCostingService {
     // Badges. Lowest cost is COMPUTED from route totals — a 2-axis lathe with a
     // per-part rechuck penalty is often costlier than live tooling, so the old
     // hardcoded "lathe = cheapest" badge could contradict the numbers next to it.
-    // Same pick function as getCostSummary, so summary and badge always agree.
+    // It names the route the comparison recommends (badgeLowestCost), which is the route getCostSummary quotes.
     const capable = routes.filter((r) => r.capability.overallCapable);
+    BomItemCostingService.badgeLowestCost(routes);
     if (capable.length > 0) {
-      const recommended = pickRecommendedRoute(
-        routes.map((r) => ({ route: r, totalCost: r.totalCost ?? Infinity, capable: r.capability.overallCapable, setupCount: r.setupCount ?? 99 })),
-      ).route;
-      routes.forEach((r) => { r.badges.lowestCost = r.routeId === recommended.routeId; });
       // Fastest: minimum realized cycle time among capable routes — replaces
       // the old unconditional "mill-turn is always fastest" badge, which had
       // no physical justification beyond being the last of 3 fixed literals.

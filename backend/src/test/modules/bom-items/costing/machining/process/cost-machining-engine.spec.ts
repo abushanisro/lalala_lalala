@@ -6,7 +6,6 @@ import {
   computeTurningCostSummary,
   computeSurfaceTreatmentLine,
   meetsRequiredMilledClass,
-  pickRecommendedRoute,
   checkMachiningCapability,
   NO_STOCK_WARNING,
   type MachiningCostInput,
@@ -805,41 +804,6 @@ describe('meetsRequiredMilledClass', () => {
     expect(meetsRequiredMilledClass(mc('5_axis_mill'), mc('4_axis_mill'))).toBe(true);
     // Lathe classes are not gated by the milled hierarchy
     expect(meetsRequiredMilledClass(mc('2_axis_lathe'), mc('5_axis_mill'))).toBe(true);
-  });
-});
-
-describe('pickRecommendedRoute', () => {
-  it('picks the lowest-cost capable route — Cost Summary must equal the Route Comparison badge', () => {
-    const picked = pickRecommendedRoute([
-      { id: '3ax', totalCost: 766, capable: true, setupCount: 3 },
-      { id: '4ax', totalCost: 990, capable: true, setupCount: 2 },
-      { id: '5ax', totalCost: 1239, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('3ax');
-  });
-
-  it('never recommends an incapable route while a capable one exists', () => {
-    const picked = pickRecommendedRoute([
-      { id: '3ax', totalCost: 766, capable: false, setupCount: 3 },
-      { id: '5ax', totalCost: 1239, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('5ax');
-  });
-
-  it('breaks cost ties toward fewer setups', () => {
-    const picked = pickRecommendedRoute([
-      { id: 'a', totalCost: 100, capable: true, setupCount: 3 },
-      { id: 'b', totalCost: 100, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('b');
-  });
-
-  it('falls back to cheapest overall when nothing is capable', () => {
-    const picked = pickRecommendedRoute([
-      { id: 'a', totalCost: 200, capable: false, setupCount: 1 },
-      { id: 'b', totalCost: 100, capable: false, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('b');
   });
 });
 
