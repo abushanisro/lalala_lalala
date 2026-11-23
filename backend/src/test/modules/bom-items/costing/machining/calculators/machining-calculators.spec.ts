@@ -107,12 +107,12 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     for (const name of ['Rough Turning', 'Finish Turning', 'Stock Prep Lathe']) expect(committed).toContain(`-- Machining - ${name}`);
     // 804 still ships the formulas it was applied with; the engine sees only the current entries.
     expect(buildMachiningCalculatorsMigrationSql()).toContain('round({Rough Stock} / {Rough Depth of Cut})');
-    expect(calcs['Rough Turning']!.fields.map((f) => f.field_name)).toEqual([
+    expect(calcs['Rough Turning']?.fields.map((f) => f.field_name)).toEqual([
       'Turned Diameter', 'Turned Length', 'Bar Diameter', 'Finish Depth of Cut', 'Rough Depth of Cut', 'Rough Cutting Speed', 'Rough Feed',
       'Approach Length', 'Finish Start Diameter', 'Rough Passes', 'Spindle Speed', 'Feed Rate', 'Time per Pass', CYCLE_TIME_FIELD,
     ]);
     // The lathe's stock preparation is the same cut: it copies the current Rough Turning.
-    expect(calcs['Stock Prep Lathe']!.fields).toEqual(calcs['Rough Turning']!.fields);
+    expect(calcs['Stock Prep Lathe']?.fields).toEqual(calcs['Rough Turning']?.fields);
   });
 
   it('Rough Turning reproduces the three worked rows of the workbook\'s Turning sheet', () => {
@@ -124,8 +124,8 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
         'Bar Diameter': d1, 'Turned Diameter': d2, 'Turned Length': length, 'Rough Cutting Speed': v, 'Rough Feed': s, 'Rough Depth of Cut': t, 'Finish Depth of Cut': 0,
       }).map(([name, value]) => [name, { value, source: 'Turning sheet' }]));
       const run = runMachiningCalculator(calcs, 'Rough Turning', seeds);
-      const value = (field: string) => run.trace.find((step) => step.fieldName === field)!.value as number;
-      return { rpm: value('Spindle Speed'), passes: value('Rough Passes'), min: run.sec! / 60, missing: run.missing };
+      const value = (field: string) => Number(run.trace.find((step) => step.fieldName === field)?.value);
+      return { rpm: value('Spindle Speed'), passes: value('Rough Passes'), min: (run.sec ?? NaN) / 60, missing: run.missing };
     };
     const first = row(100, 96, 200, 120, 0.2, 2);
     expect(first.missing).toEqual([]);
