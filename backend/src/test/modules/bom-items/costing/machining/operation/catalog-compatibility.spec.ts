@@ -1,4 +1,5 @@
 import { catalogGapSummary, machiningCatalogCompatibility } from '../../../../../../modules/bom-items/costing/machining/operation/catalog-compatibility';
+import { resolveCanonicalOperation } from '../../../../../../modules/bom-items/costing/machining/process/canonical-operation';
 import { readMachiningMemoryCsv } from '../real-reference-tables';
 
 // The reference operation catalog itself (memory/Machining/operations_full__operations.csv, 1174 rows).
@@ -9,7 +10,7 @@ const feature = (feature_type: string, operation: string, n: number) =>
   ({ id: `${feature_type}-${n}`, feature_type, variant: 'default', canonical_operation: `${operation} // ${feature_type}`, occurrences: Array(n).fill({}) });
 const PART = [
   feature('Edge', 'Rounding', 32), feature('SimpleHole', 'Tapping', 8), feature('SimpleHole', 'Drilling', 5),
-  feature('PocketV2', 'Rough Milling', 16), feature('Keyway', 'Rough Milling', 1), feature('Slot', 'Groove Milling', 6),
+  feature('PocketV2', 'Rough Milling', 16), feature('Keyway', 'Obround Slot Milling', 1), feature('Slot', 'Groove Milling', 6),
   feature('PlanarFace', 'Fine Finish Milling', 19), feature('CurvedWall', 'Contouring', 4), feature('CurvedSurface', 'Contouring', 8),
 ];
 
@@ -41,10 +42,39 @@ describe('machiningCatalogCompatibility: what a machine can make, read from the 
     const v = machiningCatalogCompatibility(PART, CATALOG, '2 Axis Lathe')!;
     const sentence = catalogGapSummary('2 Axis Lathe', PART, v.incompatibilities);
     expect(sentence).toMatch(/^2 Axis Lathe cannot make this part: the machining catalog gives it no /);
-    expect(sentence).toContain('Rough Milling (16 × PocketV2, 1 × Keyway)');
+    expect(sentence).toContain('Rough Milling (16 × PocketV2)');
+    expect(sentence).toContain('Obround Slot Milling (1 × Keyway)');
     expect(sentence).toContain('Rounding (32 × Edge)');
     // The machine is named once, not once per feature group.
     expect(sentence.match(/2 Axis Lathe/g)).toHaveLength(1);
+  });
+
+  describe('a keyway, labelled as the analysis labels it (canonical-operation.ts)', () => {
+    const keyway = (family: 'milling' | 'turning') =>
+      [{ id: 'Keyway-1', feature_type: 'Keyway', variant: 'default', canonical_operation: resolveCanonicalOperation('Keyway', 'default', family)!, occurrences: [{}, {}] }];
+
+    it.each(['3 Axis Mill', '4 Axis Mill', '5 Axis Mill', '3 Axis Lathe', '3 Axis Bar Feed Lathe with Sub Spindle', 'MillTurn', 'Simultaneous Turning'])(
+      '%s mills it: the catalog gives it the operation the keyway is costed by',
+      (process) => {
+        for (const family of ['milling', 'turning'] as const) {
+          expect(machiningCatalogCompatibility(keyway(family), CATALOG, process)).toMatchObject({ status: 'compatible', incompatibilities: [] });
+        }
+      },
+    );
+
+    it.each(['2 Axis Lathe', '2 Axis Bar Feed Lathe with Sub Spindle'])('%s cannot: it has no live tool to mill a keyway with', (process) => {
+      const v = machiningCatalogCompatibility(keyway('turning'), CATALOG, process)!;
+      expect(v.incompatibilities).toEqual([expect.objectContaining({
+        featureType: 'Keyway', count: 2, reason: `${process} has no "Obround Slot Milling // Keyway" operation in the machining catalog`,
+      })]);
+    });
+
+    it('an analysis stored with the earlier label "Rough Milling" still rules out the 3 axis bar feed lathe and Simultaneous Turning: the catalog gives them no Rough Milling for a keyway', () => {
+      const storedEarlier = [feature('Keyway', 'Rough Milling', 2)];
+      for (const process of ['3 Axis Bar Feed Lathe with Sub Spindle', 'Simultaneous Turning']) {
+        expect(machiningCatalogCompatibility(storedEarlier, CATALOG, process)!.status).toBe('incompatible');
+      }
+    });
   });
 
   it('gives no verdict without a catalog or without a feature that states its operation', () => {

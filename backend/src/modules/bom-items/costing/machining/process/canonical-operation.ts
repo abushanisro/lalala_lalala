@@ -32,10 +32,11 @@ const MILLING_OPERATION_BY_FEATURE: Readonly<Record<string, string>> = {
   'Slot:straight': 'Slot Milling',
   'Slot:radial': 'Slot Milling',
   'Slot:groove': 'Groove Milling',
-  // The cost engine mills a keyway as "Obround Slot Milling" (operation-sequencer.ts), which the catalog also gives a Keyway. The label stays
-  // "Rough Milling": it is the name the tolerance capability table links to a capability (operation_capability_process: Rough Milling ->
-  // Milling; no slot-milling operation has a row), so a keyway's tolerances are still judged (feature-tolerance.service.ts).
-  'Keyway:default': 'Rough Milling',
+  // The operation the cost engine mills a keyway by (operation-sequencer.ts KEYWAY_MILLING), so the feature and its cost row carry one name
+  // and a machine is judged by the operation it is priced on: the catalog gives "Obround Slot Milling//Keyway" to the mills, the 3 axis
+  // lathes, MillTurn and Simultaneous Turning. The tolerance capability table links the operation to Milling (operation_capability_process,
+  // migration 1120): that is the capability a keyway's tolerances are judged against (feature-tolerance.service.ts).
+  'Keyway:default': 'Obround Slot Milling',
   'Cutout:default': 'Perimeter Milling',
   'PlanarFace:default': 'Fine Finish Milling',
   'CurvedWall:default': 'Contouring',
