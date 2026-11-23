@@ -17,6 +17,7 @@ import {
   type RankedMaterial,
 } from '../../raw-materials/material-search-ranking';
 import { expandSearchTermSpellingVariants } from '../../raw-materials/material-search-spelling';
+import { polymerNamesIn } from '../../raw-materials/material-polymer-symbols';
 import { escapeLikePattern, ilikeContains } from '../../../common/db/postgrest-filter';
 
 /** The raw_materials column density, UTS and shear strength were read from, for a calculator input's source (SourceRef 'material'). */
@@ -401,12 +402,17 @@ export class MaterialResolutionService {
       // The old .limit(12) (arbitrary order) could drop the right row before
       // any ranking; the cap is now large enough to hold every plausible
       // candidate and the fetch is ordered so it is reproducible.
+      // A plastic's ISO 1043-1 symbol is a word of the grade ("PC/ABS") and is
+      // fetched as the words the reference data names it with ("PA66", "POM-C":
+      // "Nylon, Type 66", "Acetal"; the ranker scores the grade with them in
+      // place), never as itself when shorter than three letters ("PC" is inside
+      // every "SPCC").
       const tokens = g
         .split(/[\s\-\/]+/)
         .map((t) => t.replace(/[(),]/g, ''))
-        .filter((t) => t.length >= 3);
+        .filter((t) => t.length >= 3 || polymerNamesIn(t).length > 0);
       const terms = tokens.length > 1 ? tokens : [g.replace(/[(),]/g, '')];
-      const orClause = terms
+      const orClause = [...terms.filter((t) => t.length >= 3 || terms.length === 1), ...polymerNamesIn(g)]
         .flatMap((t) => expandSearchTermSpellingVariants(t))
         .flatMap((v) => {
           const pattern = ilikeContains(v);
