@@ -17,7 +17,7 @@ import { ReparseUploadUseCase } from './application/reparse-upload.use-case';
 import { StartAssemblyUploadUseCase } from './application/start-assembly-upload.use-case';
 import { StartUploadUseCase } from './application/start-upload.use-case';
 import { ElectronicsWorkers } from './electronics-workers';
-import { EcadEngineClient } from './infrastructure/ecad/ecad-engine.client';
+import { BoardExtractionClient } from './infrastructure/cad-engine/board-extraction.client';
 import { electronicsJobQueueProvider } from './infrastructure/queue/queue.provider';
 import { ElectronicsQueueHealthIndicator } from './infrastructure/queue/queue.health';
 import { ElectronicsRateBookLoader } from './infrastructure/repositories/electronics-rate-book.loader';
@@ -32,7 +32,7 @@ import { DatabaseModule } from '../../common/database/database.module';
   providers: [
     electronicsJobQueueProvider,
     ElectronicsQueueHealthIndicator,
-    EcadEngineClient,
+    BoardExtractionClient,
     BoardSetParser,
     // Registered parsers, in priority order. A new input tier is one new entry here.
     {

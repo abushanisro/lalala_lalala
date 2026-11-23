@@ -4,3 +4,5 @@
 # Railway builds should not carry test tooling. Dockerfile.dev layers these on
 # top of that image so tests run against the exact production runtime.
 pytest==9.2.0
+# Board feature-graph schemas (test_pcb_contract_schemas.py, test_pcb_board_graph.py) are checked as JSON Schema draft 7.
+jsonschema==4.23.0

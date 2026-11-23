@@ -52,11 +52,10 @@ jest.setTimeout(30_000);
 describe('HealthController: liveness and readiness', () => {
   let app: INestApplication | undefined;
   const cad = new FakeEngine();
-  const ecad = new FakeEngine();
 
   // Everything a test may change before boot(). Reset for each test.
   let database: ReturnType<typeof databaseReturning>;
-  let ecadConfigured: boolean;
+  let cadConfigured: boolean;
   let queueHealth: QueueHealth;
 
   const server = () => app!.getHttpServer();
@@ -70,7 +69,7 @@ describe('HealthController: liveness and readiness', () => {
         ConfigModule.forRoot({
           ignoreEnvFile: true,
           isGlobal: true,
-          load: [() => ({ CAD_ENGINE_URL: cad.url, ECAD_ENGINE_URL: ecadConfigured ? ecad.url : '', APP_ENV: 'stage' })],
+          load: [() => ({ CAD_ENGINE_URL: cadConfigured ? cad.url : '', APP_ENV: 'stage' })],
         }),
       ],
       controllers: [HealthController],
@@ -90,19 +89,15 @@ describe('HealthController: liveness and readiness', () => {
 
   beforeAll(async () => {
     await cad.start();
-    await ecad.start();
   });
   afterAll(async () => {
     await cad.stop();
-    await ecad.stop();
   });
 
   beforeEach(() => {
     cad.behaviour = 'up';
-    ecad.behaviour = 'up';
     cad.paths = [];
-    ecad.paths = [];
-    ecadConfigured = true;
+    cadConfigured = true;
     database = databaseReturning(null);
     queueHealth = { configured: true, ready: true };
   });
@@ -130,23 +125,21 @@ describe('HealthController: liveness and readiness', () => {
   });
 
   describe('GET /api/health/ready', () => {
-    it('is 200 when the database, both engines and the queue answer', async () => {
+    it('is 200 when the database, the CAD engine and the queue answer', async () => {
       await boot();
       const res = await request(server()).get('/api/health/ready').expect(200);
       expect(res.body.status).toBe('ok');
       expect(res.body.info).toMatchObject({
         database: { status: 'up' },
         cad_engine: { status: 'up' },
-        ecad_engine: { status: 'up' },
         electronics_queue: { status: 'up' },
       });
     });
 
-    it('probes each engine on its own /ready route', async () => {
+    it('probes the CAD engine on its own /ready route', async () => {
       await boot();
       await request(server()).get('/api/health/ready').expect(200);
       expect(cad.paths).toEqual(['/ready']);
-      expect(ecad.paths).toEqual(['/ready']);
     });
 
     it('is 503 and names cad_engine when it answers an error status', async () => {
@@ -154,22 +147,22 @@ describe('HealthController: liveness and readiness', () => {
       await boot();
       const res = await request(server()).get('/api/health/ready').expect(503);
       expect(res.body.error.cad_engine).toMatchObject({ status: 'down', reason: 'http_503' });
-      expect(res.body.info.ecad_engine.status).toBe('up'); // the others are still reported as up
+      expect(res.body.info.database.status).toBe('up'); // the others are still reported as up
     });
 
-    it('is 503 and names ecad_engine when it is unreachable', async () => {
+    it('is 503 and names cad_engine when it is unreachable', async () => {
       const unreachable = new FakeEngine();
       await unreachable.start();
       const url = unreachable.url;
       await unreachable.stop(); // nothing listens on this port any more
-      ecad.url = url;
+      const listening = cad.url;
+      cad.url = url;
       try {
         await boot();
         const res = await request(server()).get('/api/health/ready').expect(503);
-        expect(res.body.error.ecad_engine).toMatchObject({ status: 'down', reason: 'unreachable' });
+        expect(res.body.error.cad_engine).toMatchObject({ status: 'down', reason: 'unreachable' });
       } finally {
-        await ecad.stop();
-        await ecad.start(); // fresh listener for the tests after this one
+        cad.url = listening;
       }
     });
 
@@ -198,10 +191,10 @@ describe('HealthController: liveness and readiness', () => {
     });
 
     it('does not fail readiness for an engine with no URL configured, and says so', async () => {
-      ecadConfigured = false;
+      cadConfigured = false;
       await boot();
       const res = await request(server()).get('/api/health/ready').expect(200);
-      expect(res.body.info.ecad_engine).toEqual({ status: 'up', configured: false });
+      expect(res.body.info.cad_engine).toEqual({ status: 'up', configured: false });
     });
 
     it('does not fail readiness for a queue with no backend configured, and says so', async () => {

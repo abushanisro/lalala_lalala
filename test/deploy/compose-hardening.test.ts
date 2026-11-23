@@ -56,7 +56,7 @@ describe('docker-compose.prod.yml', () => {
   });
 
   it('no Dockerfile writes an env file into its image: settings come from the environment, never from a baked file', () => {
-    for (const dockerfile of ['backend/Dockerfile', 'Dockerfile.frontend', 'cad-engine/Dockerfile', 'ecad-engine/Dockerfile', 'core/Dockerfile']) {
+    for (const dockerfile of ['backend/Dockerfile', 'Dockerfile.frontend', 'cad-engine/Dockerfile', 'core/Dockerfile']) {
       const text = read(dockerfile);
       expect(text, dockerfile).not.toMatch(/>>?\s*\.env\b/);
       expect(text, dockerfile).not.toMatch(/COPY[^\n]*\.env(\s|$)/);
@@ -80,9 +80,9 @@ describe('docker-compose.prod.yml', () => {
     for (const [, s] of services) if (s.image) expect(s.image).toMatch(/@sha256:[0-9a-f]{64}$/);
   });
 
-  it('keeps the engines off the internet and off the edge network', () => {
+  it('keeps the CAD engine off the internet and off the edge network', () => {
     expect(compose.networks.internal?.internal).toBe(true);
-    for (const name of ['cad-engine', 'ecad-engine']) expect(compose.services[name]?.networks).toEqual(['internal']);
+    expect(compose.services['cad-engine']?.networks).toEqual(['internal']);
     expect(compose.services.cloudflared?.networks).toEqual(['edge']);
   });
 
@@ -248,7 +248,7 @@ describe('docker-compose.prod.yml', () => {
 });
 
 describe('Dockerfiles', () => {
-  const files = ['backend/Dockerfile', 'Dockerfile.frontend', 'cad-engine/Dockerfile', 'ecad-engine/Dockerfile'];
+  const files = ['backend/Dockerfile', 'Dockerfile.frontend', 'cad-engine/Dockerfile'];
 
   it.each(files)('%s: pinned base by digest, non-root, no env files copied in', (file) => {
     const text = read(file);

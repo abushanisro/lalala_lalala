@@ -52,7 +52,7 @@ echo "[4/7] database (baseline, clean-up, role) and migrations"
 "${ssh_[@]}" 'cd /opt/emithran/backend && docker run --rm --network host -v /opt/emithran:/work -w /work/backend node:24 sh -c "npm ci --legacy-peer-deps --no-audit --no-fund >/dev/null && npm run db:migrate -- --env prd --confirm"'
 
 echo "[5/7] application (builds the images on the VM: several minutes the first time; no `storage` service: files go to R2)"
-"${ssh_[@]}" 'cd /opt/emithran && docker compose -p emithran-prd -f docker-compose.prod.yml -f docker-compose.data.yml --env-file env/prd.env up -d --build postgres postgrest backend frontend cad-engine ecad-engine cloudflared'
+"${ssh_[@]}" 'cd /opt/emithran && docker compose -p emithran-prd -f docker-compose.prod.yml -f docker-compose.data.yml --env-file env/prd.env up -d --build postgres postgrest backend frontend cad-engine cloudflared'
 
 # Monitoring needs about 1.75 GB; the app about 8.75 GB. It starts only on a VM with at least 10 GB of memory (the 24 GB and the 12 GB sizes), so a smaller
 # VM keeps its memory for the application. MONITORING=off forces it off.

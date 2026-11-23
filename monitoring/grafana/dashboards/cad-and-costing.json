@@ -466,7 +466,7 @@
     {
       "id": 40,
       "type": "row",
-      "title": "Engine stages (metric: emithran_engine_stage_duration; set OTEL_* on cad-engine / ecad-engine to fill these)",
+      "title": "Engine stages (metric: emithran_engine_stage_duration; set OTEL_* on cad-engine to fill these)",
       "collapsed": false,
       "gridPos": {
         "x": 0,

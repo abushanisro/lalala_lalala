@@ -14,7 +14,7 @@ import {
   type ThumbnailArtifact,
   type ServedPreview,
 } from './preview-artifact';
-import { EcadEngineClient, ExtractionUnavailable } from '../infrastructure/ecad/ecad-engine.client';
+import { BoardExtractionClient, ExtractionUnavailable } from '../infrastructure/cad-engine/board-extraction.client';
 import { ElectronicsFileStore, previewArtifactPathFor, thumbnailArtifactPathFor } from '../infrastructure/storage/electronics-file-store';
 
 import type { StoredUploadFile, UploadRow } from '../infrastructure/repositories/electronics.repository';
@@ -36,7 +36,7 @@ export class PreviewArtifactService {
 
   constructor(
     private readonly store: ElectronicsFileStore,
-    private readonly engine: EcadEngineClient,
+    private readonly engine: BoardExtractionClient,
   ) {}
 
   /** The Gerber and drill files draw the layers; a Pick Place file (csv or workbook) positions the parts on them. */

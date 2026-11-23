@@ -57,3 +57,7 @@ pywin32>=306; sys_platform == "win32"
 
 # 2D polygon geometry (flat-pattern outline union, true nesting placement/collision)
 shapely>=2.2.0,<3.0
+
+# Printed circuit boards (pcb/): Gerber RS-274X and Excellon drill files, and Pick Place / BOM workbooks.
+gerbonara==1.6.3
+openpyxl==3.1.5

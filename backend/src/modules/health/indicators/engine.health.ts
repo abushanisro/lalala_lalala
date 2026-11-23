@@ -15,11 +15,11 @@ export class EngineHealthIndicator extends HealthIndicator {
 
   /**
    * @param urlVariable env var holding the engine base URL
-   * @param path        the engine's own probe route (cad-engine: /health, ecad-engine: /ready)
+   * @param path        the engine's own probe route (/ready)
    * An unconfigured engine is reported `configured: false` and does not fail readiness: the feature
    * that needs it says so itself (ExtractionUnavailable); the API is not unhealthy because of it.
    */
-  async check(key: string, urlVariable: 'CAD_ENGINE_URL' | 'ECAD_ENGINE_URL', path: string): Promise<HealthIndicatorResult> {
+  async check(key: string, urlVariable: 'CAD_ENGINE_URL', path: string): Promise<HealthIndicatorResult> {
     const base = this.config.get<string>(urlVariable, '').trim();
     if (!base) return this.getStatus(key, true, { configured: false });
 

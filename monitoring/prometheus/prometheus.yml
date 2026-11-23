@@ -58,6 +58,4 @@ scrape_configs:
     static_configs:
       - targets: ["http://cad-engine:5055/ready"]
         labels: { engine: cad }
-      - targets: ["http://ecad-engine:5100/ready"]
-        labels: { engine: ecad }
     relabel_configs: *probe_relabel

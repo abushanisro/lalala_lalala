@@ -41,3 +41,6 @@ RUNNING.md
 DEPLOYMENT.md
 ADVANCED_FEATURES.md
 memory.md
+
+# The board parsers' own tests (pure Python; CI runs them outside the image)
+pcb/tests/

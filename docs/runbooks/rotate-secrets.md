@@ -12,7 +12,7 @@ file (`env/<env>.env`, mode 600), the GitHub Environment, or Vercel, as the tabl
 | Secret | Where it is set | What uses it | Rotation |
 |---|---|---|---|
 | `DB_JWT_SECRET` | `env/<env>.env` on the host | backend (signs database tokens), `postgrest` (`PGRST_JWT_SECRET`), `cad-core` | [below](#db_jwt_secret) |
-| `CAD_ENGINE_API_KEY`, `ECAD_ENGINE_API_KEY` | `env/<env>.env` | backend and the engine (shared secret) | [below](#engine-keys) |
+| `CAD_ENGINE_API_KEY` | `env/<env>.env` | backend and the engine (shared secret) | [below](#engine-keys) |
 | `ANTHROPIC_API_KEY` | Vercel project (web app, `lib/server/anthropic.ts`); `env/<env>.env` only where backend AI features run | Claude calls | [below](#provider-api-keys) |
 | `GEMINI_API_KEY`, the Google Cloud API key | nowhere any more (only in old commits) | nothing in the current code | revoke at the provider, [below](#provider-api-keys) |
 | Supabase JWT secret, `anon` / `service_role` keys (the `jwt` findings) | the old Supabase projects | legacy only, until the cutover ([CUTOVER_AUTH0_POSTGRES.md](../CUTOVER_AUTH0_POSTGRES.md)) | [below](#legacy-supabase-keys) |
@@ -44,7 +44,7 @@ requests while the containers restart; do it in a quiet hour, stage first.
 
 ## Engine keys
 
-`CAD_ENGINE_API_KEY` / `ECAD_ENGINE_API_KEY` are shared between the backend and one engine. Generate (`openssl rand -hex 32`), set in
+`CAD_ENGINE_API_KEY` is shared between the backend and the CAD engine. Generate (`openssl rand -hex 32`), set in
 `env/<env>.env`, recreate the backend and that engine together (`up -d --force-recreate backend cad-engine`). Verify an upload
 analyses. The values committed in `cad-engine/.env.development` / `.env.production` are dead once the env file holds a new one; make
 sure no host still uses them.

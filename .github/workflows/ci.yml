@@ -136,6 +136,9 @@ jobs:
       - name: Production build
         run: npm run build
 
+  # The board-file parsers (cad-engine/pcb) and the board feature-graph contract, in plain Python: they need no OpenCascade, so
+  # they run here in seconds. The board routes themselves are tested in the CAD engine image (cad-engine-tests). The job keeps
+  # the name the required check has always had.
   ecad-engine-contract:
     name: Electronics extraction engine (Python)
     runs-on: ubuntu-latest
@@ -149,14 +152,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install -r ecad-engine/requirements.txt -r ecad-engine/requirements-dev.txt
+        run: pip install -r cad-engine/requirements.txt -r cad-engine/requirements-dev.txt
 
-      - name: Contract and service tests
-        working-directory: ecad-engine
-        run: python -I -m pytest -q
-
-      - name: Build the service image
-        run: docker build -t ecad-engine:ci ecad-engine
+      - name: Board parser and contract tests
+        working-directory: cad-engine
+        run: python -m pytest -q -p no:cacheprovider pcb/tests
 
   sql:
     name: Database migrations (SQL tests)

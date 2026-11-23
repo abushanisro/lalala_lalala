@@ -85,10 +85,6 @@ updates:
     target-branch: develop
     directory: /cad-engine
     schedule: { interval: weekly }
-  - package-ecosystem: docker
-    target-branch: develop
-    directory: /ecad-engine
-    schedule: { interval: weekly }
 
   # The cloudflared image pinned in docker-compose.prod.yml
   - package-ecosystem: docker-compose
@@ -104,8 +100,4 @@ updates:
   - package-ecosystem: pip
     target-branch: develop
     directory: /cad-engine
-    schedule: { interval: weekly }
-  - package-ecosystem: pip
-    target-branch: develop
-    directory: /ecad-engine
     schedule: { interval: weekly }
