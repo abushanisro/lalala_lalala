@@ -84,11 +84,11 @@ imports, so every existing import path (including Sheet Metal's real
 Covers turned and mill_turn parts (_recognize_turned):
   external_diameter, through_hole, blind_hole, cross_hole, pcd_hole_pattern,
   chamfer, groove, fillet, slot, radial_slot, pocket, counterbore,
-  countersink, keyway, multi_step_hole
+  countersink, keyway, multi_step_hole, flat
 
 milled (_recognize_milled) covers the same feature set as the turned
 path minus the turning-specific ones (external_diameter, pcd_hole_pattern,
-radial_slot), using generic "pocket" instead of the turned-only keyway/
+radial_slot, flat), using generic "pocket" instead of the turned-only keyway/
 radial_slot split, plus the milled-only Phase 3-5 additions: planar_face/
 curved_wall/curved_surface (general face classification) and cutout
 (non-circular through-openings).
@@ -150,6 +150,11 @@ _STRUCTURAL_FACE_AXIS_TOL_MM = 0.05
 # or a slot milled into a turned surface) when its normal makes less than
 # this cosine with the axis: within about 8 degrees of square.
 _RADIAL_FLOOR_MAX_DOT = 0.15
+
+# A floor facing across the turning axis is a flat cut into a turned diameter when the diameter stands at least this
+# far above it, and the axis lies behind it to within this (a flat on the centre line leaves a half round): the
+# recessed-floor rise tolerance (recessed_floor._RISE_TOL_MM). A plane that only touches the round is not a cut.
+_TURNED_FLAT_TOL_MM = 0.02
 
 
 def _is_bore(f: MachiningFeature) -> bool:
@@ -260,7 +265,11 @@ class MachiningFeatureRecognizer:
         cones = self._collect_cones(shape)
         toroids = self._collect_toroids(shape)
         hole_flats: List[Dict] = []
-        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True, hole_flats=hole_flats, on_axis=on_axis)
+        # The faces of the turned diameters, each with its radius: what a flat is milled into.
+        turned_radii = {i: c["radius"] for c in raw_cylinders if c["kind"] == "external_diameter" for i in c["face_indices"]}
+        prismatic = self._collect_prismatic_pockets(
+            shape, main_axis, bbox, radial=True, hole_flats=hole_flats, on_axis=on_axis, turned_radii=turned_radii,
+        )
 
         # ── Teeth around the axis (gear / spline) → AxiGroove ────────────────
         # Off-axis convex faces with N-fold rotational symmetry (axigroove.py).
@@ -290,9 +299,9 @@ class MachiningFeatureRecognizer:
             f"cones={len(cones)} toroids={len(toroids)} prismatic={len(prismatic)}"
         )
 
-        # ── Recess floors → keyway / radial slot, classified before the cylinders ─
-        # A keyway or a slot milled into a turned surface owns its faces (the floor and the walls standing on it),
-        # so none of them is reported a second time as something else.
+        # ── Recess floors → keyway / radial slot / flat, classified before the cylinders ─
+        # A keyway, a slot or a flat milled into a turned surface owns its faces (the floor and the walls standing on
+        # it), so none of them is reported a second time as something else.
         # The flat bottom of a round hole that breaks out of the turned surface (a spot face, a counterbore on a
         # diameter) is walled by that hole's cylinder alone: it belongs to the hole, which stays a cross hole.
         cross_cylinders = [c for c in cylinders if c["kind"] == "cross_hole"]
@@ -301,7 +310,7 @@ class MachiningFeatureRecognizer:
             result = _classify_prismatic_turned(p, main_axis)
             if result is None:
                 continue
-            if p["radial"] and any(set(p["wall_faces"]) <= set(c.get("face_indices", [])) for c in cross_cylinders):
+            if p["radial"] and p["wall_faces"] and any(set(p["wall_faces"]) <= set(c.get("face_indices", [])) for c in cross_cylinders):
                 continue
             recesses.append((p, result))
         recess_faces = {i for p, _result in recesses if p["radial"] for i in p["face_indices"]}
@@ -555,9 +564,9 @@ class MachiningFeatureRecognizer:
                 face_ids=tor.get("face_indices", []),
             ))
 
-        # ── Prismatic pockets → slot / keyway only (skip structural faces) ────
+        # ── Prismatic pockets → slot / keyway / flat only (skip structural faces) ─
         # Classified above (recesses). Generic "pocket" is not emitted from turned
-        # parts — pockets on turned parts are either keyways or radial slots.
+        # parts — pockets on turned parts are keyways, radial slots or flats.
         for p_idx, (p, (ftype, variant, params)) in enumerate(recesses):
             features.append(MachiningFeature(
                 id=f"{ftype}_{p_idx}",
@@ -1070,6 +1079,7 @@ class MachiningFeatureRecognizer:
         radial: bool = False,
         hole_flats: Optional[List[Dict]] = None,
         on_axis: Optional[Tuple[float, float, float]] = None,
+        turned_radii: Optional[Dict[int, float]] = None,
     ) -> List[Dict]:
         """
         The floors of the part's recesses, for slot / keyway / pocket classification: planar faces that
@@ -1090,6 +1100,13 @@ class MachiningFeatureRecognizer:
         hole's size across it (how far the hole's wall rises above the flat) and the faces standing on it.
         on_axis is a point on the turning axis (shared turning_line_point); without one the axis is
         taken through the centre of the bounding box, as collect_cylinders takes it.
+
+        turned_radii (face ordinal -> radius of the part's turned diameters): a floor facing across the
+        axis that meets one of them in an outside corner, the round falling away from its edge, lies
+        inside it and has the axis behind it is a flat milled into that diameter (a wrench flat, a D
+        flat, a tang). It is collected with or without a wall standing on it (a flat along the whole
+        shaft has none) and carries turned_radius_mm, the largest such diameter's radius, and
+        axis_distance_mm, how far its plane stands from the turning axis.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1159,14 +1176,22 @@ class MachiningFeatureRecognizer:
                         hole_bottoms.add(face_idx)
                     recessed = bool(floor and floor["recessed"] and not floor["hole_bottom"])
                     hole_side = False
-                    if recessed and across_axis:
+                    turned_radius = None
+                    if floor and across_axis:
                         # How far the turning axis stands above the floor, on the side its walls rise on. Within
                         # the walls' height, the axis runs through the space they enclose: a side of an axial hole.
                         origin = plane.Location()
                         fnx, fny, fnz = floor["normal"]
                         axis_height = (on_axis[0] - origin.X()) * fnx + (on_axis[1] - origin.Y()) * fny + (on_axis[2] - origin.Z()) * fnz
-                        hole_side = 0.0 < axis_height <= floor["depth_mm"]
-                    sides = faces_box([topods.Face(face)]) if recessed else None
+                        hole_side = recessed and 0.0 < axis_height <= floor["depth_mm"]
+                        # A flat is milled into a turned diameter from outside it: the floor meets the diameter in an outside
+                        # corner (the round falls away from its edge), the diameter stands above it, and the axis lies behind
+                        # it, in the material. The side wall of a keyway or a slot meets the round too, with the axis in front
+                        # of it; a flat cut past the axis is not told from one and is left out.
+                        radius = max((turned_radii[i] for i in floor["outside_faces"] if i in (turned_radii or {})), default=None)
+                        if radius is not None and -_TURNED_FLAT_TOL_MM <= -axis_height < radius - _TURNED_FLAT_TOL_MM:
+                            turned_radius = radius
+                    sides = faces_box([topods.Face(face)]) if recessed or turned_radius is not None else None
                     if sides and hole_side:
                         if hole_flats is not None:
                             # The flat's width is its side across the axis; its other side runs the hole's length.
@@ -1186,6 +1211,7 @@ class MachiningFeatureRecognizer:
                             "wall_faces": floor["wall_faces"],
                             # OCC face ordinals — match face_map in memory_optimizer
                             "face_indices": sorted([face_idx] + floor["wall_faces"]) if across_axis else [face_idx],
+                            **({"turned_radius_mm": turned_radius, "axis_distance_mm": -axis_height} if turned_radius is not None else {}),
                         })
             face_idx += 1  # increment for EVERY face, not just planes
             exp.Next()
@@ -1444,16 +1470,17 @@ def _classify_prismatic_turned(
 ) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
     """
     Classify a recess floor collected from a turned part.
-    Returns None for what is not a channel: structural faces (end faces, shoulders,
-    datums), open flats and their end walls.
+    Returns None for structural faces (end faces, shoulders, datums), the end walls
+    of flats, and an open floor that is not cut into a turned diameter.
 
-    Only Keyway and Slot/radial are emitted from turned parts — PocketV2 is not
-    valid here because pockets on turned ODs are either keyways (parallel to axis)
-    or radial slots (perpendicular).
+    Only Keyway, Slot/radial and Flat are emitted from turned parts — PocketV2 is not
+    valid here because pockets on turned ODs are either keyways (parallel to axis),
+    radial slots (perpendicular) or flats.
 
-    A channel is a floor with walls standing on both sides of its width. An open
-    flat (a wall at its ends, or on one side) is not one and is left out, as every
-    generic pocket on a turned part is.
+    A channel is a floor with walls standing on both sides of its width. A floor that
+    is not one (a wall at its ends, on one side, or none) and is cut into a turned
+    diameter is a flat milled on it (_classify_turned_flat); any other is left out, as
+    every generic pocket on a turned part is.
 
     A floor that faces across the axis (milled into a turned diameter or a bore) is
     named by the direction of its long side, not by its normal: Keyway when it runs
@@ -1469,8 +1496,10 @@ def _classify_prismatic_turned(
     """
     dims = pocket["dims"]
     short, mid, long = dims[0], dims[1], dims[2]
-    if mid < 0.1 or not pocket["width_confined"]:
+    if mid < 0.1:
         return None
+    if not pocket["width_confined"]:
+        return _classify_turned_flat(pocket, main_axis)
 
     nx, ny, nz = pocket["normal"]
     ax, ay, az = main_axis
@@ -1493,6 +1522,39 @@ def _classify_prismatic_turned(
     if not faces_along_axis and abs(lx * ax + ly * ay + lz * az) > 0.85:
         return "Keyway", "default", params
     return "Slot", "radial", params
+
+
+def _classify_turned_flat(
+    pocket: Dict,
+    main_axis: Tuple[float, float, float],
+) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
+    """
+    A flat milled on a turned diameter: a floor facing across the turning axis, cut into the diameter it meets in an
+    outside corner and walled on at most one side of its width (a wrench flat, a D flat at a shaft end, either face of a
+    tang, a flat along the whole shaft). None for an open floor cut into no turned diameter. The catalog names the
+    feature Flat and gives it no variant.
+
+    It carries what it is costed from: its length along the axis and its width across it (the chord), its depth below
+    the diameter it is cut into and that diameter, the floor's area and walled_fraction (the share of its outline that
+    has a wall: its end walls), and its centroid.
+    """
+    radius = pocket.get("turned_radius_mm")
+    if radius is None:
+        return None
+    _depth, mid, long = pocket["dims"]
+    ax, ay, az = main_axis
+    lx, ly, lz = pocket["long_direction"]
+    along_axis = abs(lx * ax + ly * ay + lz * az) > 0.5
+    return "Flat", "default", {
+        "length_mm": round(long if along_axis else mid, 3),
+        "width_mm": round(mid if along_axis else long, 3),
+        # Below the round it is cut into, not the height of its tallest wall: a flat cut up to a shoulder is no deeper for it.
+        "depth_mm": round(radius - pocket["axis_distance_mm"], 3),
+        "diameter_mm": round(2.0 * radius, 3),
+        "area_mm2": round(pocket["area_mm2"], 3),
+        "walled_fraction": round(pocket["walled_fraction"], 3),
+        "centroid": pocket.get("centroid"),
+    }
 
 
 def _detect_pcd_from_axial_bores(
@@ -1627,8 +1689,8 @@ def _angles_equally_spaced(angles: List[float], tolerance_deg: float = 8.0) -> b
 # occurrence fields are emitted. A (type, variant) missing from _SHAPE is a
 # programming error, raised loudly -- never silently dropped.
 
-_DIAMETER, _TOROID, _VOLUMETRIC, _PATTERN, _STEPPED, _REGION, _TOOTHED = (
-    "diameter", "toroid", "volumetric", "pattern", "stepped", "region", "toothed",
+_DIAMETER, _TOROID, _VOLUMETRIC, _PATTERN, _STEPPED, _REGION, _TOOTHED, _FLAT = (
+    "diameter", "toroid", "volumetric", "pattern", "stepped", "region", "toothed", "flat",
 )
 _SHAPE: Dict[Tuple[str, str], str] = {
     ("SimpleHole", "through"): _DIAMETER,
@@ -1653,9 +1715,26 @@ _SHAPE: Dict[Tuple[str, str], str] = {
     ("CurvedWall", "default"): _REGION,
     ("CurvedSurface", "default"): _REGION,
     ("AxiGroove", "default"): _TOOTHED,
+    ("Flat", "default"): _FLAT,
 }
 _TOOTH_FIELDS = ("tooth_count", "tip_diameter_mm", "root_diameter_mm", "face_width_mm")
 _KEYWAY_DIM_FIELDS = ("length_mm", "width_mm", "depth_mm")
+_FLAT_FIELDS = ("length_mm", "width_mm", "depth_mm", "diameter_mm", "area_mm2", "walled_fraction")
+
+
+def _flat_removed_mm3(diameter_mm: float, depth_mm: float, area_mm2: float) -> float:
+    """
+    The material a flat cuts off the round it is milled into: the circular segment between its plane and that diameter,
+    over its length. The length is the floor's area over its chord, exact for a floor that spans the chord, as a flat
+    milled across a round does. A flat that runs across a shoulder is measured against the larger diameter.
+    """
+    r = diameter_mm / 2.0
+    d = r - depth_mm  # the plane's distance from the axis
+    if r <= 0 or not -r < d < r:
+        return 0.0
+    half_chord = math.sqrt(r * r - d * d)
+    segment = r * r * math.acos(d / r) - d * half_chord
+    return area_mm2 * segment / (2.0 * half_chord)
 
 
 def _extract_diam_depth(ftype: str, variant: str, p: dict):
@@ -1783,6 +1862,11 @@ def build_machining_feature_graph_v2(
                 "material_removed_mm3": round(removed, 2),
             })
 
+        elif shape == _FLAT:
+            flat = {f: p.get(f) for f in _FLAT_FIELDS}
+            removed = _flat_removed_mm3(flat["diameter_mm"] or 0.0, flat["depth_mm"] or 0.0, flat["area_mm2"] or 0.0)
+            buckets[(ftype, variant, None)].append({**base, **flat, "material_removed_mm3": round(removed, 2)})
+
         elif shape == _TOOTHED:
             # Teeth around the axis; removed volume is not derivable from the
             # face classification -- disclosed 0.0.
@@ -1834,6 +1918,9 @@ def build_machining_feature_graph_v2(
                 occ_entry["step_count"] = occ["step_count"]
             elif shape == _TOOTHED:
                 for fld in _TOOTH_FIELDS:
+                    occ_entry[fld] = occ.get(fld)
+            elif shape == _FLAT:
+                for fld in _FLAT_FIELDS:
                     occ_entry[fld] = occ.get(fld)
             elif shape == _REGION:
                 occ_entry["area_mm2"] = occ["area_mm2"]

@@ -4,7 +4,8 @@ A recess floor that faces along the turning axis (machining_feature_recognizer._
 Such a floor lies across the axis, so it is never a keyway: a keyway's floor faces across the axis and its long side runs along it
 (test_turned_keyway.py). An elongated one walled on both sides of its width is a slot across an end face or a shoulder, Slot/radial. One
 walled on a single side is the end wall of a milled flat (a D flat, a wrench flat, a tang): it was read as a keyway as long as the flat's
-chord and as deep as the flat is long, and is now no feature. The flat itself has no feature either. Built on OCC solids with known sizes.
+chord and as deep as the flat is long, and is now no feature of its own: it is a face of the flat, a Flat (test_turned_flat.py). Built on
+OCC solids with known sizes.
 """
 import pytest
 

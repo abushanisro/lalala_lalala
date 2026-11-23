@@ -16,6 +16,8 @@ around it falls away), so it is not a floor; nothing was cut out above it.
   normal           the floor's normal, out of the material: the side its walls rise on.
   wall_faces       the face ordinals of the walls that stand on the floor's edges (side walls, rounded ends, floor
                    fillets): with the floor, the faces of the recess.
+  outside_faces    the face ordinals across the floor's outside (convex) corners: what the floor falls away to. A flat
+                   milled on a turned diameter meets that diameter there.
 
 Measured on the exact geometry (edges sampled along their curves); nothing is estimated.
 """
@@ -107,7 +109,7 @@ class RecessedFloors:
         outer = breptools.OuterWire(face)
         outer_edges = self._edges(outer)
         outer_len = sum(length(e) for e in outer_edges)
-        walled_len, depth, walls = 0.0, 0.0, []
+        walled_len, depth, walls, outside = 0.0, 0.0, [], []
         boundary: List[Tuple[Tuple[float, float, float], float, bool]] = []  # outer boundary samples: point, length share, walled
         for edge in self._edges(face):
             if BRep_Tool.Degenerated(edge):
@@ -116,6 +118,8 @@ class RecessedFloors:
             edge_walled = False
             for other in self._across(edge, face):
                 corner = _concavity(edge, face, other)
+                if corner == "external":
+                    outside.append(other)
                 rise = self._rise(other, origin, normal)
                 # An inside corner is a wall and an outside corner is not (the face beyond it may still reach
                 # above the floor somewhere else). Across a smooth edge, a fillet rises and a rounded edge falls.
@@ -158,6 +162,7 @@ class RecessedFloors:
             "area_mm2": area.Mass(),
             "normal": normal,
             "wall_faces": sorted({self._faces.FindIndex(w) - 1 for w in walls}),
+            "outside_faces": sorted({self._faces.FindIndex(o) - 1 for o in outside}),
         }
 
 
