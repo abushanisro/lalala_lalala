@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -15,7 +16,11 @@ import {
   AreaChart,
   Area,
   ComposedChart,
-  Legend
+  DefaultZIndexes,
+  Legend,
+  Rectangle,
+  type BarShapeProps,
+  type LabelProps
 } from 'recharts';
 
 import { BarChart3 } from '@/components/ui/icons';
@@ -27,6 +32,17 @@ const CHART_COLORS = [
   'hsl(var(--chart-4))',
   'hsl(var(--chart-5))',
 ];
+
+// recharts 3 sorts tooltip rows by name; a constant key keeps them in the order the series are declared.
+const keepSeriesOrder = () => 0;
+
+// recharts 3 packs the bars of a group side by side once maxBarSize narrows them; recharts 2 left each bar centred in its own slot.
+// The two-series charts keep that spacing: each bar takes its whole slot and is drawn at most this wide inside it.
+const GROUPED_BAR_WIDTH = 14;
+const SlotCentredBar = (props: BarShapeProps) => {
+  const width = Math.min(props.width, GROUPED_BAR_WIDTH);
+  return <Rectangle {...props} x={props.x + (props.width - width) / 2} width={width} />;
+};
 
 interface CostChartProps {
   projects: Array<{
@@ -62,10 +78,11 @@ export function CostChart({ projects }: CostChartProps) {
     <div className="h-72">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
+          accessibilityLayer={false}
           data={chartData}
           margin={{ top: 20, right: 60, left: 20, bottom: 5 }}
         >
-          <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.7} />
+          <CartesianGrid yAxisId="cost" vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.7} />
           <XAxis
             dataKey="name"
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
@@ -91,14 +108,15 @@ export function CostChart({ projects }: CostChartProps) {
               borderRadius: '12px',
               boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             }}
-            formatter={(value: any, name: string) => {
+            formatter={(value, name) => {
               if (name === 'Savings %') return [`${Number(value).toFixed(1)}%`, name];
               return [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name];
             }}
+            itemSorter={keepSeriesOrder}
           />
-          <Legend />
-          <Bar yAxisId="cost" dataKey="targetPrice" name="Target Price" fill="hsl(var(--chart-1))" radius={[8, 8, 8, 8]} maxBarSize={14} />
-          <Bar yAxisId="cost" dataKey="shouldCost" name="Should Cost" fill="hsl(var(--chart-2))" radius={[8, 8, 8, 8]} maxBarSize={14} />
+          <Legend itemSorter={null} />
+          <Bar yAxisId="cost" dataKey="targetPrice" name="Target Price" fill="hsl(var(--chart-1))" radius={[8, 8, 8, 8]} shape={SlotCentredBar} />
+          <Bar yAxisId="cost" dataKey="shouldCost" name="Should Cost" fill="hsl(var(--chart-2))" radius={[8, 8, 8, 8]} shape={SlotCentredBar} />
           <Line yAxisId="percent" type="monotone" dataKey="savingsPercent" name="Savings %" stroke="hsl(var(--chart-3))" strokeWidth={3} dot={{ fill: 'hsl(var(--chart-3))', strokeWidth: 2, r: 4 }} />
         </ComposedChart>
       </ResponsiveContainer>
@@ -124,7 +142,7 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
     <div className="space-y-4">
       <div className="h-48">
         <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
+          <PieChart accessibilityLayer={false}>
             <Pie
               data={dataWithPercentage}
               cx="50%"
@@ -140,7 +158,8 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
               {dataWithPercentage.map((_, index) => (
                 <Cell
                   key={`cell-${index}`}
-                  fill={CHART_COLORS[index % CHART_COLORS.length]}
+                  // The index is always inside the palette; recharts 3 no longer takes an undefined fill.
+                  fill={CHART_COLORS[index % CHART_COLORS.length] ?? ''}
                 />
               ))}
             </Pie>
@@ -151,7 +170,9 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
                 borderRadius: '12px',
                 boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
               }}
-              formatter={(value: any, name: string) => [`${value} projects`, name]}
+              formatter={(value, name) => [`${String(value)} projects`, name]}
+              // recharts 3 colours a pie's tooltip row like its slice; it was black before.
+              itemStyle={{ color: '#000' }}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -178,36 +199,42 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
   );
 }
 
+const TREND_X_PADDING = { left: 4, right: 4 };
+
 // New comprehensive analytics charts
 export function ProjectTrendChart({ projects }: { projects: any[] }) {
-  const last30Days = Array.from({ length: 30 }, (_, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (29 - i));
-    return date;
-  });
-
-  const trendData = last30Days.map(date => {
-    const dayProjects = projects.filter(p => {
-      const projectDate = new Date(p.createdAt || Date.now());
-      return projectDate.toDateString() === date.toDateString();
+  // recharts 3 replays the area's animation, hiding the end marker meanwhile, whenever it is handed a new data array, even one
+  // with the same values. The rows are therefore rebuilt only when the projects change.
+  const trendData = useMemo(() => {
+    const last30Days = Array.from({ length: 30 }, (_, i) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (29 - i));
+      return date;
     });
-    
-    return {
-      date: date.getDate(),
-      projects: dayProjects.length,
-      value: dayProjects.reduce((sum, p) => sum + (Number(p.targetPrice) || 0), 0),
-      savings: dayProjects.reduce((sum, p) => sum + ((Number(p.targetPrice) || 0) - (Number(p.shouldCost) || 0)), 0)
-    };
-  });
 
-  const firstDay = trendData[0]?.date;
+    return last30Days.map(date => {
+      const dayProjects = projects.filter(p => {
+        const projectDate = new Date(p.createdAt || Date.now());
+        return projectDate.toDateString() === date.toDateString();
+      });
+
+      return {
+        date: date.getDate(),
+        projects: dayProjects.length,
+        value: dayProjects.reduce((sum, p) => sum + (Number(p.targetPrice) || 0), 0),
+        savings: dayProjects.reduce((sum, p) => sum + ((Number(p.targetPrice) || 0) - (Number(p.shouldCost) || 0)), 0)
+      };
+    });
+  }, [projects]);
+
   const lastIndex = trendData.length - 1;
-  const lastDay = trendData[lastIndex]?.date;
+  // Rebuilt with the rows only: a new ticks array is a new axis to recharts 3, which replays the animation as well.
+  const edgeTicks = useMemo(() => [trendData[0]?.date ?? 0, trendData[trendData.length - 1]?.date ?? 0], [trendData]);
 
   return (
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={trendData} margin={{ top: 16, right: 48, left: 8, bottom: 5 }}>
+        <AreaChart accessibilityLayer={false} data={trendData} margin={{ top: 16, right: 48, left: 8, bottom: 5 }}>
           <defs>
             <linearGradient id="colorProjects" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="hsl(var(--chart-1))" stopOpacity={0.22}/>
@@ -217,11 +244,11 @@ export function ProjectTrendChart({ projects }: { projects: any[] }) {
           <CartesianGrid horizontal={false} vertical={false} />
           <XAxis
             dataKey="date"
-            ticks={[firstDay ?? 0, lastDay ?? 0]}
+            ticks={edgeTicks}
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
             axisLine={false}
             tickLine={false}
-            padding={{ left: 4, right: 4 }}
+            padding={TREND_X_PADDING}
           />
           <YAxis hide />
           <Tooltip
@@ -243,8 +270,10 @@ export function ProjectTrendChart({ projects }: { projects: any[] }) {
             name="New Projects"
             dot={false}
             activeDot={{ r: 4 }}
-            label={(props: { index?: number; x?: number; y?: number; value?: number }) =>
-              props.index === lastIndex && props.x !== undefined && props.y !== undefined ? (
+            // recharts 3 draws the hover line over the area; recharts 2 drew it behind.
+            zIndex={DefaultZIndexes.cursorLine + 1}
+            label={(props: LabelProps) =>
+              props.index === lastIndex && typeof props.x === 'number' && typeof props.y === 'number' ? (
                 <g key="end-marker">
                   <circle cx={props.x} cy={props.y} r={5} fill="hsl(var(--card))" stroke="hsl(var(--chart-1))" strokeWidth={2.5} />
                   <text x={props.x + 10} y={props.y + 4} fontSize={12} fontWeight={600} fill="hsl(var(--foreground))">
@@ -271,7 +300,7 @@ export function EfficiencyGaugeChart({ efficiency }: { efficiency: number }) {
   return (
     <div className="h-32">
       <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
+        <PieChart accessibilityLayer={false}>
           <Pie
             data={data}
             cx="50%"
@@ -305,10 +334,11 @@ export function ManufacturingPerformanceChart({ modules }: { modules: any[] }) {
     <div className="h-80">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
+          accessibilityLayer={false}
           data={performanceData}
           margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
         >
-          <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.7} />
+          <CartesianGrid yAxisId="count" vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.7} />
           <XAxis 
             dataKey="name" 
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
@@ -336,15 +366,16 @@ export function ManufacturingPerformanceChart({ modules }: { modules: any[] }) {
               borderRadius: '12px',
               boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             }}
-            formatter={(value: any, name: string) => {
+            formatter={(value, name) => {
               if (name === 'Efficiency') return [`${Number(value).toFixed(1)}%`, name];
               if (name === 'Value') return [`$${Number(value).toFixed(1)}L`, name];
               return [value, name];
             }}
+            itemSorter={keepSeriesOrder}
           />
-          <Legend />
-          <Bar yAxisId="count" dataKey="active" name="Active" fill="hsl(var(--chart-1))" radius={[8, 8, 8, 8]} maxBarSize={14} />
-          <Bar yAxisId="count" dataKey="total" name="Total" fill="hsl(var(--chart-2))" radius={[8, 8, 8, 8]} maxBarSize={14} />
+          <Legend itemSorter={null} />
+          <Bar yAxisId="count" dataKey="active" name="Active" fill="hsl(var(--chart-1))" radius={[8, 8, 8, 8]} shape={SlotCentredBar} />
+          <Bar yAxisId="count" dataKey="total" name="Total" fill="hsl(var(--chart-2))" radius={[8, 8, 8, 8]} shape={SlotCentredBar} />
           <Line yAxisId="percent" type="monotone" dataKey="efficiency" name="Efficiency" stroke="hsl(var(--chart-3))" strokeWidth={2} dot={{ fill: 'hsl(var(--chart-3))', strokeWidth: 2, r: 3 }} />
         </ComposedChart>
       </ResponsiveContainer>
@@ -399,7 +430,7 @@ export function CostSavingsChart({ projects }: { projects: any[] }) {
           </div>
         </div>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={placeholderData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+          <BarChart accessibilityLayer={false} data={placeholderData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.7} />
             <XAxis 
               dataKey="name" 
@@ -436,6 +467,7 @@ export function CostSavingsChart({ projects }: { projects: any[] }) {
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart
+          accessibilityLayer={false}
           data={savingsData}
           margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
         >
@@ -462,7 +494,7 @@ export function CostSavingsChart({ projects }: { projects: any[] }) {
               borderRadius: '12px',
               boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             }}
-            formatter={(value: any, name: string) => {
+            formatter={(value, name) => {
               if (name === 'Cost Savings') {
                 const numValue = Number(value);
                 const sign = numValue >= 0 ? 'Savings' : 'Overspend';
@@ -470,7 +502,8 @@ export function CostSavingsChart({ projects }: { projects: any[] }) {
               }
               return [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name];
             }}
-            labelFormatter={(label) => `Project: ${label}`}
+            // recharts 3 types the label as any React node, so it is placed as a child rather than turned into a string.
+            labelFormatter={(label) => <>Project: {label}</>}
           />
           <Bar 
             dataKey="savings" 

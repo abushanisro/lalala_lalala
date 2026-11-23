@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -7,6 +8,7 @@ import {
   Bar,
   CartesianGrid,
   Cell,
+  DefaultZIndexes,
   PieChart,
   Pie,
   ResponsiveContainer,
@@ -35,14 +37,14 @@ interface Props {
 }
 
 export function SelectedPartsAnalysis({ bomMetrics, selectedParts, onBack }: Props) {
-  // Filter BOM metrics to only selected parts
-  const filteredBomMetrics: ResolvedBOMMetricEntry[] = bomMetrics.map((bd) => ({
+  // Filter BOM metrics to only selected parts. Kept between renders so the weight pie below is not redrawn for nothing.
+  const filteredBomMetrics: ResolvedBOMMetricEntry[] = useMemo(() => bomMetrics.map((bd) => ({
     ...bd,
     items: (bd.items ?? []).filter((item) => {
       const key = item.partNumber ?? item.name ?? `item-${item.id}`;
       return selectedParts.has(key);
     }),
-  }));
+  })), [bomMetrics, selectedParts]);
 
   return (
     <div className="animate-fade-in space-y-6">
@@ -103,6 +105,31 @@ export function SelectedPartsAnalysis({ bomMetrics, selectedParts, onBack }: Pro
 // ─── Cost & Weight content ────────────────────────────────────────────────────
 
 function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: ResolvedBOMMetricEntry[] }) {
+  // recharts 3 replays a pie's animation, hiding its labels meanwhile, every time the chart re-renders; recharts 2 kept them
+  // in place. The chart element is therefore reused until the selected parts change.
+  const weightPie = useMemo(() => (
+    <PieChart accessibilityLayer={false}>
+      <Pie
+        data={filteredBomMetrics.map((bd) => ({
+          name: bd.bom.name,
+          value: bd.items.reduce((s, i) => s + itemWeight(i), 0),
+        }))}
+        cx="50%"
+        cy="50%"
+        labelLine={false}
+        label={({ name, value }) => `${name}: ${value.toFixed(1)}kg`}
+        outerRadius={80}
+        dataKey="value"
+      >
+        {filteredBomMetrics.map((_, index) => (
+          <Cell key={index} fill={`hsl(${220 + index * 40}, 70%, ${45 + index * 10}%)`} />
+        ))}
+      </Pie>
+      {/* recharts 3 colours a pie's tooltip row like its slice; it was black before. */}
+      <Tooltip itemStyle={{ color: "#000" }} formatter={(v) => [`${Number(v).toFixed(2)}kg`, "Weight"]} />
+    </PieChart>
+  ), [filteredBomMetrics]);
+
   return (
     <>
       {/* Cost analysis table */}
@@ -301,6 +328,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
             <h3 className="text-sm font-semibold mb-4">Total Cost by BOM</h3>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart
+                accessibilityLayer={false}
                 data={filteredBomMetrics.map((bd) => ({
                   name: bd.bom.name,
                   cost: bd.items.reduce((s, i) => s + itemCost(i), 0),
@@ -310,7 +338,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={70} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v) => [`$${Number(v).toFixed(0)}`, "Total Cost"]} />
-                <Bar dataKey="cost" fill="hsl(var(--chart-4))" radius={[4, 4, 0, 0]} />
+                {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+                <Bar dataKey="cost" fill="hsl(var(--chart-4))" radius={[4, 4, 0, 0]} zIndex={DefaultZIndexes.axis + 1} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
@@ -318,25 +347,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
           <Card className="p-4">
             <h3 className="text-sm font-semibold mb-4">Weight Distribution</h3>
             <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie
-                  data={filteredBomMetrics.map((bd) => ({
-                    name: bd.bom.name,
-                    value: bd.items.reduce((s, i) => s + itemWeight(i), 0),
-                  }))}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, value }) => `${name}: ${Number(value).toFixed(1)}kg`}
-                  outerRadius={80}
-                  dataKey="value"
-                >
-                  {filteredBomMetrics.map((_, index) => (
-                    <Cell key={index} fill={`hsl(${220 + index * 40}, 70%, ${45 + index * 10}%)`} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}kg`, "Weight"]} />
-              </PieChart>
+              {weightPie}
             </ResponsiveContainer>
           </Card>
 
@@ -344,6 +355,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
             <h3 className="text-sm font-semibold mb-4">Cost per Kilogram</h3>
             <ResponsiveContainer width="100%" height={260}>
               <AreaChart
+                accessibilityLayer={false}
                 data={filteredBomMetrics.map((bd) => {
                   const totalCost = bd.items.reduce((s, i) => s + itemCost(i), 0);
                   const totalWeight = bd.items.reduce((s, i) => s + itemWeight(i), 0);
@@ -363,6 +375,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                   stroke="hsl(160, 60%, 40%)"
                   fill="hsl(160, 60%, 40%)"
                   fillOpacity={0.6}
+                  // recharts 3 draws the axes and the hover line over the area; recharts 2 drew both behind it.
+                  zIndex={DefaultZIndexes.cursorLine + 1}
                 />
               </AreaChart>
             </ResponsiveContainer>

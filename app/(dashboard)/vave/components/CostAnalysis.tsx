@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  ReferenceLine, Cell, CartesianGrid, BarChart, PieChart, Pie,
+  ReferenceLine, Cell, CartesianGrid, BarChart, PieChart, Pie, DefaultZIndexes,
 } from 'recharts';
 import { toast } from 'sonner';
 
@@ -91,6 +91,13 @@ const TOOLTIP_STYLE = {
 };
 const AXIS_TICK = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
 const GRID_STROKE = 'hsl(var(--border))';
+// recharts 3 sorts tooltip rows by name; a constant key keeps them in the order the series are declared.
+const keepSeriesOrder = () => 0;
+// recharts 3 draws the hover line and the axes over the series; recharts 2 drew both behind them, so the line did not cut
+// through the hovered Pareto bar.
+const ABOVE_HOVER_LINE = DefaultZIndexes.cursorLine + 1;
+
+const PIE_COLORS = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)', 'hsl(0 72% 51%)', 'hsl(200 90% 50%)'];
 
 // ── Sub-views ──────────────────────────────────────────────────────────────────
 
@@ -109,18 +116,18 @@ function ParetoView({ items }: { items: VaveBomItem[] }) {
         <Pill color="muted" label={`${items.length} parts`} />
       </div>
       <ResponsiveContainer width="100%" height={300}>
-        <ComposedChart data={data} margin={{ top: 8, right: 40, bottom: 64, left: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+        <ComposedChart accessibilityLayer={false} data={data} margin={{ top: 8, right: 40, bottom: 64, left: 20 }}>
+          <CartesianGrid yAxisId="left" strokeDasharray="3 3" stroke={GRID_STROKE} />
           <XAxis dataKey="name" tick={AXIS_TICK} angle={-40} textAnchor="end" interval={0} />
           <YAxis yAxisId="left" tickFormatter={fmtUSD} tick={AXIS_TICK} />
           <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${v.toFixed(0)}%`} tick={AXIS_TICK} domain={[0, 100]} />
-          <Tooltip {...TOOLTIP_STYLE} formatter={(v: any, n: string) => n === 'spend' ? [fmtUSD(v), 'Annual Spend'] : [`${Number(v).toFixed(1)}%`, 'Cumulative %']} />
-          <ReferenceLine yAxisId="right" y={80} stroke="hsl(var(--destructive))" strokeDasharray="5 3"
+          <Tooltip {...TOOLTIP_STYLE} itemSorter={keepSeriesOrder} formatter={(v: any, n) => n === 'spend' ? [fmtUSD(v), 'Annual Spend'] : [`${Number(v).toFixed(1)}%`, 'Cumulative %']} />
+          <ReferenceLine yAxisId="right" y={80} stroke="hsl(var(--destructive))" strokeDasharray="5 3" zIndex={DefaultZIndexes.axis + 1}
             label={{ value: '80%', position: 'insideTopRight', fontSize: 10, fill: 'hsl(var(--destructive))' }} />
-          <Bar yAxisId="left" dataKey="spend" maxBarSize={40} radius={[4, 4, 0, 0]}>
+          <Bar yAxisId="left" dataKey="spend" maxBarSize={40} radius={[4, 4, 0, 0]} zIndex={ABOVE_HOVER_LINE}>
             {data.map((entry, i) => <Cell key={i} fill={entry.isTop ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground) / 0.5)'} />)}
           </Bar>
-          <Line yAxisId="right" type="monotone" dataKey="cumPct" stroke="hsl(175 84% 32%)" dot={false} strokeWidth={2} />
+          <Line yAxisId="right" type="monotone" dataKey="cumPct" stroke="hsl(175 84% 32%)" dot={false} strokeWidth={2} zIndex={ABOVE_HOVER_LINE + 1} />
         </ComposedChart>
       </ResponsiveContainer>
       <Legend3 />
@@ -139,15 +146,17 @@ function WaterfallView({ items }: { items: VaveBomItem[] }) {
         <Pill color="muted" label={`${data.length} BOM levels`} />
       </div>
       <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={data} margin={{ top: 8, right: 20, bottom: 24, left: 20 }}>
+        <BarChart accessibilityLayer={false} data={data} margin={{ top: 8, right: 20, bottom: 24, left: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
           <XAxis dataKey="name" tick={AXIS_TICK} />
           <YAxis tickFormatter={fmtUSD} tick={AXIS_TICK} />
           <Tooltip {...TOOLTIP_STYLE} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
-          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]}>
+          {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]} zIndex={DefaultZIndexes.axis + 1}>
             {data.map((_, i) => {
               const colors = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)'];
-              return <Cell key={i} fill={colors[i % colors.length]} />;
+              // The index is always inside the palette; recharts 3 no longer takes an undefined fill.
+              return <Cell key={i} fill={colors[i % colors.length] ?? ''} />;
             })}
           </Bar>
         </BarChart>
@@ -177,10 +186,24 @@ function WaterfallView({ items }: { items: VaveBomItem[] }) {
 }
 
 function SupplierView({ items }: { items: VaveBomItem[] }) {
-  const { suppliers, tailThreshold, total } = buildSupplierData(items);
-  const PIE_COLORS = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)', 'hsl(0 72% 51%)', 'hsl(200 90% 50%)'];
+  const { suppliers, tailThreshold, total } = useMemo(() => buildSupplierData(items), [items]);
   const tail = suppliers.filter((s) => s.spend < tailThreshold);
-  const top = suppliers.filter((s) => s.spend >= tailThreshold);
+  const top = useMemo(() => suppliers.filter((s) => s.spend >= tailThreshold), [suppliers, tailThreshold]);
+  // recharts 3 replays a pie's animation, hiding its labels meanwhile, every time the chart re-renders; recharts 2 kept them
+  // in place. The chart element is therefore reused until the suppliers change.
+  const supplierPie = useMemo(() => (
+    <PieChart accessibilityLayer={false}>
+      <Pie data={top.slice(0, 6).map((s) => ({ name: s.name, value: s.spend }))}
+        cx="50%" cy="50%" outerRadius={100} dataKey="value"
+        label={({ name, pct }: any) => `${name} ${(pct * 100).toFixed(0)}%`}
+        labelLine={false}
+      >
+        {top.slice(0, 6).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length] ?? ''} />)}
+      </Pie>
+      {/* recharts 3 colours a pie's tooltip row like its slice; it was black before. */}
+      <Tooltip {...TOOLTIP_STYLE} itemStyle={{ color: '#000' }} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
+    </PieChart>
+  ), [top]);
 
   if (!items.length) return <EmptyState message="Import BOM items to see supplier spend" />;
   return (
@@ -193,16 +216,7 @@ function SupplierView({ items }: { items: VaveBomItem[] }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ResponsiveContainer width="100%" height={280}>
-          <PieChart>
-            <Pie data={top.slice(0, 6).map((s) => ({ name: s.name, value: s.spend }))}
-              cx="50%" cy="50%" outerRadius={100} dataKey="value"
-              label={({ name, pct }: any) => `${name} ${(pct * 100).toFixed(0)}%`}
-              labelLine={false}
-            >
-              {top.slice(0, 6).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-            </Pie>
-            <Tooltip {...TOOLTIP_STYLE} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
-          </PieChart>
+          {supplierPie}
         </ResponsiveContainer>
 
         <div className="overflow-y-auto max-h-[280px]">

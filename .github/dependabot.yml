@@ -24,9 +24,6 @@ updates:
       # Intelligence and Electronics layouts to it is a UI change to make and check on screen, not a weekly bump.
       - dependency-name: "react-resizable-panels"
         update-types: ["version-update:semver-major"]
-      # recharts 3 changed the types of Tooltip formatters, Cell and LabelList: the charts must be ported and looked at, not bumped.
-      - dependency-name: "recharts"
-        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch: { update-types: [minor, patch] }
 
