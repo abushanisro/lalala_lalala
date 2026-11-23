@@ -161,6 +161,14 @@ interface RollBendingMachineParams {
 export class SheetMetalLookupService {
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * The client the lookup tables are read with. They are global reference data shared by every organisation, with no tenant rows, so they
+   * are read past row-level security. New readers take the client from here, so the privileged-read budget does not grow with them.
+   */
+  private referenceClient() {
+    return this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
+  }
+
   // sm_reference_data machine rows whose raw name equals `machineName`
   // (case-insensitive), filtered in the database. The per-machine lookups
   // below used to download every machine row (the whole library's JSON) and
@@ -243,8 +251,7 @@ export class SheetMetalLookupService {
     const key = `${technology}|${material}`;
     const cached = this.laserPowerRowsCache.get(key);
     if (cached) return cached;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared')
+    const { data, error } = await this.referenceClient()
       .from('sm_lookup_laser_cut')
       .select('thickness_mm, laser_power_w')
       .eq('material', material)
@@ -306,7 +313,7 @@ export class SheetMetalLookupService {
       : family === 'AL' ? 'Aluminium'
       : family === 'CU' && normaliseLaserMaterial(grade) === 'Brass' ? 'Brass'
       : null;
-    const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
+    const db = this.referenceClient();
     const cut = machineClass === 'plasma_cut' ? 'PlasmaCut' : 'OxyFuelCut';
     const table = machineClass === 'fiber_laser' ? 'sm_lookup_laser_cut (fiber)' : machineClass === 'co2_laser' ? 'sm_lookup_laser_cut (co2)'
       : machineClass === 'waterjet' ? 'sm_lookup_waterjet_cut' : `sm_reference_data nestingCutRate ${cut}`;
