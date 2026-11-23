@@ -38,7 +38,7 @@ export interface DesignGuidance {
   costDrivers: { count: number | null; items: ReviewItem[] };
   material: {
     name: string | null;
-    /** The currency of the library prices compared (the factory location's price column). */
+    /** The currency of the library prices compared (the factory location's price column, held in USD). */
     currency: string;
     /** Price x density, per cm3: what a unit of the part's volume costs in this material. */
     costPerCm3: RangedValue;

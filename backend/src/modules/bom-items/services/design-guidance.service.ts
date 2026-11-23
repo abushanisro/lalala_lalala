@@ -15,6 +15,7 @@ import { detectMaterialClass } from '../costing/machining/process/cost-machining
 import { PlasticDfmService } from '../costing/plastic-molding/dfm/plastic-dfm.service';
 import { sideActionSignals } from '../costing/plastic-molding/side-action-signals';
 import { DEFAULT_COSTING_LOCATION, LOCATION_INFO } from '../costing/shared/core/default-rates.constants';
+import { RAW_MATERIAL_PRICE_CURRENCY } from '../costing/shared/core/material-location-price';
 import { CAD_FAMILY_TO_PROCESS_GROUP, CASTING_PROCESS_GROUP, appliedCastingFamily } from '../costing/shared/core/part-family-process-group';
 import type { CostTable } from '../costing/shared/cost-table';
 import { buildDesignGuidance, type DesignGuidance, type DesignGuidanceInput, type GuidanceFeature, type GuidanceSeverity, type ReviewItem } from '../costing/shared/design-guidance';
@@ -113,7 +114,8 @@ export class DesignGuidanceService {
       findings: dfm.findings, findingsReason: dfm.reason,
       material: {
         name: library.row?.name ?? grade,
-        currency: info.code,
+        // The location's prices compared as the library holds them: USD per kg in every location's column.
+        currency: RAW_MATERIAL_PRICE_CURRENCY,
         row: library.row ? { pricePerKg: num(library.row[info.materialCol]), densityKgM3: densityOf(library.row) } : null,
         volumeMm3: num(item.volume),
         comparables: library.comparables.map((r) => ({ pricePerKg: num(r[info.materialCol]), densityKgM3: densityOf(r) })),

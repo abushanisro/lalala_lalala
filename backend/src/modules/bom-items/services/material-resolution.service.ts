@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../common/database/database.service';
 import type { RateSnapshot } from '../../../common/exchange-rate/exchange-rate.service';
 import { resolveUtsMpa, isSheetFormableMaterial } from '../costing/shared/core/default-rates.constants';
+import { rawMaterialPricePerKg } from '../costing/shared/core/material-location-price';
 import { ASSEMBLY_FAMILY, CAD_FAMILY_TO_PROCESS_GROUP, costedProcessGroups, familiesOfProcessGroup } from '../costing/shared/core/part-family-process-group';
 import { isMaterialNamed, ownMaterialGroup, pricedGradeFor, type PricedGrade, type ProcessMaterial } from '../costing/shared/core/process-materials';
 import { isPlasticGrade } from '../costing/plastic-molding/process/process-tree';
@@ -32,6 +33,8 @@ interface MatchedMaterialRow {
   stockForm: string | null; matlState: string | null;
   astmStandard: string | null; dinStandard: string | null; enStandard: string | null; jisStandard: string | null;
   hasCost: boolean;
+  // locCost: the location's price (its LOCATION_INFO column); indiaCost: cost_india, else cost. Both USD per kg, as every raw_materials
+  // price is (material-location-price.ts).
   shape: string | null; locCost: number | null; indiaCost: number | null; densityKgM3: number | null;
   shearStrengthMpa: number | null; utsMpa: number | null; yieldStrengthMpa: number | null;
   /** The raw_materials column each of these values was read from (newer column first, then the legacy one); null when neither holds it. */
@@ -747,12 +750,11 @@ export class MaterialResolutionService {
           } else if (priceForm && locationStockPrices.length > 0) {
             warnings.push(`No ${priceForm.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
           }
-          // A form's price: its stock price when one is on file, else the material's own.
+          // A form's price: its stock price when one is on file, else the material's own (the location's price, else India's or the
+          // general one), held in USD per kg and converted to the quote's currency like any other.
           const priceOf = (s: StockPrice | null) => (s
             ? s.pricePerKg * rates.convertStrict(s.currencyCode, locCurrencyCode)
-            : hasCost
-              ? (best.locCost != null && best.locCost > 0 ? best.locCost : (best.indiaCost as number) * rates.convertStrict('INR', locCurrencyCode))
-              : 0);
+            : rawMaterialPricePerKg(best.locCost, locCurrencyCode, rates) ?? rawMaterialPricePerKg(best.indiaCost, locCurrencyCode, rates) ?? 0);
           return {
             materialCostPerKg: priceOf(stock),
             stockFormPricesPerKg: Object.fromEntries(STOCK_PRICE_FORMS.map((f) => [f, priceOf(stockPriceIn(f))])),

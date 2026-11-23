@@ -100,6 +100,7 @@ import { requiredClampForce, type MaterialClampProperties } from './costing/plas
 import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './costing/plastic-molding/shot-size';
 import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
+import { rawMaterialPricePerKg } from './costing/shared/core/material-location-price';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
 import type { CapabilityCheck as MachineCapabilityCheck, PartGeometryForCapability } from './costing/shared/capability/machine-capability';
 import type { CuttingProcessContext, CuttingProcessResult } from './costing/shared/core/manufacturing-process.types';
@@ -3874,21 +3875,8 @@ export class BomItemCostingService {
     const smUtsMpa = utsMpa;
 
     // Scrap recovery credit (~30% of material price) — a distinct concern from
-    // shear/UTS, still queried directly since resolveMaterialForFamily doesn't
-    // expose cost_india.
-    let smScrapPricePerKg = 0;
-    try {
-      const adminDb = this.databaseService.getUserClient();
-      const g = (grade ?? '').trim();
-      let rmRow: any[] | null = null;
-      if (g) {
-        ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('grade', g).limit(1));
-        if (!rmRow?.length) {
-          ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('name', g).limit(1));
-        }
-      }
-      if (rmRow?.[0]?.cost_india) smScrapPricePerKg = Number(rmRow[0].cost_india) * 0.30;
-    } catch { /* non-fatal — scrap credit stays 0 */ }
+    // shear/UTS (sheetScrapPricePerKg).
+    const smScrapPricePerKg = await this.sheetScrapPricePerKg(grade, locInfo.code, rates);
 
     // Determine part complexity from feature graph or item complexity field
     const smComplexityRaw = ((item as any).complexity ?? fg?.summary?.complexity ?? 'medium') as string;
@@ -6299,22 +6287,9 @@ export class BomItemCostingService {
     ]);
     const rcSamplingRate = rcSamplingForCost.rate;
     const rcInspectionTimeMin = rcInspectionMinResult.minutes;
-    // Scrap recovery credit (~30% of material price) — same standalone query
-    // as getCostSummary's smScrapPricePerKg (resolveMaterialForFamily doesn't
-    // expose cost_india).
-    let rcScrapPricePerKg = 0;
-    try {
-      const adminDb = this.databaseService.getUserClient();
-      const g = (grade ?? '').trim();
-      let rmRow: any[] | null = null;
-      if (g) {
-        ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('grade', g).limit(1));
-        if (!rmRow?.length) {
-          ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('name', g).limit(1));
-        }
-      }
-      if (rmRow?.[0]?.cost_india) rcScrapPricePerKg = Number(rmRow[0].cost_india) * 0.30;
-    } catch { /* non-fatal — scrap credit stays 0 */ }
+    // Scrap recovery credit (~30% of material price) — the same read as
+    // getCostSummary's smScrapPricePerKg.
+    const rcScrapPricePerKg = await this.sheetScrapPricePerKg(grade, locInfo.code, rates);
     const rcEMithranCtx = {
       dlrPerHr: mhrRates.directLaborRate ?? 0,
       qairPerHr: mhrRates.qaInspectorRate ?? 0,
@@ -9615,6 +9590,25 @@ export class BomItemCostingService {
   // guessed location. Returns null when no row exists, so the caller can say the
   // price is unknown instead of pricing the consumable at 0. A failed query or a
   // missing FX rate throws: those are errors, not "no price on file".
+  /**
+   * A sheet-metal part's scrap recovery price per kg in the quote's currency: 30% of the grade's cost_india, which is not on the
+   * resolved material (resolveMaterialForFamily). The column holds USD per kg (material-location-price.ts): read as the quote's
+   * currency it made an India part's scrap credit about 94 times too small. 0 (no credit) when the grade has no such price or the read
+   * fails: the credit only lowers the material cost.
+   */
+  private async sheetScrapPricePerKg(grade: string | null, currencyCode: string, rates: RateSnapshot): Promise<number> {
+    try {
+      const adminDb = this.databaseService.getUserClient();
+      const g = (grade ?? '').trim();
+      if (!g) return 0;
+      let { data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('grade', g).limit(1);
+      if (!rmRow?.length) ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('name', g).limit(1));
+      return (rawMaterialPricePerKg(rmRow?.[0]?.cost_india, currencyCode, rates) ?? 0) * 0.30;
+    } catch {
+      return 0;
+    }
+  }
+
   private async resolveConsumablePrice(
     accessToken: string,
     consumableType: string,

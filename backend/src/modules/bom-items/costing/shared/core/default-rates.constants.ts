@@ -1195,12 +1195,13 @@ export type MachineClass = keyof typeof MACHINE_REGISTRY;
 // table) — no hardcoded/fallback rate lives here anymore (removed the old
 // `defaultInrRate` field, which several call sites silently fell back to when
 // a real rate lookup came back empty).
-// `materialCol`: column to read from raw_materials for this location.
+// `materialCol`: column to read from raw_materials for this location: the
+// material's price there in USD per kg, not in `code` (material-location-price.ts).
 
 interface LocationCurrencyInfo {
   readonly code: string;          // ISO 4217 currency code
   readonly symbol: string;        // display symbol
-  readonly materialCol: string;   // raw_materials column
+  readonly materialCol: string;   // raw_materials column (USD per kg)
 }
 
 export const LOCATION_INFO: Readonly<Record<string, LocationCurrencyInfo>> = {
