@@ -87,6 +87,23 @@ describe('physics', () => {
     expect(classifyLaserMaterial(null)).toBe('OTHER');
   });
 
+  it('reads an alloy written by its elements by its base metal, the first one named', () => {
+    // Ti-6Al-4V is titanium with 6 % aluminium. It was read as aluminium, so a titanium part was gated and cut on aluminium's limits.
+    expect(classifyLaserMaterial('Ti-6Al-4V')).toBe('OTHER');
+    expect(classifyLaserMaterial('Titanium, Ti-6Al-4V Grade 5')).toBe('OTHER');
+    expect(classifyLaserMaterial('Ti-3Al-2.5V')).toBe('OTHER');
+    expect(classifyLaserMaterial('Magnesium, Mg-Al-Zn AZ31B')).toBe('OTHER');
+    // Aluminium named first is aluminium, whatever it is alloyed with.
+    expect(classifyLaserMaterial('Al-Cu-Mg-Ni 2618')).toBe('AL');
+    expect(classifyLaserMaterial('Aluminum, ANSI 6061')).toBe('AL');
+    expect(classifyLaserMaterial('AA7075 (Al-Zn-Mg-Cu)')).toBe('AL');
+    // A bronze or a brass is a copper alloy, with aluminium in its name or not.
+    expect(classifyLaserMaterial('Aluminium Bronze')).toBe('CU');
+    expect(classifyLaserMaterial('Nickel Aluminium Bronze C95800')).toBe('CU');
+    // A nickel word after a steel one changes nothing: there is no aluminium token to decide.
+    expect(classifyLaserMaterial('Mild Steel, nickel plated')).toBe('MS');
+  });
+
   it('classifies the JIS carbon-steel sheet family as MS, coated or not', () => {
     // SECC is the most common grade in this deployment and used to classify as
     // OTHER, while CRCA and SPCC -- the same material class -- classified as MS.
