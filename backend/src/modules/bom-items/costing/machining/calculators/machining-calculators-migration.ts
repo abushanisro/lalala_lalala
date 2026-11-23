@@ -152,6 +152,29 @@ COMMIT;
 /** A calculator's place in the current spec; a superseded entry has the place of the entry that replaced it. */
 const order = (spec: MachiningCalculatorSpec, c: SpecCalculator) => spec.calculators.findIndex((x) => x.name === c.name);
 
+/** One paragraph as SQL comment lines, wrapped at the header's width. */
+function commentParagraph(text: string, width = 96): string {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    if (line && `${line} ${word}`.length > width) { lines.push(line); line = word; }
+    else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(line);
+  return lines.map((l) => `-- ${l}\n`).join('');
+}
+
+/**
+ * The header's account of every default the spec gives a source for (SpecField.note): the calculator, the field, its value and the source. Empty
+ * when no field of the migration's calculators has one, so a migration generated before notes existed does not change.
+ */
+function defaultSources(added: readonly SpecCalculator[]): string {
+  return added
+    .flatMap((c) => c.fields.flatMap((f) => (f.note ? [`${c.name}, ${f.name}${f.default != null ? ` = ${f.default}` : ''}. ${f.note}`] : [])))
+    .map((paragraph) => `${commentParagraph(paragraph)}--\n`)
+    .join('');
+}
+
 /**
  * The SQL of a later migration that adds the calculators the spec marks with
  * that migration number (migrations/<n>_machining_<...>_calculator.sql).
@@ -170,7 +193,7 @@ export function buildMachiningCalculatorMigrationSql(migration: number, spec: Ma
 -- src/modules/bom-items/costing/machining/calculators/machining-calculators.json.
 -- Do not edit by hand: change the spec and regenerate.
 --
--- Requires migration 804. Self-contained, idempotent, post-checked.
+${defaultSources(added)}-- Requires migration 804. Self-contained, idempotent, post-checked.
 
 BEGIN;
 ${added.map((c) => calculatorSql(spec, c, 700 + order(spec, c))).join('')}

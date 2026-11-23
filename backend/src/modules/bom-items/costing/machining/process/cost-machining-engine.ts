@@ -422,7 +422,7 @@ const MILLING_TIME_INPUT: Record<string, string> = {
   'Rough Milling': 'Rough Milling Time', 'Bulk Milling': 'Rough Milling Time',
   'Fine Finish Milling': 'Finish Milling Time',
   'Contouring': 'Contouring Time', 'Perimeter Milling': 'Contouring Time',
-  'Slot Milling': 'Slot and Groove Milling Time', 'Groove Milling': 'Slot and Groove Milling Time',
+  'Slot Milling': 'Slot and Groove Milling Time', 'Groove Milling': 'Slot and Groove Milling Time', 'Obround Slot Milling': 'Slot and Groove Milling Time',
   'Center Drilling': 'Hole Making Time', 'Drilling': 'Hole Making Time', 'Counterboring': 'Hole Making Time', 'Countersinking': 'Hole Making Time',
   'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time',
 };
@@ -2112,11 +2112,12 @@ export function computeTurningCostSummary(
 
   // ── Live-tool milling ─────────────────────────────────────────────────────
   // The part's keyways that are not broached, and its slots: each sequenced
-  // operation ("Rough Milling", "Slot Milling") is a line of the lathe, timed
-  // by that operation's own calculator, with the features it mills as its
-  // rows (lathe-milling.ts). Whether this lathe has the live tool for them is
-  // the route's capability (checkLatheCapability), not a cost. An operation
-  // the sequencer could not time is a named gap on its line.
+  // operation ("Obround Slot Milling" of a keyway; "Rough Milling" and "Slot
+  // Milling" of a slot) is a line of the lathe, timed by that operation's own
+  // calculator, with the features it mills as its rows (lathe-milling.ts).
+  // Whether this lathe has the live tool for them is the route's capability
+  // (checkLatheCapability), not a cost. An operation the sequencer could not
+  // time is a named gap on its line.
   for (const milling of latheMillingLines(input.latheMilling)) {
     processLines.push(withFeatureGroups(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), milling.rows));
   }

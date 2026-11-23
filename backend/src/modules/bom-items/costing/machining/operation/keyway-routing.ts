@@ -4,7 +4,7 @@
 //   broached   a keyway open at both ends, so a broach can be drawn straight through it (the keyway of a hub bore): its own line on a broaching machine,
 //              timed by the reference broach tables (computeKeywayBroachingLine in cost-machining-engine.ts);
 //   milled     every other keyway: one closed at an end (a broach cannot enter or leave it), or one whose width no reference broach cuts. It stays in the
-//              feature list and the sequencer mills it (the catalog's "Rough Milling // Keyway").
+//              feature list and the sequencer mills it with a cutter of its width (the catalog's "Obround Slot Milling // Keyway").
 // Broached keyways are taken out of the feature list here, before buildOperationSequence sees them, so none is costed twice or with the wrong physics.
 //
 // Open or closed is measured, not assumed: the engine reports walled_fraction, the share of the keyway floor's outline that has a wall standing on it. Open at

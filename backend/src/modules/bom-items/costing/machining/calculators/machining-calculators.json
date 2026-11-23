@@ -3142,6 +3142,96 @@
           "formula": "({Load Time} + {Unload Time} + ({Setups} - 1) * {Reorientation Time}) * {Adjustment Factor} * {Repetitions}"
         }
       ]
+    },
+    {
+      "name": "Machining - Obround Slot Milling",
+      "operation": "Obround Slot Milling",
+      "machineClasses": [
+        "3_axis_lathe",
+        "3_axis_bar_feed_lathe_with_sub_spindle",
+        "simultaneous_turning",
+        "machining_millturn",
+        "3_axis_mill",
+        "4_axis_mill",
+        "5_axis_mill"
+      ],
+      "migration": 1118,
+      "description": "Milling a keyway that is not broached, with an end mill of the keyway's width: the cutter takes the slot in passes, each plunging its share of the depth and travelling between the keyway's two end centres, at the feed rate a cutter of that diameter runs in the material (tblMillingFinishing). The depth of a pass is the Slotting Depth Ratio of the cutter diameter: 0.2, the upper value of a tool maker's published guidance for slotting with a solid end mill of ordinary cutting edge (Mitsubishi Materials, \"Depth of cut\": axial depth 0.05 to 0.2 of the diameter); the reference data has no value for it.",
+      "fields": [
+        {
+          "name": "Keyway Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Keyway Width",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Keyway Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Keyways",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "engine"
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "engine"
+        },
+        {
+          "name": "Feed per Tooth per Diameter",
+          "unit": null,
+          "source": "engine"
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "default",
+          "default": 10000
+        },
+        {
+          "name": "Slotting Depth Ratio",
+          "unit": null,
+          "source": "default",
+          "default": 0.2,
+          "note": "The engine's own value: the reference data has none. A tool maker's published guidance for slotting with a solid end mill of ordinary cutting edge gives an axial depth of 0.05 to 0.2 of the cutter diameter (Mitsubishi Materials, \"Depth of cut\", mmc-carbide.com/permanent/courses/70/depth-of-cut.html); the upper value is taken."
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Keyway Width}))"
+        },
+        {
+          "name": "Feed Rate",
+          "unit": "mm/min",
+          "formula": "{Spindle Speed} * {Teeth} * {Feed per Tooth per Diameter} * {Keyway Width}"
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "formula": "ceil({Keyway Depth} / ({Slotting Depth Ratio} * {Keyway Width}))"
+        },
+        {
+          "name": "Path per Pass",
+          "unit": "mm",
+          "formula": "max({Keyway Length} - {Keyway Width}, 0) + {Keyway Depth} / {Passes}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Keyways} * {Passes} * {Path per Pass} / {Feed Rate} * 60"
+        }
+      ]
     }
   ],
   "retire": [

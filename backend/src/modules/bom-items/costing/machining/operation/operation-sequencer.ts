@@ -174,6 +174,32 @@ function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketF
   return [...groups.values()].sort((a, b) => b.toolMm - a.toolMm);
 }
 
+/** The catalog's operation for a keyway that is milled, not broached ("Obround Slot Milling//Keyway" on the mills and the live-tool lathes). */
+export const KEYWAY_MILLING = 'Obround Slot Milling';
+
+/** The milled keyways of one size, or those that lack the same CAD measurements (`lacks`: they are not timed). */
+interface KeywayGroup { lengthMm: number; widthMm: number; depthMm: number; keyways: number; lacks: string[] }
+
+/**
+ * A Keyway feature's occurrences by size (CAD length_mm x width_mm x depth_mm): keyways of one size are cut alike, by a cutter of their width.
+ * A keyway with a measurement missing is not given one: it is grouped with those that lack the same, to be named as a gap.
+ */
+function keywayGroups(occurrences: readonly { length_mm?: unknown; width_mm?: unknown; depth_mm?: unknown }[]): KeywayGroup[] {
+  const groups = new Map<string, KeywayGroup>();
+  for (const o of occurrences) {
+    const measured = { length: Number(o.length_mm), width: Number(o.width_mm), depth: Number(o.depth_mm) };
+    const lacks = Object.entries(measured).filter(([, mm]) => !(mm > 0)).map(([name]) => name);
+    const key = lacks.length > 0 ? `lacks ${lacks.join(' ')}` : `${measured.length}|${measured.width}|${measured.depth}`;
+    const g = groups.get(key) ?? { lengthMm: measured.length, widthMm: measured.width, depthMm: measured.depth, keyways: 0, lacks };
+    g.keyways += 1;
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+/** "length", "length and width", "length, width and depth". */
+const listed = (names: readonly string[]): string => names.join(', ').replace(/, ([^,]*)$/, ' and $1');
+
 /** One operation timed by its calculator: the time, its steps and the calculator that ran, or the missing inputs named (time 0). */
 function calcOp(
   calculators: MachiningCalculators | null,
@@ -235,6 +261,7 @@ const OP_ORDER: string[] = [
   "Contouring",
   "Perimeter Milling",
   "Rough Milling",
+  KEYWAY_MILLING,
   "Slot Milling",
   "Center Drilling",
   "Drilling",
@@ -312,21 +339,22 @@ export function buildOperationSequence(
     'Removed Volume': { value: removedMm3, source: 'CAD: volume the features remove' }, ...mrrSeed,
   });
   // A finishing pass is a tool path at the cutter's feed: the cutter and how it runs in this material, from the table.
-  const cutterSeeds = (toolMm: number, toolWhy: string): Record<string, CalcSeed> => {
-    if (!finishing) return {};
-    const fromTable = (value: number, column: string, note = ''): CalcSeed => ({
-      value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`,
-      match: { table: 'tblMillingFinishing', row: { MaterialClass: matClass } },
-    });
-    return {
-      'Tool Diameter': toolMm === finishing.toolDiameterMm
-        ? fromTable(toolMm, 'ToolDiameterMm')
-        : { value: toolMm, source: toolWhy },
-      'Teeth': fromTable(finishing.teeth, 'Teeth'),
-      'Cutting Speed': fromTable(finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`),
-      'Feed per Tooth per Diameter': fromTable(finishing.feedPerToothPerDiameter, 'FeedPerToothPerDiameter'),
-    };
-  };
+  const fromFinishingTable = (value: number, column: string, note = ''): CalcSeed => ({
+    value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`,
+    match: { table: 'tblMillingFinishing', row: { MaterialClass: matClass } },
+  });
+  // How an end mill runs in this material, whatever its diameter (the chip load is per diameter): every tool-path calculator reads these.
+  const cutterRunSeeds = (): Record<string, CalcSeed> => (finishing ? {
+    'Teeth': fromFinishingTable(finishing.teeth, 'Teeth'),
+    'Cutting Speed': fromFinishingTable(finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`),
+    'Feed per Tooth per Diameter': fromFinishingTable(finishing.feedPerToothPerDiameter, 'FeedPerToothPerDiameter'),
+  } : {});
+  const cutterSeeds = (toolMm: number, toolWhy: string): Record<string, CalcSeed> => (finishing ? {
+    'Tool Diameter': toolMm === finishing.toolDiameterMm
+      ? fromFinishingTable(toolMm, 'ToolDiameterMm')
+      : { value: toolMm, source: toolWhy },
+    ...cutterRunSeeds(),
+  } : {});
   const standardToolMm = finishing?.toolDiameterMm ?? Number.POSITIVE_INFINITY;
   const contourOp = (operation: string, wallMm2: number, surfaceMm2: number, faces: number) => calcOp(calculators, operation, {
     'Wall Area': { value: wallMm2, source: 'CAD: area of the walls' },
@@ -347,6 +375,14 @@ export function buildOperationSequence(
       : { value: 0, source: 'The cutter is as wide as the pocket: the walls are finished with the floor' },
     'Faces': { value: g.pockets, source: 'CAD: pockets to finish' },
     ...cutterSeeds(g.toolMm, `CAD: pocket width ${g.toolMm} mm, narrower than the standard finishing cutter`),
+  });
+  // A milled keyway is cut by an end mill of its own width, in passes between its two end centres.
+  const keywayOp = (g: KeywayGroup) => calcOp(calculators, KEYWAY_MILLING, {
+    'Keyway Length': { value: g.lengthMm, source: 'CAD: keyway length' },
+    'Keyway Width': { value: g.widthMm, source: 'CAD: keyway width, the diameter of the cutter' },
+    'Keyway Depth': { value: g.depthMm, source: 'CAD: keyway depth' },
+    'Keyways': { value: g.keyways, source: 'CAD: keyways of this size' },
+    ...cutterRunSeeds(),
   });
   const countOp = (operation: string, field: string, n: number) => calcOp(calculators, operation, { [field]: { value: n, source: 'CAD: feature count' } });
   // An edge with a CAD diameter is timed by its length (pi x D per edge) at the table's edge speed; one without, per edge.
@@ -425,9 +461,15 @@ export function buildOperationSequence(
         break;
 
       case "Keyway:default":
-        // A keyway no broach in the reference cuts (keyway-routing.ts): the
-        // catalog's "Rough Milling//Keyway" on the mill.
-        ops.push({ name: "Rough Milling", ...volumeOp('Rough Milling', totalRemovedMm3), source: "feature", cadFeatureType: ft });
+        // A keyway no broach in the reference cuts (keyway-routing.ts): the catalog's "Obround Slot Milling//Keyway", one line per
+        // keyway size. Not the volume at the bulk removal rate: that rate is a large cutter's in open material, and a keyway is cut
+        // by a cutter of its own width. A keyway with no CAD length, width or depth is a named gap.
+        for (const g of keywayGroups(occurrences)) {
+          const timed = g.lacks.length > 0
+            ? { timeSec: 0, missing: `the CAD ${listed(g.lacks)} of ${g.keyways > 1 ? `${g.keyways} keyways` : 'the keyway'}` }
+            : keywayOp(g);
+          ops.push({ name: KEYWAY_MILLING, ...timed, source: "feature", cadFeatureType: ft, count: g.keyways });
+        }
         break;
 
       case "SimpleHole:through":
@@ -595,8 +637,9 @@ export function injectDrawingIntelligence(
   const raValue = di.surfaceFinishRa?.value ?? di.surface_finish_ra ?? null;
   const raMicron = typeof raValue === "number" ? raValue : parseFloat(raValue ?? "");
   if (isFinite(raMicron) && raMicron < 1.6 && raMicron > 0) {
+    // A keyway's milling passes leave its finished walls and floor: they take the allowance as a roughing or finishing pass does.
     const finishIdx = result.findIndex((o) =>
-      o.name.includes("Finish") || o.name.includes("Rough"),
+      o.name.includes("Finish") || o.name.includes("Rough") || o.name === KEYWAY_MILLING,
     );
     if (finishIdx >= 0) {
       result[finishIdx] = { ...result[finishIdx], timeSec: result[finishIdx].timeSec * 1.3 };

@@ -2,9 +2,10 @@
 //
 // The turning engine turns the part's diameters, drills its holes and taps its threads. A keyway or a slot it can only mill, with a driven
 // tool (capability/live-tooling.ts: which features, and which lathes have the tool). The operations and their times are the operation
-// sequencer's (operation-sequencer.ts), the ones a mill is priced on: "Rough Milling" of the volume the feature removes, "Slot Milling" of
-// each slot, each timed by its own stored calculator from the feature's CAD measurements. On a lathe each operation name is one line: its
-// sequenced operations summed, each one a row of the line naming the features it mills, for the Process tree to list and light.
+// sequencer's (operation-sequencer.ts), the ones a mill is priced on: "Obround Slot Milling" of a keyway, "Rough Milling" of the volume a
+// slot removes and "Slot Milling" of each slot, each timed by its own stored calculator from the feature's CAD measurements. On a lathe
+// each operation name is one line: its sequenced operations summed, each one a row of the line naming the features it mills, for the
+// Process tree to list and light.
 import { sumRuns } from './machining-trace';
 import { isLatheMilledFeatureType, type LatheMilledFeatureType } from '../capability/live-tooling';
 
@@ -21,7 +22,7 @@ export function latheMillingOps(ops: readonly OperationLine[]): LatheMillingOp[]
 }
 
 export interface LatheMillingLine {
-  /** The catalog operation the line is ("Rough Milling", "Slot Milling"). */
+  /** The catalog operation the line is ("Obround Slot Milling", "Rough Milling", "Slot Milling"). */
   operation: string;
   /** The line's time and calculation: the calculator run of each of its sequenced operations, summed. */
   run: CalcRun;
