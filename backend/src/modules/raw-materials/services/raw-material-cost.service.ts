@@ -12,9 +12,9 @@ import { Injectable, NotFoundException, InternalServerErrorException, BadRequest
 import { Logger } from '../../../common/logger/logger.service';
 import { DatabaseService } from '../../../common/database/database.service';
 import { ExchangeRateService } from '../../../common/exchange-rate/exchange-rate.service';
-import { declareCostRecordCurrency } from '../../bom-items/costing/shared/core/persisted-currency-contract';
 import { LOCATION_INFO } from '../../bom-items/costing/shared/core/default-rates.constants';
 import { RAW_MATERIAL_PRICE_CURRENCY } from '../../bom-items/costing/shared/core/material-location-price';
+import { declareCostRecordCurrency } from '../../bom-items/costing/shared/core/persisted-currency-contract';
 import {
   CreateRawMaterialCostDto,
   UpdateRawMaterialCostDto,
@@ -565,7 +565,7 @@ export class RawMaterialCostService {
     country: string,
   ): Promise<MaterialPriceLookup> {
     const g = materialName.trim();
-    const local = LOCATION_INFO[country]?.materialCol;
+    const local = priceColumnOf(country);
     const columns = local && local !== 'cost_india' ? `${local}, cost_india, density` : 'cost_india, density';
     const client = this.databaseService.getClient(accessToken);
     const fail = (message: string): never => {
@@ -591,6 +591,11 @@ export class RawMaterialCostService {
     if (error) fail(error.message);
     return pickRegionalMaterialPrice(orderExactNameFirst((data ?? []) as unknown as Array<Record<string, unknown>>, g), country);
   }
+}
+
+/** The raw_materials column of a country's price: the one the cost engine reads (LOCATION_INFO); none for a location the app does not know. */
+function priceColumnOf(country: string): string | undefined {
+  return Object.hasOwn(LOCATION_INFO, country) ? LOCATION_INFO[country].materialCol : undefined;
 }
 
 /**
@@ -623,7 +628,7 @@ export function orderExactNameFirst(rows: ReadonlyArray<Record<string, unknown>>
 
 /** Picks the price for `country` from candidate raw_materials rows, flagging any India substitution. */
 export function pickRegionalMaterialPrice(rows: Record<string, unknown>[], country: string): MaterialPriceLookup {
-  const local = LOCATION_INFO[country]?.materialCol;
+  const local = priceColumnOf(country);
   const currency = RAW_MATERIAL_PRICE_CURRENCY;
   const positive = (v: unknown): number | null => {
     const n = parseFloat(String(v));

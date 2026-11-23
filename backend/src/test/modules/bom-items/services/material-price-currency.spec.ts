@@ -7,6 +7,7 @@
 import { BomItemCostingService } from '../../../../modules/bom-items/bom-item-costing.service';
 import { LOCATION_INFO } from '../../../../modules/bom-items/costing/shared/core/default-rates.constants';
 import { MaterialResolutionService } from '../../../../modules/bom-items/services/material-resolution.service';
+
 import type { RateSnapshot } from '../../../../common/exchange-rate/exchange-rate.service';
 
 /** A snapshot as ExchangeRateService builds one (USD per unit), at the reference rates of 2026-11-16. */
@@ -28,13 +29,13 @@ function snapshot(usdPer: Record<string, number>): RateSnapshot {
 const RATES = snapshot({ INR: 1 / 93.93, CNY: 1 / 6.6665 });
 
 /** A data API that answers every raw_materials read with `rows` and every other table with nothing: no alias, no stock price. */
-function client(rows: Array<Record<string, unknown>>) {
+function client(rows: Record<string, unknown>[]) {
   return {
     from: (table: string) => {
       const data = table === 'raw_materials' ? rows : [];
       const builder: Record<string, unknown> = {};
       for (const m of ['select', 'eq', 'neq', 'ilike', 'or', 'not', 'in', 'order', 'limit', 'range']) builder[m] = () => builder;
-      builder.maybeSingle = async () => ({ data: null, error: null });
+      builder.maybeSingle = () => Promise.resolve({ data: null, error: null });
       builder.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve({ data, error: null }).then(resolve, reject);
       return builder;
     },
@@ -49,7 +50,7 @@ const AA_7003 = {
 
 async function priced(location: string, row: Record<string, unknown> = AA_7003, family = 'sheet_metal') {
   const service = new MaterialResolutionService({ getClient: () => client([row]) } as never);
-  const info = LOCATION_INFO[location]!;
+  const info = LOCATION_INFO[location];
   const warnings: string[] = [];
   const r = await service.resolveMaterialForFamily({
     accessToken: 't', grade: String(row.grade), family, materialCol: info.materialCol, rates: RATES, locCurrencyCode: info.code, location, warnings,
@@ -91,7 +92,7 @@ describe('the material price of a quote: raw_materials USD per kg in the quote\'
 });
 
 describe('the sheet-metal scrap price: 30% of cost_india, in the quote\'s currency', () => {
-  const scrap = (rows: Array<Record<string, unknown>>, currency: string) => {
+  const scrap = (rows: Record<string, unknown>[], currency: string) => {
     const service = Object.create(BomItemCostingService.prototype) as { sheetScrapPricePerKg: (g: string | null, c: string, r: RateSnapshot) => Promise<number>; databaseService: unknown };
     service.databaseService = { getUserClient: () => client(rows) };
     return service.sheetScrapPricePerKg('Generic Aluminum, AA 7003', currency, RATES);
