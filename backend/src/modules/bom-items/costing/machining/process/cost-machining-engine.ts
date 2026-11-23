@@ -164,8 +164,9 @@ export interface MachiningCostInput {
   partSetup?: { loadTable: any[] | null; adjustmentFactor: number | null; repetitions: number | null; setups: number | null } | null;
   /** The material's milling removal rate (tblMillingRemovalRate, mm^3/min); null or unset = not on file. */
   millingRemovalRateMm3PerMin?: number | null;
-  // Feature volumes from feature_graph_v2 — enables per-feature cycle time. When absent, the whole
-  // stock-to-part volume is one Bulk Milling operation ((stock volume − part volume) / MRR).
+  // The part's sequenced operations (feature_graph_v2, operation-sequencer.ts): each feature's own, and on a milled route the
+  // Bulk Milling of the stock around the part (stock-excess.ts). When absent, the whole stock-to-part volume is one Bulk Milling
+  // operation ((stock volume − part volume) / MRR).
   featureOps?: Array<{ name: string; timeSec: number; source: string; /** feature_graph_v2 ids of the features the operation is performed on. */ featureIds?: string[]; /** The steps of the calculator that timed the operation. */ trace?: CalculationTraceStep[]; /** The inputs the operation could not be priced without (its time is then 0). */ missing?: string }>;
   /**
    * The sequenced operations on the features a lathe mills with a live tool: the part's keyways that are not broached, and its slots
@@ -1610,7 +1611,8 @@ export function computeMillingCostSummary(
   // When feature_graph_v2 data is available (featureOps), use per-feature cycle
   // times from the operation sequencer — this is Fix 3 + Fix 4. The sequencer
   // already breaks out Drill, Tap, Pocket Rough/Finish per occurrence so we sum
-  // all machining ops and bill them against the VMC rate.
+  // all machining ops and bill them against the VMC rate. The stock the feature operations leave around the part is in the
+  // sequence too, as one Bulk Milling operation (stock-excess.ts), so the whole piece is machined down to the part.
   // Without feature data: one Bulk Milling operation on the stock volume less the part volume.
   //
   // machinabilityRating scales MRR: Al 6061 ≈ 150 (2× mild steel baseline of 75).
