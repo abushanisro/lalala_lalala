@@ -27,6 +27,23 @@ that rests on:
   stock_surface   the faces lying on each envelope, with their area: a surface the stock already has, machined only when the stock carries
                   an allowance there. round: outer cylinders at the circle; rect: planar faces on the rectangle's four sides ("w+" and "w-"
                   bound the width, "h+" and "h-" the height, + on the side its direction points to); hex: planar faces on the hexagon's flats.
+  plate           the part as a piece cut out of plate ("plt_v1", the block's own version: it was added to stk_v1, and an analysis made
+                  before it has none), or None when it could not be measured (the reason is logged, the rest of the stock stands):
+    normal          the direction the part is thinnest in (unit vector, named as the axis is): of the envelope's three directions (the
+                    axis, the rectangle's width, the rectangle's height) the one the part is smallest along. That is the rectangle's
+                    height, which is never larger than its width, or the axis when the part is shorter along it than the rectangle is
+                    high (a disc). A tie goes to the height: a cube, and a round or a square bar, are seen across their axis. On a
+                    round part that direction is as arbitrary as the rectangle's angle: a hole across the axis shows as an opening
+                    only when it happens to lie along it.
+    thickness_mm    the part's extent along the normal.
+    outline         the part's silhouette seen along the normal:
+      perimeter_mm    the length of its outer boundary: what a cutter or a torch follows round the part.
+      area_mm2        the area inside that outer boundary, openings not subtracted.
+      rect            the smallest rectangle round it, the footprint it nests in: length_mm >= width_mm, angle_deg the direction of its
+                      length in the plane across the normal, measured as the stock rectangle's angle_deg is about the axis.
+      openings        the openings through the silhouette (windows, holes through the part along the normal): their count, and their
+                      perimeter_mm and area_mm2 summed. A pocket, a blind hole and a hole across the normal are not openings: seen
+                      along the normal the part closes them.
 
 Face ids are TopExp_Explorer ordinals, as everywhere in machining_features (machining/face_coverage.py).
 
@@ -34,9 +51,20 @@ Face ids are TopExp_Explorer ordinals, as everywhere in machining_features (mach
 circle and the hexagon. The sizes are the solid's own extents in that frame, not the mesh's. A face lies on an envelope when every node of
 it is within shared.machining_geometry.envelope_tolerance of it, and an envelope a face lies on takes that face's own size: a blend surface
 standing a few microns proud of a Ø14 turned diameter leaves the round at 14.
+
+The plate's silhouette is the union of every triangle of that mesh projected on the plane across the normal (nothing is assumed of the
+shape being a closed solid). Its rectangle and the thickness are the solid's own extents, as the envelope's are; its perimeters and areas
+are the mesh's. A straight edge is exact. An arc is read along its chords, which the mesh keeps within its chord error (_deflection: 0.02 mm,
+or 0.05 % of the part's diagonal when that is more) and at 26 or more to a full turn: an arc reads at most 0.25 % short, and the area inside
+a full circle at most 1 % short (a small round hole; a disc's own rim, from Ø20 up, reads within 0.05 % and 0.15 %). A curved face seen
+from its side ends at its outermost mesh node, up to the chord error inside the true edge. The mesh is not made finer for the plate: it is
+the one mesh the whole stock is measured on. Two meshes of one edge seen along the normal (the top and the bottom of a wall) leave cracks
+between them narrower than the chord error, so a gap narrower than that is closed: an opening or a notch narrower than the chord error is
+not seen.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -48,7 +76,11 @@ from shared.machining_geometry import ENVELOPE_TOLERANCE_MM, _one_way, envelope_
 from shared.planar_outline import Pt, enclosing_circle, hull, min_area_rect, regular_hexagon
 from shared.solid_measures import principal_axes
 
+logger = logging.getLogger(__name__)
+
 VERSION = "stk_v1"
+# The plate block's own version. VERSION stays: the backend takes an analysis with another stock version for one made before the measurement.
+PLATE_VERSION = "plt_v1"
 
 # A face's outward normal is along a direction when their cosine is above this (0.5 degrees): the node test then says whether it lies there.
 _ALONG = math.cos(math.radians(0.5))
@@ -351,6 +383,54 @@ def _hexagon_faces(env: _Envelope, faces: Sequence[_Face], hexagon: Dict[str, An
     return [on_flats[i] for i in sorted(on_flats)]
 
 
+def _silhouette(faces: Sequence[_Face], normal: np.ndarray, deflection: float) -> Any:
+    """The part's silhouette seen along `normal`, as a shapely geometry in the plane across it: the union of every mesh triangle projected
+    there. A gap narrower than the mesh's chord error is closed (two meshes of one edge leave such cracks), with mitred corners: the
+    outline's own corners stay as they are."""
+    import shapely  # type: ignore
+
+    u0, v0 = _across(normal)
+    triangles = np.concatenate([f.nodes for f in faces if len(f.nodes)]).reshape(-1, 3, 3)
+    seen = shapely.polygons(np.stack([triangles @ u0, triangles @ v0], axis=-1))
+    # A triangle edge-on to the plane has no area to add.
+    shadow = shapely.union_all(seen[shapely.area(seen) > 1e-9])
+    return shadow.buffer(deflection / 2.0, join_style="mitre").buffer(-deflection / 2.0, join_style="mitre")
+
+
+def _plate(shape: Any, faces: Sequence[_Face], nodes: np.ndarray, env: _Envelope, deflection: float) -> Dict[str, Any]:
+    """The part as a piece cut out of plate (the "plate" of the module docstring), from the envelope the stock is measured in."""
+    import shapely  # type: ignore
+
+    # The thinnest of the envelope's three directions: the rectangle's height, or the axis when the part is shorter along it. Seen along
+    # the height, the rectangle the envelope already has (the axis by the width) stands unless the silhouette's own is smaller.
+    if env.length < env.height * (1.0 - _SAME_SIZE):
+        seen = env
+    else:
+        seen = _envelope(shape, faces, nodes, _named(np.cross(env.axis, env.width_dir)), "box", deflection, side=env.axis)
+
+    silhouette = _silhouette(faces, seen.axis, deflection)
+    if silhouette.is_empty:
+        raise ValueError("the part has no silhouette seen along its thinnest direction")
+    pieces = shapely.get_parts(silhouette)   # one, or one to each body of a part of several
+    outer = [shapely.Polygon(p.exterior) for p in pieces]
+    openings = [shapely.Polygon(ring) for p in pieces for ring in p.interiors]
+    return {
+        "version": PLATE_VERSION,
+        "normal": [round(float(x) + 0.0, 6) for x in seen.axis],
+        "thickness_mm": round(seen.length, 3),
+        "outline": {
+            "perimeter_mm": round(float(sum(p.length for p in outer)), 3),
+            "area_mm2": round(float(sum(p.area for p in outer)), 3),
+            "rect": {"length_mm": round(seen.width, 3), "width_mm": round(seen.height, 3), "angle_deg": round(seen.angle_deg, 3)},
+            "openings": {
+                "count": len(openings),
+                "perimeter_mm": round(float(sum(o.length for o in openings)), 3),
+                "area_mm2": round(float(sum(o.area for o in openings)), 3),
+            },
+        },
+    }
+
+
 def measure_stock(shape: Any) -> Dict[str, Any]:
     """The stock envelope of a machined part (see the module docstring for each key)."""
     deflection = _deflection(shape)
@@ -386,6 +466,12 @@ def measure_stock(shape: Any) -> Dict[str, Any]:
 
     hexagon = env.hexagon
     bore = _clear_bore(shape, faces, env)
+    # The plate outline is one more measurement of the same envelope: when it fails, the stock stands without it.
+    plate = None
+    try:
+        plate = _plate(shape, faces, nodes, env, deflection)
+    except Exception as exc:
+        logger.warning(f"[machining_features] plate outline failed: {exc}")
 
     def ids(found: Sequence[_Face]) -> List[int]:
         return sorted(f.index for f in found)
@@ -406,4 +492,5 @@ def measure_stock(shape: Any) -> Dict[str, Any]:
                      for side in ("w+", "w-", "h+", "h-") for f in sorted(env.sides[side], key=lambda f: f.index)],
             "hex": [{"face_id": f.index, "kind": "PlanarFace", "area_mm2": round(f.area, 3)} for f in (_hexagon_faces(env, faces, hexagon) if hexagon is not None else [])],
         },
+        "plate": plate,
     }

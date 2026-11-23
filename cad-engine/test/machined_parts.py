@@ -91,6 +91,33 @@ def plate_with_holes():
     return plate
 
 
+def disc(diameter=100.0, thickness=10.0):
+    """A disc along Z from the origin."""
+    return cylinder((0, 0, 0), (0, 0, 1), diameter, thickness)
+
+
+def l_plate():
+    """A 100 x 60 x 8 plate with the 60 x 35 corner at its far end cut away: an L, its legs 40 and 25 wide."""
+    return cut(box((0, 0, 0), (100, 60, 8)), box((40, 25, -1), (70, 40, 10)))
+
+
+def plate_with_window_and_holes():
+    """The 200 x 120 x 6 plate with four Ø8 holes, with an 80 x 40 window through its middle."""
+    return cut(plate_with_holes(), box((60, 40, -1), (80, 40, 8)))
+
+
+def plate_with_blind_pocket_and_hole():
+    """A 200 x 120 x 10 plate with an 80 x 40 pocket 6 deep and a Ø8 hole 7 deep in its top: nothing goes through."""
+    plate = cut(box((0, 0, 0), (200, 120, 10)), box((60, 40, 4), (80, 40, 8)))
+    return cut(plate, cylinder((20, 20, 3), (0, 0, 1), 8.0, 8.0))
+
+
+def plate_with_counterbored_hole():
+    """A 100 x 60 x 10 plate with a Ø6 hole through it, counterbored Ø11 x 4 deep from the top."""
+    plate = cut(box((0, 0, 0), (100, 60, 10)), cylinder((30, 30, -1), (0, 0, 1), 6.0, 12.0))
+    return cut(plate, cylinder((30, 30, 6), (0, 0, 1), 11.0, 5.0))
+
+
 def spindle():
     """Two Ø20 cones base to base along X, 60 long: no flat end, no cylinder, no flat side."""
     a = BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 0.0, 10.0, 30.0).Shape()

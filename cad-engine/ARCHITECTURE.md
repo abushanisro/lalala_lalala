@@ -1,6 +1,6 @@
 # CAD Engine — Architecture
 
-Current state first (updated 2026-11-22); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
+Current state first (updated 2026-11-23); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
 
 ## How a request flows
 
@@ -92,7 +92,11 @@ cad-engine/
                                    axis the stock runs along (the turning axis when round bar about it is the smallest stock, else the
                                    longest side of the part's tightest box), the length, the round, rectangle and hexagon around the
                                    part seen along it, a through bore on its centre line (round tube), the end faces the saw cuts leave
-                                   and the faces already lying on each stock's surface; null when it could not be measured
+                                   and the faces already lying on each stock's surface; null when it could not be measured. With it,
+                                   the part as a piece cut out of plate ("plate", plt_v1): the direction it is thinnest in, its
+                                   thickness, and its silhouette seen along it (the union of the mesh's triangles: the outer boundary's
+                                   length, the area inside it, the smallest rectangle round it, the openings through it); null when
+                                   that alone could not be measured
   shared/                        — cross-domain, not owned by one manufacturing family
     machining_geometry.py        — hole/cone/counterbore classification + cylinder
                                     collection primitives, extracted out of Machining

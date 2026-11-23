@@ -249,8 +249,8 @@ interface RollFormMeasurement {
 
 /**
  * What a machined part is measured for its raw stock (cad-engine machining/stock_envelope.py, the "stock" of its machining_features), as
- * feature_graph.summary.machiningStock: the top-level keys camelCase, the objects inside (round, rect, hex, bore, endFaces, stockSurface)
- * as the engine writes them, snake_case -- as rollFormGeometry(). null when the engine could not measure the part.
+ * feature_graph.summary.machiningStock: the top-level keys camelCase, the objects inside (round, rect, hex, bore, endFaces, stockSurface,
+ * plate) as the engine writes them, snake_case -- as rollFormGeometry(). null when the engine could not measure the part.
  */
 export function machiningStock(raw: unknown): MachiningStockSummary | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -267,7 +267,19 @@ export function machiningStock(raw: unknown): MachiningStockSummary | null {
     bore: stock.bore ?? null,
     endFaces: stock.end_faces ?? null,
     stockSurface: stock.stock_surface ?? null,
+    plate: machiningPlate(stock.plate),
   };
+}
+
+/**
+ * The stock's "plate" block (the part as a piece cut out of plate: its thinnest direction, its thickness and its outline seen along it), as
+ * the engine wrote it. null when the measurement has none (an analysis made before the block, or the engine could not measure it) and when
+ * it carries no version: not the engine's block.
+ */
+function machiningPlate(raw: unknown): Readonly<Record<string, unknown>> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const plate = raw as Record<string, unknown>;
+  return typeof plate.version === 'string' ? plate : null;
 }
 
 /** The engine's "stock" result as it arrives (its values are passed on as measured). */
@@ -282,6 +294,7 @@ interface MachiningStockMeasurement {
   bore?: unknown;
   end_faces?: unknown;
   stock_surface?: unknown;
+  plate?: unknown;
 }
 
 @Injectable()
@@ -777,8 +790,9 @@ export class AutoFillService {
         } : {}),
         // What every machined part is measured for its raw stock (cad-engine machining/stock_envelope.py): the axis the stock runs along, its
         // length, the round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's
-        // surface. The Stock Machining cost chooses and prices the stock from it. Absent until the part is analysed by an engine that
-        // measures it (press Refresh analysis); null when that engine could not. See machiningStock().
+        // surface; and, as a piece cut out of plate, its outline seen along its thinnest direction (plate). The Stock Machining cost
+        // chooses and prices the stock from it. Absent until the part is analysed by an engine that measures it (press Refresh analysis);
+        // null when that engine could not. See machiningStock().
         ...(machiningFeatures && 'stock' in machiningFeatures ? { machiningStock: machiningStock(machiningFeatures.stock) } : {}),
         // A bar, tube or profile (cad-engine bar_tube/feature_extractor.py): its stock form and section, the centreline's developed length, the
         // bends, the holes and openings through the wall, the end cuts and the end forms. The bar and tube cost prices its stock and routes from it.

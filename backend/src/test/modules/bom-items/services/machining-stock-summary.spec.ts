@@ -34,6 +34,15 @@ const block = {
   },
 };
 
+// The engine's "plate" block for R_M-0230-039 STIFFNER 2 (159.5 x 42, 8 through its standoffs, seven through holes), as it measures it.
+const stiffenerPlate = {
+  version: 'plt_v1', normal: [0, 0, 1], thickness_mm: 8,
+  outline: {
+    perimeter_mm: 397.81, area_mm2: 5058.565, rect: { length_mm: 159.5, width_mm: 42, angle_deg: 90 },
+    openings: { count: 7, perimeter_mm: 61.385, area_mm2: 42.924 },
+  },
+};
+
 const cadResult = (family: string, machiningFeatures: Record<string, unknown> | undefined) => ({
   geometry_features: { manufacturing_features: { manufacturing_intelligence: { detected_family: family, features: {} } } },
   ...(machiningFeatures ? { machining_features: { family, features: [], ...machiningFeatures } } : {}),
@@ -61,6 +70,7 @@ describe('feature_graph.summary.machiningStock', () => {
       bore: { diameter_mm: 6 },
       endFaces: { min: [3], max: [7] },
       stockSurface: shaft.stock_surface,
+      plate: null,
     });
   });
 
@@ -69,6 +79,20 @@ describe('feature_graph.summary.machiningStock', () => {
     expect(stored.axisSource).toBe('box');
     expect(stored.bore).toBeNull();
     expect(stored.stockSurface.rect.map((f) => [f.side, f.face_id])).toEqual([['w+', 3], ['w-', 2], ['h+', 5], ['h-', 4]]);
+  });
+
+  it('carries the plate outline as the engine writes it, under the stock version it was added to', () => {
+    const stored = summaryOf('milled', { stock: { ...block, plate: stiffenerPlate } }).machiningStock as { extractionVersion: string; plate: unknown };
+    expect(stored.plate).toEqual(stiffenerPlate);
+    expect(stored.extractionVersion).toBe(MACHINING_STOCK_EXTRACTION_VERSION);
+  });
+
+  it('has a null plate when the stock has none (an analysis made before the block, or one the engine could not measure) or it is no block', () => {
+    expect(machiningStock(block)).toMatchObject({ plate: null });                    // measured before the plate block: no key
+    expect(machiningStock({ ...block, plate: null })).toMatchObject({ plate: null }); // the engine could not measure it
+    for (const malformed of ['plt_v1', 8, [stiffenerPlate], { thickness_mm: 8 }, { ...stiffenerPlate, version: 1 }]) {
+      expect(machiningStock({ ...block, plate: malformed })).toMatchObject({ plate: null, lengthMm: 80 });
+    }
   });
 
   it('is null when the engine could not measure the stock, and absent when the engine did not try (an analysis from before stk_v1)', () => {

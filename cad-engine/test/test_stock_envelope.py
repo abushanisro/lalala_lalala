@@ -12,7 +12,7 @@ from OCC.Core.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane  # noqa: E402
 from OCC.Core.TopAbs import TopAbs_FACE  # noqa: E402
 from OCC.Core.TopExp import TopExp_Explorer  # noqa: E402
 
-from machining.stock_envelope import VERSION, measure_stock  # noqa: E402
+from machining.stock_envelope import PLATE_VERSION, VERSION, measure_stock  # noqa: E402
 from shared.planar_outline import enclosing_circle, enclosing_circle_diameter, regular_hexagon  # noqa: E402
 
 import machined_parts as P  # noqa: E402
@@ -241,6 +241,140 @@ def test_a_blend_standing_a_few_microns_proud_leaves_the_round_at_the_turned_dia
     assert stock["stock_surface"]["round"] == []
 
 
+# ── The plate outline ("plate", plt_v1) ────────────────────────────────────
+# A straight edge is exact. An arc is read along the mesh's chords: a disc's rim within 0.05 % in length and 0.15 % in area, a small round
+# hole (26 chords to the turn) at most 0.25 % short in length and 1 % in area (the module docstring).
+
+def outline(shape):
+    """The part's plate block, and its outline."""
+    plate = measure_stock(shape)["plate"]
+    assert plate["version"] == PLATE_VERSION == "plt_v1"
+    return plate, plate["outline"]
+
+
+def test_a_rectangular_plate_is_seen_along_its_thickness():
+    plate, seen = outline(P.box((0, 0, 0), (200, 120, 6)))
+    assert plate["normal"] == [0.0, 0.0, 1.0]
+    assert plate["thickness_mm"] == pytest.approx(6.0, abs=MM)
+    assert seen["perimeter_mm"] == pytest.approx(2.0 * (200.0 + 120.0), abs=MM)
+    assert seen["area_mm2"] == pytest.approx(200.0 * 120.0, abs=0.01)
+    # Its footprint is the plate itself, its length along X: the first direction across Z, angle 0.
+    assert seen["rect"] == {"length_mm": pytest.approx(200.0, abs=MM), "width_mm": pytest.approx(120.0, abs=MM), "angle_deg": 0.0}
+    assert seen["openings"] == {"count": 0, "perimeter_mm": 0.0, "area_mm2": 0.0}
+
+
+def test_a_disc_is_seen_along_its_axis_and_its_rim_is_read_along_the_chords_of_the_mesh():
+    # Ø100 x 10, turned about Z: shorter along its axis than across it, so the axis is its thinnest direction.
+    stock = measure_stock(P.disc(100.0, 10.0))
+    plate, seen = stock["plate"], stock["plate"]["outline"]
+    assert stock["axis_source"] == "turned"
+    assert plate["normal"] == stock["axis"] == [0.0, 0.0, 1.0]
+    assert plate["thickness_mm"] == pytest.approx(10.0, abs=MM)
+    # The chords are inside the circle: never longer than it, and within 0.05 % (pi x 100 = 314.159) and 0.15 % (pi x 50² = 7853.98).
+    circle, inside = math.pi * 100.0, math.pi * 50.0 ** 2
+    assert circle * (1.0 - 0.0005) <= seen["perimeter_mm"] <= circle
+    assert inside * (1.0 - 0.0015) <= seen["area_mm2"] <= inside
+    # The rectangle is the solid's own extent, not the chords': 100 exactly.
+    assert seen["rect"]["length_mm"] == pytest.approx(100.0, abs=MM) and seen["rect"]["width_mm"] == pytest.approx(100.0, abs=MM)
+    assert seen["openings"]["count"] == 0
+
+
+def test_an_l_shaped_plate_gives_its_own_perimeter_not_its_hulls():
+    plate, seen = outline(P.l_plate())
+    assert plate["normal"] == [0.0, 0.0, 1.0] and plate["thickness_mm"] == pytest.approx(8.0, abs=MM)
+    # Round the L: 100 + 25 + 60 + 35 + 40 + 60 = 320 (its hull, which cuts the inside corner, is 294.46 round). 100 x 60 less 60 x 35.
+    assert seen["perimeter_mm"] == pytest.approx(320.0, abs=MM)
+    assert seen["area_mm2"] == pytest.approx(3900.0, abs=0.01)
+    assert seen["rect"] == {"length_mm": pytest.approx(100.0, abs=MM), "width_mm": pytest.approx(60.0, abs=MM), "angle_deg": 0.0}
+    assert seen["openings"]["count"] == 0
+
+
+def test_a_window_and_through_holes_are_openings_and_leave_the_outer_boundary_alone():
+    plate, seen = outline(P.plate_with_window_and_holes())   # 200 x 120 x 6, an 80 x 40 window, four Ø8 holes
+    assert plate["normal"] == [0.0, 0.0, 1.0]
+    assert seen["perimeter_mm"] == pytest.approx(640.0, abs=MM)
+    assert seen["area_mm2"] == pytest.approx(24000.0, abs=0.01)          # the openings are not subtracted
+    openings = seen["openings"]
+    assert openings["count"] == 5
+    # The window's 240 and 3200 are exact; the holes' 4 x pi x 8 = 100.53 and 4 x pi x 16 = 201.06 are read along 26 chords each.
+    round_length, round_area = 4.0 * math.pi * 8.0, 4.0 * math.pi * 16.0
+    assert 240.0 + round_length * (1.0 - 0.0025) <= openings["perimeter_mm"] <= 240.0 + round_length
+    assert 3200.0 + round_area * (1.0 - 0.01) <= openings["area_mm2"] <= 3200.0 + round_area
+
+
+def test_a_counterbored_hole_is_one_opening_the_bore_that_goes_through():
+    _, seen = outline(P.plate_with_counterbored_hole())   # Ø6 through, Ø11 counterbore
+    openings = seen["openings"]
+    assert openings["count"] == 1
+    assert math.pi * 6.0 * (1.0 - 0.0025) <= openings["perimeter_mm"] <= math.pi * 6.0
+    assert math.pi * 9.0 * (1.0 - 0.01) <= openings["area_mm2"] <= math.pi * 9.0
+
+
+def test_a_pocket_and_a_blind_hole_are_not_openings():
+    plate, seen = outline(P.plate_with_blind_pocket_and_hole())
+    assert plate["thickness_mm"] == pytest.approx(10.0, abs=MM)
+    assert seen["perimeter_mm"] == pytest.approx(640.0, abs=MM)
+    assert seen["area_mm2"] == pytest.approx(24000.0, abs=0.01)
+    assert seen["openings"] == {"count": 0, "perimeter_mm": 0.0, "area_mm2": 0.0}
+
+
+def test_a_plate_lying_askew_in_the_model_gives_the_same_numbers():
+    flat = measure_stock(P.plate_with_window_and_holes())["plate"]
+    # Turned 30 degrees about Z, then 20 about X: no side of it lies along a model axis.
+    askew = measure_stock(P.rotated(P.rotated(P.plate_with_window_and_holes(), (0, 0, 1), 30.0), (1, 0, 0), 20.0))["plate"]
+    # Its thickness runs along Z turned 20 degrees about X, (0, -sin 20, cos 20), under the name an axis has: first component positive.
+    assert askew["normal"] == pytest.approx([0.0, math.sin(math.radians(20)), -math.cos(math.radians(20))], abs=1e-6)
+    assert askew["thickness_mm"] == pytest.approx(flat["thickness_mm"], abs=MM)
+    for key in ("perimeter_mm", "area_mm2"):
+        assert askew["outline"][key] == pytest.approx(flat["outline"][key], abs=0.01)
+        assert askew["outline"]["openings"][key] == pytest.approx(flat["outline"]["openings"][key], abs=0.01)
+    assert askew["outline"]["openings"]["count"] == 5
+    assert askew["outline"]["rect"]["length_mm"] == pytest.approx(200.0, abs=MM)
+    assert askew["outline"]["rect"]["width_mm"] == pytest.approx(120.0, abs=MM)
+    # Across that normal the first direction is X and the second (0, -cos 20, -sin 20); the plate's length, X turned the same way, is
+    # (cos 30, sin 30 cos 20, sin 30 sin 20): cos 30 along the first and -sin 30 along the second, 30 degrees back from X, named 150.
+    assert askew["outline"]["rect"]["angle_deg"] == pytest.approx(150.0, abs=1e-3)
+
+
+def test_a_block_that_is_no_plate_is_still_measured_along_its_thinnest_direction():
+    plate, seen = outline(P.block_with_pocket())   # 80 x 50 x 30, a pocket in its top
+    assert plate["normal"] == [0.0, 0.0, 1.0]
+    assert plate["thickness_mm"] == pytest.approx(30.0, abs=MM)
+    assert seen["perimeter_mm"] == pytest.approx(260.0, abs=MM)
+    assert seen["area_mm2"] == pytest.approx(4000.0, abs=0.01)
+    assert seen["rect"] == {"length_mm": pytest.approx(80.0, abs=MM), "width_mm": pytest.approx(50.0, abs=MM), "angle_deg": 0.0}
+    assert seen["openings"]["count"] == 0
+
+
+def test_a_turned_shaft_is_measured_too_seen_across_its_axis():
+    # Ø12 x 30 then a Ø20 x 10 collar along X. As wide as it is high, so the tie goes to the rectangle's height: a direction across the
+    # axis, whichever the rectangle's angle makes it. Seen from any of them the shaft is its stepped profile: 2 x (40 + 20) round, 12 x 30
+    # + 20 x 10 inside, each curved side ending at a mesh node at most the chord error inside the true edge (within 0.5 %).
+    stock = measure_stock(P.fuse(P.cylinder((0, 0, 0), (1, 0, 0), 12.0, 30.0), P.cylinder((30, 0, 0), (1, 0, 0), 20.0, 10.0)))
+    plate, seen = stock["plate"], stock["plate"]["outline"]
+    assert stock["axis_source"] == "turned" and stock["axis"] == [1.0, 0.0, 0.0]
+    assert plate["normal"][0] == 0.0 and math.hypot(*plate["normal"]) == pytest.approx(1.0, abs=1e-6)
+    assert plate["thickness_mm"] == pytest.approx(20.0, abs=MM)
+    assert seen["perimeter_mm"] == pytest.approx(120.0, rel=0.005)
+    assert seen["area_mm2"] == pytest.approx(560.0, rel=0.005) and seen["area_mm2"] <= 560.0
+    assert seen["rect"]["length_mm"] == pytest.approx(40.0, abs=MM) and seen["rect"]["width_mm"] == pytest.approx(20.0, abs=MM)
+    assert seen["openings"]["count"] == 0
+
+
+def test_a_plate_outline_that_fails_is_null_and_the_stock_stands(monkeypatch, caplog):
+    import machining.stock_envelope as stock_envelope
+
+    def boom(*_args):
+        raise RuntimeError("no outline today")
+    monkeypatch.setattr(stock_envelope, "_silhouette", boom)
+    with caplog.at_level("WARNING", logger="machining.stock_envelope"):
+        stock = measure_stock(P.plate_with_holes())
+    assert stock["plate"] is None
+    assert "plate outline failed: no outline today" in caplog.text
+    assert stock["version"] == "stk_v1" and stock["length_mm"] == pytest.approx(200.0, abs=MM)
+    assert stock["rect"] == {"width_mm": pytest.approx(120.0, abs=MM), "height_mm": pytest.approx(6.0, abs=MM), "angle_deg": 0.0}
+
+
 # ── The outline geometry behind it (shared/planar_outline.py) ──────────────
 
 def test_the_smallest_circle_is_exact_for_an_outline_of_any_number_of_points():
@@ -301,6 +435,9 @@ def test_every_machined_part_carries_its_stock_in_machining_features(tmp_path):
     collar = stock["stock_surface"]["round"][0]["face_id"]
     assert collar in {f for feature in result["machining_features"]["features"] for f in feature["face_ids"]}
     assert collar < len(result["machining_features"]["face_map"])
+    # And its plate outline, under its own version: the stock's stays stk_v1.
+    assert stock["plate"]["version"] == "plt_v1"
+    assert stock["plate"]["thickness_mm"] == pytest.approx(20.0, abs=MM)
 
 
 def test_a_stock_measurement_that_fails_is_null_and_the_analysis_still_succeeds(tmp_path, monkeypatch):

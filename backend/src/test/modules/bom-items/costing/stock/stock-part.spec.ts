@@ -16,6 +16,7 @@ const SHAFT = {
   rect: { width_mm: 14.0, height_mm: 14.0, angle_deg: 158.886 }, hex: null, bore: { diameter_mm: 6.0 },
   endFaces: { min: [5], max: [22] },
   stockSurface: { round: [{ face_id: 9, kind: 'CurvedWall', area_mm2: 334.876 }], rect: [], hex: [] },
+  plate: null,
 };
 const STIFFENER = {
   extractionVersion: 'stk_v1', axis: [1, 0, 0], axisSource: 'box', lengthMm: 159.5, round: { od_mm: 42.107 },

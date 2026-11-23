@@ -200,7 +200,8 @@ def analyze_part(
             except Exception as _fgv2_exc:
                 logger.warning(f"[machining_fgv2] synthesis failed: {_fgv2_exc}")
             # The stock the part is cut from (machining/stock_envelope.py, "stock", stk_v1): the axis it runs along, its length, the
-            # round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's surface.
+            # round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's surface;
+            # and, as a piece cut out of plate, its outline seen along its thinnest direction ("plate", plt_v1; None when that alone fails).
             # Measured for every machined part; a failure here leaves it None and never fails the analysis.
             stock = None
             try:
