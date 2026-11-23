@@ -100,6 +100,7 @@ import { requiredClampForce, type MaterialClampProperties } from './costing/plas
 import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './costing/plastic-molding/shot-size';
 import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
+import { rawMaterialPricePerKg } from './costing/shared/core/material-location-price';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
 import type { CapabilityCheck as MachineCapabilityCheck, PartGeometryForCapability } from './costing/shared/capability/machine-capability';
 import type { CuttingProcessContext, CuttingProcessResult } from './costing/shared/core/manufacturing-process.types';
@@ -3875,7 +3876,8 @@ export class BomItemCostingService {
 
     // Scrap recovery credit (~30% of material price) — a distinct concern from
     // shear/UTS, still queried directly since resolveMaterialForFamily doesn't
-    // expose cost_india.
+    // expose cost_india. Held in USD per kg, so converted to the quote's
+    // currency, as the material price is.
     let smScrapPricePerKg = 0;
     try {
       const adminDb = this.databaseService.getUserClient();
@@ -3887,7 +3889,7 @@ export class BomItemCostingService {
           ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('name', g).limit(1));
         }
       }
-      if (rmRow?.[0]?.cost_india) smScrapPricePerKg = Number(rmRow[0].cost_india) * 0.30;
+      smScrapPricePerKg = (rawMaterialPricePerKg(rmRow?.[0]?.cost_india, locInfo.code, rates) ?? 0) * 0.30;
     } catch { /* non-fatal — scrap credit stays 0 */ }
 
     // Determine part complexity from feature graph or item complexity field
@@ -6301,7 +6303,7 @@ export class BomItemCostingService {
     const rcInspectionTimeMin = rcInspectionMinResult.minutes;
     // Scrap recovery credit (~30% of material price) — same standalone query
     // as getCostSummary's smScrapPricePerKg (resolveMaterialForFamily doesn't
-    // expose cost_india).
+    // expose cost_india), converted from USD per kg the same way.
     let rcScrapPricePerKg = 0;
     try {
       const adminDb = this.databaseService.getUserClient();
@@ -6313,7 +6315,7 @@ export class BomItemCostingService {
           ({ data: rmRow } = await adminDb.from('raw_materials').select('cost_india').ilike('name', g).limit(1));
         }
       }
-      if (rmRow?.[0]?.cost_india) rcScrapPricePerKg = Number(rmRow[0].cost_india) * 0.30;
+      rcScrapPricePerKg = (rawMaterialPricePerKg(rmRow?.[0]?.cost_india, locInfo.code, rates) ?? 0) * 0.30;
     } catch { /* non-fatal — scrap credit stays 0 */ }
     const rcEMithranCtx = {
       dlrPerHr: mhrRates.directLaborRate ?? 0,

@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { RAW_MATERIAL_PRICE_CURRENCY } from '../../bom-items/costing/shared/core/material-location-price';
 
 export class RawMaterialResponseDto {
   @ApiProperty()
@@ -194,15 +195,12 @@ export class RawMaterialResponseDto {
 
   static fromDatabase(row: any): RawMaterialResponseDto {
     const costValue = row.cost_india ?? (row.cost ? parseFloat(row.cost) : undefined);
-    // `cost`/`cost_india` are always INR by column definition (migration 069:
-    // "Material cost per unit in INR") — row.currency is only reliable when a
-    // distinct currency was actually recorded for this row (e.g. an imported
-    // material priced in a listed non-INR currency). Defaulting to 'USD'
-    // whenever row.currency was null silently mislabeled INR-sourced values
-    // as USD — confirmed live: costValue backed by cost_india displayed as
-    // "$X USD" instead of "₹X". Leave undefined (not a guessed default) when
-    // there's no cost value to label at all.
-    const currency = row.currency || (costValue !== undefined ? 'INR' : undefined);
+    // `cost` and every location price (cost_india, ...) are USD per kg
+    // (material-location-price.ts; migration 069's "per unit in INR" comment
+    // is not what the columns hold). row.currency wins where a row records
+    // one. Leave undefined (not a guessed default) when there's no cost value
+    // to label at all.
+    const currency = row.currency || (costValue !== undefined ? RAW_MATERIAL_PRICE_CURRENCY : undefined);
 
     return {
       id: row.id,
