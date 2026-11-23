@@ -49,8 +49,9 @@ export function firstStepHoldsUnclaimedFeatures(family: string): boolean {
 
 /**
  * Whether a cost line is one of the stock's own steps: a Stock Machining part's band saw cuts the stock to pieces before any machine makes a
- * feature. Such a step is never "the part's first step" above.
+ * feature, and a plate cutting process cuts a plate part out of its plate (the engine marks that line, which keeps its own process group).
+ * Such a step is never "the part's first step" above.
  */
-export function isStockStep(line: { processGroup?: string | null } | null | undefined): boolean {
-  return line?.processGroup === STOCK_MACHINING_PROCESS_GROUP
+export function isStockStep(line: { processGroup?: string | null; stockStep?: boolean } | null | undefined): boolean {
+  return line?.processGroup === STOCK_MACHINING_PROCESS_GROUP || line?.stockStep === true
 }

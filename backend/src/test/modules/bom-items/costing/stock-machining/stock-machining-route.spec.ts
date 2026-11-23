@@ -8,7 +8,9 @@ import { sawBundle, sawFit, sawHandlingRow, sawRateRow } from '../../../../../mo
 import { stockReference } from '../../../../../modules/bom-items/costing/stock/stock-reference';
 import { selectStock, type StockForm, type StockPart, type StockSettings } from '../../../../../modules/bom-items/costing/stock/stock-selection';
 import { loadStockMachiningCalculatorSpec, stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
-import { buildStockMachiningCalculatorsMigrationSql } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculators-migration';
+import {
+  buildStockMachiningCalculatorsMigrationSql, buildStockMachiningPerimeterCutMigrationSql,
+} from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculators-migration';
 import {
   buildStockMachiningQuote, STOCK_MACHINING_PROCESS_GROUP, type StockMachiningInput, type StockMachiningMaterial,
 } from '../../../../../modules/bom-items/costing/stock-machining/stock-machining-route';
@@ -40,17 +42,31 @@ const AREA = (Math.PI / 4) * 15.875 ** 2; // the 5/8 in bar's section: 197.93 mm
 const gapReason = (line: { physicsGap?: unknown }) => (line.physicsGap as { reason?: string } | undefined)?.reason;
 
 describe('the Stock Machining calculators', () => {
-  it('are the six of the spec: the stock as supplied, its size, bar and plate yield, the band saw and the scrap credit', () => {
+  it('are the six of migration 1116 (the stock as supplied, its size, bar and plate yield, the band saw, the scrap credit) and the perimeter cut of 1119', () => {
     const spec = loadStockMachiningCalculatorSpec();
     expect(spec.processGroup).toBe(STOCK_MACHINING_PROCESS_GROUP);
     expect(spec.calculators.map((c) => c.name)).toEqual(['Stock Machining - Material Stock', 'Stock Machining - Stock Size', 'Stock Machining - Bar Stock',
-      'Stock Machining - Plate Stock', 'Stock Machining - Band Saw', 'Stock Machining - Scrap Credit']);
+      'Stock Machining - Plate Stock', 'Stock Machining - Band Saw', 'Stock Machining - Scrap Credit', 'Stock Machining - Perimeter Cut']);
+    // A calculator added after 1116 names the migration that ships it; 1116's own name none.
+    expect(spec.calculators.map((c) => c.migration ?? null)).toEqual([null, null, null, null, null, null, 1119]);
     // The two catalog processes of memory/Stock Maching each have their calculator; the rest are helpers.
     expect(spec.calculators.flatMap((c) => c.operations)).toEqual(['Material Stock', 'Band Saw']);
   });
 
   it('are what migration 1116 creates (regenerate it after editing the spec)', () => {
-    expect(readFileSync(join(__dirname, '../../../../../../migrations/1116_stock_machining_calculators.sql'), 'utf8')).toBe(buildStockMachiningCalculatorsMigrationSql());
+    const sql = buildStockMachiningCalculatorsMigrationSql();
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1116_stock_machining_calculators.sql'), 'utf8')).toBe(sql);
+    // An applied migration never changes: the calculator a later one ships is not in it.
+    expect(sql).not.toContain('Stock Machining - Perimeter Cut');
+  });
+
+  it('the perimeter cut is what migration 1119 creates, and nothing else is', () => {
+    const sql = buildStockMachiningPerimeterCutMigrationSql();
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1119_stock_machining_perimeter_cut.sql'), 'utf8')).toBe(sql);
+    expect(sql.match(/^-- Stock Machining - .*$/gm)).toEqual(['-- Stock Machining - Perimeter Cut']);
+    // A helper: thirteen fields, linked to no catalog operation.
+    expect(sql).toContain('($q$Stock Machining - Perimeter Cut$q$, 13, 0)');
+    expect(sql).not.toContain('UPDATE public.process_calculator_mappings');
   });
 
   it('read only variables the staged data holds', () => {

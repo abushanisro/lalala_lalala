@@ -1,6 +1,6 @@
 import { type CostSummaryDto, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { type SecondaryProcessLine } from '@/lib/api/hooks/useSecondaryProcesses';
-import { MATERIAL_STOCK_STEP, allowanceLine, materialStockFeatures, pieceLine, yieldLine } from '@/lib/costing/stock-machining-view';
+import { MATERIAL_STOCK_STEP, allowanceLine, materialStockFeatures, pieceLine, quotedDropoff, yieldLine } from '@/lib/costing/stock-machining-view';
 import { AS_SUPPLIED_STEP, asSuppliedFaceIdsOf, asSuppliedOccurrences } from '@/lib/costing/two-model-view';
 import { fmt, fmtInt, formatEstCycleTime } from '@/lib/features/display-format';
 import { gdtCalloutNodes } from '@/lib/features/gdt-callout-nodes';
@@ -661,7 +661,7 @@ export function buildProcessTree(
       machine: stock.sizeLabel,
       attrs: [
         { name: 'Stock', value: stock.sizeLabel }, { name: 'Allowance', value: allowanceLine(stock) },
-        { name: 'Piece', value: pieceLine(stock) }, { name: 'Yield', value: yieldLine(stock) },
+        { name: 'Piece', value: pieceLine(stock) }, { name: 'Yield', value: yieldLine(stock, quotedDropoff(cost.stockMachining)) },
         { name: 'Cost', value: "In the part's material cost" },
       ],
       children: supplied.length > 0

@@ -8,9 +8,16 @@
 //
 // What cannot be chosen or priced never stops the quote (the user's decision 2026-11-20: Apply never fails): it is a named, uncosted line,
 // which Apply writes as a $0 No Cost Feature with its reason. Nothing is estimated in its place.
+//
+// A part cut from plate has three roughing techniques on a mill's route (stock/plate-roughing.ts; user decision 2026-11-22). The quoted
+// one is data of the priced stock (PricedStock.selection.chosen and .roughing): the piece the engines start from, the lines before the
+// machining, the mill's perimeter cut and the summary's section are all read from there, as the stock form is.
+import { PERIMETER_MILLING } from './perimeter-cut';
 import { STOCK_MACHINING_CALC, STOCK_MACHINING_CLASS, STOCK_MACHINING_PROCESS_GROUP, type StockCutOff } from './stock-machining-route';
 import { runView } from '../casting/casting-calculator-seeds';
+import { stockExcess } from '../machining/operation/stock-excess';
 import { stockPriceFormOf, type StockPriceForm } from '../machining/stock-price';
+import { ROUGHING_TECHNIQUE_LABEL } from '../stock/plate-roughing';
 import { asSuppliedFaces } from '../stock/stock-part';
 
 import type { PricedStock, StockMachiningChoice } from './stock-machining-cost.service';
@@ -31,6 +38,18 @@ export const PARTED_OFF = 'A bar-fed lathe takes the whole bar and parts each pi
 /** Said on a route that starts from a sawn piece whose sawing the part's Process does not cost. A note, not a gap: the route is complete. */
 export const SAW_NOT_COSTED = 'Sawing the stock to pieces is not costed: the machine is loaded with a piece cut to length. Set the part\'s Process to '
   + 'Stock Machining to cost the band saw.';
+
+/** Said on a route whose part a drop-off technique cuts out of the plate: there is no blank to saw, whatever the part's Process. */
+export const PLATE_NOT_SAWN: Readonly<Record<'perimeter_milling_dropoff' | 'plate_cutting_dropoff', string>> = {
+  perimeter_milling_dropoff: 'The plate is loaded on the mill whole and the mill cuts each part out of it: no band saw cuts it.',
+  plate_cutting_dropoff: 'A plate cutting process cuts each part out of the plate: no band saw cuts it.',
+};
+
+/** The engine's own rules of the drop-off techniques, which the reference data does not state, said once on a quote that uses one. */
+export const DROPOFF_RULES_DISCLOSED = 'Disclosed (the engine\'s rules, agreed 2026-11-22; the data names the roughing techniques and has no formula for '
+  + 'them): the parts are nested as their outlines\' rectangles in a grid; the mill\'s perimeter cut is a slot through the plate in passes of the keyway\'s '
+  + 'slotting depth, each pass the outline plus one cutter diameter; a plate cutting process cuts the outline grown by the stock allowance (perimeter + 2πa, '
+  + 'area + perimeter x a + πa²) from one pierce; the mill then removes what is left inside the cut round the part.';
 
 /** The engine's own rules, which the reference data does not state, said once on the quote. */
 export const STOCK_RULES_DISCLOSED = 'Disclosed (the engine\'s rules, agreed 2026-11-22; the data states the allowance, snapping and plate rules and has none for '
@@ -53,13 +72,21 @@ export interface StockMachiningPlan {
 }
 
 /**
+ * The stock the quote prices for a cut-off: the priced stock's (a plate under a drop-off technique is that technique's), else the stock
+ * model's own choice when nothing is priced.
+ */
+export function quotedStock(choice: StockMachiningChoice, cutOff: StockCutOff, priced?: Readonly<Record<StockCutOff, PricedStock>> | null): StockOption | null {
+  return (priced?.[cutOff].selection ?? choice.selection[cutOff]).chosen;
+}
+
+/**
  * The stock model's choice as the blank the machining engines start from: the piece cut for one part (what is machined away, and the bar a
  * lathe turns down from: the circle round a bar's corners), with the stock bought per part beside it (what the material is priced on).
- * Null when no form holds the part.
+ * `priced` gives the roughing technique's piece for a plate part. Null when no form holds the part.
  */
-export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutOff): BlankResult | null {
+export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutOff, priced?: Readonly<Record<StockCutOff, PricedStock>> | null): BlankResult | null {
   const selection = choice.selection[cutOff];
-  const o = selection.chosen;
+  const o = quotedStock(choice, cutOff, priced);
   if (!o) return null;
   return {
     form: o.form, sizeLabel: o.sizeLabel, billetVolMm3: o.blank.volumeMm3, utilizationPct: o.utilizationPct,
@@ -76,8 +103,9 @@ export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutO
  */
 export function stockEngineInput(
   choice: StockMachiningChoice | null, cutOff: StockCutOff, pricesPerKg: Partial<Record<StockPriceForm, number>>,
+  priced?: Readonly<Record<StockCutOff, PricedStock>> | null,
 ): { blankResult?: BlankResult; stockCutOff?: StockCutOff; materialCostPerKg?: number } {
-  const blank = choice ? stockBlankResult(choice, cutOff) : null;
+  const blank = choice ? stockBlankResult(choice, cutOff, priced) : null;
   if (!blank) return {};
   const priceForm = stockPriceFormOf(blank.form);
   const perKg = priceForm ? pricesPerKg[priceForm] : undefined;
@@ -96,8 +124,9 @@ function uncosted(process: 'Material Stock' | 'Band Saw', reason: string): Proce
 }
 
 /**
- * The lines the stock puts before a route's machining: the Band Saw of a Stock Machining part (none when the lathe parts the piece off), or
- * what is not costed. A part with no stock has no material either: nothing is estimated in the stock's place.
+ * The lines the stock puts before a route's machining: the Band Saw of a Stock Machining part (none when the lathe parts the piece off),
+ * the plate cutting of a part a drop-off technique cuts out of the plate, or what is not costed. A part with no stock has no material
+ * either: nothing is estimated in the stock's place.
  */
 function frontLines(plan: StockMachiningPlan, cutOff: StockCutOff): ProcessLineCost[] {
   const why = plan.missing.join('; ');
@@ -127,15 +156,19 @@ export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: Stoc
     ...(quote.material.run ? { 'Stock Machining stock': runView(isPlate(priced!.selection.chosen!) ? STOCK_MACHINING_CALC.plate : STOCK_MACHINING_CALC.bar, 'Material Cost', quote.material.run) } : {}),
     ...(quote.material.creditRun ? { 'Stock Machining scrap credit': runView(STOCK_MACHINING_CALC.scrap, 'Scrap Credit', quote.material.creditRun) } : {}),
   } : {};
+  // A drop-off technique's stock: nothing is sawn, so the saw notes give way to the technique's own.
+  const dropoff = priced?.selection.chosen?.roughing ?? null;
   const warnings = [
     ...cost.warnings, ...plan.warnings, ...(plan.choice?.notes ?? []),
     ...(plan.missing.length ? [`Stock: ${plan.missing.join('; ')}.`] : []),
     ...(priced?.selection.fallback ? [priced.selection.fallback] : []),
+    ...(priced?.roughing?.fallback ? [priced.roughing.fallback] : []),
     ...(quote?.warnings ?? []),
+    ...(priced?.roughing?.warnings ?? []),
     ...(quote?.missing.length ? [`The stock is not priced: ${quote.missing.join('; ')}.`] : []),
     ...(quote && cutOff === 'parting' ? [PARTED_OFF] : []),
-    ...(quote && cutOff === 'saw' && !plan.sawCosted ? [SAW_NOT_COSTED] : []),
-    ...(quote ? [STOCK_RULES_DISCLOSED] : []),
+    ...(quote && cutOff === 'saw' && !plan.sawCosted && !dropoff ? [SAW_NOT_COSTED] : []),
+    ...(quote ? [dropoff ? DROPOFF_RULES_DISCLOSED : STOCK_RULES_DISCLOSED] : []),
   ];
   return {
     ...cost,
@@ -148,24 +181,41 @@ export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: Stoc
   };
 }
 
-/** The stock as the material record names it: 5/8" round bar, 33.59 mm piece, 172 per 6096 mm bar. */
+/** The stock as the material record names it: 5/8" round bar, 33.59 mm piece, 172 per 6096 mm bar. A drop-off technique's plate names what cuts it. */
 export function stockLabelOf(o: StockOption): string {
   if (!isPlate(o)) return `${o.sizeLabel}, ${r2(o.blank.lengthMm)} mm piece, ${o.stock.partsPerStock} per ${r2(o.stock.lengthMm)} mm bar`;
-  return o.stock.virtual
+  const plate = o.stock.virtual
     ? `${o.sizeLabel}, cut from a plate of its own size`
     : `${o.sizeLabel}, ${o.stock.partsPerStock} per ${r2(o.stock.lengthMm)} x ${r2(o.stock.widthMm ?? 0)} mm plate`;
+  return o.roughing ? `${plate}, ${o.roughing.process ?? 'perimeter milled'}` : plate;
 }
 
-/** The Cost Summary's stock section (stockMachining) for the quoted route's cut-off; undefined when no stock was chosen. Money in the location's currency. */
-export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockCutOff, batchSize: number): StockMachiningBreakdown | undefined {
+/** What a plate part's roughing techniques are stated with on the quoted mill, beyond the stock's own pricing. */
+export interface RoughingOnMill {
+  /** The part's volume and what its features remove (mm³): the bulk a technique leaves is its piece less both (stock-excess.ts). */
+  partMm3: number;
+  featureRemovedMm3: number;
+  /** What a milling operation of this many seconds costs on the quoted mill, in the location's currency; null when it cannot be priced. */
+  operationCost: (seconds: number) => number | null;
+}
+
+/**
+ * The Cost Summary's stock section (stockMachining) for the quoted route's cut-off; undefined when no stock was chosen. Money in the
+ * location's currency. `mill` is the quoted mill, for a plate part's roughing techniques (the bulk each leaves, and what the perimeter cut
+ * costs at that mill's rate).
+ */
+export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockCutOff, batchSize: number, mill?: RoughingOnMill): StockMachiningBreakdown | undefined {
   const { choice } = plan;
   if (!choice) return undefined;
   const selection = choice.selection[cutOff];
-  const o = selection.chosen;
   const priced = plan.priced?.[cutOff] ?? null;
+  // The stock the quote prices; and the stock as the model chose it, whose own allowance says which faces are left as supplied.
+  const o = quotedStock(choice, cutOff, plan.priced);
+  const base = selection.chosen;
   const quote = priced?.quote ?? null;
   const kg = (v: number | null | undefined) => (v == null ? null : Math.round(v * 1e6) / 1e6);
   const sawGap = priced?.lines[0]?.physicsGap;
+  const roughing = priced?.roughing ?? null;
   return {
     rule: selection.rule,
     stock: o ? {
@@ -182,19 +232,38 @@ export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockC
     } : null,
     fallback: selection.fallback,
     options: priced?.options
-      ?? selection.options.map((x) => ({ form: x.form, sizeLabel: 'sizeLabel' in x ? x.sizeLabel : null, unavailable: 'unavailable' in x ? x.unavailable : null, materialCost: null, sawCost: null, chosen: x === o })),
+      ?? selection.options.map((x) => ({ form: x.form, sizeLabel: 'sizeLabel' in x ? x.sizeLabel : null, unavailable: 'unavailable' in x ? x.unavailable : null, materialCost: null, sawCost: null, chosen: x === base })),
+    // A plate part's roughing techniques, the quoted one and every other beside it. Absent for bar stock, which has one.
+    ...(roughing ? {
+      roughing: {
+        technique: roughing.technique, label: ROUGHING_TECHNIQUE_LABEL[roughing.technique], source: roughing.source, defaultTechnique: roughing.defaultTechnique,
+        fallback: roughing.fallback,
+        options: roughing.options.map((x) => ({
+          technique: x.technique, label: x.label, chosen: x.chosen, unavailable: x.unavailable, partsPerPlate: x.partsPerPlate, materialCost: x.materialCost,
+          // The mill's own perimeter cut costs its time at the quoted mill's rate; the saw and a plate cutting process are priced on their own machines.
+          separation: x.separation && x.separation.process === PERIMETER_MILLING && x.separation.timeSec != null
+            ? { ...x.separation, timeSec: r3(x.separation.timeSec), cost: mill?.operationCost(x.separation.timeSec) ?? null }
+            : x.separation ? { ...x.separation, timeSec: x.separation.timeSec != null ? r3(x.separation.timeSec) : null } : null,
+          bulkVolumeMm3: x.pieceVolumeMm3 != null && mill
+            ? r2(stockExcess({ pieceMm3: x.pieceVolumeMm3, partMm3: mill.partMm3, featureRemovedMm3: mill.featureRemovedMm3 }).excessMm3)
+            : null,
+          processes: x.processes,
+        })),
+      },
+    } : {}),
     saw: quote?.saw ? {
       machineName: quote.saw.machine, bundleBars: quote.saw.bundle.bars, bundleBasis: quote.saw.bundle.basis, cuttingRateMm2Min: quote.saw.cuttingRateMm2Min,
       cutSec: r3(quote.saw.cutS), feedSec: r3(quote.saw.feedS), loadSec: r3(quote.saw.loadPerPartS), unloadSec: r3(quote.saw.unloadS), cycleSec: r3(quote.saw.cycleS),
     } : null,
     sawMissing: quote?.saw ? null
-      : cutOff === 'parting' ? PARTED_OFF
-        : !plan.sawCosted ? SAW_NOT_COSTED
-          : sawGap && 'reason' in sawGap ? sawGap.reason
-            : plan.missing.join('; ') || 'no stock form holds the part',
+      : o?.roughing ? PLATE_NOT_SAWN[o.roughing.technique]
+        : cutOff === 'parting' ? PARTED_OFF
+          : !plan.sawCosted ? SAW_NOT_COSTED
+            : sawGap && 'reason' in sawGap ? sawGap.reason
+              : plan.missing.join('; ') || 'no stock form holds the part',
     scrapCredit: { enabled: choice.scrapCredit, percent: plan.scrapCostPercent, credit: priced?.scrapCredit ?? 0 },
     partSource: choice.part.source,
-    asSuppliedFaceIds: o ? asSuppliedFaces(o, choice.part, choice.faces) : { curvedWall: [], planarFace: [] },
+    asSuppliedFaceIds: base ? asSuppliedFaces(base, choice.part, choice.faces) : { curvedWall: [], planarFace: [] },
     endFaceIds: choice.faces.endFaceIds,
     stockLabel: o ? stockLabelOf(o) : null,
     notes: [...choice.notes, ...(o?.notes ?? []), choice.remnant.source],

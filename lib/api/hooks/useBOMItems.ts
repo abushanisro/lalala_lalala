@@ -889,6 +889,11 @@ export interface ProcessLineCost {
   processGroup?: string;
   processRoute?: string;
   operation?: string;
+  /**
+   * Set on a line the part's stock puts before its first machine under another process group than Stock Machining: a plate part cut out
+   * of its plate by a Sheet Metal cutting process (backend ProcessLineCost.stockStep). A step of the stock, like the Band Saw.
+   */
+  stockStep?: boolean;
   setupCost: number;
   runCost: number;
   totalCost: number;
@@ -1290,11 +1295,36 @@ export interface CostSummaryDto {
     fallback: string | null;
     /** Every form: its stock with what it costs a part (the stock bought, and its sawing), or why it is not offered. */
     options: { form: string; sizeLabel: string | null; unavailable: string | null; materialCost: number | null; sawCost: number | null; chosen: boolean }[];
+    /**
+     * How a part cut from plate is separated from the plate and roughed out: the technique the quote prices and every other beside it
+     * (backend StockMachiningBreakdown.roughing). Present only for plate stock on a mill's route: bar stock has one technique.
+     */
+    roughing?: {
+      /** The quoted technique (all_bulk_milling, perimeter_milling_dropoff, plate_cutting_dropoff) and its name. */
+      technique: string; label: string;
+      /** Whether it was set here (scenario key stockRoughingTechnique), or is the data's default. */
+      source: 'cost_guide' | 'default'; defaultTechnique: string;
+      /** Why the technique asked for is not the quoted one, when it is not. */
+      fallback: string | null;
+      options: {
+        technique: string; label: string; chosen: boolean; unavailable: string | null;
+        partsPerPlate: number | null; materialCost: number | null;
+        /** What separates the part from the plate: the Band Saw, the mill's Perimeter Milling, or a plate cutting process; cost null when not costed. */
+        separation: { process: string; machineClass: string | null; machineName: string | null; cost: number | null; timeSec: number | null } | null;
+        /** What is left round the part for the mill to remove in bulk (mm³). */
+        bulkVolumeMm3: number | null;
+        /** Plate Cutting with Drop-off: every cutting process, each priced or with why it is not. */
+        processes: {
+          process: string; chosen: boolean; unavailable: string | null; machineClass: string | null; machineName: string | null; partsPerPlate: number | null;
+          materialCost: number | null; cutCost: number | null;
+        }[];
+      }[];
+    };
     saw: {
       machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
       cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
     } | null;
-    /** Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing, or what keeps the saw from being costed. */
+    /** Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing, a drop-off technique cuts the part out of the plate, or what keeps the saw from being costed. */
     sawMissing: string | null;
     scrapCredit: { enabled: boolean; percent: number | null; credit: number };
     partSource: 'measured' | 'bounding box';

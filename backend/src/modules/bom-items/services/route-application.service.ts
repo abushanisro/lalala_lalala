@@ -172,7 +172,9 @@ export class RouteApplicationService {
       );
     }
 
-    const processGroup = localLines.find((l) => l.processGroup)?.processGroup ?? NO_COST_FEATURE;
+    // What the route does not make is filed under the route's own process group: not under that of a plate cutting line the stock puts
+    // before it (stockStep), which is another group's.
+    const processGroup = localLines.find((l) => l.processGroup && !l.stockStep)?.processGroup ?? NO_COST_FEATURE;
     // A route with no operations (a 2-Model part its source supplies whole) is applied as one $0 record that says so: the route is on the
     // part, and its cost is the material.
     if (localLines.length === 0 && unmade.length === 0) unmade.push(`${route.routeLabel}: no operations to cost on this part (its cost is the material)`);

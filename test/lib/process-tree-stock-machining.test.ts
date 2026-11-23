@@ -5,7 +5,7 @@ import { computeFeatureNodeVisual } from '@/lib/features/operation-highlight';
 import { buildProcessTree, findNode, type ProcessTreeNode } from '@/lib/features/process-tree';
 import type { FeatureGraph, FeatureGraphSummary } from '@/lib/types/manufacturing';
 
-import { SHAFT_INDIA, SHAFT_USA_AS_SUPPLIED } from '../fixtures/stock-machining-quotes';
+import { SHAFT_INDIA, SHAFT_USA_AS_SUPPLIED, STIFFNER_PERIMETER_MILLED, STIFFNER_PLATE_CUT } from '../fixtures/stock-machining-quotes';
 
 // A Stock Machining part in the process tree: the catalog's Material Stock step (the stock, and the faces left as it supplies them), the Band
 // Saw with its StockTrim on the two end faces, then the Machining route. Each face row highlights its own faces in the 3D view.
@@ -83,6 +83,51 @@ describe('buildProcessTree: a Stock Machining part', () => {
     expect(node(tree, 'op_material_stock').attrs).toEqual(node(buildProcessTree(item, fg, summary, 'India', undefined, cost(SHAFT_INDIA, [bandSaw, turning])), 'op_material_stock').attrs);
     // The features no step claims stay on the machining step.
     expect((findNode(tree, 'op_0')?.children ?? []).map((c) => c.label)).toEqual(['SimpleHole ×1']);
+  });
+
+  it('a plate part cut out by a cutting process: the cutting line is its own step, a step of the stock, and the features stay on the mill', () => {
+    const milled = { ...fg, classification: { family: 'milled' } } as unknown as FeatureGraph;
+    const cutting = line({ process: 'Waterjet Cutting', processGroup: 'Sheet Metal', processRoute: 'Cutting', machineName: 'OMAX 55100', machineClass: 'waterjet', stockStep: true });
+    const mill = line({ process: '3 Axis Mill', processGroup: 'Machining', processRoute: '3 Axis Mill', machineName: 'Makino V22', machineClass: '3_axis_mill' });
+    const tree = buildProcessTree(item, milled, summary, 'USA', undefined, cost(STIFFNER_PLATE_CUT, [cutting, mill]));
+    // A step of another process group than the part's own sits under its catalog route, as the machining after a casting does:
+    // Sheet Metal > Cutting > Waterjet Cutting.
+    expect(steps(tree)).toEqual(['Stock Machining: Material Stock', 'Sheet Metal: Cutting', 'Machining: 3 Axis Mill']);
+    expect(node(tree, 'op_0').label).toBe('Waterjet Cutting');
+    const labels = (id: string) => (findNode(tree, id)?.children ?? []).map((c) => c.label);
+    // The features no step claims are the mill's, never the cutting process's: it cuts the blank out of the plate and makes none of them.
+    expect(labels('op_0')).not.toContain('SimpleHole ×1');
+    expect(labels('op_1')).toEqual(['SimpleHole ×1']);
+    expect(node(tree, 'op_0').machine).toBe('OMAX 55100');
+    expect(node(tree, 'op_material_stock').attrs).toContainEqual({ name: 'Yield', value: '45 cut blanks per 914.4 × 457.2 mm plate' });
+    // Without the engine's mark the cutting line would have been taken for the part's first machine.
+    const unmarked = buildProcessTree(item, milled, summary, 'USA', undefined, cost(STIFFNER_PLATE_CUT, [{ ...cutting, stockStep: undefined }, mill]));
+    expect((findNode(unmarked, 'op_0')?.children ?? []).map((c) => c.label)).toEqual(['SimpleHole ×1']);
+  });
+
+  it('a plate part the mill cuts out itself: Perimeter Milling is a row of the mill\'s step, on the part\'s Perimeter, and the plate makes outlines', () => {
+    const milled = { ...fg, classification: { family: 'milled' } } as unknown as FeatureGraph;
+    const mill = line({
+      process: '3 Axis Mill', processGroup: 'Machining', processRoute: '3 Axis Mill', machineName: 'Makino V22', machineClass: '3_axis_mill',
+      featureBreakdown: [
+        { name: 'Facing', timeSec: 45, featureType: '', count: 1 },
+        { name: 'Bulk Milling', timeSec: 32, featureType: '', count: 1 },
+        { name: 'Perimeter Milling', timeSec: 123, featureType: 'Perimeter', count: 1 },
+        { name: 'Drilling Ø3.0mm', timeSec: 4, featureType: 'SimpleHole', count: 1, featureIds: ['SimpleHole:1'] },
+      ],
+    });
+    const tree = buildProcessTree(item, milled, summary, 'USA', undefined, cost(STIFFNER_PERIMETER_MILLED, [mill]));
+    // No Band Saw step: the mill's step follows the stock.
+    expect(steps(tree)).toEqual(['Stock Machining: Material Stock', 'Machining: 3 Axis Mill']);
+    const rows = (findNode(tree, 'op_0')?.children ?? []).map((c) => c.label);
+    expect(rows).toEqual(['Facing', 'Bulk Milling', 'Perimeter Milling', 'Drilling Ø3.0mm']);
+    const cut = (findNode(tree, 'op_0')?.children ?? []).find((c) => c.label === 'Perimeter Milling');
+    expect(cut?.attrs?.map((a) => a.name)).toEqual(['Count', 'Time']);
+    expect(cut?.attrs?.[0]?.value).toBe('1');
+    // It is on no recognised feature: nothing to light, and no child rows.
+    expect(cut?.v2FeatureIds).toBeUndefined();
+    expect(cut?.children).toBeUndefined();
+    expect(node(tree, 'op_material_stock').attrs).toContainEqual({ name: 'Yield', value: '40 outlines per 914.4 × 457.2 mm plate' });
   });
 
   it('adds no Material Stock step to a part whose cost summary has no stock (a part of another family, or a stock that could not be chosen)', () => {

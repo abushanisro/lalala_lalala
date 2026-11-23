@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   allowanceLine, batchLine, bundleLine, facesHighlight, flagOf, flagValue, isPlateStock, isStockMachiningItem, lossLine, materialStockFeatures, neededLine,
-  optionCostLine, parseNonNegative, pieceLine, sawTimesLine, stockMachiningOverridesOf, yieldLine,
+  optionCostLine, parseNonNegative, pieceLine, plateCutLine, quotedDropoff, roughingCostLine, roughingTechniqueLabel, roughingYieldLine, sawTimesLine,
+  stockMachiningOverridesOf, yieldLine,
 } from '@/lib/costing/stock-machining-view';
+import { isStockStep } from '@/lib/features/process-tree-family';
 
 import {
-  SHAFT_INDIA, SHAFT_INDIA_SAW, SHAFT_INDIA_STOCK, SHAFT_USA_AS_SUPPLIED, SHAFT_USA_STOCK, STIFFNER_PLATE, STIFFNER_PLATE_STOCK, STIFFNER_TUBE_ASKED, optionOf,
+  SHAFT_INDIA, SHAFT_INDIA_SAW, SHAFT_INDIA_STOCK, SHAFT_USA_AS_SUPPLIED, SHAFT_USA_STOCK, STIFFNER_NO_OUTLINE, STIFFNER_PERIMETER_MILLED, STIFFNER_PLATE,
+  STIFFNER_PLATE_CUT, STIFFNER_PLATE_ROUGHING, STIFFNER_PLATE_STOCK, STIFFNER_TUBE_ASKED, optionOf, techniqueOf,
 } from '../fixtures/stock-machining-quotes';
+
+const BULK = techniqueOf(STIFFNER_PLATE_ROUGHING, 'all_bulk_milling');
+const MILLED = techniqueOf(STIFFNER_PLATE_ROUGHING, 'perimeter_milling_dropoff');
+const CUT = techniqueOf(STIFFNER_PLATE_ROUGHING, 'plate_cutting_dropoff');
 
 describe('the Stock Machining Cost Guide', () => {
   it('is the panel of a part whose Process is Stock Machining, not of a plain Machining part', () => {
@@ -17,11 +24,11 @@ describe('the Stock Machining Cost Guide', () => {
   });
 
   it('reads the settings as the engine does: a known form, numbers of 0 or more, true or false; anything else is unset', () => {
-    expect(stockMachiningOverridesOf({ stockForm: 'plate', stockAllowanceMm: 0, stockSnap: false, stockRemnantMm: 50, stockScrapCredit: true }))
-      .toEqual({ form: 'plate', allowanceMm: 0, snap: false, barEndMm: 50, scrapCredit: true });
-    expect(stockMachiningOverridesOf({ stockForm: 'sheet', stockAllowanceMm: -1, stockSnap: 'yes', stockRemnantMm: '50', stockScrapCredit: 1 }))
-      .toEqual({ form: null, allowanceMm: null, snap: null, barEndMm: null, scrapCredit: null });
-    expect(stockMachiningOverridesOf(undefined)).toEqual({ form: null, allowanceMm: null, snap: null, barEndMm: null, scrapCredit: null });
+    expect(stockMachiningOverridesOf({ stockForm: 'plate', stockAllowanceMm: 0, stockSnap: false, stockRemnantMm: 50, stockScrapCredit: true, stockRoughingTechnique: 'plate_cutting_dropoff' }))
+      .toEqual({ form: 'plate', allowanceMm: 0, snap: false, barEndMm: 50, scrapCredit: true, roughingTechnique: 'plate_cutting_dropoff' });
+    expect(stockMachiningOverridesOf({ stockForm: 'sheet', stockAllowanceMm: -1, stockSnap: 'yes', stockRemnantMm: '50', stockScrapCredit: 1, stockRoughingTechnique: 'Plate Cutting' }))
+      .toEqual({ form: null, allowanceMm: null, snap: null, barEndMm: null, scrapCredit: null, roughingTechnique: null });
+    expect(stockMachiningOverridesOf(undefined)).toEqual({ form: null, allowanceMm: null, snap: null, barEndMm: null, scrapCredit: null, roughingTechnique: null });
   });
 
   it('takes 0 as a number field\'s value, an empty field as clearing it, and refuses a negative or a word', () => {
@@ -76,6 +83,63 @@ describe('the Stock Machining Cost Guide', () => {
     expect(optionCostLine(optionOf(STIFFNER_PLATE, 'round_bar'), '$')).toBe('$4.98 + $0.37 saw');
     expect(optionCostLine(optionOf(SHAFT_USA_AS_SUPPLIED, 'round_bar'), '$')).toBe('$0.09');
     expect(optionCostLine(optionOf(STIFFNER_TUBE_ASKED, 'round_tube'), '$')).toBeNull();
+  });
+
+  it('prices a roughing technique as its plate plus what separates the part from it', () => {
+    expect(roughingCostLine(BULK, '$')).toBe('$2.37 plate + $0.44 Band Saw');
+    expect(roughingCostLine(MILLED, '$')).toBe('$2.67 plate + $2.85 Perimeter Milling');
+    expect(roughingCostLine(CUT, '$')).toBe('$2.37 plate + $1.46 Waterjet Cut');
+    // A saw the part's Process does not cost is left out, not shown at 0.
+    expect(roughingCostLine({ ...BULK, separation: { process: 'Band Saw', machineClass: 'band_saw', machineName: null, cost: null, timeSec: null } }, '$')).toBe('$2.37 plate');
+    // A technique that cannot be used has no price.
+    expect(roughingCostLine(techniqueOf(STIFFNER_NO_OUTLINE, 'perimeter_milling_dropoff'), '$')).toBeNull();
+  });
+
+  it('states what a technique makes of a plate and what it leaves the mill', () => {
+    expect(roughingYieldLine(BULK)).toBe('45 per plate · 56,074.51 mm³ left for the mill');
+    expect(roughingYieldLine(MILLED)).toBe('40 per plate · 24,268.95 mm³ left for the mill');
+    expect(roughingYieldLine({ ...MILLED, bulkVolumeMm3: null })).toBe('40 per plate');
+    expect(roughingYieldLine(techniqueOf(STIFFNER_NO_OUTLINE, 'perimeter_milling_dropoff'))).toBeNull();
+  });
+
+  it('lists each plate cutting process with its nest and cost, or why it is not priced', () => {
+    const lines = CUT.processes.map((p) => plateCutLine(p, '$'));
+    expect(lines).toEqual([
+      'Laser Cut · 35 per plate · $3.05 plate + $1.64 cut',
+      'Plasma Cut: sm_reference_data nestingCutRate PlasmaCut holds no feed data for Aluminum, ANSI 6061',
+      'Oxyfuel Cut: sm_reference_data nestingCutRate OxyFuelCut holds no feed data for Aluminum, ANSI 6061',
+      'Waterjet Cut (quoted) · 45 per plate · $2.37 plate + $1.46 cut',
+    ]);
+  });
+
+  it('names the techniques, and tells a quoted drop-off from a sawn blank', () => {
+    expect(roughingTechniqueLabel('perimeter_milling_dropoff')).toBe('Perimeter Milling with Drop-off');
+    expect(roughingTechniqueLabel('something_new')).toBe('something_new');
+    expect(quotedDropoff(SHAFT_INDIA)).toBeNull();
+    expect(quotedDropoff(STIFFNER_PLATE_ROUGHING)).toBeNull();
+    expect(quotedDropoff(STIFFNER_PERIMETER_MILLED)).toBe('perimeter_milling_dropoff');
+    expect(quotedDropoff(STIFFNER_PLATE_CUT)).toBe('plate_cutting_dropoff');
+  });
+
+  it('states a plate a drop-off technique cuts the part out of: outlines or cut blanks, and what lies between two of them', () => {
+    const milled = { ...STIFFNER_PLATE_STOCK, ...STIFFNER_PERIMETER_MILLED.stock };
+    expect(pieceLine(milled)).toBe('159.5 × 42 × 12.7 mm');
+    expect(yieldLine(milled, 'perimeter_milling_dropoff')).toBe('40 outlines per 914.4 × 457.2 mm plate');
+    expect(lossLine(milled, 'perimeter_milling_dropoff')).toBe("10 mm cutter width between parts and to the plate's edge");
+    const cut = { ...STIFFNER_PLATE_STOCK, ...STIFFNER_PLATE_CUT.stock };
+    expect(yieldLine(cut, 'plate_cutting_dropoff')).toBe('45 cut blanks per 914.4 × 457.2 mm plate');
+    expect(lossLine(cut, 'plate_cutting_dropoff')).toBe('5.08 mm between cut parts');
+    // A sawn blank reads as it did, with or without the technique named.
+    expect(yieldLine(STIFFNER_PLATE_STOCK, null)).toBe(yieldLine(STIFFNER_PLATE_STOCK));
+    expect(lossLine(STIFFNER_PLATE_STOCK, null)).toBe('0.89 mm saw kerf between pieces');
+  });
+
+  it('a step of the stock is the Band Saw, or a line the engine marks as the stock\'s own (a plate cutting line)', () => {
+    expect(isStockStep({ processGroup: 'Stock Machining' })).toBe(true);
+    expect(isStockStep({ processGroup: 'Sheet Metal', stockStep: true })).toBe(true);
+    expect(isStockStep({ processGroup: 'Sheet Metal' })).toBe(false);
+    expect(isStockStep({ processGroup: 'Machining' })).toBe(false);
+    expect(isStockStep(undefined)).toBe(false);
   });
 
   it('lists the Material Stock features the catalog names, only those the part has', () => {

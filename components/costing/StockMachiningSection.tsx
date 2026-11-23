@@ -3,7 +3,8 @@
 import { NumberField } from '@/components/costing/NumberField';
 import {
   STOCK_MACHINING_SCENARIO_KEYS, allowanceLine, batchLine, bundleLine, facesHighlight, flagOf, flagValue, isPlateStock, lossLine, neededLine, optionCostLine,
-  parseNonNegative, pieceLine, sawTimesLine, stockFormLabel, stockMachiningOverridesOf, yieldLine, type StockMachiningSummary,
+  parseNonNegative, pieceLine, plateCutLine, quotedDropoff, roughingCostLine, roughingTechniqueLabel, roughingYieldLine, sawTimesLine, stockFormLabel,
+  stockMachiningOverridesOf, yieldLine, type StockMachiningSummary,
 } from '@/lib/costing/stock-machining-view';
 import type { FeatureNodeV2 } from '@/lib/types/manufacturing';
 
@@ -71,8 +72,9 @@ function FlagSelect({ label, title, value, auto, on, off, onCommit }: {
 /**
  * The Cost Guide's stock panel of a machined part: the stock the part is cut from and why that form, the allowance left on it, the piece
  * cut for one part, what a bar or plate makes, the band saw's cycle (a Stock Machining part's; for any other machined part, why no saw is
- * costed), every other form that holds the part with its cost, and the stock rules that can be set here over the data's. The faces left as
- * the stock supplies them, and the two end cuts, are shown in the 3D view when clicked. The mill's or lathe's own work is on the Cost tab.
+ * costed), every other form that holds the part with its cost, how a part cut from plate is roughed out (each technique with its cost),
+ * and the stock rules that can be set here over the data's. The faces left as the stock supplies them, and the two end cuts, are shown in
+ * the 3D view when clicked. The mill's or lathe's own work is on the Cost tab.
  */
 export function StockMachiningSection({ stockMachining: s, sawCosted, currencySymbol, overrides, onChange, onSelectHighlight }: Props) {
   const set = stockMachiningOverridesOf(overrides);
@@ -83,6 +85,8 @@ export function StockMachiningSection({ stockMachining: s, sawCosted, currencySy
   const planar = facesHighlight('stock-as-supplied-planar', 'PlanarFace', s.asSuppliedFaceIds.planarFace);
   const ends = facesHighlight('stock-trim', 'StockTrim', s.endFaceIds);
   const asSupplied = s.asSuppliedFaceIds.curvedWall.length + s.asSuppliedFaceIds.planarFace.length;
+  // A plate part a drop-off technique cuts out of its plate: nothing is sawn, and the plate makes outlines or cut blanks.
+  const dropoff = quotedDropoff(s);
   return (
     <div className="space-y-1 text-xs">
       {stock ? (
@@ -99,10 +103,10 @@ export function StockMachiningSection({ stockMachining: s, sawCosted, currencySy
           </Field>
           <Field label="Piece" title="What is cut from the bar or plate for one part, and what each cut loses.">
             {pieceLine(stock)}
-            <span className="block text-muted-foreground">{lossLine(stock)}</span>
+            <span className="block text-muted-foreground">{lossLine(stock, dropoff)}</span>
           </Field>
           <Field label="Yield" title="The parts one bar or plate makes. Each part carries its share of the whole bar or plate.">
-            {yieldLine(stock)}
+            {yieldLine(stock, dropoff)}
             <span className="block text-muted-foreground">{batchLine(stock)} · {stock.utilizationPct}% of the stock ends in the part</span>
           </Field>
           <Field label="Material" title="The stock bought per part (its share of a whole bar or plate), the piece cut for it, and the finished part.">
@@ -127,8 +131,9 @@ export function StockMachiningSection({ stockMachining: s, sawCosted, currencySy
             <span className="block text-muted-foreground">{sawTimesLine(s.saw)}</span>
           </>
         ) : (
-          // Amber only where a saw should be costed and is not; a lathe that parts the piece off, or a Process that costs no saw, is a note.
-          <span className={sawCosted && stock?.cutOff !== 'parting' ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>{s.sawMissing ?? 'Not costed'}</span>
+          // Amber only where a saw should be costed and is not; a lathe that parts the piece off, a Process that costs no saw, or a plate the
+          // part is cut out of with no saw, is a note.
+          <span className={sawCosted && stock?.cutOff !== 'parting' && !dropoff ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>{s.sawMissing ?? 'Not costed'}</span>
         )}
       </Field>
 
@@ -180,6 +185,43 @@ export function StockMachiningSection({ stockMachining: s, sawCosted, currencySy
           </button>
         )}
       </Field>
+
+      {s.roughing && (
+        <Field label="Roughing" title="How a part cut from plate is separated from the plate, and what the mill then removes round it. Auto follows the data's default; a technique picked here is quoted instead.">
+          {s.roughing.options.map((o) => {
+            const cost = roughingCostLine(o, currencySymbol);
+            const made = roughingYieldLine(o);
+            return (
+              <span key={o.technique} className="flex items-start gap-2 py-0.5">
+                <span className={`flex-1 min-w-0 ${o.chosen ? 'text-foreground' : 'text-muted-foreground'}`}>
+                  {o.label}{cost ? ` · ${cost}` : ''}
+                  {made && <span className="block text-[11px] leading-snug">{made}</span>}
+                  {o.unavailable && <span className="block text-[11px] leading-snug">{o.unavailable}</span>}
+                  {o.processes.map((p) => <span key={p.process} className="block text-[11px] leading-snug">{plateCutLine(p, currencySymbol)}</span>)}
+                </span>
+                {o.chosen ? (
+                  <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-border bg-muted/40 text-muted-foreground">Quoted</span>
+                ) : !o.unavailable && (
+                  <button
+                    type="button"
+                    className="shrink-0 text-[11px] px-1.5 py-0.5 rounded border border-border hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
+                    title={`Quote the part with ${o.label}`}
+                    onClick={() => { onChange({ [keys.roughingTechnique]: o.technique }); }}
+                  >
+                    Use
+                  </button>
+                )}
+              </span>
+            );
+          })}
+          {s.roughing.fallback && <span className="block text-amber-600 dark:text-amber-400 leading-snug">{s.roughing.fallback}</span>}
+          {set.roughingTechnique && (
+            <button type="button" className={`${linkClass} mt-0.5`} onClick={() => { onChange({ [keys.roughingTechnique]: null }); }}>
+              Back to Auto ({roughingTechniqueLabel(s.roughing.defaultTechnique)})
+            </button>
+          )}
+        </Field>
+      )}
 
       <NumberField
         label="Allowance mm"

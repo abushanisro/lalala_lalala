@@ -161,6 +161,14 @@ interface RollBendingMachineParams {
 export class SheetMetalLookupService {
   constructor(private readonly database: DatabaseService) {}
 
+  /**
+   * The client the lookup tables are read with. They are global reference data shared by every organisation, with no tenant rows, so they
+   * are read past row-level security. New readers take the client from here, so the privileged-read budget does not grow with them.
+   */
+  private referenceClient() {
+    return this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
+  }
+
   // sm_reference_data machine rows whose raw name equals `machineName`
   // (case-insensitive), filtered in the database. The per-machine lookups
   // below used to download every machine row (the whole library's JSON) and
@@ -243,8 +251,7 @@ export class SheetMetalLookupService {
     const key = `${technology}|${material}`;
     const cached = this.laserPowerRowsCache.get(key);
     if (cached) return cached;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared')
+    const { data, error } = await this.referenceClient()
       .from('sm_lookup_laser_cut')
       .select('thickness_mm, laser_power_w')
       .eq('material', material)
@@ -284,6 +291,50 @@ export class SheetMetalLookupService {
     const tableThicknessMm = Math.min(...thicker);
     const requiredW = Math.min(...rows.filter((r) => r.t === tableThicknessMm).map((r) => r.w));
     return { material, tableThicknessMm, requiredW };
+  }
+
+  /**
+   * What a cutting process's feed table holds for a material: the table's own name for the material and the thicknesses it lists it at.
+   * `material` is null when the table has no rows for the material (plasma and oxyfuel list steels only, the CO2 laser no aluminium).
+   *
+   * The feed getters of this service read the row NEAREST a thickness, whatever the distance, and price every grade that is not
+   * stainless at the steel rows: right for sheet, whose thicknesses the tables cover. A caller pricing a cut the tables may not reach (a
+   * machined part's plate, far thicker than sheet, of any material) asks this first, and does not price what the table does not hold.
+   * The material is named as getMinLaserPowerRequirement names it: only the families a table carries, never a default.
+   */
+  async getCutFeedCoverage(
+    machineClass: 'fiber_laser' | 'co2_laser' | 'waterjet' | 'plasma_cut' | 'oxyfuel_cut',
+    grade: string | null | undefined,
+  ): Promise<{ table: string; material: string | null; minThicknessMm: number | null; maxThicknessMm: number | null }> {
+    const family = classifyLaserMaterial(grade ?? null);
+    const named =
+      family === 'MS' ? 'Carbon Steel'
+      : family === 'SS' ? 'Stainless Steel'
+      : family === 'AL' ? 'Aluminium'
+      : family === 'CU' && normaliseLaserMaterial(grade) === 'Brass' ? 'Brass'
+      : null;
+    const db = this.referenceClient();
+    const cut = machineClass === 'plasma_cut' ? 'PlasmaCut' : 'OxyFuelCut';
+    const table = machineClass === 'fiber_laser' ? 'sm_lookup_laser_cut (fiber)' : machineClass === 'co2_laser' ? 'sm_lookup_laser_cut (co2)'
+      : machineClass === 'waterjet' ? 'sm_lookup_waterjet_cut' : `sm_reference_data nestingCutRate ${cut}`;
+    const none = { table, material: null, minThicknessMm: null, maxThicknessMm: null };
+    if (!named) return none;
+    let material = named;
+    let thicknesses: number[];
+    if (machineClass === 'fiber_laser' || machineClass === 'co2_laser') {
+      thicknesses = ((await this.laserPowerRows(named, machineClass === 'fiber_laser' ? 'fiber' : 'co2')) ?? []).map((r) => r.t);
+    } else if (machineClass === 'waterjet') {
+      const { data } = await db.from('sm_lookup_waterjet_cut').select('thickness_mm').eq('material', named).not('cutting_speed_mm_per_min', 'is', null);
+      thicknesses = (data ?? []).map((r: { thickness_mm: unknown }) => Number(r.thickness_mm));
+    } else {
+      // The plasma and oxyfuel rows name their materials Steel, Cast Iron and Stainless Steel.
+      if (named !== 'Carbon Steel' && named !== 'Stainless Steel') return none;
+      material = named === 'Carbon Steel' ? 'Steel' : named;
+      const { data } = await db.from('sm_reference_data').select('raw').eq('category', 'lookup_table').like('key', `nestingCutRate:%:${cut}:%`);
+      thicknesses = (data ?? []).filter((r: any) => r.raw?.materialTypeName === material).map((r: any) => Number(r.raw?.thicknessMm));
+    }
+    const listed = thicknesses.filter((t) => Number.isFinite(t) && t > 0);
+    return listed.length ? { table, material, minThicknessMm: Math.min(...listed), maxThicknessMm: Math.max(...listed) } : none;
   }
 
   // ── Table 5: Laser cutting params ─────────────────────────────────────────

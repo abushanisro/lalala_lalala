@@ -16,6 +16,9 @@
  * - The operations on the features do not remove the stock around the part: on a
  *   milled route that is one Bulk Milling operation, of the stock excess the
  *   caller gives (stock-excess.ts).
+ * - An operation on the stock itself (the cut round a plate part's outline,
+ *   stock-machining/perimeter-cut.ts) is given already timed by its own
+ *   calculator, and takes its place in the sequence.
  *
  * ── Sheet-metal feature-driven routing backlog (see migration 381) ─────────
  * Sheet metal's Counterboring/Countersinking/PEM Insertion/Reaming/CMM Inspection/
@@ -178,6 +181,24 @@ function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketF
   return [...groups.values()].sort((a, b) => b.toolMm - a.toolMm);
 }
 
+/** A value of a material class's tblMillingFinishing row, as a calculator input that names the table, the row and the column. */
+export function finishingTableSeed(matClass: MaterialClass, value: number, column: string, note = ''): CalcSeed {
+  return { value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`, match: { table: 'tblMillingFinishing', row: { MaterialClass: matClass } } };
+}
+
+/**
+ * How an end mill runs in a material, whatever its diameter (the chip load is per diameter): the inputs every tool-path calculator reads
+ * (the finishing passes, a keyway's slotting, the cut round a plate part's outline). Empty when the material's cutter is not on file.
+ */
+export function cutterRunSeeds(finishing: MillingFinishingRow | null, matClass: MaterialClass, machinabilityFactor: number): Record<string, CalcSeed> {
+  if (!finishing) return {};
+  return {
+    'Teeth': finishingTableSeed(matClass, finishing.teeth, 'Teeth'),
+    'Cutting Speed': finishingTableSeed(matClass, finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`),
+    'Feed per Tooth per Diameter': finishingTableSeed(matClass, finishing.feedPerToothPerDiameter, 'FeedPerToothPerDiameter'),
+  };
+}
+
 /** The catalog's operation for a keyway that is milled, not broached ("Obround Slot Milling//Keyway" on the mills and the live-tool lathes). */
 export const KEYWAY_MILLING = 'Obround Slot Milling';
 
@@ -221,7 +242,11 @@ function calcOp(
 export interface OperationLine {
   name: string;
   timeSec: number;
-  source: "feature" | "fixed";
+  /**
+   * "feature": on a recognised feature of the part. "fixed": on the part as a whole. "stock": on the stock itself (the cut round a plate
+   * part's outline), which is no feature of the part: it keeps a row of its own in the line's breakdown.
+   */
+  source: "feature" | "fixed" | "stock";
   // Reference CAD feature_type ('SimpleHole'/'MultiStepHole'/'Edge'/
   // 'PocketV2'/'Slot'/...) and diameter this specific op line was generated from, when it came from one feature_graph_v2
   // occurrence group. Carried through so the frontend can trace an operation
@@ -311,6 +336,9 @@ function opOrderIndex(name: string): number {
  *   what it holds beyond the part and its features is milled away by one Bulk
  *   Milling operation. null/absent (a lathe's plan, a part with no stock chosen)
  *   adds none.
+ * @param stockOps  the operations on the stock itself that this mill performs
+ *   (the cut round a plate part's outline of Perimeter Milling with Drop-off),
+ *   each already timed by its own calculator. None for any other stock.
  * @returns flat OperationLine[] sorted in manufacturing order, or [] if no features
  */
 export function buildOperationSequence(
@@ -330,6 +358,7 @@ export function buildOperationSequence(
   // The material's finishing cutter (tblMillingFinishing). Null = not on file: every finishing pass is a named gap.
   finishing: MillingFinishingRow | null = null,
   stockAround: StockExcess | null = null,
+  stockOps: readonly OperationLine[] = [],
 ): OperationLine[] {
   if (!Array.isArray(fgv2Features) || fgv2Features.length === 0) return [];
 
@@ -348,21 +377,13 @@ export function buildOperationSequence(
     'Removed Volume': { value: removedMm3, source: 'CAD: volume the features remove' }, ...mrrSeed,
   });
   // A finishing pass is a tool path at the cutter's feed: the cutter and how it runs in this material, from the table.
-  const fromFinishingTable = (value: number, column: string, note = ''): CalcSeed => ({
-    value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`,
-    match: { table: 'tblMillingFinishing', row: { MaterialClass: matClass } },
-  });
-  // How an end mill runs in this material, whatever its diameter (the chip load is per diameter): every tool-path calculator reads these.
-  const cutterRunSeeds = (): Record<string, CalcSeed> => (finishing ? {
-    'Teeth': fromFinishingTable(finishing.teeth, 'Teeth'),
-    'Cutting Speed': fromFinishingTable(finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`),
-    'Feed per Tooth per Diameter': fromFinishingTable(finishing.feedPerToothPerDiameter, 'FeedPerToothPerDiameter'),
-  } : {});
+  // How an end mill runs in this material, whatever its diameter: every tool-path calculator reads these.
+  const cutterRun = (): Record<string, CalcSeed> => cutterRunSeeds(finishing, matClass, machinabilityFactor);
   const cutterSeeds = (toolMm: number, toolWhy: string): Record<string, CalcSeed> => (finishing ? {
     'Tool Diameter': toolMm === finishing.toolDiameterMm
-      ? fromFinishingTable(toolMm, 'ToolDiameterMm')
+      ? finishingTableSeed(matClass, toolMm, 'ToolDiameterMm')
       : { value: toolMm, source: toolWhy },
-    ...cutterRunSeeds(),
+    ...cutterRun(),
   } : {});
   const standardToolMm = finishing?.toolDiameterMm ?? Number.POSITIVE_INFINITY;
   const contourOp = (operation: string, wallMm2: number, surfaceMm2: number, faces: number) => calcOp(calculators, operation, {
@@ -391,7 +412,7 @@ export function buildOperationSequence(
     'Keyway Width': { value: g.widthMm, source: 'CAD: keyway width, the diameter of the cutter' },
     'Keyway Depth': { value: g.depthMm, source: 'CAD: keyway depth' },
     'Keyways': { value: g.keyways, source: 'CAD: keyways of this size' },
-    ...cutterRunSeeds(),
+    ...cutterRun(),
   });
   const countOp = (operation: string, field: string, n: number) => calcOp(calculators, operation, { [field]: { value: n, source: 'CAD: feature count' } });
   // An edge with a CAD diameter is timed by its length (pi x D per edge) at the table's edge speed; one without, per edge.
@@ -424,6 +445,7 @@ export function buildOperationSequence(
       source: "fixed",
     });
   }
+  ops.push(...stockOps);
 
   for (const f of fgv2Features as any[]) {
     // feature_graph_v2 entries carry a reference catalog feature_type

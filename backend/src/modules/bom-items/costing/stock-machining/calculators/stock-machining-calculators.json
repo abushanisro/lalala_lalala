@@ -407,6 +407,102 @@
           "formula": "({Mass per Part} - {Part Mass}) * {Price per kg} * {Scrap Cost Percent} / 100"
         }
       ]
+    },
+    {
+      "key": "stock_machining.perimeter_cut",
+      "name": "Stock Machining - Perimeter Cut",
+      "operations": [],
+      "helper": true,
+      "migration": 1119,
+      "results": [
+        "Feed Rate",
+        "Passes",
+        "Path per Pass"
+      ],
+      "description": "Perimeter Milling with Drop-off, per part: the mill cuts round the part's outline through the plate's thickness, and the rest of the plate drops off. The cut is a slot as wide as the cutter, taken in passes by the slotting rule of Machining - Obround Slot Milling: each pass goes down the Slotting Depth Ratio of the cutter diameter, so the passes are the plate's thickness over that depth, rounded up. Each pass follows the outline and one cutter diameter of lead, at the feed rate the cutter runs at in the material (the standard end mill of tblMillingFinishing: its diameter, teeth, cutting speed and feed per tooth per diameter, the spindle held to the Max Spindle Speed). The time is one more operation of the mill's line (Perimeter Milling). The data names the technique (defaultRoughingTechnique) and has no formula for its cut: this rule is the engine's own, agreed with the user 2026-11-22.",
+      "fields": [
+        {
+          "name": "Outline Perimeter",
+          "unit": "mm",
+          "source": {
+            "engine": "outline_perimeter_mm (the length of the part's outline seen through the plate)"
+          }
+        },
+        {
+          "name": "Plate Thickness",
+          "unit": "mm",
+          "source": {
+            "engine": "plate_thickness_mm (the plate's thickness: the depth of the cut)"
+          }
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": {
+            "engine": "cutter_diameter_mm (the material's standard end mill: tblMillingFinishing)"
+          }
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": {
+            "engine": "teeth (the cutter's teeth: tblMillingFinishing)"
+          }
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": {
+            "engine": "cutting_speed_m_min (the cutter's cutting speed in the material: tblMillingFinishing)"
+          }
+        },
+        {
+          "name": "Feed per Tooth per Diameter",
+          "unit": null,
+          "source": {
+            "engine": "feed_per_tooth_per_diameter (the cutter's chip load over its diameter: tblMillingFinishing)"
+          }
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": {
+            "engine": "max_spindle_rpm (the spindle limit of Machining - Obround Slot Milling)"
+          }
+        },
+        {
+          "name": "Slotting Depth Ratio",
+          "unit": null,
+          "source": {
+            "engine": "slotting_depth_ratio (the depth of a slotting pass over the cutter diameter: Machining - Obround Slot Milling)"
+          }
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Feed Rate",
+          "unit": "mm/min",
+          "formula": "{Spindle Speed} * {Teeth} * {Feed per Tooth per Diameter} * {Cutter Diameter}"
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "formula": "ceil({Plate Thickness} / ({Slotting Depth Ratio} * {Cutter Diameter}))"
+        },
+        {
+          "name": "Path per Pass",
+          "unit": "mm",
+          "formula": "{Outline Perimeter} + {Cutter Diameter}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Passes} * {Path per Pass} / {Feed Rate} * 60"
+        }
+      ]
     }
   ]
 }

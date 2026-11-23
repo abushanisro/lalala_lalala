@@ -1,4 +1,6 @@
-import type { StockMachiningOption, StockMachiningSaw, StockMachiningStock, StockMachiningSummary } from '@/lib/costing/stock-machining-view';
+import type {
+  RoughingOption, StockMachiningOption, StockMachiningRoughing, StockMachiningSaw, StockMachiningStock, StockMachiningSummary,
+} from '@/lib/costing/stock-machining-view';
 
 // Stock Machining sections as the engine returned them on the local stack (aluminium 6061, batch 100, 2026-11-22), money in USD.
 
@@ -113,6 +115,83 @@ export const STIFFNER_TUBE_ASKED: StockMachiningSummary = {
   options: STIFFNER_PLATE.options.map((o) => ({ ...o, chosen: o.form === 'billet' })),
   scrapCredit: { enabled: false, percent: 9, credit: 0 },
   stockLabel: '163.7 x 46.2 x 12.2 mm billet, 45 per 914.4 x 457.2 mm plate',
+};
+
+const NO_PLASMA_FEED = 'sm_reference_data nestingCutRate PlasmaCut holds no feed data for Aluminum, ANSI 6061';
+const NO_OXYFUEL_FEED = 'sm_reference_data nestingCutRate OxyFuelCut holds no feed data for Aluminum, ANSI 6061';
+
+/** STIFFNER 2's roughing techniques as a Stock Machining part in the USA, none set: All Bulk Milling (the data's default) is quoted. */
+export const STIFFNER_ROUGHING: StockMachiningRoughing = {
+  technique: 'all_bulk_milling', label: 'All Bulk Milling', source: 'default', defaultTechnique: 'all_bulk_milling', fallback: null,
+  options: [
+    {
+      technique: 'all_bulk_milling', label: 'All Bulk Milling', chosen: true, unavailable: null, partsPerPlate: 45, materialCost: 2.3695,
+      separation: { process: 'Band Saw', machineClass: 'band_saw', machineName: 'DoAll 3613-1 Vert', cost: 0.44, timeSec: 27.694 }, bulkVolumeMm3: 56074.51, processes: [],
+    },
+    {
+      technique: 'perimeter_milling_dropoff', label: 'Perimeter Milling with Drop-off', chosen: false, unavailable: null, partsPerPlate: 40, materialCost: 2.6657,
+      separation: { process: 'Perimeter Milling', machineClass: null, machineName: null, cost: 2.85, timeSec: 122.517 }, bulkVolumeMm3: 24268.95, processes: [],
+    },
+    {
+      technique: 'plate_cutting_dropoff', label: 'Plate Cutting with Drop-off', chosen: false, unavailable: null, partsPerPlate: 45, materialCost: 2.3695,
+      separation: { process: 'Waterjet Cut', machineClass: 'waterjet', machineName: 'OMAX 55100', cost: 1.4575, timeSec: 78.6 }, bulkVolumeMm3: 35054.49,
+      processes: [
+        { process: 'Laser Cut', chosen: false, unavailable: null, machineClass: 'fiber_laser', machineName: 'Durma HD-F 3015 4kW Fiber', partsPerPlate: 35, materialCost: 3.0465, cutCost: 1.6449 },
+        { process: 'Plasma Cut', chosen: false, unavailable: NO_PLASMA_FEED, machineClass: null, machineName: null, partsPerPlate: null, materialCost: null, cutCost: null },
+        { process: 'Oxyfuel Cut', chosen: false, unavailable: NO_OXYFUEL_FEED, machineClass: null, machineName: null, partsPerPlate: null, materialCost: null, cutCost: null },
+        { process: 'Waterjet Cut', chosen: true, unavailable: null, machineClass: 'waterjet', machineName: 'OMAX 55100', partsPerPlate: 45, materialCost: 2.3695, cutCost: 1.4575 },
+      ],
+    },
+  ],
+};
+/** A technique's row of a quote's roughing list. */
+export function techniqueOf(s: Pick<StockMachiningSummary, 'roughing'>, technique: string): RoughingOption {
+  const option = s.roughing?.options.find((o) => o.technique === technique);
+  if (!option) throw new Error(`the quote lists no ${technique}`);
+  return option;
+}
+const quoting = (technique: string): StockMachiningRoughing => ({
+  ...STIFFNER_ROUGHING, technique, label: techniqueOf({ roughing: STIFFNER_ROUGHING }, technique).label, source: 'cost_guide',
+  options: STIFFNER_ROUGHING.options.map((o) => ({ ...o, chosen: o.technique === technique })),
+});
+
+/** The same plate quote with its roughing techniques listed (no technique set). */
+export const STIFFNER_PLATE_ROUGHING: StockMachiningSummary = { ...STIFFNER_PLATE, scrapCredit: { enabled: false, percent: 9, credit: 0 }, roughing: STIFFNER_ROUGHING };
+
+/** STIFFNER 2 set to Perimeter Milling with Drop-off: the plate is loaded on the mill whole, 40 outlines a plate, no band saw. */
+export const STIFFNER_PERIMETER_MILLED: StockMachiningSummary = {
+  ...STIFFNER_PLATE_ROUGHING,
+  stock: {
+    ...STIFFNER_PLATE_STOCK, sizeLabel: '1/2" plate, 159.5 x 42 mm outline', piece: { lengthMm: 159.5, widthMm: 42, thicknessMm: 12.7 }, cutWidthMm: 10,
+    partsPerStock: 40, utilizationPct: 11.5, purchasedKg: 0.358385, pieceKg: 0.173458,
+  },
+  options: STIFFNER_PLATE.options.map((o) => (o.chosen ? { ...o, sizeLabel: '1/2" plate, 159.5 x 42 mm outline', materialCost: 2.6657, sawCost: null } : o)),
+  roughing: quoting('perimeter_milling_dropoff'),
+  saw: null,
+  sawMissing: 'The plate is loaded on the mill whole and the mill cuts each part out of it: no band saw cuts it.',
+  stockLabel: '1/2" plate, 159.5 x 42 mm outline, 40 per 914.4 x 457.2 mm plate, perimeter milled',
+};
+
+/** STIFFNER 2 set to Plate Cutting with Drop-off: the waterjet cuts the grown outline out of the plate, 45 cut blanks a plate. */
+export const STIFFNER_PLATE_CUT: StockMachiningSummary = {
+  ...STIFFNER_PLATE_ROUGHING,
+  stock: { ...STIFFNER_PLATE_STOCK, sizeLabel: '1/2" plate, 163.7 x 46.2 mm cut blank', cutWidthMm: 5.08, pieceKg: 0.202579 },
+  roughing: quoting('plate_cutting_dropoff'),
+  saw: null,
+  sawMissing: 'A plate cutting process cuts each part out of the plate: no band saw cuts it.',
+  stockLabel: '1/2" plate, 163.7 x 46.2 mm cut blank, 45 per 914.4 x 457.2 mm plate, Waterjet Cut',
+};
+
+const NO_OUTLINE = "the part's analysis holds no plate outline: press Refresh analysis to measure the plate outline";
+/** STIFFNER 2 analysed before the plate outline was measured, with Perimeter Milling asked for: All Bulk Milling is quoted, and says why. */
+export const STIFFNER_NO_OUTLINE: StockMachiningSummary = {
+  ...STIFFNER_PLATE_ROUGHING,
+  roughing: {
+    ...STIFFNER_ROUGHING, source: 'cost_guide',
+    fallback: `The Cost Guide's roughing technique, Perimeter Milling with Drop-off, is not available: ${NO_OUTLINE}. All Bulk Milling is quoted.`,
+    options: STIFFNER_ROUGHING.options.map((o) => (o.technique === 'all_bulk_milling' ? o
+      : { ...o, unavailable: NO_OUTLINE, partsPerPlate: null, materialCost: null, separation: null, bulkVolumeMm3: null, processes: [] })),
+  },
 };
 
 /** A form's row of a quote's options. */

@@ -224,3 +224,15 @@ export function resolveScenarioStockRemnantMm(scenarioOverrides: Record<string, 
 export function resolveScenarioStockScrapCredit(scenarioOverrides: Record<string, unknown> | null | undefined): boolean | null {
   return flag(scenarioOverrides?.['stockScrapCredit']);
 }
+
+type ScenarioStockRoughingTechnique = 'all_bulk_milling' | 'perimeter_milling_dropoff' | 'plate_cutting_dropoff';
+const VALID_SCENARIO_ROUGHING_TECHNIQUES: ReadonlySet<string> = new Set(['all_bulk_milling', 'perimeter_milling_dropoff', 'plate_cutting_dropoff']);
+
+/**
+ * How a part cut from plate is separated from the plate and roughed out (costing/stock/plate-roughing.ts), replacing the data's
+ * defaultRoughingTechnique. It applies to plate stock only: bar stock has one technique. Any other value is unset.
+ */
+export function resolveScenarioStockRoughingTechnique(scenarioOverrides: Record<string, unknown> | null | undefined): ScenarioStockRoughingTechnique | null {
+  const raw = scenarioOverrides?.['stockRoughingTechnique'];
+  return typeof raw === 'string' && VALID_SCENARIO_ROUGHING_TECHNIQUES.has(raw) ? (raw as ScenarioStockRoughingTechnique) : null;
+}
