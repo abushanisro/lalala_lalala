@@ -91,6 +91,7 @@ export interface RouteResultDto {
   autoRoutable: boolean;
   processLines: ProcessLineCost[];
   materialCost: number;
+  /** A waterjet route's garnet. It is one of processLines ("Waterjet Abrasive") and so already in totalProcessCost: stated here for display only. */
   abrasiveCost: number;
   totalProcessCost: number;
   totalCost: number | null;  // null when isFeasible === false — prevents sort/ML pollution

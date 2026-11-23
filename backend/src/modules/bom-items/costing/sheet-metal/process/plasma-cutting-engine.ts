@@ -47,7 +47,7 @@ interface PlasmaCutResult {
   // Always 0 — plasma cutting's real consumable is the nozzle/electrode
   // (nozzle_cost_usd/nozzle_life_cycles exist per-machine in
   // machine_library.json), not an abrasive like waterjet's garnet. No
-  // sm_waterjet_nozzle_rates-equivalent table exists for plasma yet — a
+  // nozzle-wear rate like the waterjet's is on file for plasma yet — a
   // disclosed scoping gap, not modeled here, kept only so this result shape
   // satisfies the shared CuttingProcessResult contract.
   abrasiveCost: number;
