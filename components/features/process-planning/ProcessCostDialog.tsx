@@ -34,6 +34,7 @@ import { useMHRPickerRows, useMHRRecord } from '@/lib/api/hooks/useMHR';
 import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculatorMappings';
 import { useCalculateProcessCost } from '@/lib/api/hooks/useProcessCosts';
 import { machineListRateUsd, resolveMhrUsdRate, type MachineListRow } from '@/lib/api/mhr';
+import { formulaNumbers, lineWorkingOf, traceOfCalculator, workingOf } from '@/lib/calculators/calculation-working';
 import { calculationOfRecord, NO_CALCULATION, runOfCalculator, type LineCalculation } from '@/lib/calculators/calculator-run';
 import type { EngineCalculatorSeed } from '@/lib/calculators/engine-calculator-seeds';
 import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
@@ -61,6 +62,7 @@ import { effectiveOperation, operationChoices, resolveSavedOperation, type LiveO
 import { withOutputColumnLast } from '@/lib/processCatalog/reference-table-columns';
 import { mhrCategoryOf } from '@/lib/utils/mhrCategoryOf';
 
+import { LineGroupsWorking, WorkingSteps } from './CalculationWorking';
 import { CalculatorInputField, type TonnageCheck } from './CalculatorInputField';
 import { ReferenceTable } from './ReferenceTable';
 
@@ -452,6 +454,12 @@ export function ProcessCostDialog({
   // lookup-table inputs are re-resolved from the database for them.
   const machiningEditedRef = useRef<Set<string>>(new Set());
   const [calculatorResults, setCalculatorResults] = useState<Record<string, any> | null>(null);
+  // The inputs the results on screen were calculated from. An input edited afterwards leaves the results as they are until Calculate, so
+  // the working is written in the numbers they were reached with, not the ones now in the boxes. Display only: nothing is saved from it.
+  const [resultInputs, setResultInputs] = useState<Record<string, unknown>>({});
+  useEffect(() => {
+    setResultInputs(calculatorResults ? calculatorInputsRef.current : {});
+  }, [calculatorResults]);
   // Surfaces execute() request-level failures (network/validation errors) —
   // without this, a failed Calculate silently leaves every field showing
   // "N/A" with no indication anything went wrong.
@@ -584,6 +592,24 @@ export function ProcessCostDialog({
       currentCycleTimeSec,
     };
   }, [calculatorResults, selectedCalculator?.fields, cycleTime]);
+
+  // How the results on screen were reached (lib/calculators/calculation-working.ts): the open calculator as a trace, the steps behind its
+  // Cycle Time in the order they are computed, and every result's formula written in the numbers used. The values are the ones the
+  // calculator returned; nothing is recomputed here.
+  const calculatorTrace = useMemo(
+    () => (calculatorResults && selectedCalculator?.fields ? traceOfCalculator(selectedCalculator.fields, resultInputs, calculatorResults) : []),
+    [calculatorResults, selectedCalculator?.fields, resultInputs],
+  );
+  const cycleWorking = useMemo(() => workingOf(calculatorTrace), [calculatorTrace]);
+  const resultNumbers = useMemo(() => formulaNumbers(calculatorTrace), [calculatorTrace]);
+  // The line's own run, group by group, when its cycle is this calculator run once per group (each turned diameter, each hole size): the
+  // calculator is filled with one group, so the line's cycle is more than the result above.
+  const lineWorking = useMemo(
+    () => (cycleCalculation?.calculatorId && cycleCalculation.calculatorId === selectedCalculatorId
+      ? lineWorkingOf(cycleCalculation.calculatorRun?.trace)
+      : null),
+    [cycleCalculation, selectedCalculatorId],
+  );
 
   // sourceField -> the extra fields the two-pass sm_lookup mechanism ABOVE
   // (see the lookupField/toolSetupField block) reads directly in JS to build
@@ -3882,6 +3908,14 @@ export function ProcessCostDialog({
                       <CardTitle className="text-lg">Results</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      {/* Opened for Cycle Time, only that result is listed below: the values it is built from come first, as a worked
+                          example (each with its formula in names and in numbers), so the result is not a bare number. */}
+                      {calculatorTarget === 'cycleTime' && cycleWorking.length > 1 && (
+                        <div className="space-y-2">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">How it is calculated</div>
+                          <WorkingSteps steps={cycleWorking.slice(0, -1)} />
+                        </div>
+                      )}
                       {selectedCalculator.fields
                         ?.filter((field: CalculatorField) => field.fieldType === 'calculated')
                         // This calculator is being used only to derive a Cycle
@@ -3916,6 +3950,11 @@ export function ProcessCostDialog({
                                     Why: {field.displayLabel || field.fieldName} = {field.defaultValue}
                                   </div>
                                 )}
+                                {!hasError && resultNumbers[field.fieldName] && (
+                                  <div className="text-xs text-foreground/80 font-mono">
+                                    = {resultNumbers[field.fieldName]}
+                                  </div>
+                                )}
                                 {hasError && (
                                   <div className="text-xs text-destructive" title={result.error}>
                                     {result.error}
@@ -3940,6 +3979,22 @@ export function ProcessCostDialog({
                             </div>
                           );
                         })}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* A line timed by this calculator once per group: every group's time and steps, and the line's total of them. */}
+                {calculatorTarget === 'cycleTime' && lineWorking && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg">This line: {lineWorking.groups.length} groups</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-xs text-muted-foreground">
+                        The line runs this calculator once per group and its Cycle Time comes from all of them. The inputs above are the
+                        first group&apos;s; open a group to see its steps.
+                      </p>
+                      <LineGroupsWorking line={lineWorking} />
                     </CardContent>
                   </Card>
                 )}
@@ -3981,6 +4036,11 @@ export function ProcessCostDialog({
                         {computedCycleTime.matchesCurrent ? (
                           <span className="text-success font-medium">
                             <Mark kind="ok" /> Matches the Cycle Time currently set on this process ({formatStoredCycleSec(computedCycleTime.currentCycleTimeSec)}) — this is the value Direct Process Costs will use.
+                          </span>
+                        ) : lineWorking ? (
+                          // One group of several: the saved cycle is every group's, so it is not expected to match this result.
+                          <span className="text-warning font-medium">
+                            This result is one of the line&apos;s {lineWorking.groups.length} groups. The Cycle Time set on this process, {formatStoredCycleSec(computedCycleTime.currentCycleTimeSec)}, comes from all {lineWorking.groups.length} (see &quot;This line&quot; above); &quot;Use as Cycle Time&quot; replaces it with this one result.
                           </span>
                         ) : (
                           <span className="text-warning font-medium">
