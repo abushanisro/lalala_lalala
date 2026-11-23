@@ -6,9 +6,12 @@ import { buildRollFormingCostSummary } from './costing/roll-forming/roll-forming
 import { RollFormingCostService, type RollFormingCostResult } from './costing/roll-forming/roll-forming-cost.service';
 import { ROLL_FORMING_ROUTES, type RollFormingRouteKey } from './costing/roll-forming/roll-forming-route';
 import { rollFormingRouteFor, rollFormingRouteId } from './costing/roll-forming/roll-forming-route-comparison';
+import { PERIMETER_MILLING, slottingRuleOf, type PerimeterCutter } from './costing/stock-machining/perimeter-cut';
 import { stockBlankResult, stockEngineInput, stockMachiningBreakdown, withStockMachining, type StockMachiningPlan } from './costing/stock-machining/stock-machining-cost-summary';
 import { StockMachiningCostService, type StockMachiningChoice } from './costing/stock-machining/stock-machining-cost.service';
 import { stockCutOffOf, type StockCutOff } from './costing/stock-machining/stock-machining-route';
+import type { PlateCutPrice, PlateCutRequest } from './costing/stock-machining/plate-cutting';
+import type { PlateCutProcess } from './costing/stock/plate-roughing';
 import { asSuppliedFaces } from './costing/stock/stock-part';
 import { withoutAsSuppliedFaces } from './costing/machining/operation/as-supplied-faces';
 import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock-price';
@@ -53,7 +56,7 @@ import type { LaserCutParams } from './costing/sheet-metal/lookup/sheet-metal-lo
 import { computeNesting, resolveNestingDimensions, EDGE_ALLOWANCE_MM, computePartAllowanceMm } from './costing/sheet-metal/machine/sheet-metal-nesting.engine';
 import { resolveNetUsagePhysics } from './costing/sheet-metal/raw-material/sheet-metal-net-usage.physics';
 import {
-  computeMillingCostSummary, computeTurningCostSummary,
+  computeMillingCostSummary, computeTurningCostSummary, millingOperationsCost,
   checkMachiningCapability, checkLatheCapability, computeRouteComplexityScore,
   meetsRequiredMilledClass, pickRecommendedRoute,
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
@@ -98,6 +101,7 @@ import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveT
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
 import type { CapabilityCheck as MachineCapabilityCheck, PartGeometryForCapability } from './costing/shared/capability/machine-capability';
+import type { CuttingProcessContext, CuttingProcessResult } from './costing/shared/core/manufacturing-process.types';
 import { getProcessLabelForClass, getEnginesForFamily, getRouteCoreProcessClasses, ROUTE_ID_FOR_CLASS, ROUTE_LABEL_FOR_CLASS } from './costing/shared/core/manufacturing-process-registry';
 // Platform Architecture Remediation Phase 1 (engine registry unification,
 // Rule 8) — getRouteComparison()'s Press Brake/Deburring/Hole Extrusion/
@@ -309,6 +313,8 @@ const isRollForming = (item: { scenarioOverrides?: Record<string, unknown> | nul
 interface StockRouteMaterial {
   /** USD -> the location's currency. */
   usdToLocal: number;
+  /** The request's exchange rates: a plate cutting machine's rate is converted with them, as every Sheet Metal machine's is. */
+  fx: RateSnapshot;
   material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
 }
 /**
@@ -322,6 +328,8 @@ const isStockMachining = (item: { scenarioOverrides?: Record<string, unknown> | 
  */
 const usesStockModel = (item: { scenarioOverrides?: Record<string, unknown> | null }, family: string) =>
   isMachiningFamily(family) && !(family === 'turned' && isMultiSpindle(item));
+/** The Sheet Metal machine classes that cut a plate part's blank out of its plate (Plate Cutting with Drop-off). */
+type PlateCutClass = 'fiber_laser' | 'co2_laser' | 'plasma_cut' | 'oxyfuel_cut' | 'waterjet';
 /** The part's Process as the user chose it (scenarioOverrides.processGroup); null when none is chosen. */
 const processGroupOf = (item: { scenarioOverrides?: Record<string, unknown> | null }): string | null => {
   const g = item.scenarioOverrides?.['processGroup'];
@@ -580,6 +588,17 @@ export class BomItemCostingService {
         stockMachining: {
           ...dto.stockMachining,
           options: dto.stockMachining.options.map((o) => ({ ...o, materialCost: o.materialCost != null ? conv(o.materialCost) : null, sawCost: o.sawCost != null ? conv(o.sawCost) : null })),
+          // A plate part's roughing techniques, the same: each one's plate, its separation and its cutting processes.
+          ...(dto.stockMachining.roughing ? {
+            roughing: {
+              ...dto.stockMachining.roughing,
+              options: dto.stockMachining.roughing.options.map((o) => ({
+                ...o, materialCost: o.materialCost != null ? conv(o.materialCost) : null,
+                separation: o.separation ? { ...o.separation, cost: o.separation.cost != null ? conv(o.separation.cost) : null } : null,
+                processes: o.processes.map((x) => ({ ...x, materialCost: x.materialCost != null ? conv(x.materialCost) : null, cutCost: x.cutCost != null ? conv(x.cutCost) : null })),
+              })),
+            },
+          } : {}),
           scrapCredit: { ...dto.stockMachining.scrapCredit, credit: conv(dto.stockMachining.scrapCredit.credit) },
         },
       } : {}),
@@ -999,8 +1018,10 @@ export class BomItemCostingService {
     }
     for (const line of lines) {
       // Machine-less lines (Fixture: amortised tooling hardware, zero machine
-      // time) must not carry a machine picker.
-      if (line.hourlyRate <= 0) continue;
+      // time) must not carry a machine picker. A plate cutting line of the
+      // stock (stockStep) carries the selection it was priced on, made for the
+      // plate (plateCutPrices): the part's own selection of that class is not it.
+      if (line.hourlyRate <= 0 || line.stockStep) continue;
       const selection = byClass.get(line.machineClass);
       if (selection) {
         line.machineSelection = selection;
@@ -1542,6 +1563,8 @@ export class BomItemCostingService {
      * its stock off the diameters, costed per diameter) and for a part with no stock chosen: no stock is then milled away in bulk.
      */
     milledPieceMm3?: number,
+    /** On a milled route, the operations on the stock itself that the mill performs (StockMachiningPlan: the perimeter cut of a plate part), each already timed. */
+    stockOps: readonly OperationLine[] = [],
   ) {
     const warnings: string[] = [];
     const matClass = detectMaterialClass(grade);
@@ -1620,6 +1643,7 @@ export class BomItemCostingService {
       await this.machiningLookup.getMillingRemovalRate(matClass),
       await this.machiningLookup.getMillingFinishing(matClass),
       stockAround,
+      stockOps,
     );
     // Ops the sequencer could not price from real inputs (missing CAD
     // measurement or lookup row) — reported, never estimated.
@@ -1655,7 +1679,7 @@ export class BomItemCostingService {
     };
     return {
       warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool,
-      heatTreatment, machinabilityRating,
+      heatTreatment, machinabilityRating, stockAround,
     };
   }
 
@@ -1703,7 +1727,10 @@ export class BomItemCostingService {
       // hole sizes surface as separate, individually-highlightable rows —
       // the same bucketing discipline Sheet Metal's bend-radius grouping uses.
       const diaBucket = op.diameterMm ? Math.round(op.diameterMm * 10) / 10 : undefined;
-      const groupKey = diaBucket !== undefined ? `${key}@${diaBucket}` : key;
+      const featureKey = diaBucket !== undefined ? `${key}@${diaBucket}` : key;
+      // An operation on the stock itself (the cut round a plate part's outline) is not one of the part's features of that operation's
+      // name (its cutouts): it keeps a row of its own.
+      const groupKey = op.source === 'stock' ? `${featureKey}@stock` : featureKey;
       const g = groups.get(groupKey);
       if (g) {
         g.timeSec += op.timeSec; g.count += op.count ?? 1;
@@ -2371,7 +2398,7 @@ export class BomItemCostingService {
       // The part's stock by the stock model (costing/stock), on every route below: the stock bought per part as the material and, for a
       // Stock Machining part, the band saw. Null for a multi-spindle's part, whose bar is its own engine's.
       const stock = usesStockModel(item, family) ? await this.stockMachiningRoutes(item, fg, family as MachiningFamily, {
-        location, accessToken, batchSize, usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code),
+        location, accessToken, batchSize, usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
         material: { name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
       }) : null;
       // The milling engine prices no parting, so a mill's piece is sawn; a lathe's is cut off as its class says (a bar-fed lathe parts it off the bar).
@@ -2422,10 +2449,12 @@ export class BomItemCostingService {
         this.machiningLookup.getCapabilityRules(),
       ]);
       const machiningCalculators = await this.resolveMachiningCalculators(accessToken);
-      // A milled part is milled from the sawn piece, whatever mill makes it: its plan mills away the stock around the part. A turned
-      // part's routes here are lathes, which turn the stock off.
+      // A milled part is milled from the sawn piece, whatever mill makes it: its plan mills away the stock around the part (and, for a
+      // plate part under Perimeter Milling with Drop-off, cuts round its outline first). A turned part's routes here are lathes, which turn
+      // the stock off.
       const featurePlan = await this.machiningFeaturePlan(
         item, fg, grade, accessToken, stock?.asSuppliedFaceIds, family === 'milled' ? stock?.input('saw').blankResult?.billetVolMm3 : undefined,
+        family === 'milled' ? stock?.millOps : undefined,
       );
       materialWarnings.push(...featurePlan.warnings);
       const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
@@ -2678,7 +2707,14 @@ export class BomItemCostingService {
       // The stock of the quoted route: a bar-fed lathe's is the bar it parts the piece off, any other machine's the sawn piece.
       const quotedCutOff = stockCutOffFor(recommended.cls);
       const quotedBlank = stock?.input(quotedCutOff).blankResult;
-      const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize) : undefined;
+      // A plate part's roughing techniques are stated on the quoted mill: the bulk each leaves round the part, and what the perimeter cut
+      // costs at that mill's rate (the mill's own line prices it the same way).
+      const quotedRate = candidateClasses.find((c) => c.cls === recommended.cls)?.rate;
+      const roughingOnMill = family === 'milled' && featurePlan.stockAround && quotedRate ? {
+        partMm3: featurePlan.stockAround.partMm3, featureRemovedMm3: featurePlan.stockAround.featureRemovedMm3,
+        operationCost: (seconds: number) => millingOperationsCost(machiningCalculators, quotedRate, recommended.cls, [{ name: PERIMETER_MILLING, timeSec: seconds, source: 'stock' }]),
+      } : undefined;
+      const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize, roughingOnMill) : undefined;
       if (stockBreakdown) cncResult.stockMachining = stockBreakdown;
       if (!recommended.capable) {
         cncResult.warnings.push(
@@ -6571,9 +6607,11 @@ export class BomItemCostingService {
         // Inherited tapping runs on THIS route's primary machine — surface that
         // machine on the Tapping line, not the "class default (tapping)" panel.
         if (mhrRates.tapping.source !== 'mhr_database') {
-          // The route's machine is its first line after the stock's own (a Stock Machining route starts with its Band Saw).
+          // The route's machine is its first line after the stock's own (a Stock Machining route starts with its Band Saw, a plate cut
+          // out by a cutting process with that process's line).
           const primaryLine =
-            route.processLines.find((l) => l.process === 'Setup') ?? route.processLines.find((l) => l.processGroup !== STOCK_MACHINING_PROCESS_GROUP) ?? route.processLines[0];
+            route.processLines.find((l) => l.process === 'Setup') ?? route.processLines.find((l) => l.processGroup !== STOCK_MACHINING_PROCESS_GROUP && !l.stockStep)
+            ?? route.processLines[0];
           const primarySelection = primaryLine
             ? (Object.values(mhrRates) as MHRRateInput[]).find((r) => r && typeof r.machineClass === 'string' && r.machineClass === primaryLine.machineClass)
                 ?.selection
@@ -6664,7 +6702,7 @@ export class BomItemCostingService {
       const routeDeburrLinearSpeed = routeDeburrParams.dataFound ? routeDeburrParams.linearSpeedMmPerSec : null;
       // What the part's stock is priced from, for every route builder below.
       const stockMaterial: StockRouteMaterial = {
-        usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code),
+        usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
         material: { name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg },
       };
       if (family === 'milled') {
@@ -8769,8 +8807,9 @@ export class BomItemCostingService {
     // A mill cuts this part from milled stock, whatever the part's own family. The milling engine prices no parting, so the piece is sawn
     // whatever machine mills it (a bar-fed lathe milling with live tools included).
     const stock = await this.stockMachiningRoutes(item, fg, 'milled', { location, accessToken, batchSize, ...stockMaterial });
-    // Every route here mills that sawn piece: the plan mills away the stock around the part.
-    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds, stock.input('saw').blankResult?.billetVolMm3);
+    // Every route here mills that piece: the plan mills away the stock around the part, after the stock's own operation on the mill (the
+    // cut round a plate part's outline of Perimeter Milling with Drop-off).
+    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds, stock.input('saw').blankResult?.billetVolMm3, stock.millOps);
     comparisonWarnings.push(...featurePlan.warnings);
 
     const baseInput: Omit<MachiningCostInput, 'mhrRate' | 'tappingRate'> = {
@@ -9041,11 +9080,17 @@ export class BomItemCostingService {
    * finished, what each route's engine takes from it (the piece it starts from, what cut it off, the price of its form) and the route's
    * quote with the stock on it (the stock as the material cost and, for a Stock Machining part, the Band Saw line). One definition for the
    * cost summary, both route builders and the candidate routes, so the Cost tab, the comparison and Apply agree on the stock.
+   *
+   * On a mill's routes (`family` milled) a part cut from plate is also roughed out by one of three techniques (costing/stock/
+   * plate-roughing.ts): the quoted one is in the plan, and what it gives the routes comes from here like the rest. The piece is the
+   * technique's, the lines before the machining are its plate cutting (or none), and `millOps` is what it adds to the mill's own sequence.
    */
   private async stockMachiningRoutes(item: any, fg: any, family: MachiningFamily, ctx: {
     location: string; accessToken: string; batchSize: number;
     /** USD -> the location's currency. */
     usdToLocal: number;
+    /** The request's exchange rates (a plate cutting machine's rate is converted with them). */
+    fx: RateSnapshot;
     /** The material the quote prices: its Raw Materials name, the grade asked for, its density, and each stock form's price per kg in the location's currency. */
     material: { name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>> };
   }): Promise<{
@@ -9053,12 +9098,21 @@ export class BomItemCostingService {
     asSuppliedFaceIds: number[];
     input: (cutOff: StockCutOff) => ReturnType<typeof stockEngineInput>;
     apply: <T extends CostSummaryDto>(cost: T, cutOff: StockCutOff) => T;
+    /** The operations the stock adds to a mill's own sequence: the perimeter cut of a plate part under Perimeter Milling with Drop-off. */
+    millOps: OperationLine[];
   }> {
     const { choice, missing } = await this.stockMachiningChoice(item, fg, family, ctx.location);
     const zeroCtx = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
     const name = ctx.material.name ?? ctx.material.grade ?? 'the material';
     // Sawing the stock to pieces is costed for a Stock Machining part only: the one switch between its quote and any other machined part's.
     const sawCosted = isStockMachining(item);
+    // A mill's route: what a plate part's drop-off techniques are priced from. A lathe's plate is sawn to a blank, its one technique.
+    const roughing = family === 'milled' ? {
+      cutter: await this.perimeterCutter(fg, ctx.material.grade, ctx.accessToken),
+      priceCuts: (cuts: readonly PlateCutRequest[]) => this.plateCutPrices({
+        accessToken: ctx.accessToken, location: ctx.location, fx: ctx.fx, grade: ctx.material.grade, batchSize: ctx.batchSize, costContext: zeroCtx, cuts,
+      }),
+    } : undefined;
     const priced = choice && this.stockMachiningCostService
       ? await this.stockMachiningCostService.price({
         client: this.databaseService.getClient(ctx.accessToken), accessToken: ctx.accessToken, location: ctx.location, choice, sawCosted,
@@ -9067,20 +9121,215 @@ export class BomItemCostingService {
           pricePerKgUsd: Object.fromEntries(Object.entries(ctx.material.pricesPerKg).filter(([, v]) => v > 0).map(([form, v]) => [form, v / ctx.usdToLocal])),
         },
         batchSize: ctx.batchSize, usdToLocal: ctx.usdToLocal, costContext: zeroCtx,
+        ...(roughing ? { roughing } : {}),
       })
       : null;
     const plan: StockMachiningPlan = {
       sawCosted, choice, priced: priced?.stock ?? null, scrapCostPercent: priced?.material?.scrapCostPercent ?? null,
       missing: [...missing, ...(priced?.missing ?? [])], warnings: priced?.warnings ?? [],
     };
+    // The faces left as supplied follow the stock as the model chose it (its own allowance), whatever cuts the part out of it.
     const sawn = choice?.selection.saw.chosen;
     const supplied = sawn ? asSuppliedFaces(sawn, choice.part, choice.faces) : { curvedWall: [], planarFace: [] };
     return {
       plan,
       asSuppliedFaceIds: [...supplied.curvedWall, ...supplied.planarFace],
-      input: (cutOff) => stockEngineInput(choice, cutOff, ctx.material.pricesPerKg),
+      input: (cutOff) => stockEngineInput(choice, cutOff, ctx.material.pricesPerKg, plan.priced),
       apply: (cost, cutOff) => withStockMachining(cost, plan, cutOff),
+      millOps: plan.priced?.saw.roughing?.millOps ?? [],
     };
+  }
+
+  /**
+   * The cutter a mill cuts round a plate part's outline with (Perimeter Milling with Drop-off): the material's standard end mill and how
+   * it runs (tblMillingFinishing, with the part's machinability as every milling calculator takes it), and the slotting rule of the
+   * keyway's stored calculator. One reading of each, as machiningFeaturePlan reads them for the part's own operations.
+   */
+  private async perimeterCutter(fg: any, grade: string | null, accessToken: string): Promise<PerimeterCutter> {
+    const matClass = detectMaterialClass(grade);
+    const machinabilityRating = (fg?.machining_features?.material_machinability ?? null) as number | null;
+    return {
+      matClass,
+      finishing: await this.machiningLookup.getMillingFinishing(matClass),
+      machinabilityFactor: machinabilityRating != null ? machinabilityRating / 75 : 1.0,
+      slotting: slottingRuleOf(await this.resolveMachiningCalculators(accessToken)),
+      sequenced: (((fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2)?.features ?? []) as unknown[]).length > 0,
+    };
+  }
+
+  /**
+   * Prices the cut of Plate Cutting with Drop-off (costing/stock-machining/plate-cutting.ts) by each plate cutting process, with the Sheet
+   * Metal cutting model: the same machines (HR Rates classes fiber_laser, co2_laser, plasma_cut, oxyfuel_cut, waterjet, selected for the
+   * plate's thickness and the blank's size as a sheet part's are), the same feed and pierce lookups, the same stored calculators (laser,
+   * waterjet) and the same registered engines the Sheet Metal route comparison runs. No second cutting model: this seeds that one with a
+   * plate part's cut (the grown outline plus the process's lead-in, one pierce).
+   *
+   * A process is priced only where that model holds the data: a machine at the location that can take the plate, and feed rows for the
+   * material at the plate's thickness. The feed getters read the row nearest a thickness and price every grade that is not stainless as
+   * steel, so the table's own coverage is asked first (getCutFeedCoverage); what it does not hold is listed with the reason, never
+   * priced. Laser Cut is the cheaper of the fiber and the CO2 laser. Lines come back in the location's currency, as the engines give them.
+   */
+  private async plateCutPrices(args: {
+    accessToken: string; location: string; fx: RateSnapshot; grade: string | null; batchSize: number;
+    /** The cost context of the stock's own lines (no sampling, no yield loss): a cut blank is costed as the sawn one is. */
+    costContext: { qairPerHr: number; inspTimeMin: number; samplingRate: number; yieldPct: number; netMatCost: number; netWeightKg: number; scrapPricePerKg: number };
+    cuts: readonly PlateCutRequest[];
+  }): Promise<PlateCutPrice[]> {
+    const { accessToken, location, fx, grade, batchSize, cuts } = args;
+    const first = cuts[0];
+    if (!first) return [];
+    // Every request is a cut of the one blank out of the one plate: only its length (the process's lead-in) differs.
+    const thk = first.thicknessMm;
+    const { lengthMm, widthMm } = first.blank;
+    const locInfo = LOCATION_INFO[location] ?? LOCATION_INFO['Other'];
+
+    const requirements = await this.buildPartRequirements({
+      family: 'sheet_metal', grade, sheetThicknessMm: thk, bendCount: 0, flatPatternAreaMm2: lengthMm * widthMm, flatLenMm: lengthMm, flatWidMm: widthMm,
+      bboxXMm: lengthMm, bboxYMm: widthMm, bboxZMm: thk, weightKg: 0, utsMpa: null,
+      materialClamp: { injectionPressureMaxMpa: null, flowLengthRatio: null, referenceMaterial: null }, location, accessToken,
+    });
+    const mhrRates = await this.rates.resolveMHRRates(accessToken, location, { requirements, overrides: new Map<string, string>() }, fx);
+    const classesOf: Readonly<Record<PlateCutProcess, readonly PlateCutClass[]>> = {
+      'Laser Cut': ['fiber_laser', 'co2_laser'], 'Plasma Cut': ['plasma_cut'], 'Oxyfuel Cut': ['oxyfuel_cut'], 'Waterjet Cut': ['waterjet'],
+    };
+    const rateOf: Readonly<Record<PlateCutClass, MHRRateInput>> = {
+      fiber_laser: mhrRates.fiberLaser, co2_laser: mhrRates.co2Laser, plasma_cut: mhrRates.plasmaCut, oxyfuel_cut: mhrRates.oxyfuelCut, waterjet: mhrRates.waterjet,
+    };
+    const [identities, opSetupTimes] = await Promise.all([
+      this.rates.resolveProcessIdentities(accessToken, Object.keys(rateOf), 'sheet_metal'),
+      this.smLookup.getOpSetupTimes(),
+    ]);
+    const engines = new Map(getEnginesForFamily('sheet_metal_cutting').map((e) => [e.machineClass as string, e]));
+    const geometry: PartGeometryForCapability = { sheetThicknessMm: thk, flatPatternLengthMm: lengthMm, flatPatternWidthMm: widthMm, materialGrade: grade };
+    const cutSource = 'Plate Cutting with Drop-off: the outline grown by the stock allowance plus the process\'s lead-in and lead-out';
+    const pierceSource = 'Plate Cutting with Drop-off: one pierce to a part (its openings are left for the mill)';
+
+    /** One machine class's price for a cut: its lines, or why the Sheet Metal model does not price it. */
+    const priceOn = async (cls: PlateCutClass, cut: PlateCutRequest): Promise<{ lines: ProcessLineCost[]; machineClass: string; machineName: string | null; warnings: string[] } | { why: string }> => {
+      const rate = rateOf[cls];
+      const engine = engines.get(cls);
+      const identity = identities[cls];
+      if (rate.source === 'no_db_rate') return { why: `HR Rates has no ${cls.replace(/_/g, ' ')} machine for ${location}` };
+      if (!engine || !identity) return { why: `the process catalog has no active ${cls.replace(/_/g, ' ')} row for a cut part` };
+      const coverage = await this.smLookup.getCutFeedCoverage(cls, grade);
+      if (!coverage.material) return { why: `${coverage.table} holds no feed data for ${grade ?? 'a part with no material grade'}` };
+      if (thk > coverage.maxThicknessMm! + 1e-9 || thk < coverage.minThicknessMm! - 1e-9) {
+        return { why: `${coverage.table} lists ${coverage.material} from ${coverage.minThicknessMm} to ${coverage.maxThicknessMm} mm; the plate is ${thk} mm` };
+      }
+      const candidate = rate.selection?.balanced?.candidate as { capability?: any; capabilitySource?: 'imported' | 'seed' | 'default_class'; machineName?: string } | undefined;
+      const capability: MachineCapabilityCheck = engine.checkCapability(geometry, rate.commodityCode, candidate?.capability, candidate?.capabilitySource);
+      if (!capability.capable) return { why: `${rate.machineName ?? cls}: ${capability.reasons.join('; ')}` };
+
+      const context: CuttingProcessContext = {
+        sheetThicknessMm: thk, cutLengthMm: cut.cutLengthMm, pierceCount: cut.pierceCount, holeCount: 0, batchSize, grade, rate, processIdentity: identity,
+        flatPatternLengthMm: lengthMm, flatPatternWidthMm: widthMm, opSetupMin: this.smLookup.resolveOpSetupMin(opSetupTimes, cls).minutes ?? undefined,
+        dlrPerHr: mhrRates.directLaborRate ?? 0, ...args.costContext,
+      };
+      let trace: CalculationTraceStep[] = [];
+      const notes: string[] = [];
+      if (cls === 'fiber_laser' || cls === 'co2_laser') {
+        const technology = cls === 'fiber_laser' ? 'fiber' as const : 'co2' as const;
+        const powerKw = candidate?.capability?.powerKw as number | undefined;
+        if (!powerKw) return { why: `${rate.machineName ?? cls} has no verified power_kw on file, so its cut speed cannot be read` };
+        // A power read off the model's documented specs, not this unit's nameplate, is said on the quote as on a sheet part's.
+        if (candidate?.capabilitySource === 'seed') {
+          notes.push(`ESTIMATED (not verified): ${rate.machineName ?? 'the selected laser'}'s power (${powerKw * 1000}W) is a disclosed engineering estimate from documented model specs, `
+            + 'not a nameplate/PO reading of this specific unit — verify before finalizing this quote.');
+        }
+        const params = await this.smLookup.getLaserParams(grade, thk, powerKw * 1000, technology);
+        if (!params.dataFound) return { why: `sm_lookup_laser_cut (${technology}) has no cutting speed for ${coverage.material} at ${thk} mm` };
+        const calc = await this.resolvePhysicsQuantity(accessToken, {
+          machineClass: cls, process: 'Laser Cutting', targetFieldNames: ['Total Time'],
+          seedScope: { 'Cutting Length': cut.cutLengthMm, 'No Of Starts': cut.pierceCount, 'Cutting Speed': params.cuttingSpeedMPerMin, 'Piercing Time Per Start': params.pierceTimeMin },
+          seedProvenance: {
+            'Cutting Length': cutSource, 'No Of Starts': pierceSource,
+            'Cutting Speed': `sm_lookup_laser_cut (${technology}) — ${grade || 'material'}, ${thk}mm plate at ${rate.machineName ?? 'the selected laser'}'s ${powerKw} kW`,
+            'Piercing Time Per Start': `sm_lookup_laser_cut (${technology}) — same row as Cutting Speed`,
+          },
+          seedRefs: laserCutSeedRefs(params),
+          lookupTableByField: { 'Cutting Speed': 'sm_lookup_laser_cut', 'Piercing Time Per Start': 'sm_lookup_laser_cut' },
+        });
+        Object.assign(context, {
+          cuttingSecFromCalculator: calc.outputs['Total Time'], calculatorId: calc.calculatorId, calculatorVersion: calc.calculatorVersion, physicsGap: calc.gap, confidence: calc.confidence,
+        });
+        trace = calc.trace;
+      } else if (cls === 'waterjet') {
+        const [params, delaySec, tubeMm, refTubeMm, vars, abrasiveRate, machineAbrasiveRate, nozzleRate, abrasivePricePerKg] = await Promise.all([
+          this.smLookup.getWaterjetParams(grade, thk),
+          this.smLookup.getWaterjetNozzleDelaySec(rate.machineName),
+          this.smLookup.getWaterjetMixingTubeMm(rate.machineName),
+          this.smLookup.getWaterjetMixingTubeMm(WATERJET_REFERENCE_MACHINE),
+          this.smLookup.getNumericVariables(['standardWaterjetCutLeadInAmount', 'waterjetCutTimeAdjustmentFactor']),
+          this.smLookup.getWaterjetAbrasiveRate(),
+          this.smLookup.getWaterjetAbrasiveRateForMachine(rate.machineName),
+          this.smLookup.getWaterjetNozzleCostPerHr(),
+          this.resolveConsumablePrice(accessToken, 'garnet_abrasive', location, locInfo.code, fx),
+        ]);
+        const leadIn = vars.get('standardWaterjetCutLeadInAmount') ?? null;
+        const adjustment = vars.get('waterjetCutTimeAdjustmentFactor') ?? null;
+        const speedFactor = waterjetSpeedFactor(tubeMm, refTubeMm);
+        const missing = waterjetMissingInputs({
+          machineName: rate.machineName, speedFactor, hasCuttingSpeed: params.dataFound, nozzleDelaySec: delaySec, leadInMm: leadIn, adjustmentFactor: adjustment,
+        });
+        if (missing) return { why: missing };
+        const calc = await this.resolvePhysicsQuantity(accessToken, {
+          machineClass: 'waterjet', process: 'Waterjet Cutting', targetFieldNames: ['Total Time', 'Cutting Time'],
+          seedScope: {
+            'Cutting Length': cut.cutLengthMm, 'No Of Starts': cut.pierceCount, 'Lead In Per Start': leadIn!, 'Cutting Speed': params.cuttingSpeedMmPerMin * speedFactor!,
+            'Cut Time Adjustment Factor': adjustment!, 'Pierce Delay Per Start': delaySec!, 'Lot Size': batchSize,
+          },
+          seedProvenance: {
+            'Cutting Length': cutSource, 'No Of Starts': pierceSource,
+            'Lead In Per Start': 'Sheet metal variable standardWaterjetCutLeadInAmount (lead-in and lead-out of each start)',
+            'Cutting Speed': `ESTIMATE: sm_lookup_waterjet_cut — ${grade || 'material'}, ${thk}mm plate (reference tier, curve fitted to two published anchor points) x ${speedFactor!.toFixed(3)} for ${rate.machineName} mixing tube ${tubeMm} mm vs ${WATERJET_REFERENCE_MACHINE} ${refTubeMm} mm; the machine reference data has no cut-speed model`,
+            'Cut Time Adjustment Factor': 'Sheet metal variable waterjetCutTimeAdjustmentFactor (acceleration and deceleration)',
+            'Pierce Delay Per Start': `${rate.machineName} — nozzle_delay_s (machine library)`,
+            'Lot Size': 'Batch Size entered on this process cost form',
+          },
+          lookupTableByField: { 'Cutting Speed': 'sm_lookup_waterjet_cut' },
+          seedRefs: waterjetSeedRefs({
+            machineName: rate.machineName!, referenceMachineName: WATERJET_REFERENCE_MACHINE, cutRow: params.row, tableSpeedMmPerMin: params.cuttingSpeedMmPerMin,
+            machineTubeMm: tubeMm!, referenceTubeMm: refTubeMm!, speedFactor: speedFactor!, material: grade || 'material', thicknessMm: thk,
+          }),
+        });
+        const cuttingMin = calc.outputs['Cutting Time'];
+        Object.assign(context, {
+          abrasivePricePerKg, abrasiveKgPerMin: (machineAbrasiveRate.dataFound ? machineAbrasiveRate : abrasiveRate).kgPerMin, nozzleRate,
+          cuttingSecFromCalculator: calc.outputs['Total Time'], ...(cuttingMin != null ? { activeCuttingSecFromCalculator: cuttingMin * 60 } : {}),
+          calculatorId: calc.calculatorId, calculatorVersion: calc.calculatorVersion, physicsGap: calc.gap, confidence: calc.confidence,
+        });
+        trace = calc.trace;
+      } else {
+        const params = cls === 'plasma_cut' ? await this.smLookup.getPlasmaCutParams(rate.machineName, grade, thk) : await this.smLookup.getOxyfuelParams(grade, thk);
+        if (!params.dataFound) return { why: `${coverage.table} has no feed rate and pierce time for ${rate.machineName ?? cls} cutting ${coverage.material} at ${thk} mm` };
+        Object.assign(context, cls === 'plasma_cut' ? { plasmaCutParams: params } : { oxyfuelParams: params });
+      }
+
+      const result: CuttingProcessResult = engine.computeCost(context);
+      const gap = result.processLines.find((l) => l.physicsGap)?.physicsGap;
+      if (gap) return { why: 'reason' in gap ? gap.reason : gap.requiredAction };
+      const lines = result.processLines.map((l) => (trace.length && l.calculatorId && !l.calculationTrace?.length ? { ...l, calculationTrace: trace } : l));
+      // The machine the cut was priced on, selected for this plate: the line carries that selection, as a sheet part's cutting line does.
+      this.attachMachineSelections(lines, { [cls]: rate });
+      // A waterjet's garnet is a cost of the cut that its engine states beside its lines: here it is a line of its own, as its nozzle wear is.
+      if (result.abrasiveCost > 0) {
+        lines.push({
+          process: 'Waterjet Abrasive', setupCost: 0, runCost: result.abrasiveCost, totalCost: result.abrasiveCost, cycleTimeMin: 0, hourlyRate: 0,
+          rateSource: 'consumable_allowance', machineClass: rate.machineClass, machineName: null, commodityCode: null,
+        });
+      }
+      return { lines, machineClass: cls, machineName: rate.machineName ?? null, warnings: [...result.warnings, ...notes] };
+    };
+
+    return Promise.all(cuts.map(async (cut): Promise<PlateCutPrice> => {
+      const tried = await Promise.all(classesOf[cut.process].map((cls) => priceOn(cls, cut)));
+      const cost = (t: { lines: ProcessLineCost[] }) => t.lines.reduce((sum, l) => sum + l.totalCost, 0);
+      const priced = tried.flatMap((t) => ('lines' in t ? [t] : []));
+      const best = priced.reduce<(typeof priced)[number] | null>((cheapest, t) => (cheapest == null || cost(t) < cost(cheapest) ? t : cheapest), null);
+      if (best) return { process: cut.process, lines: best.lines, cost: cost(best), machineClass: best.machineClass, machineName: best.machineName, unavailable: null, warnings: best.warnings };
+      const reasons = [...new Set(tried.flatMap((t) => ('why' in t ? [t.why] : [])))];
+      return { process: cut.process, lines: [], cost: null, machineClass: null, machineName: null, unavailable: reasons.join('; '), warnings: [] };
+    }));
   }
 
   private async buildTurnedRoutes(

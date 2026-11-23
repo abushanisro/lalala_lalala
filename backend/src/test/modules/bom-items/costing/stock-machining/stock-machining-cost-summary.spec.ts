@@ -89,7 +89,7 @@ describe('what cuts the piece off its stock', () => {
 
 describe('the Cost Guide\'s stock settings', () => {
   it('none set: the data\'s rules, the engine\'s 6 in bar end, no scrap credit (enableScrapMaterialCredit false)', () => {
-    expect(stockMachiningSettings({ processGroup: 'Stock Machining' })).toEqual({ form: null, allowanceMm: null, snap: null, remnantMm: null, scrapCredit: null });
+    expect(stockMachiningSettings({ processGroup: 'Stock Machining' })).toEqual({ form: null, allowanceMm: null, snap: null, remnantMm: null, scrapCredit: null, roughingTechnique: null });
     const c = choose();
     expect(c).toMatchObject({ unitSystem: 'US', remnant: { mm: 152.4, source: BAR_END_REMNANT_SOURCE }, scrapCredit: false, notes: [] });
     expect(c.part).toMatchObject({ source: 'measured', lengthMm: 32, roundOdMm: 14 });
@@ -101,7 +101,7 @@ describe('the Cost Guide\'s stock settings', () => {
 
   it('each one replaces its rule: the form, the stock on each side, snapping, the bar end, the scrap credit', () => {
     const c = choose({ stockForm: 'hex_bar', stockAllowanceMm: 1, stockSnap: false, stockRemnantMm: 100, stockScrapCredit: true });
-    expect(c.settings).toEqual({ form: 'hex_bar', allowanceMm: 1, snap: false, remnantMm: 100, scrapCredit: true });
+    expect(c.settings).toEqual({ form: 'hex_bar', allowanceMm: 1, snap: false, remnantMm: 100, scrapCredit: true, roughingTechnique: null });
     expect(c).toMatchObject({ remnant: { mm: 100, source: 'the bar end set in the Cost Guide (mm)' }, scrapCredit: true });
     // Hex bar round the Ø14: 14 + 2 x 1 = 16 across flats, not snapped; the piece 32 + 2 x 1 = 34; floor((6096 - 100) / 34.889) = 171.
     expect(c.selection.saw.chosen).toMatchObject({ form: 'hex_bar', aMm: 16, allowancePerSideMm: 1, endAllowanceMm: 1, snapped: false, blank: { lengthMm: 34 }, stock: { partsPerStock: 171 } });

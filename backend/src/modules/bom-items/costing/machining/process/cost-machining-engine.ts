@@ -1538,6 +1538,20 @@ export function checkLatheCapability(
   };
 }
 
+/**
+ * What milling operations cost on a mill, as its line prices them: the station's "Machining - Milling" calculator on their times (the
+ * rapids and tool-change allowance included), at the machine's rate with its operators' labour. It is what the operations add to the
+ * mill's run cost (the calculator is linear in the operation times). Null when the station's calculator is not on file.
+ */
+export function millingOperationsCost(
+  machiningCalculators: MachiningCostInput['machiningCalculators'], mhrRate: MHRRateInput, machineClass: MachineClassId, ops: NonNullable<MachiningCostInput['featureOps']>,
+): number | null {
+  const run = runMachiningCalculator(machiningCalculators, realProcessName(machineClass), millingSeeds(ops));
+  if (run.sec == null) return null;
+  const minutes = run.sec / 60;
+  return makeLine(realProcessName(machineClass), 0, r2((minutes / 60) * mhrRate.rate), minutes, mhrRate).runCost;
+}
+
 /** Said on a quote whose part has no stock (input.blankResult): the engine prices no material and sizes no stock of its own. */
 export const NO_STOCK_WARNING = 'No stock is chosen for the part: its material is not costed, and nothing is estimated in its place.';
 

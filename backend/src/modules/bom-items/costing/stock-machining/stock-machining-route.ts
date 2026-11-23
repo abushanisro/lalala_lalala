@@ -7,7 +7,8 @@
 // Machining Process adds: only its quote has a Band Saw line (`sawCosted`).
 //
 // A bar-fed lathe takes the whole bar and parts each piece off, so its route has no Band Saw line (the reference's catalog gives Parting
-// to the bar-fed lathes only, and the saw's Stock Trim to every other machine).
+// to the bar-fed lathes only, and the saw's Stock Trim to every other machine). Nor has a plate part under a drop-off roughing technique
+// (stock/plate-roughing.ts): the mill, or a plate cutting process, cuts it out of the plate, and nothing is sawn.
 import { loadStockMachiningCalculatorSpec } from './calculators/stock-machining-calculator-spec';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { fail, routeKit } from '../shared/calculators/route-kit';
@@ -83,7 +84,10 @@ export interface StockMachiningInput {
 }
 
 export interface StockMachiningQuote {
-  /** The Band Saw line (a named gap when no saw can cut the stock); empty when a bar-fed lathe parts the piece off, or the saw is not costed. */
+  /**
+   * The Band Saw line (a named gap when no saw can cut the stock); empty when a bar-fed lathe parts the piece off, the saw is not costed, or
+   * a drop-off technique cuts the part out of the plate.
+   */
   lines: ProcessLineCost[];
   material: {
     /** The stock bought per part at the form's price, less the scrap credit when it is on (USD); null when a figure is missing. */
@@ -158,14 +162,22 @@ export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachini
   const size = kit.run(STOCK_MACHINING_CALC.size, null, sizeSeeds(inp));
   const priceSeed = seed(price ?? 0, `${material.priceSource} (USD/kg)`);
   const densitySeed = seed(density ?? 0, `${material.name}: density (kg/m³)`);
+  // A plate under a drop-off technique is nested by its outline's rectangle, on the technique's own plate and spacing.
+  const dropoff = option.roughing;
+  const milled = dropoff?.technique === 'perimeter_milling_dropoff';
+  const standardPlate = (side: 'Length' | 'Width') => (option.stock.virtual ? 'a plate cut to the blank (it is larger than the standard plate)'
+    : milled ? `the plate a mill takes: standardPlate${side}, within maxPlate${side}ForNestedMilledParts`
+      : `Stock Machining variable standardPlate${side}`);
   const bought = density == null || price == null ? null : isPlate(option)
     ? kit.run(STOCK_MACHINING_CALC.plate, null, {
-      blank_length_mm: seed(option.blank.lengthMm, "the part's length plus the stock on each end (mm)"),
-      blank_width_mm: seed(option.blank.widthMm ?? 0, "the part's width plus the stock on each side (mm)"),
+      blank_length_mm: seed(option.blank.lengthMm, dropoff ? `the rectangle round the ${milled ? "part's outline" : 'cut blank'}, its length (mm): what is nested` : "the part's length plus the stock on each end (mm)"),
+      blank_width_mm: seed(option.blank.widthMm ?? 0, dropoff ? `the rectangle round the ${milled ? "part's outline" : 'cut blank'}, its width (mm): what is nested` : "the part's width plus the stock on each side (mm)"),
       thickness_mm: seed(option.blank.thicknessMm ?? 0, option.snapped ? `the plate: ${option.sizeLabel}` : "the part's height plus the stock on each face (mm)"),
-      plate_length_mm: seed(option.stock.lengthMm, option.stock.virtual ? 'a plate cut to the blank (it is larger than the standard plate)' : 'Stock Machining variable standardPlateLength'),
-      plate_width_mm: seed(option.stock.widthMm ?? 0, option.stock.virtual ? 'a plate cut to the blank (it is larger than the standard plate)' : 'Stock Machining variable standardPlateWidth'),
-      parts_per_plate: seed(option.stock.partsPerStock, `the blanks of the grid, a ${stock.kerfMm} mm kerf apart (bandSawKerf)`),
+      plate_length_mm: seed(option.stock.lengthMm, standardPlate('Length')),
+      plate_width_mm: seed(option.stock.widthMm ?? 0, standardPlate('Width')),
+      parts_per_plate: seed(option.stock.partsPerStock, !dropoff ? `the blanks of the grid, a ${stock.kerfMm} mm kerf apart (bandSawKerf)`
+        : milled ? `the outlines' rectangles in a grid, the ${dropoff.nest.gapMm} mm cutter's width between two parts and to the plate's edge`
+          : `the cut blanks' rectangles in a grid, ${dropoff.nest.gapMm} mm apart (tblPartSpacing, ${dropoff.process})`),
       density_kg_m3: densitySeed, price_per_kg: priceSeed,
     })
     : kit.run(STOCK_MACHINING_CALC.bar, null, {
@@ -199,7 +211,7 @@ export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachini
   // ── The band saw ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   const lines: ProcessLineCost[] = [];
   let saw: StockMachiningQuote['saw'] = null;
-  if (inp.sawCosted && inp.cutOff === 'saw') {
+  if (inp.sawCosted && inp.cutOff === 'saw' && !dropoff) {
     const sawStock = sawStockOf(option);
     const plans = new Map<string, { bundle: SawBundle; rate: number; family: string; unloadS: number }>();
     const step = kit.step('Band Saw', (m: SandMachine) => {

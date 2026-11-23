@@ -475,6 +475,12 @@ export interface ProcessLineCost {
   // "not linked to a machine" even when a real, priced resource was used.
   mhrId?: string | null;
   benchmarkMhrId?: string | null;
+  /**
+   * Set on a line the part's stock puts before its first machine under another process group than Stock Machining: the cutting of a plate
+   * part out of its plate by a Sheet Metal cutting process (Plate Cutting with Drop-off, costing/stock/plate-roughing.ts). Such a line is
+   * a step of the stock, like the Band Saw: it makes none of the part's features, and the part's first machine is the one after it.
+   */
+  stockStep?: boolean;
   // eMithran-style per-feature operation breakdown. Present on CNC Milling (per hole/pocket/tap),
   // Laser Cutting (cut path + pierces), and Press Brake (per bend group). Absent on Setup/Deburr/Inspect.
   featureBreakdown?: FeatureOp[];
@@ -1157,14 +1163,51 @@ export interface StockMachiningBreakdown {
   fallback: string | null;
   /** Every form: its stock with what it costs a part (the stock bought, and its sawing when the saw is costed), or why it is not offered. */
   options: { form: string; sizeLabel: string | null; unavailable: string | null; materialCost: number | null; sawCost: number | null; chosen: boolean }[];
+  /**
+   * How a part cut from PLATE is separated from the plate and roughed out (costing/stock/plate-roughing.ts): the technique the quote
+   * prices and every other beside it. Present only for plate stock on a mill's route: bar stock has one technique, and no choice.
+   */
+  roughing?: {
+    /** The quoted technique (all_bulk_milling, perimeter_milling_dropoff, plate_cutting_dropoff) and its name. */
+    technique: string;
+    label: string;
+    /** Whether the Cost Guide set it (scenario key stockRoughingTechnique), or it is the data's defaultRoughingTechnique. */
+    source: 'cost_guide' | 'default';
+    defaultTechnique: string;
+    /** Why the technique asked for is not the quoted one, when it is not. */
+    fallback: string | null;
+    /** Every technique: what it costs a part, or why it cannot be used. */
+    options: {
+      technique: string;
+      label: string;
+      chosen: boolean;
+      unavailable: string | null;
+      /** The parts one plate makes by the technique's nest, and the plate bought per part. */
+      partsPerPlate: number | null;
+      materialCost: number | null;
+      /**
+       * What separates the part from the plate: the Band Saw, the mill's Perimeter Milling, or a plate cutting process. Its machine and
+       * that machine's HR Rates class (the mill's own cut names none: it runs on the mill that makes the part), its time per part (s)
+       * and what it costs a part; `cost` is null where it is not costed (a saw the part's Process does not cost).
+       */
+      separation: { process: string; machineClass: string | null; machineName: string | null; cost: number | null; timeSec: number | null } | null;
+      /** What is left round the part for the mill to remove in bulk (mm³): the technique's piece less the part and what its features remove. */
+      bulkVolumeMm3: number | null;
+      /** Plate Cutting with Drop-off: every cutting process with its own nest, the plate and the cut it costs a part, or why it is not priced. */
+      processes: {
+        process: string; chosen: boolean; unavailable: string | null; machineClass: string | null; machineName: string | null; partsPerPlate: number | null;
+        materialCost: number | null; cutCost: number | null;
+      }[];
+    }[];
+  };
   /** The saw that cuts the piece: its bundle (the bars cut at once, and what set it), the cutting rate and the cycle's parts. */
   saw: {
     machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
     cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
   } | null;
   /**
-   * Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing (any but Stock Machining), or what keeps
-   * the saw from being costed. Null with a saw.
+   * Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing (any but Stock Machining), a drop-off
+   * roughing technique cuts the part out of the plate, or what keeps the saw from being costed. Null with a saw.
    */
   sawMissing: string | null;
   /** The chips sold back: whether the credit is on (enableScrapMaterialCredit, or the Cost Guide's), the material's Scrap Cost Percent, and the credit taken per part. */

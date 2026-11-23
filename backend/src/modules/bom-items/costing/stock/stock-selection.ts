@@ -8,8 +8,10 @@
 // - a bar makes floor((bar length - bar end) / (piece + cut width)) parts, and each part carries its share of the whole bar;
 // - plate blanks are cut in a grid on the standard plate, a kerf apart, in the better of the two orientations;
 // - Auto follows the part's shape (autoStockForm); every other form that holds the part is offered beside it.
+import { gridNest } from './plate-nest';
 import { allowancePerSideMm, barSectionAreaMm2, circumscribedDiameterMm, partingWidthMm, snapUp, type PreferredSize, type UnitSystem } from './stock-sizing';
 
+import type { DropoffStock } from './plate-roughing';
 import type { StockReference } from './stock-reference';
 
 /** The forms the reference prices stock in (memory/Stock Maching materials), plus billet: a block cut to the part's own size from plate. */
@@ -79,6 +81,11 @@ export interface StockOption {
   saw: { cutAreaMm2: number; widthMm: number; heightMm: number };
   /** What else the quote says of this stock (a virtual plate, an override). */
   notes: string[];
+  /**
+   * Set on a plate option a drop-off roughing technique has replaced the sawn blank of (plate-roughing.ts roughedOption): the piece, the
+   * plate's yield and the stock bought are then the technique's. Absent for All Bulk Milling, and for every bar.
+   */
+  roughing?: DropoffStock;
 }
 export interface StockUnavailable { form: StockForm; unavailable: string }
 export type StockOptionResult = StockOption | StockUnavailable;
@@ -155,14 +162,18 @@ function fromBar(
   };
 }
 
+/** Said of a blank the standard plate cannot hold. */
+export function virtualPlateNote(blank: { lengthMm: number; widthMm: number }, ref: StockReference): string {
+  return `The ${r3(blank.lengthMm)} x ${r3(blank.widthMm)} mm blank is larger than the standard ${ref.plate.lengthMm} x ${ref.plate.widthMm} mm plate: priced as a plate cut to the blank.`;
+}
+
 /**
  * Blanks of a plate, a kerf apart, in the better of the two orientations on the standard plate; a blank the standard plate cannot hold is cut
  * from a plate of its own size (the variables' note: the standard sizes are those of a virtual stock).
  */
 function fromPlate(part: StockPart, ref: StockReference, blank: { lengthMm: number; widthMm: number; thicknessMm: number }): Pick<StockOption, 'blank' | 'cutWidthMm' | 'stock' | 'purchasedVolumeMm3' | 'utilizationPct' | 'saw' | 'notes'> {
   const k = ref.kerfMm;
-  const count = (l: number, w: number) => Math.floor((ref.plate.lengthMm + k + 1e-9) / (l + k)) * Math.floor((ref.plate.widthMm + k + 1e-9) / (w + k));
-  const nested = Math.max(count(blank.lengthMm, blank.widthMm), count(blank.widthMm, blank.lengthMm));
+  const nested = gridNest(ref.plate, blank, k, 0).partsPerPlate;
   const virtual = nested < 1;
   const stock = virtual
     ? { lengthMm: blank.lengthMm, widthMm: blank.widthMm, partsPerStock: 1, virtual }
@@ -177,9 +188,7 @@ function fromPlate(part: StockPart, ref: StockReference, blank: { lengthMm: numb
     // The saw frees a blank along two of its edges (its neighbours' cuts free the other two), through the plate's thickness; it crosses the
     // plate's width, which is what the vise must take and the width its cutting rate is read at.
     saw: { cutAreaMm2: blank.thicknessMm * (blank.lengthMm + blank.widthMm), widthMm: Math.min(stock.lengthMm, stock.widthMm), heightMm: blank.thicknessMm },
-    notes: virtual
-      ? [`The ${r3(blank.lengthMm)} x ${r3(blank.widthMm)} mm blank is larger than the standard ${ref.plate.lengthMm} x ${ref.plate.widthMm} mm plate: priced as a plate cut to the blank.`]
-      : [],
+    notes: virtual ? [virtualPlateNote(blank, ref)] : [],
   };
 }
 
