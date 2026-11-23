@@ -22,7 +22,7 @@ services:
 
   # Started by `local:load` once the database holds the schema and the `authenticator` role exists.
   postgrest:
-    image: postgrest/postgrest@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc
+    image: postgrest/postgrest@sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7
     profiles: [api]
     restart: unless-stopped
     # PostgREST is the container's PID 1, which ignores the stop signal: Docker had to kill it, and when Docker itself shut down first (the
