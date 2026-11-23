@@ -6,7 +6,7 @@ import type { RateSnapshot } from '../../../common/exchange-rate/exchange-rate.s
 import { resolveUtsMpa, isSheetFormableMaterial } from '../costing/shared/core/default-rates.constants';
 import { rawMaterialPricePerKg } from '../costing/shared/core/material-location-price';
 import { ASSEMBLY_FAMILY, CAD_FAMILY_TO_PROCESS_GROUP, costedProcessGroups, familiesOfProcessGroup } from '../costing/shared/core/part-family-process-group';
-import { isMaterialNamed, ownMaterialGroup, pricedGradeFor, type PricedGrade, type ProcessMaterial } from '../costing/shared/core/process-materials';
+import { isMaterialNamed, ownMaterialGroup, pricedGradeFor, type OwnMaterial, type PricedGrade, type ProcessMaterial } from '../costing/shared/core/process-materials';
 import { isPlasticGrade } from '../costing/plastic-molding/process/process-tree';
 import { isDiscouragedShapeForFamily } from '../../raw-materials/constants/material-shape-ranking';
 import type { BOMItemResponseDto } from '../dto/bom-item-response.dto';
@@ -82,15 +82,25 @@ interface MaterialMatch {
   note: string | null;
   /** Set when the query was too under-specified to pick a grade; replaces the "not found" wording. */
   ambiguityNote: string | null;
+  /** The rows the query fits equally well when it is ambiguous (none is priced); empty otherwise. */
+  ambiguous?: MatchedMaterialRow[];
 }
 
-/** A row of a process's material group, as gradeForProcess reads it. */
+/** A row of a process's material group, as gradeForProcess reads it: with what the molding engine judges a material by (enginePrices). */
 interface MaterialGroupRow {
   name: string | null;
   grade: string | null;
   material_type: string | null;
   density_kg_m3: number | string | null;
   density: number | string | null;
+  stock_form: string | null;
+  matl_state: string | null;
+  melting_temp_c: number | string | null;
+  mold_temp_c: number | string | null;
+  cure_time_min?: number | string | null;
+  im_injection_pressure_max_mpa?: number | string | null;
+  im_flow_length_ratio?: number | string | null;
+  im_density_of_melt_kg_m3?: number | string | null;
 }
 
 /** The family of a part whose chosen Process has no cost model: no engine prices it. */
@@ -513,6 +523,7 @@ export class MaterialResolutionService {
           `Material "${g}" is ambiguous — it matches ${pick.ambiguous.length} equally specific grades with different densities ` +
           `(${pick.ambiguous.slice(0, 4).map(fmt).join(', ')}${pick.ambiguous.length > 4 ? ', …' : ''}). ` +
           `Select a specific grade; no weight or cost is assumed.`,
+        ambiguous: pick.ambiguous.map((r) => r.row),
       };
     }
     const best = pick.best ?? ranked[0];
@@ -535,28 +546,42 @@ export class MaterialResolutionService {
 
   /**
    * The grade `family`'s engine prices for the part's `grade` (process-materials.ts): the grade itself, or, when the process prices only its
-   * own materials and the grade is not one of them, the process's closest own material with a note saying so. The grade's own row is read
-   * with the same ranked search the quote resolves materials with. `processGroup`: the part's Process, for a group costed as another's family
+   * own materials and the grade is not one of them, the closest of its materials its engine can price, with a note saying so. The grade's
+   * own row is read with the same ranked search the quote resolves materials with. `processGroup`: the part's Process, for a group costed as another's family
    * that prices from materials of its own (Rapid Prototyping).
    */
   async gradeForProcess(accessToken: string, grade: string, family: string, processGroup?: string | null): Promise<PricedGrade> {
     const group = ownMaterialGroup(family, processGroup);
     if (!group) return { grade, note: null };
     const client = this.databaseService.getClient(accessToken);
-    const { data, error } = await client.from('raw_materials').select('name, grade, material_type, density_kg_m3, density').eq('material_group', group).order('name');
+    // The columns the molding engine judges a material by, so that a stand-in is one the engine can price (process-materials.ts enginePrices).
+    const cureTime = (await this.checkMaterialCureTimeColumnAvailable(client)) ? ', cure_time_min' : '';
+    const injection = (await this.checkMaterialImColumnsAvailable(client)) ? ', im_injection_pressure_max_mpa, im_flow_length_ratio, im_density_of_melt_kg_m3' : '';
+    const selectCols = `name, grade, material_type, density_kg_m3, density, stock_form, matl_state, melting_temp_c, mold_temp_c${cureTime}${injection}`;
+    const { data, error } = await client.from('raw_materials').select(selectCols).eq('material_group', group).order('name');
     if (error) throw new Error(`Failed to read the ${group} materials: ${error.message}`);
-    const rows = data as MaterialGroupRow[];
+    // Cast via unknown: the column list is dynamic, which the client's select() parser cannot type.
+    const rows = data as unknown as MaterialGroupRow[];
+    const num = (v: number | string | null | undefined) => (v == null ? null : Number(v));
     const materials: ProcessMaterial[] = rows.map((r) => ({
       name: r.name ?? r.grade ?? '',
       grade: r.grade,
       materialType: r.material_type,
       densityKgM3: r.density_kg_m3 != null ? Number(r.density_kg_m3) : r.density != null ? Number(r.density) * 1000 : null,
+      molding: {
+        stockForm: r.stock_form, matlState: r.matl_state,
+        injectionPressureMaxMpa: num(r.im_injection_pressure_max_mpa), flowLengthRatio: num(r.im_flow_length_ratio),
+        meltingTempC: num(r.melting_temp_c), moldTempC: num(r.mold_temp_c), densityOfMeltKgM3: num(r.im_density_of_melt_kg_m3),
+        cureTimeMin: num(r.cure_time_min),
+      },
     }));
     if (materials.some((m) => isMaterialNamed(m, grade))) return { grade, note: null };
-    const { row } = await this.matchBestRawMaterialRow(client, grade.trim(), family, 'cost');
-    const own = row
-      ? { name: row.materialGrade, grade: row.material, materialGroup: row.materialGroup, materialType: row.materialType, densityKgM3: row.densityKgM3 }
-      : null;
+    // What the search found the grade to be: its row, or the rows it fits equally well when it cannot tell them apart (the general lookup
+    // prices none of those; the stand-in can still be chosen by what they share), or nothing.
+    const match = await this.matchBestRawMaterialRow(client, grade.trim(), family, 'cost');
+    const own: OwnMaterial[] = (match.row ? [match.row] : match.ambiguous ?? []).map((row) => ({
+      name: row.materialGrade, grade: row.material, materialGroup: row.materialGroup, materialType: row.materialType, densityKgM3: row.densityKgM3,
+    }));
     // Named as the Process whose own materials these are (Rapid Prototyping), else as the family's process group.
     const processLabel = processGroup && group !== ownMaterialGroup(family, null) ? processGroup : CAD_FAMILY_TO_PROCESS_GROUP[family] ?? group;
     return pricedGradeFor({ family, processGroup, processLabel, grade, own, materials });

@@ -98,7 +98,7 @@ export function stockPriceOfForm(
  * The price of a material the location's stock prices do not hold, in a location whose prices are a partial copy of the reference's
  * (India holds 71 to 90 materials per form of the USA's 105): the price of its closest material that the location prices in the same
  * form, named. Closest is the established rule (process-materials.ts closestProcessMaterial: the same material type, then the nearest
- * density, then the name); a material that can be placed by name only is too far to borrow from, and has no stock price. This is the
+ * density); a material with no type or density to compare is too far to borrow from, and has no stock price. This is the
  * plan's rule for India stock (user decision 2026-11-22). Without it such a material fell back to its raw_materials row, whose India
  * price is held in USD and was read as rupees: Aluminum ANSI 2024 round bar in India cost 2.99 INR/kg, 0.03 USD.
  *
@@ -121,11 +121,11 @@ export function closestStockPrice(
     materialType: properties.get(r.raw_material_name!.toLowerCase())?.materialType ?? null,
     densityKgM3: properties.get(r.raw_material_name!.toLowerCase())?.densityKgM3 ?? null,
   }));
-  const closest = closestProcessMaterial(own, materials);
-  if (!closest || closest.by === 'name') return null;
+  const closest = closestProcessMaterial([own], materials);
+  if (!closest || closest.by === 'unplaced') return null;
   const price = stockPriceOfForm(priced, closest.material.name, form, location);
   if (!price) return null;
   const by = closest.by === 'material type' ? `the same material type, ${closest.material.materialType}`
-    : closest.by === 'grade' ? 'the same grade' : 'the nearest density';
+    : closest.by === 'grade' ? 'the same grade' : closest.by === 'variant' ? `a variant of "${own.name ?? own.grade ?? ''}"` : 'the nearest density';
   return { ...price, borrowed: { from: closest.material.name, by } };
 }
