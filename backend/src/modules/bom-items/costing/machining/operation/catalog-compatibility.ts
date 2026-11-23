@@ -28,7 +28,7 @@ function performs(catalog: ReadonlySet<string>, compound: readonly string[], pro
 
 /**
  * One sentence for a machine the catalog rules out: each operation it lacks, with how many of the part's features need it.
- * "2 Axis Lathe cannot make this part: the machining catalog gives it no Rounding (52 × Edge), Rough Milling (5 × PocketV2, 1 × Keyway)."
+ * "2 Axis Lathe cannot make this part: the machining catalog gives it no Rounding (52 × Edge), Rough Milling (5 × PocketV2), Obround Slot Milling (1 × Keyway)."
  */
 export function catalogGapSummary(process: string, features: readonly unknown[] | null | undefined, incompatibilities: RouteCompatibility['incompatibilities']): string {
   const operationOf = new Map(((features ?? []) as CatalogFeature[]).filter((f) => f.id && f.canonical_operation?.includes('//'))

@@ -16,7 +16,7 @@ interface ToleranceReference {
 /**
  * The three staged tables tolerance decisions read:
  *   tblGtolProcessCapabilities     memory/Machining/lookup (migration 747)
- *   operation_capability_process   memory/Machining/lookup (migration 882)
+ *   operation_capability_process   memory/Machining/lookup (migration 882; 1120 adds Obround Slot Milling)
  *   iso286_standard_tolerances     memory/Standards/lookup (migration 880)
  * Cached per process; a read error or a missing table is not cached.
  */
