@@ -305,6 +305,28 @@ def point_to_axis_distance(
     return math.sqrt(cx * cx + cy * cy + cz * cz)
 
 
+def line_to_axis_distance(
+    point: Tuple[float, float, float],
+    direction: Tuple[float, float, float],
+    axis_unit: Tuple[float, float, float],
+) -> float:
+    """
+    Distance between two lines: one through `point` along the unit vector `direction`, the other
+    through the origin along axis_unit. 0 when they meet. Two parallel lines are as far apart as
+    any point of one is from the other.
+    """
+    dx, dy, dz = direction
+    ax, ay, az = axis_unit
+    # The direction square to both lines: the lines are closest along it.
+    nx = dy * az - dz * ay
+    ny = dz * ax - dx * az
+    nz = dx * ay - dy * ax
+    n = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if n < 1e-9:
+        return point_to_axis_distance(point, axis_unit)
+    return abs(point[0] * nx + point[1] * ny + point[2] * nz) / n
+
+
 def angle_around_axis(
     point: Tuple[float, float, float],
     axis_unit: Tuple[float, float, float],
@@ -498,8 +520,10 @@ def collect_cylinders(
             cx, cy, cz = loc.X(), loc.Y(), loc.Z()
             position = cx * ax + cy * ay + cz * az
 
-            # Distance from centroid to main axis (arbitrary orientation)
-            dist_from_axis = point_to_axis_distance((cx - ox, cy - oy, cz - oz), (ax, ay, az))
+            # Distance from the main axis. A cylinder that runs along the axis is as far from it as any
+            # point of its own axis is; a cross hole's is measured below, between the two lines.
+            from_axis = (cx - ox, cy - oy, cz - oz)
+            dist_from_axis = point_to_axis_distance(from_axis, (ax, ay, az))
 
             # Approximate length from face bounding box
             fbox = Bnd_Box()
@@ -518,7 +542,7 @@ def collect_cylinders(
             axial_range = (min(projections), max(projections))
 
             # Angular position of centroid around main axis (for PCD grouping)
-            angle_deg = angle_around_axis((cx - ox, cy - oy, cz - oz), (ax, ay, az))
+            angle_deg = angle_around_axis(from_axis, (ax, ay, az))
 
             if alignment >= 0.85:
                 # Axially aligned cylinder
@@ -539,6 +563,16 @@ def collect_cylinders(
                     kind = "offset_profile"
             else:
                 kind = "cross_hole"
+                # The stored origin of a cross hole is an arbitrary point of its own axis, so nothing about the
+                # hole is read from it (a hole drilled through the main axis was as far from it as that point
+                # happened to lie). Its distance is the one between the two lines, 0 when they meet. Its angle
+                # round the main axis is that of the middle of its wall; a hole the main axis runs through lies
+                # on both sides of it and has none.
+                dist_from_axis = line_to_axis_distance(from_axis, (fx, fy, fz), (ax, ay, az))
+                along = (axial_range[0] + axial_range[1]) / 2 - (cx * fx + cy * fy + cz * fz)
+                middle = (from_axis[0] + along * fx, from_axis[1] + along * fy, from_axis[2] + along * fz)
+                on_one_side = point_to_axis_distance(middle, (ax, ay, az)) > radius
+                angle_deg = angle_around_axis(middle, (ax, ay, az)) if on_one_side else 0.0
 
             # Arc extent in the U (angular) direction — 2π = full cylinder.
             # Used by _deduplicate_cylinders to distinguish arc patches of

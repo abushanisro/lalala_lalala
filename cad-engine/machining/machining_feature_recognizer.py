@@ -460,6 +460,7 @@ class MachiningFeatureRecognizer:
                     type="SimpleHole",
                     variant="pcd_pattern",
                     params={
+                        # The circle the holes' axes touch: 0 for radial holes, whose axes meet on the turning axis.
                         "pcd_mm": round(sample.params["distance_from_axis_mm"] * 2.0, 3),
                         "hole_count": len(group),
                         "hole_diameter_mm": sample.params["diameter_mm"],
