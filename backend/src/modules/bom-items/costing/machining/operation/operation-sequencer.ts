@@ -519,6 +519,21 @@ export function buildOperationSequence(
         }
         break;
 
+      case "Flat:default":
+        // A flat milled on a turned diameter (cad-engine _classify_turned_flat): the catalog's "Rough Milling//Flat", timed by the
+        // stored Rough Milling calculator on the volume the flat cuts off its round (the circular segment over its length, the CAD
+        // material_removed_mm3), at the material's removal rate: a flat is cut in open material, as a pocket is roughed. The calculator
+        // takes the last share of that volume at the finishing rate; the reference stores no calculator of the catalog's "Surface
+        // Finishing//Flat", so no second pass is added. A flat with no removed volume on file is a named gap, never free.
+        ops.push({
+          name: "Rough Milling",
+          ...(totalRemovedMm3 > 0
+            ? volumeOp('Rough Milling', totalRemovedMm3)
+            : { timeSec: 0, missing: `the CAD volume ${count > 1 ? `${count} flats remove` : 'the flat removes'}` }),
+          source: "feature", cadFeatureType: ft,
+        });
+        break;
+
       case "SimpleHole:through":
       case "SimpleHole:blind":
       case "SimpleHole:cross":

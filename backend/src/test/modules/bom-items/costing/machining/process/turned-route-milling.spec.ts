@@ -223,6 +223,47 @@ describe('a slot on a turned part: roughed, then finished, each a line of the la
   });
 });
 
+describe('flats on a turned part: roughed on the lathe, as a line of the lathe', () => {
+  // Two wrench flats, as the CAD engine stores them: each the circular segment it cuts off its round over its length, 290.12 mm^3.
+  // Rough: 580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000 = 0.0125719 min = 0.7543 s; at 0.25 per second = 0.1886 -> 0.19.
+  const FLATS = {
+    id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default',
+    occurrences: [4, 8].map((face) => ({ face_ids: [face], material_removed_mm3: 290.12, depth_mm: 2, length_mm: 20, width_mm: 10.583, diameter_mm: 16 })),
+  };
+  const FLATS_SEC = (580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000) * 60;
+  const without = cost(shaft());
+  const result = cost(shaft({ latheMilling: millingOf([FLATS]) }));
+  const rough = lineOf(result.processLines, 'Rough Milling')!;
+
+  it('is a Rough Milling line on the lathe, after the turning and before the cut-off', () => {
+    expect(latheLines(result.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Rough Milling', 'Parting']);
+    expect(rough).toMatchObject({ machineClass: LATHE, machineName: 'M', hourlyRate: 900, setupCost: 0 });
+  });
+
+  it('is timed by the Rough Milling calculator on the volume the flats cut off, and adds exactly its own cost to the route', () => {
+    expect(sec(rough)).toBeCloseTo(FLATS_SEC, 2);
+    expect(rough.calculatorId).toBe('Machining - Rough Milling');
+    expect(calculatorInputSteps(rough.calculationTrace!).find((s) => s.fieldName === 'Removed Volume')).toMatchObject({ value: 580.24 });
+    expect(rough.runCost).toBe(0.19);
+    expect(lineDataGap(rough)).toBeNull();
+    expect(result.totalProcessCost).toBe(Math.round((without.totalProcessCost + 0.19) * 100) / 100);
+    expect(result.processLines.filter((l) => l.process !== 'Rough Milling')).toEqual(without.processLines);
+  });
+
+  it('names the flats as its row, so the Process tree lists them under the line and lights their faces', () => {
+    expect(rough.featureBreakdown).toEqual([
+      { name: 'Rough Milling // Flat ×2', timeSec: expect.closeTo(FLATS_SEC, 4), featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] },
+    ]);
+  });
+
+  it('a flat with no removed volume on file is the line\'s named gap, never a free flat', () => {
+    const unmeasured = { ...FLATS, occurrences: [{ ...FLATS.occurrences[0], material_removed_mm3: 0 }] };
+    const line = lineOf(cost(shaft({ latheMilling: millingOf([unmeasured]) })).processLines, 'Rough Milling')!;
+    expect(line.totalCost).toBe(0);
+    expect(lineDataGap(line)?.reason).toContain('the CAD volume the flat removes');
+  });
+});
+
 describe('an operation the sequencer could not time is a named gap on its line, never a silent zero', () => {
   // No milling removal rate on file for the material: the slot's Rough Milling cannot be timed. The keyway and Slot Milling need none.
   const result = cost(shaft({ latheMilling: millingOf([KEYWAY, SLOT], null) }));

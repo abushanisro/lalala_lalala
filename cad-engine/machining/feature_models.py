@@ -39,6 +39,7 @@ MachiningFeatureType = Literal[
     "CurvedWall",
     "CurvedSurface",
     "AxiGroove",
+    "Flat",
 ]
 
 # Geometric sub-classification per type. Each value is a real geometric fact
@@ -72,6 +73,10 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     "CurvedSurface": frozenset({"default"}),
     # Teeth repeated around a turned part's axis (gear / spline): see axigroove.py.
     "AxiGroove": frozenset({"default"}),
+    # A flat milled on a turned diameter (a wrench flat, a D flat, a tang): the
+    # catalog's Flat ("Rough Milling//Flat", "Surface Finishing//Flat"), which
+    # has no variants of its own.
+    "Flat": frozenset({"default"}),
 }
 
 for _t in VARIANTS:

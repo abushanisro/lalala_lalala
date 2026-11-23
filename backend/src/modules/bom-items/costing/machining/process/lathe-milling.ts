@@ -1,9 +1,9 @@
-// The milling a lathe does with a live tool: the part's keyways that are not broached, and its slots. Pure.
+// The milling a lathe does with a live tool: the part's keyways that are not broached, its slots and its flats. Pure.
 //
-// The turning engine turns the part's diameters, drills its holes and taps its threads. A keyway or a slot it can only mill, with a driven
-// tool (capability/live-tooling.ts: which features, and which lathes have the tool). The operations and their times are the operation
+// The turning engine turns the part's diameters, drills its holes and taps its threads. A keyway, a slot or a flat it can only mill, with a
+// driven tool (capability/live-tooling.ts: which features, and which lathes have the tool). The operations and their times are the operation
 // sequencer's (operation-sequencer.ts), the ones a mill is priced on: "Obround Slot Milling" of a keyway, "Rough Milling" of the volume a
-// slot removes and "Slot Milling" of each slot, each timed by its own stored calculator from the feature's CAD measurements. On a lathe
+// slot or a flat removes and "Slot Milling" of each slot, each timed by its own stored calculator from the feature's CAD measurements. On a lathe
 // each operation name is one line: its sequenced operations summed, each one a row of the line naming the features it mills, for the
 // Process tree to list and light.
 import { sumRuns } from './machining-trace';
@@ -16,7 +16,7 @@ import type { OperationLine } from '../operation/operation-sequencer';
 /** A sequenced operation on a feature a lathe mills. */
 export type LatheMillingOp = OperationLine & { cadFeatureType: LatheMilledFeatureType };
 
-/** Of the part's sequenced operations, those a lathe mills: the operations on its Keyway and Slot features. */
+/** Of the part's sequenced operations, those a lathe mills: the operations on its Keyway, Slot and Flat features. */
 export function latheMillingOps(ops: readonly OperationLine[]): LatheMillingOp[] {
   return ops.filter((o): o is LatheMillingOp => isLatheMilledFeatureType(o.cadFeatureType));
 }

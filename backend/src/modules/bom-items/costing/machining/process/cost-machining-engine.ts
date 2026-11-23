@@ -1558,7 +1558,7 @@ export interface LatheCapabilityResult extends MachiningCapabilityResult {
 
 /**
  * Whether a lathe can make the part: the part within the machine's envelope (checkMachiningCapability) and, when the part needs a live
- * tool (cross and off-axis holes, milled keyways and slots: live-tooling.ts), the machine having one. ONE definition for the cost summary
+ * tool (cross and off-axis holes, milled keyways, slots and flats: live-tooling.ts), the machine having one. ONE definition for the cost summary
  * and the route comparison, so the route the Cost tab quotes is one the comparison calls capable.
  */
 export function checkLatheCapability(
@@ -2184,10 +2184,11 @@ export function computeTurningCostSummary(
   }
 
   // ── Live-tool milling ─────────────────────────────────────────────────────
-  // The part's keyways that are not broached, and its slots: each sequenced
-  // operation ("Obround Slot Milling" of a keyway; "Rough Milling" and "Slot
-  // Milling" of a slot) is a line of the lathe, timed by that operation's own
-  // calculator, with the features it mills as its rows (lathe-milling.ts).
+  // The part's keyways that are not broached, its slots and its flats: each
+  // sequenced operation ("Obround Slot Milling" of a keyway; "Rough Milling"
+  // and "Slot Milling" of a slot; "Rough Milling" of a flat) is a line of the
+  // lathe, timed by that operation's own calculator, with the features it
+  // mills as its rows (lathe-milling.ts).
   // Whether this lathe has the live tool for them is the route's capability
   // (checkLatheCapability), not a cost. An operation the sequencer could not
   // time is a named gap on its line.

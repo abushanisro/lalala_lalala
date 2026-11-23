@@ -207,6 +207,32 @@ describe('latheMillingLines: one lathe line per operation', () => {
     expect(milling([noVolume]).map((l) => [l.operation, l.run.sec])).toEqual([['Slot Milling', 40]]);
   });
 
+  it('flats: their volume roughed on the Rough Milling line, one row for the group, beside the slots\' roughing', () => {
+    // Two wrench flats, 290.12 mm^3 each (the circular segment each cuts off its Ø16 over 20 mm): 580.24 * 0.8 / 60000 + 580.24 * 0.2 /
+    // 24000 = 0.0125719 min = 0.75431 s.
+    const FLATS = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [{ material_removed_mm3: 290.12, depth_mm: 2 }, { material_removed_mm3: 290.12, depth_mm: 2 }] };
+    const flatSec = (580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000) * 60;
+    const [line, ...rest] = milling([...TURNED_AND_DRILLED, FLATS]);
+    expect(rest).toEqual([]);
+    expect(line.operation).toBe('Rough Milling');
+    expect(line.run.sec).toBeCloseTo(flatSec, 6);
+    expect(line.run.calculatorId).toBe('Machining - Rough Milling');
+    expect(line.rows).toEqual([{ name: 'Rough Milling // Flat ×2', timeSec: expect.closeTo(flatSec, 6), featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] }]);
+    // With slots the two features share the line, each its own row; the Slot Milling line is the slots' alone.
+    const [rough, slot] = milling([SLOTS, FLATS]);
+    expect(rough.run.sec).toBeCloseTo(0.39 + flatSec, 6);
+    expect(rough.rows.map((r) => [r.name, r.featureType])).toEqual([['Rough Milling // Slot ×2', 'Slot'], ['Rough Milling // Flat ×2', 'Flat']]);
+    expect(slot).toEqual(milling([SLOTS])[1]);
+  });
+
+  it('a flat with no removed volume on file is a line with no time that names it', () => {
+    const [line] = milling([{ id: 'Flat-default_c1', feature_type: 'Flat', variant: 'default', occurrences: [{ material_removed_mm3: 0 }] }]);
+    expect(line.operation).toBe('Rough Milling');
+    expect(line.run.sec).toBeNull();
+    expect(line.run.missing).toEqual(['the CAD volume the flat removes']);
+    expect(line.rows).toEqual([]);
+  });
+
   it('none: a part with no keyway or slot has no milling line', () => {
     expect(milling(TURNED_AND_DRILLED)).toEqual([]);
     expect(latheMillingLines(undefined)).toEqual([]);

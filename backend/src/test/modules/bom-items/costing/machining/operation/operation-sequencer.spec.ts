@@ -698,3 +698,42 @@ describe('finishing is a tool path at the cutter feed (tblMillingFinishing), not
     expect(finish.missing).toContain('Cutting Speed');
   });
 });
+
+describe('a flat milled on a turned diameter: Rough Milling // Flat', () => {
+  // Two wrench flats 6 from the axis on a Ø16, 20 long, as the CAD engine's analysis of that shaft stores them: each cuts the circular
+  // segment 64 acos(0.75) - 6 sqrt(28) = 14.506 mm^2 off the round over its 20 mm, 290.12 mm^3.
+  const flat = (faces: number[]) => ({
+    face_ids: faces, material_removed_mm3: 290.12, depth_mm: 2, length_mm: 20, width_mm: 10.583, diameter_mm: 16, area_mm2: 211.66, walled_fraction: 0.346,
+  });
+  const FLATS = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [flat([4, 5, 6]), flat([8, 9, 10])] };
+  const flatOps = (features: unknown[], ...rest: unknown[]) =>
+    (buildOperationSequence as (...a: unknown[]) => OperationLine[])(features, 'aluminum', ...rest).filter((o) => o.cadFeatureType === 'Flat');
+
+  it('is one Rough Milling operation for the group, counted per flat, on the flats\' feature id', () => {
+    const [op, ...rest] = flatOps([FLATS]);
+    expect(rest).toEqual([]);
+    expect(op).toMatchObject({ name: 'Rough Milling', source: 'feature', count: 2, featureIds: ['Flat-default_c2'] });
+    expect(op.missing).toBeUndefined();
+  });
+
+  it('is timed by the stored Rough Milling calculator on the volume the flats cut off, at the material\'s removal rate', () => {
+    // 580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000 = 0.0125719 min = 0.75431 s.
+    const [op] = flatOps([FLATS]);
+    expect(op.timeSec).toBeCloseTo((580.24 * 0.8 / 60000 + 580.24 * 0.2 / (60000 * 0.4)) * 60, 6);
+    expect(op.calculator?.id).toBe('Machining - Rough Milling');
+    expect(op.trace!.find((s) => s.fieldName === 'Removed Volume')).toMatchObject({ value: 580.24 });
+    expect(op.trace!.find((s) => s.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
+  });
+
+  it('a flat with no removed volume on file is a named gap, never free', () => {
+    const [op] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), material_removed_mm3: 0 }] }]);
+    expect(op).toMatchObject({ name: 'Rough Milling', timeSec: 0, missing: 'the CAD volume the flat removes', count: 1 });
+    const [two] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), material_removed_mm3: 0 }, { ...flat([8]), material_removed_mm3: 0 }] }]);
+    expect(two.missing).toBe('the CAD volume 2 flats remove');
+  });
+
+  it('with no removal rate on file it is the calculator\'s named gap', () => {
+    const ops = buildWith([FLATS], 'aluminum', 1.0, null, null, null, null, null, specAsCalculators(), null, null).filter((o) => o.cadFeatureType === 'Flat');
+    expect(ops).toEqual([expect.objectContaining({ name: 'Rough Milling', timeSec: 0, missing: expect.stringContaining('Material Removal Rate') })]);
+  });
+});

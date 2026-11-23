@@ -2,8 +2,8 @@
  * What a lathe makes only with a driven (live) tool, and whether a lathe has one.
  *
  * A lathe cuts on its spindle axis: a hole on the turning centreline is drilled with a stationary tool while the part turns. A radial
- * (cross) hole, an axial hole off the centreline, a milled keyway or a slot needs the tool to turn while the part is held still: a
- * live-tool spindle (C/Y axis). Each machine's live-tool spindle is its own data (mhr_records.live_tooling_power_kw, migration 1043, from
+ * (cross) hole, an axial hole off the centreline, a milled keyway, a slot or a flat needs the tool to turn while the part is held still:
+ * a live-tool spindle (C/Y axis). Each machine's live-tool spindle is its own data (mhr_records.live_tooling_power_kw, migration 1043, from
  * memory/Machining/machine): 0 kW means it has none. Pure: every fact comes in as data.
  */
 
@@ -47,8 +47,8 @@ export function liveToolHoles(features: readonly MachiningFeatureLike[] | null |
   return [...byKey.values()].sort((a, b) => (a.why === b.why ? a.diameterMm - b.diameterMm : a.why === 'cross' ? -1 : 1));
 }
 
-/** The feature types a lathe mills, having no turning or drilling tool for them: a keyway that is not broached, and a slot. */
-export const LATHE_MILLED_FEATURE_TYPES = ['Keyway', 'Slot'] as const;
+/** The feature types a lathe mills, having no turning or drilling tool for them: a keyway that is not broached, a slot, and a flat. */
+export const LATHE_MILLED_FEATURE_TYPES = ['Keyway', 'Slot', 'Flat'] as const;
 export type LatheMilledFeatureType = (typeof LATHE_MILLED_FEATURE_TYPES)[number];
 
 export const isLatheMilledFeatureType = (type: unknown): type is LatheMilledFeatureType =>
