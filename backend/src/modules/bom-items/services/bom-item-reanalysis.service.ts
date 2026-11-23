@@ -1,12 +1,14 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
-import { MAX_CAD_FILE_BYTES } from '../../../common/upload-limits';
-import { UpdateBOMItemDto } from '../dto/bom-items.dto';
-import { BOMItemResponseDto } from '../dto/bom-item-response.dto';
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+
 import { BOMItemsService } from '../bom-items.service';
 import { AutoFillService } from './auto-fill.service';
 import { FileStorageService } from './file-storage.service';
 import { PlasticPullDirectionService } from './plastic-pull-direction.service';
+import { BOMItemResponseDto } from '../dto/bom-item-response.dto';
+import { UpdateBOMItemDto } from '../dto/bom-items.dto';
+
+/** The name the file was uploaded with: the stored name carries one or two upload timestamps in front of it. */
+const uploadedName = (path: string): string => (path.split('/').pop() ?? path).replace(/^(\d{10,}_)+/, '');
 
 /** Runs the CAD analysis (and the drawing's) on an item's stored files and stores the result on the item. Used by the analysis run (Apply Scenario) and by a changed pull direction. */
 @Injectable()
@@ -29,20 +31,7 @@ export class BomItemReanalysisService {
 
     // Prefer the original STEP (full OCC topology) over the browser-viewable STL
     const analysisPath = bomItem.fileStepPath ?? bomItem.file3dPath!;
-    const signedUrl = await this.fileStorageService.getSignedUrl(analysisPath, 3600);
-
-    let fileBuffer: Buffer;
-    try {
-      const response = await axios.get(signedUrl, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-        maxContentLength: MAX_CAD_FILE_BYTES,
-      });
-      fileBuffer = Buffer.from(response.data);
-    } catch (err) {
-      this.logger.error(`[reanalyze] Failed to download file: ${err.message}`);
-      throw new BadRequestException('Failed to download 3D file from storage');
-    }
+    const fileBuffer = await this.storedFile(analysisPath, '3D model');
 
     const fileName = analysisPath.split('/').pop() ?? 'model.stp';
     // Re-analyse as the process the user chose (Create/Edit BOM Item's
@@ -108,6 +97,28 @@ export class BomItemReanalysisService {
     return this.bomItemsService.update(id, updateData, userId, token);
   }
 
+  /**
+   * The item's stored file. A file the row names but storage does not hold is a state the user can act on (upload it again), so
+   * it says that, and which file, instead of "failed to download". A storage outage is not the user's to fix: it is reported as one.
+   * The size limit is enforced when a file is uploaded (FileStorageService), so a stored file is within it.
+   */
+  private async storedFile(path: string, what: '3D model' | '2D drawing'): Promise<Buffer> {
+    let bytes: Buffer | null;
+    try {
+      bytes = await this.fileStorageService.download(path);
+    } catch (err: unknown) {
+      this.logger.error(`[reanalyze] could not read ${path} from storage: ${err instanceof Error ? err.message : String(err)}`);
+      throw new ServiceUnavailableException(`The file storage could not be reached to read this part's ${what}. Try again in a moment.`);
+    }
+    if (bytes === null) {
+      this.logger.warn(`[reanalyze] ${path} is named by the part but not in storage`);
+      throw new NotFoundException(
+        `This part's ${what} (${uploadedName(path)}) is not in file storage, so it cannot be analysed. Upload the file again on the part.`,
+      );
+    }
+    return bytes;
+  }
+
   /** Reads the title block, thread callouts and tolerances of the stored 2D drawing (a vector PDF) and stores them on the item. */
   async analyzeDrawing(id: string, userId: string, token: string): Promise<BOMItemResponseDto> {
     const bomItem = await this.bomItemsService.findOne(id, userId, token);
@@ -117,15 +128,7 @@ export class BomItemReanalysisService {
     if (!bomItem.file2dPath.toLowerCase().endsWith('.pdf')) {
       throw new BadRequestException('Drawing intelligence extraction requires a vector PDF (text extraction, not OCR) — this file is not a PDF');
     }
-    const signedUrl = await this.fileStorageService.getSignedUrl(bomItem.file2dPath, 3600);
-    let fileBuffer: Buffer;
-    try {
-      const response = await axios.get(signedUrl, { responseType: 'arraybuffer', timeout: 60000, maxContentLength: MAX_CAD_FILE_BYTES });
-      fileBuffer = Buffer.from(response.data);
-    } catch (err: unknown) {
-      this.logger.error(`[analyze-drawing] Failed to download file: ${err instanceof Error ? err.message : String(err)}`);
-      throw new BadRequestException('Failed to download 2D file from storage');
-    }
+    const fileBuffer = await this.storedFile(bomItem.file2dPath, '2D drawing');
     const drawingResult = await this.autoFillService.analyzeDrawing(fileBuffer, bomItem.partNumber);
     return this.bomItemsService.update(id, { drawingIntelligence: drawingResult as unknown as Record<string, any> }, userId, token);
   }
