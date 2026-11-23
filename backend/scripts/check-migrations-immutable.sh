@@ -15,7 +15,17 @@ git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
 ref="origin/$base"
 git rev-parse --verify --quiet "$ref" >/dev/null || { echo "check-migrations-immutable: no $ref to compare with; skipped"; exit 0; }
 
-# In a pull request build HEAD is the merge of the branch into the base, so a tree comparison with the base tip is exactly what the pull request changes.
+# In a pull request build HEAD is the merge of the branch into the base AS THE BASE WAS when the merge was made. The base can move on
+# before the job runs (another pull request merged while this one waited for a runner): its new migrations are then missing from HEAD
+# and read as deleted by this branch (it failed two pull requests that way, each blamed for "deleting" the other's migration). So the
+# comparison is with the base the merge was made on, the merge commit's first parent; only without one is it the base's tip.
+parents="$(git cat-file -p HEAD | awk '$1 == "parent" { print $2 }')"
+if [ "$(printf '%s\n' "$parents" | grep -c .)" = 2 ]; then
+  merged_onto="$(printf '%s\n' "$parents" | head -1)"
+  # a shallow checkout has the merge commit only: fetch the one commit it was made on
+  git cat-file -e "$merged_onto^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$merged_onto" >/dev/null 2>&1 || true
+  if git cat-file -e "$merged_onto^{commit}" 2>/dev/null; then ref="$merged_onto"; fi
+fi
 diff="$(git diff --name-status --no-renames "$ref" HEAD -- 'backend/migrations/*.sql')"
 changed="$(printf '%s\n' "$diff" | awk '$1 != "A" && NF { print $1 "\t" $2 }')"
 if [ -n "$changed" ]; then
