@@ -51,9 +51,8 @@ export interface WaterjetInput {
   // real per-machine setup_time_hr wins; with neither, setup is not costed
   // (resolveSetupMinutes returns source 'none' with a warning).
   setupMin?: number;
-  // Real nozzle-wear cost/hr — see manufacturing-process-engine.ts's
-  // CuttingProcessContext for sourcing (migration 531, closeout Plan
-  // Phase 2b).
+  // Real nozzle-wear cost an hour, in the same currency as the machine rate: see
+  // CuttingProcessContext for its source.
   nozzleRate?: { costPerHr: number; dataFound: boolean };
   // eMithranTerms() inputs — see CuttingProcessContext's own doc comment for
   // sourcing.
@@ -70,7 +69,9 @@ export interface WaterjetInput {
 interface WaterjetResult {
   processLines: ProcessLineCost[];
   cuttingMin: number;
-  abrasiveCost: number;  // same currency as the machine rate / abrasivePricePerKg
+  // The garnet's cost, in the currency of the machine rate. It is one of
+  // processLines already ("Waterjet Abrasive"): stated here for display, never added to them again.
+  abrasiveCost: number;
   warnings: string[];
 }
 
@@ -195,8 +196,8 @@ export function computeWaterjetCost(input: WaterjetInput): WaterjetResult {
   ];
 
   // Real nozzle-wear cost, charged only for active cutting time (same basis
-  // as abrasive cost above) — see migration 531 (closeout Plan Phase 2b). A
-  // distinct, visible line item, never charged when no rate is seeded.
+  // as abrasive cost above). A distinct, visible line item, never charged
+  // when no rate is on file.
   if (input.nozzleRate?.dataFound && cuttingSec > 0) {
     const nozzleCost = r2((cuttingSec / 3600) * input.nozzleRate.costPerHr);
     processLines.push({
@@ -213,6 +214,25 @@ export function computeWaterjetCost(input: WaterjetInput): WaterjetResult {
     });
   } else if (cuttingSec > 0) {
     warnings.push("Waterjet: no nozzle-wear rate seeded — nozzle cost excluded from quote");
+  }
+
+  // The garnet is a cost of the cut, so it is a line of its own, as the nozzle
+  // wear is: whatever reads the route's lines (the comparison, the Cost tab,
+  // Apply) then carries it. Stated only beside the lines, it was in the
+  // comparison's total and in nothing that was saved.
+  if (abrasiveCost > 0) {
+    processLines.push({
+      process: "Waterjet Abrasive",
+      setupCost: 0,
+      runCost: abrasiveCost,
+      totalCost: abrasiveCost,
+      cycleTimeMin: 0,
+      hourlyRate: 0,
+      rateSource: "consumable_allowance",
+      machineClass: rate.machineClass,
+      machineName: null,
+      commodityCode: null,
+    });
   }
 
   return {

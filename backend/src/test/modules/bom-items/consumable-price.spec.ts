@@ -67,3 +67,33 @@ describe('BomItemCostingService.resolveConsumablePrice', () => {
     await expect(service.resolveConsumablePrice('t', 'garnet_abrasive', 'UK', 'GBP', rates)).rejects.toThrow('No exchange rate');
   });
 });
+
+// waterjetNozzleRate: the reference data states a nozzle's cost in USD. The engine adds the wear to lines that are in the
+// quote's currency, so the rate is converted before it gets there; a rate that is not on file stays a reported gap.
+describe('BomItemCostingService.waterjetNozzleRate', () => {
+  function serviceWithNozzle(nozzle: { costPerHr: number; dataFound: boolean }) {
+    const smLookup = { getWaterjetNozzleCostPerHr: async () => nozzle };
+    const deps = Array.from({ length: 15 }, () => ({}));
+    return new (BomItemCostingService as any)({}, {}, {}, {}, {}, {}, {}, {}, smLookup, ...deps) as any;
+  }
+
+  it("converts the nozzle's USD rate into the costing currency", async () => {
+    const service = serviceWithNozzle({ costPerHr: 100 / 85, dataFound: true });
+    await expect(service.waterjetNozzleRate('USD', rates)).resolves.toEqual({ costPerHr: 100 / 85, dataFound: true });
+    const india = await service.waterjetNozzleRate('INR', rates);
+    expect(india.dataFound).toBe(true);
+    expect(india.costPerHr).toBeCloseTo((100 / 85) * 80, 6);
+  });
+
+  it('leaves a rate that is not on file as it is: no conversion, no charge', async () => {
+    const service = serviceWithNozzle({ costPerHr: 0, dataFound: false });
+    await expect(service.waterjetNozzleRate('INR', rates)).resolves.toEqual({ costPerHr: 0, dataFound: false });
+    // no rate to convert, so a currency with no exchange rate is not an error here
+    await expect(service.waterjetNozzleRate('GBP', rates)).resolves.toEqual({ costPerHr: 0, dataFound: false });
+  });
+
+  it('throws when the FX rate is missing instead of charging USD as if it were the local currency', async () => {
+    const service = serviceWithNozzle({ costPerHr: 100 / 85, dataFound: true });
+    await expect(service.waterjetNozzleRate('GBP', rates)).rejects.toThrow('No exchange rate');
+  });
+});

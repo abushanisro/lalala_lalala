@@ -187,9 +187,9 @@ export interface CuttingProcessContext {
   // seeded for this machine class — the engine must NOT charge a guessed
   // allowance in that case.
   handlingAllowance?: { allowanceUsd: number; dataFound: boolean };
-  // Real nozzle-wear cost/hr resolved by the caller from
-  // sm_waterjet_nozzle_rates (SheetMetalLookupService.getWaterjetNozzleCostPerHr,
-  // migration 531, closeout Plan Phase 2b). Only WaterjetEngine reads this.
+  // Real nozzle-wear cost an hour, in the quote's currency: resolved by the caller from the staged
+  // tblWaterjetAbrasiveNozzle rows (SheetMetalLookupService.getWaterjetNozzleCostPerHr, which states
+  // it in USD) and converted. Only WaterjetEngine reads this.
   nozzleRate?: { costPerHr: number; dataFound: boolean };
   // ── Shared cost-composition-core inputs (Phase 1, engine registry unification) ──
   // These 7 fields feed eMithranTerms() (engine-kernel.ts) — the platform's one

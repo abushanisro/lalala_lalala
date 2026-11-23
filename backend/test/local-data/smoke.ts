@@ -135,6 +135,13 @@ async function main(): Promise<void> {
     const bob = await (await api('/projects?select=name', minter.forUser('22222222-2222-4222-8222-222222222222'))).json() as { name: string }[];
     must(alice.length === 1 && bob.length === 0, `alice ${alice.length}, bob ${bob.length}`);
   });
+  await check("migration 1121 lets a signed-in user read the consumable prices (a waterjet's garnet), and not write them", async () => {
+    const bob = minter.forUser('22222222-2222-4222-8222-222222222222');
+    const rows = await (await api('/consumable_prices?consumable_type=eq.garnet_abrasive&select=location,price_per_unit', bob)).json() as { location: string; price_per_unit: number | string }[];
+    must(rows.length === 2 && Number(rows.find((r) => r.location === 'India')?.price_per_unit) === 0.48, `rows ${JSON.stringify(rows)}`);
+    const write = await api('/consumable_prices', bob, { method: 'POST', body: JSON.stringify({ consumable_type: 'garnet_abrasive', location: 'X', price_per_unit: 1 }) });
+    must(write.status === 401 || write.status === 403, `a user's write answered HTTP ${write.status}`);
+  });
   await check('the data API refuses an anonymous request to a protected function', async () => {
     const res = await fetch(`${env.POSTGREST_URL}/rpc/link_identity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ p_provider: 'auth0', p_sub: 'x', p_email: 'alice@example.com', p_email_verified: true, p_connection: 'company-sso', p_trusted_connections: ['company-sso'] }) });
     must(res.status === 401 || res.status === 403 || res.status === 404, `HTTP ${res.status}`);
