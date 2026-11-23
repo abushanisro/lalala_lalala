@@ -444,6 +444,7 @@ def collect_cylinders(
     shape,
     main_axis: Tuple[float, float, float],
     bbox: Dict,
+    axis_point: Optional[Tuple[float, float, float]] = None,
 ) -> List[Dict]:
     """
     Collects all cylindrical faces and classifies each as:
@@ -452,6 +453,11 @@ def collect_cylinders(
     Uses face orientation (FORWARD/REVERSED) for external vs internal.
     Uses axis alignment with main_axis for axial vs cross orientation.
     Uses length vs part span for through vs blind discrimination.
+
+    axis_point: a point on the part's own axis, the line along main_axis that distances and
+    angles are measured from and a turned diameter lies on. A turned part's is the line it is
+    turned about (turning_line_point). Without one the line runs through the centre of the
+    bounding box: a reference for a part that has no turning axis (a milled block, a sheet).
 
     Real, live cross-domain primitive: Sheet Metal
     (sheet_metal/feature_extractor.py, sheet_metal/features/formed_feature.py (stage 1))
@@ -475,12 +481,15 @@ def collect_cylinders(
 
     # Part span along main axis — used for through vs blind discrimination
     part_span = axis_span(bbox, (ax, ay, az))
-    # The part's own axis passes through its bounding-box centre, not the
-    # global origin: distances and angles round the axis are measured from
-    # there, so a part modelled away from 0,0,0 classifies the same way.
-    ox = (bbox["xmin"] + bbox["xmax"]) / 2
-    oy = (bbox["ymin"] + bbox["ymax"]) / 2
-    oz = (bbox["zmin"] + bbox["zmax"]) / 2
+    # The part's own axis passes through axis_point or, with none, the bounding-box
+    # centre, not the global origin: distances and angles round the axis are measured
+    # from there, so a part modelled away from 0,0,0 classifies the same way.
+    if axis_point is not None:
+        ox, oy, oz = axis_point
+    else:
+        ox = (bbox["xmin"] + bbox["xmax"]) / 2
+        oy = (bbox["ymin"] + bbox["ymax"]) / 2
+        oz = (bbox["zmin"] + bbox["zmax"]) / 2
 
     results = []
     face_idx = 0
@@ -601,6 +610,33 @@ def collect_cylinders(
 PARALLEL_AXIS_TOLERANCE_DEG = 0.5
 
 
+def _analytic_cylinder_faces(shape):
+    """Each analytic cylindrical face of the shape: (the face, its axis with one sign, a point on that axis, its radius)."""
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
+    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = exp.Current()
+        surf = BRepAdaptor_Surface(face)
+        if surf.GetType() == GeomAbs_Cylinder:
+            cyl = surf.Cylinder()
+            d, loc = cyl.Axis().Direction(), cyl.Location()
+            yield face, _one_way((d.X(), d.Y(), d.Z())), (loc.X(), loc.Y(), loc.Z()), float(cyl.Radius())
+        exp.Next()
+
+
+def _face_area(face) -> float:
+    from OCC.Core.BRepGProp import brepgprop  # type: ignore
+    from OCC.Core.GProp import GProp_GProps  # type: ignore
+
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(face, props)
+    return float(props.Mass())
+
+
 def dominant_cylinder_axis(shape) -> Optional[Tuple[float, float, float]]:
     """
     The part's dominant cylinder axis, the machining recognizer's turning axis: the direction its outer (convex) cylindrical faces cover the
@@ -610,40 +646,69 @@ def dominant_cylinder_axis(shape) -> Optional[Tuple[float, float, float]]:
     The direction is the widest face's own, signed so its first component that is not zero is positive. None when the part has no analytic
     cylindrical face.
     """
-    from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
-    from OCC.Core.BRepGProp import brepgprop  # type: ignore
-    from OCC.Core.GProp import GProp_GProps  # type: ignore
-    from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
-    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-    from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
     from shared.bspline_cylinder import face_is_internal
 
     parallel = math.cos(math.radians(PARALLEL_AXIS_TOLERANCE_DEG))
     # One entry per direction: [its widest face's direction, that face's area, outer area, inner area].
     directions: List[List[Any]] = []
-    exp = TopExp_Explorer(shape, TopAbs_FACE)
-    while exp.More():
-        face = exp.Current()
-        surf = BRepAdaptor_Surface(face)
-        if surf.GetType() == GeomAbs_Cylinder:
-            cyl = surf.Cylinder()
-            d, loc = cyl.Axis().Direction(), cyl.Location()
-            axis = _one_way((d.X(), d.Y(), d.Z()))
-            props = GProp_GProps()
-            brepgprop.SurfaceProperties(face, props)
-            area = float(props.Mass())
-            inner = face_is_internal(face, (loc.X(), loc.Y(), loc.Z()), axis)
-            entry = next((e for e in directions if abs(e[0][0] * axis[0] + e[0][1] * axis[1] + e[0][2] * axis[2]) >= parallel), None)
-            if entry is None:
-                entry = [axis, area, 0.0, 0.0]
-                directions.append(entry)
-            elif area > entry[1]:
-                entry[0], entry[1] = axis, area
-            entry[3 if inner else 2] += area
-        exp.Next()
+    for face, axis, point, _radius in _analytic_cylinder_faces(shape):
+        area = _face_area(face)
+        inner = face_is_internal(face, point, axis)
+        entry = next((e for e in directions if abs(e[0][0] * axis[0] + e[0][1] * axis[1] + e[0][2] * axis[2]) >= parallel), None)
+        if entry is None:
+            entry = [axis, area, 0.0, 0.0]
+            directions.append(entry)
+        elif area > entry[1]:
+            entry[0], entry[1] = axis, area
+        entry[3 if inner else 2] += area
     if not directions:
         return None
     return max(directions, key=lambda e: (e[2], e[3]))[0]
+
+
+def turning_line_point(shape, direction: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+    """
+    A point on the line the part is turned about, for the turning direction `direction` (the dominant cylinder axis): the axis line its
+    outer (convex) cylindrical faces along `direction` cover the most area about. Only a cylinder the part is centred in counts (the part's
+    centre of mass lies inside it): a turned part's diameters share one line through its mass, while the round of a block's corner and a
+    boss beside the middle have lines of their own. None when no outer cylinder qualifies: the part has no turned diameter.
+
+    Read from the surfaces and the solid themselves, so it is the same however the part is meshed and wherever it lies. The centre of the
+    bounding box is not: the box of a meshed shape is read from the mesh's nodes (a plain shaft's centre lay 0.02 mm off its axis, farther
+    than COAXIAL_TOLERANCE_MM, so it had no turned diameter), and it leaves the axis of any part that is not the same on both sides of it
+    (a shaft with a flat along its length, a stepped shaft lying askew in the model).
+    """
+    from OCC.Core.BRepGProp import brepgprop  # type: ignore
+    from OCC.Core.GProp import GProp_GProps  # type: ignore
+    from shared.bspline_cylinder import face_is_internal
+
+    parallel = math.cos(math.radians(PARALLEL_AXIS_TOLERANCE_DEG))
+    n = math.sqrt(sum(c * c for c in direction)) or 1.0
+    direction = (direction[0] / n, direction[1] / n, direction[2] / n)
+
+    def off_line(point, on_line) -> float:
+        return point_to_axis_distance((point[0] - on_line[0], point[1] - on_line[1], point[2] - on_line[2]), direction)
+
+    centre = None  # the part's centre of mass, measured for the first outer cylinder along the direction
+    lines: List[List[Any]] = []  # one entry per axis line: [a point on it, the outer area about it]
+    for face, axis, point, radius in _analytic_cylinder_faces(shape):
+        if abs(axis[0] * direction[0] + axis[1] * direction[1] + axis[2] * direction[2]) < parallel or face_is_internal(face, point, axis):
+            continue
+        if centre is None:
+            props = GProp_GProps()
+            brepgprop.VolumeProperties(shape, props)
+            if props.Mass() <= 0:
+                return None  # not a closed solid: it has no centre of mass to be turned about
+            cm = props.CentreOfMass()
+            centre = (cm.X(), cm.Y(), cm.Z())
+        if off_line(centre, point) >= radius:
+            continue
+        entry = next((e for e in lines if off_line(point, e[0]) <= COAXIAL_TOLERANCE_MM), None)
+        if entry is None:
+            lines.append([point, _face_area(face)])
+        else:
+            entry[1] += _face_area(face)
+    return max(lines, key=lambda e: e[1])[0] if lines else None
 
 
 def _one_way(axis: Tuple[float, float, float]) -> Tuple[float, float, float]:
@@ -717,8 +782,9 @@ def swing_radius(nodes: List[Tuple[float, float, float]], point: Tuple[float, fl
 
 def turning_axis(shape) -> Optional[Dict[str, Any]]:
     """
-    The line the part is turned about and what is turned on it: the dominant cylinder axis, placed on the axis of the part's largest turned
-    outer diameter (collect_cylinders' external_diameter). None when the part has no analytic cylinder to find the axis by.
+    The line the part is turned about and what is turned on it: the dominant cylinder axis, placed on the line the part's outer cylinders
+    lie about (turning_line_point), with the outer diameters on that line (collect_cylinders' external_diameter). None when the part has no
+    analytic cylinder to find the axis by.
 
       direction            the dominant cylinder axis (unit vector)
       diameters            every turned outer diameter face, as collect_cylinders lists it; empty when the part has none
@@ -728,7 +794,8 @@ def turning_axis(shape) -> Optional[Dict[str, Any]]:
     axis = dominant_cylinder_axis(shape)
     if axis is None:
         return None
-    turned = [c for c in collect_cylinders(shape, axis, part_bounding_box(shape)) if c["kind"] == "external_diameter"]
+    cylinders = collect_cylinders(shape, axis, part_bounding_box(shape), turning_line_point(shape, axis))
+    turned = [c for c in cylinders if c["kind"] == "external_diameter"]
     largest = max(turned, key=lambda c: c["radius"]) if turned else None
     return {
         "direction": axis,

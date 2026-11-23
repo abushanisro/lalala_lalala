@@ -131,6 +131,7 @@ from shared.machining_geometry import (
     axis_span as _axis_span,
     part_bounding_box as _part_bounding_box,
     collect_cylinders as _collect_cylinders_fn,
+    turning_line_point,
 )
 
 logger = logging.getLogger(__name__)
@@ -248,8 +249,10 @@ class MachiningFeatureRecognizer:
             return MachiningFeatureTree(family=family, features=[], warnings=warnings)
 
         main_axis = self._dominant_cylinder_axis(shape)
+        # The line the part is turned about. A part with no turned diameter has none: it is measured from the centre of its box.
+        on_axis = turning_line_point(shape, main_axis)
 
-        raw_cylinders = self._collect_cylinders(shape, main_axis, bbox)
+        raw_cylinders = self._collect_cylinders(shape, main_axis, bbox, on_axis)
         # Merge face patches of the same physical feature before emitting features.
         # Without this, OCC can represent a single bore or OD step as 2–8 separate
         # cylindrical face patches, inflating counts into the hundreds.
@@ -257,7 +260,7 @@ class MachiningFeatureRecognizer:
         cones = self._collect_cones(shape)
         toroids = self._collect_toroids(shape)
         hole_flats: List[Dict] = []
-        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True, hole_flats=hole_flats)
+        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox, radial=True, hole_flats=hole_flats, on_axis=on_axis)
 
         # ── Teeth around the axis (gear / spline) → AxiGroove ────────────────
         # Off-axis convex faces with N-fold rotational symmetry (axigroove.py).
@@ -948,6 +951,7 @@ class MachiningFeatureRecognizer:
         shape,
         main_axis: Tuple[float, float, float],
         bbox: Dict,
+        axis_point: Optional[Tuple[float, float, float]] = None,
     ) -> List[Dict]:
         """
         Thin delegating wrapper -- the real implementation moved to
@@ -956,7 +960,7 @@ class MachiningFeatureRecognizer:
         called this exact method as `recognizer._collect_cylinders(...)`;
         that call pattern is preserved unchanged here).
         """
-        return _collect_cylinders_fn(shape, main_axis, bbox)
+        return _collect_cylinders_fn(shape, main_axis, bbox, axis_point)
 
     def _collect_cones(self, shape) -> List[Dict]:
         """
@@ -1065,6 +1069,7 @@ class MachiningFeatureRecognizer:
         hole_bottoms: Optional[set] = None,
         radial: bool = False,
         hole_flats: Optional[List[Dict]] = None,
+        on_axis: Optional[Tuple[float, float, float]] = None,
     ) -> List[Dict]:
         """
         The floors of the part's recesses, for slot / keyway / pocket classification: planar faces that
@@ -1083,6 +1088,8 @@ class MachiningFeatureRecognizer:
         D-shaped bore, a flat of a square or hexagon socket), not a recess cut into a turned surface.
         Those flats are added to `hole_flats` when the caller passes a list: each with its width, the
         hole's size across it (how far the hole's wall rises above the flat) and the faces standing on it.
+        on_axis is a point on the turning axis (shared turning_line_point); without one the axis is
+        taken through the centre of the bounding box, as collect_cylinders takes it.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1111,8 +1118,8 @@ class MachiningFeatureRecognizer:
 
         ax, ay, az = main_axis
         axis_lo, axis_hi = _axis_range(bbox, (ax, ay, az)) if bbox is not None else (None, None)
-        # A point on the turning axis: the part's own axis passes through its bounding-box centre (as collect_cylinders takes it).
-        on_axis = ((bbox["xmin"] + bbox["xmax"]) / 2, (bbox["ymin"] + bbox["ymax"]) / 2, (bbox["zmin"] + bbox["zmax"]) / 2) if bbox is not None else None
+        if on_axis is None and bbox is not None:
+            on_axis = ((bbox["xmin"] + bbox["xmax"]) / 2, (bbox["ymin"] + bbox["ymax"]) / 2, (bbox["zmin"] + bbox["zmax"]) / 2)
         floors = RecessedFloors(shape)
         pockets = []
         face_idx = 0
