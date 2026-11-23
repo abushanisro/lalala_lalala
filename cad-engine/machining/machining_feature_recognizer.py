@@ -303,7 +303,7 @@ class MachiningFeatureRecognizer:
             recesses.append((p, result))
         recess_faces = {i for p, _result in recesses if p["radial"] for i in p["face_indices"]}
         # A flat wall of such a recess faces along the axis when the recess runs across it: it is the recess's
-        # wall, not the floor of a keyway of its own.
+        # wall, not the floor of a slot of its own.
         recesses = [(p, result) for p, result in recesses if p["radial"] or p["face_indices"][0] not in recess_faces]
         # The concave arcs that end a keyway or a radial slot are its end walls, as the two half turns of a milled
         # slot are its ends (_recognize_milled): a cylinder face that sweeps less than a bore and stands on the
@@ -1435,59 +1435,54 @@ def _classify_prismatic_turned(
     main_axis: Tuple[float, float, float],
 ) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
     """
-    Classify a prismatic face collected from a turned part.
-    Returns None for structural/transition faces (end faces, shoulders, datums).
+    Classify a recess floor collected from a turned part.
+    Returns None for what is not a channel: structural faces (end faces, shoulders,
+    datums), open flats and their end walls.
 
     Only Keyway and Slot/radial are emitted from turned parts — PocketV2 is not
     valid here because pockets on turned ODs are either keyways (parallel to axis)
     or radial slots (perpendicular).
 
-    A floor that faces along the axis: Keyway when elongated; structural faces are
-    filtered by aspect < 2.5.
-    A floor that faces across the axis (milled into a turned diameter or a bore) is a
-    channel when walls stand on both sides of its width, and is named by the direction
-    of its long side, not by its normal: Keyway when it runs along the turning axis,
-    Slot/radial when it runs across it. Its proportions do not decide (a keyway is
-    often only two widths long). An open flat (a wall at its ends, or on one side)
-    is not a channel and is left out, as every generic pocket on a turned part is.
+    A channel is a floor with walls standing on both sides of its width. An open
+    flat (a wall at its ends, or on one side) is not one and is left out, as every
+    generic pocket on a turned part is.
+
+    A floor that faces across the axis (milled into a turned diameter or a bore) is
+    named by the direction of its long side, not by its normal: Keyway when it runs
+    along the turning axis, Slot/radial when it runs across it. Its proportions do
+    not decide (a keyway is often only two widths long).
+
+    A floor that faces along the axis lies across it, so nothing cut there runs along
+    the shaft: it is never a keyway. A channel at least 2.5 times as long as it is
+    wide is a slot across an end face or a shoulder (a drive slot): Slot/radial. A
+    floor walled on one side only is the end wall of a milled flat (a D flat, a
+    wrench flat, a tang), and a squarer one is a shoulder or the bottom of a socket
+    or of a face groove: none of them is a slot.
     """
     dims = pocket["dims"]
     short, mid, long = dims[0], dims[1], dims[2]
-    if mid < 0.1:
+    if mid < 0.1 or not pocket["width_confined"]:
         return None
 
     nx, ny, nz = pocket["normal"]
     ax, ay, az = main_axis
-    dot_with_axis = abs(nx * ax + ny * ay + nz * az)
-
-    # centroid: see _classify_prismatic's identical fix above.
-    centroid = pocket.get("centroid")
-
-    if dot_with_axis > 0.85:
-        if long / mid < 2.5:
-            return None  # structural transition face, shoulder, or datum face
-        # Floor normal is parallel to axis → keyway running along the shaft
-        return "Keyway", "default", {
-            "length_mm": round(long, 3),
-            "width_mm": round(mid, 3),
-            "depth_mm": round(short, 3),
-            "centroid": centroid,
-        }
-
-    if not pocket["width_confined"]:
+    faces_along_axis = abs(nx * ax + ny * ay + nz * az) > 0.85
+    if faces_along_axis and long / mid < 2.5:
         return None
+
     # The same fields a milled part's keyway carries: costing reads walled_fraction to tell a keyway closed at an
     # end (milled) from one open at both ends (broached).
     params = {
         "length_mm": round(long, 3),
         "width_mm": round(mid, 3),
         "depth_mm": round(short, 3),
-        "centroid": centroid,
+        # centroid: see _classify_prismatic's identical fix above.
+        "centroid": pocket.get("centroid"),
         **{k: (round(v, 3) if isinstance(v, float) else v) for k in ("area_mm2", "walled_fraction", "width_confined")
            if (v := pocket.get(k)) is not None},
     }
     lx, ly, lz = pocket["long_direction"]
-    if abs(lx * ax + ly * ay + lz * az) > 0.85:
+    if not faces_along_axis and abs(lx * ax + ly * ay + lz * az) > 0.85:
         return "Keyway", "default", params
     return "Slot", "radial", params
 

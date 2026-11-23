@@ -59,7 +59,9 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     # outer_diameter: external turned cylinder step; groove: concave annular
     # (toroidal) recess on a turned part.
     "Ring": frozenset({"outer_diameter", "groove"}),
-    # straight: elongated milled slot; radial: elongated slot on a turned OD;
+    # straight: elongated milled slot; radial: a slot on a turned part that runs
+    # across the turning axis (milled into a turned diameter or a bore, or across
+    # an end face or a shoulder);
     # groove: concave toroidal recess on a milled part (Groove Milling//Slot).
     "Slot": frozenset({"straight", "radial", "groove"}),
     "Keyway": frozenset({"default"}),
