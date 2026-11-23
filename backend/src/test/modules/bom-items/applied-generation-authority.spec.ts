@@ -312,3 +312,55 @@ describe('re-apply produces a new snapshot (7)', () => {
     expect(after.totalProcessCost - before.totalProcessCost).toBeCloseTo(0.18, 8);
   });
 });
+
+// A per-part charge (a waterjet's garnet and nozzle wear, a turret's material handling) has no machine time and shares its machine class
+// with the operation it belongs to. The rows below are the generation Apply wrote for a Waterjet + Press Brake route in India (INR).
+describe('a per-part charge is read back as itself', () => {
+  const WJ_TAG = 'auto_fill_from_route:sm-waterjet';
+  const wj = (over: Partial<AppliedProcessCostRecord>): AppliedProcessCostRecord => row({
+    machine_class: 'waterjet', machine_name: 'OMAX 55100', mhr_id: 'mhr-wj-1', operation: 'Waterjet Cutting', process_route: 'Cutting',
+    cycle_time: 104.4, setup_time: 30, direct_rate: 979.4, setup_cost_per_part: 0.93, total_cycle_cost_per_part: 38.98, total_cost_per_part: 39.911785,
+    currency: 'INR', batch_size: 100, location: 'India', notes: WJ_TAG, charge_basis: 'time', ...over,
+  });
+  const charge = (opNbr: number, operation: string, cost: number) => wj({
+    op_nbr: opNbr, operation, machine_name: null, mhr_id: null, cycle_time: null as unknown as number, setup_time: 0, direct_rate: 0,
+    setup_cost_per_part: 0, total_cycle_cost_per_part: cost, total_cost_per_part: cost, charge_basis: 'per_part',
+  });
+  const WATERJET_GENERATION = [wj({ op_nbr: 10 }), charge(20, 'Nozzle Wear', 2.13), charge(30, 'Waterjet Abrasive', 17.69)];
+  const live = (abrasive = 17.69) => [
+    { process: 'Waterjet Cutting', machineClass: 'waterjet', machineName: 'OMAX 55100', rateSource: 'mhr_database', cycleTimeMin: 1.74, setupCost: 0.93, runCost: 38.98, totalCost: 39.911785, hourlyRate: 979.4 },
+    { process: 'Nozzle Wear', machineClass: 'waterjet', machineName: null, rateSource: 'consumable_allowance', cycleTimeMin: 0, setupCost: 0, runCost: 2.13, totalCost: 2.13, hourlyRate: 0 },
+    { process: 'Waterjet Abrasive', machineClass: 'waterjet', machineName: null, rateSource: 'consumable_allowance', cycleTimeMin: 0, setupCost: 0, runCost: abrasive, totalCost: abrasive, hourlyRate: 0 },
+  ] as unknown as CostSummaryDto['processLines'];
+  const cuttingLabel = getProcessLabelForClass()['waterjet'];
+
+  it('names each charge by its operation, not by its machine class, and keeps it a charge with no machine', () => {
+    const out = applyPersistedRouteToSummary(liveSummary(), WATERJET_GENERATION, getProcessLabelForClass());
+    expect(out.processLines.map((l) => l.process)).toEqual([cuttingLabel, 'Nozzle Wear', 'Waterjet Abrasive']);
+    // 'no_db_rate' on these two was reported as "No suitable machine in HR Rates for: waterjet"
+    expect(out.processLines.map((l) => l.rateSource)).toEqual(['mhr_database', 'consumable_allowance', 'consumable_allowance']);
+    expect(out.totalProcessCost).toBeCloseTo(39.911785 + 2.13 + 17.69, 8);
+  });
+
+  it('compares each charge with its own live line: an unchanged route shows no drift', () => {
+    // each charge was compared with the class\'s first line, the cutting line, and so always "out of date"
+    expect(detectAppliedGenerationDrift(WATERJET_GENERATION, live(), getProcessLabelForClass())).toEqual([]);
+  });
+
+  it('reports the charge that did change, under its own name', () => {
+    const drift = detectAppliedGenerationDrift(WATERJET_GENERATION, live(21.5), getProcessLabelForClass());
+    expect(drift).toEqual([{ machineClass: 'waterjet', process: 'Waterjet Abrasive', persistedTotalCost: 17.69, liveTotalCost: 21.5 }]);
+  });
+
+  it('ignores a charge the engine no longer composes (the garnet price is no longer on file)', () => {
+    const withoutGarnet = live().filter((l) => l.process !== 'Waterjet Abrasive');
+    expect(detectAppliedGenerationDrift(WATERJET_GENERATION, withoutGarnet, getProcessLabelForClass())).toEqual([]);
+  });
+
+  it('reads a time row exactly as before: named by its class, with or without the column', () => {
+    for (const charge_basis of ['time', null, undefined]) {
+      const out = applyPersistedRouteToSummary(liveSummary(), [wj({ op_nbr: 10, charge_basis })], getProcessLabelForClass());
+      expect(out.processLines[0]).toMatchObject({ process: cuttingLabel, rateSource: 'mhr_database' });
+    }
+  });
+});

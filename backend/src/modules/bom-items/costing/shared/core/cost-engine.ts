@@ -8,7 +8,7 @@ import {
 import type { NestingResult } from '../../sheet-metal/machine/sheet-metal-nesting.engine';
 import type { CostSummaryDto, ProcessLineCost, ProcessCO2, SustainabilitySummaryDto, PhysicsGap, ConfidenceLevel } from '../../../dto/cost-breakdown.dto';
 import type { SurfaceTreatmentDbRate } from './default-rates.constants';
-import { NO_COST_FEATURE } from './engine-kernel';
+import { NO_COST_FEATURE, isPerPartCharge } from './engine-kernel';
 
 export { eMithranTerms } from './engine-kernel';
 export type { EMithranTermsArgs, EMithranTermsResult } from './engine-kernel';
@@ -742,6 +742,11 @@ export interface AppliedProcessCostRecord {
   line_labour_rate?: number | string | null;
   engine_version?: string | null;
   setup_time_source?: ProcessLineCost['setupTimeSource'] | null;
+  /**
+   * 'per_part' for a charge with no machine time (migration 890): a waterjet's garnet or nozzle wear, a turret's material handling. Such a
+   * row shares its machine class with the operation it belongs to, so it is told apart by this and named by its operation.
+   */
+  charge_basis?: string | null;
   /** The calculation behind the cycle (migration 1097): read back onto the line as the engine line had it. NULL on older rows. */
   calculator_id?: string | null;
   calculator_version?: number | null;
@@ -912,6 +917,9 @@ export function selectAppliedGeneration(
 // machineClass — an exact key the engine already puts on every line — so a
 // newly registered process is covered with no edit here.
 
+/** True for a row written from a per-part charge line (isPerPartCharge): no machine time, its money is total_cost_per_part. */
+const isPerPartRow = (row: AppliedProcessCostRecord): boolean => row.charge_basis === 'per_part';
+
 function buildLineFromAppliedRecord(
   row: AppliedProcessCostRecord,
   processLabelForClass: Readonly<Record<string, string>>,
@@ -925,7 +933,11 @@ function buildLineFromAppliedRecord(
     // process name, so it cannot be the primary source.
     // A No Cost Feature (an operation the route could not cost, written at $0 with its reason as the operation) reads as one, never as the
     // free operation its machine class would name.
-    process: row.process_route === NO_COST_FEATURE ? NO_COST_FEATURE : processLabelForClass[row.machine_class] ?? row.process_route ?? row.operation ?? row.machine_class,
+    // A per-part charge (a waterjet's garnet, its nozzle wear) shares its machine class with the operation it belongs to: the class's
+    // label would name it "Waterjet Cutting". Its own name is the operation it was written with, which is the engine line's process.
+    process: row.process_route === NO_COST_FEATURE ? NO_COST_FEATURE
+      : isPerPartRow(row) && row.operation ? row.operation
+      : processLabelForClass[row.machine_class] ?? row.process_route ?? row.operation ?? row.machine_class,
     processGroup: row.process_group ?? undefined,
     processRoute: row.process_route ?? undefined,
     operation: row.operation ?? undefined,
@@ -966,7 +978,8 @@ function buildLineFromAppliedRecord(
       : r2(Number(row.direct_rate ?? 0)),
     labourRate: row.line_labour_rate != null ? Number(row.line_labour_rate) : undefined,
     setupTimeSource: row.setup_time_source ?? undefined,
-    rateSource: row.mhr_id ? 'mhr_database' : 'no_db_rate',
+    // A per-part charge has no machine by design: read back as "no rate on file" it was reported as a machine missing from HR Rates.
+    rateSource: isPerPartRow(row) ? 'consumable_allowance' : row.mhr_id ? 'mhr_database' : 'no_db_rate',
     machineClass: row.machine_class,
     machineName: row.machine_name ?? null,
     commodityCode: null,
@@ -1021,7 +1034,10 @@ export function detectAppliedGenerationDrift(
 ): AppliedGenerationDrift[] {
   const drift: AppliedGenerationDrift[] = [];
   for (const row of appliedRows) {
-    const live = liveLines.find((l) => l.machineClass === row.machine_class);
+    // A machine class can carry more than one line: the operation and its per-part charges (waterjet cutting, its garnet, its nozzle
+    // wear). Each row is compared with the live line of its own kind, a per-part charge by its name, never with the class's first line.
+    const perPart = isPerPartRow(row);
+    const live = liveLines.find((l) => l.machineClass === row.machine_class && isPerPartCharge(l) === perPart && (!perPart || l.process === row.operation));
     if (!live) continue; // the engine no longer composes this operation at all
     const persisted = Number(row.total_cost_per_part ?? 0);
     const current = Number(live.totalCost ?? 0);
@@ -1029,7 +1045,7 @@ export function detectAppliedGenerationDrift(
     if (Math.abs(current - persisted) > tolerance) {
       drift.push({
         machineClass: row.machine_class,
-        process: processLabelForClass[row.machine_class] ?? row.operation ?? row.machine_class,
+        process: perPart && row.operation ? row.operation : processLabelForClass[row.machine_class] ?? row.operation ?? row.machine_class,
         persistedTotalCost: persisted,
         liveTotalCost: current,
       });
