@@ -377,6 +377,8 @@ const CHART_COLORS = [
   'hsl(30 90% 55%)',
   'hsl(350 70% 55%)',
 ];
+// The index is always inside the palette; recharts 3 no longer takes an undefined fill.
+const chartColor = (index: number) => CHART_COLORS[index % CHART_COLORS.length] ?? '';
 
 interface SpendAnalysisViewProps {
   items: VaveBomItem[];
@@ -522,7 +524,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
           <Card>
             <CardContent className="pt-4 pb-2 px-2">
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={materialData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                <BarChart accessibilityLayer={false} data={materialData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                   <XAxis
                     type="number"
                     tickFormatter={(v: number) => fmtShort(v)}
@@ -539,7 +541,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                     tickLine={false}
                   />
                   <RechartsTooltip
-                    formatter={(v: number) => [formatUSD(v), 'Spend']}
+                    formatter={(v) => [formatUSD(Number(v)), 'Spend']}
                     contentStyle={{
                       background: 'hsl(var(--popover))',
                       border: '1px solid hsl(var(--border))',
@@ -551,7 +553,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                   />
                   <Bar dataKey="spend" radius={[0, 3, 3, 0]}>
                     {materialData.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                      <Cell key={i} fill={chartColor(i)} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -568,7 +570,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
           <Card>
             <CardContent className="pt-4 pb-2 px-2">
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={supplierData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                <BarChart accessibilityLayer={false} data={supplierData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                   <XAxis
                     type="number"
                     tickFormatter={(v: number) => fmtShort(v)}
@@ -585,7 +587,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                     tickLine={false}
                   />
                   <RechartsTooltip
-                    formatter={(v: number) => [formatUSD(v), 'Spend']}
+                    formatter={(v) => [formatUSD(Number(v)), 'Spend']}
                     contentStyle={{
                       background: 'hsl(var(--popover))',
                       border: '1px solid hsl(var(--border))',
@@ -597,7 +599,7 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                   />
                   <Bar dataKey="spend" radius={[0, 3, 3, 0]}>
                     {supplierData.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[(i + 2) % CHART_COLORS.length]} />
+                      <Cell key={i} fill={chartColor(i + 2)} />
                     ))}
                   </Bar>
                 </BarChart>

@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Text, type BaseTickContentProps } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,14 @@ import type { BOMMetricEntry } from "../../types";
 interface Props {
   bomMetrics: BOMMetricEntry[];
 }
+
+// recharts 3 sorts tooltip rows by name; a constant key keeps them in the order the series are declared.
+const keepSeriesOrder = () => 0;
+
+// recharts 3 centres the side labels of the angle axis on their ticks; recharts 2 set every label on its baseline.
+const renderAngleTick = (props: BaseTickContentProps) => (
+  <Text {...props} verticalAnchor="end" className="recharts-polar-angle-axis-tick-value">{props.payload.value}</Text>
+);
 
 export function ComplexityTab({ bomMetrics }: Props) {
   // Assembly complexity analysis
@@ -163,11 +171,11 @@ export function ComplexityTab({ bomMetrics }: Props) {
         <CardContent>
           <div className="h-80 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={assemblyData}>
+              <BarChart accessibilityLayer={false} data={assemblyData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
                 <YAxis />
-                <Tooltip />
+                <Tooltip itemSorter={keepSeriesOrder} />
                 <Bar dataKey="assemblyParts" stackId="a" fill="hsl(var(--chart-4))" name="Assembly Parts" />
                 <Bar dataKey="subAssemblyParts" stackId="a" fill="hsl(var(--chart-3))" name="Sub-Assembly Parts" />
                 <Bar dataKey="childParts" stackId="a" fill="hsl(var(--chart-1))" name="Child Parts" />
@@ -186,10 +194,11 @@ export function ComplexityTab({ bomMetrics }: Props) {
         <CardContent>
           <div className="h-96 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <RadarChart data={radarData}>
+              <RadarChart accessibilityLayer={false} data={radarData}>
                 <PolarGrid />
-                <PolarAngleAxis dataKey="bom" />
-                <PolarRadiusAxis angle={90} domain={[0, 100]} />
+                <PolarAngleAxis dataKey="bom" tick={renderAngleTick} />
+                {/* recharts 3 draws no radius axis or grid for a fixed domain unless a series has values or data may overflow it. */}
+                <PolarRadiusAxis angle={90} domain={[0, 100]} allowDataOverflow />
                 {bomMetrics.map((bd, idx) => (
                   <Radar
                     key={bd.bom.id}
@@ -201,7 +210,7 @@ export function ComplexityTab({ bomMetrics }: Props) {
                     strokeWidth={2}
                   />
                 ))}
-                <Tooltip />
+                <Tooltip itemSorter={keepSeriesOrder} />
               </RadarChart>
             </ResponsiveContainer>
           </div>
