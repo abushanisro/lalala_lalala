@@ -40,18 +40,26 @@ export function classifyLaserMaterial(grade: string | null): LaserMaterialFamily
   if (!grade) return 'OTHER';
   // Split letter/digit boundaries so compact codes tokenize: "SS304" → "SS 304",
   // "AL6061-T6" → "AL 6061 T 6", "IS2062" → "IS 2062"
-  const tokens = new Set(
-    grade
-      .toUpperCase()
-      .replace(/([A-Z])(\d)/g, '$1 $2')
-      .replace(/(\d)([A-Z])/g, '$1 $2')
-      .split(/[^A-Z0-9]+/)
-      .filter(Boolean),
-  );
+  const ordered = grade
+    .toUpperCase()
+    .replace(/([A-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Z])/g, '$1 $2')
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
+  const tokens = new Set(ordered);
   const has = (...keys: string[]) => keys.some((k) => tokens.has(k));
+  const firstOf = (...keys: string[]) => ordered.findIndex((t) => keys.includes(t));
 
   if (has('SS', 'STAINLESS', 'INOX', '304', '316', '321', '410', '430')) return 'SS';
-  if (has('AL', 'ALU', 'ALUMINIUM', 'ALUMINUM', '6061', '6063', '5052', '7075', '2024')) return 'AL';
+  // A bronze or a brass is a copper alloy whatever else its name carries: aluminium bronze, nickel aluminium bronze.
+  if (has('BRONZE', 'BRASS')) return 'CU';
+  // An alloy written by its elements names its base metal first: "Ti-6Al-4V" is titanium with aluminium in it, "Mg-Al-Zn" magnesium,
+  // "Al-Cu-Mg-Ni" aluminium. So an aluminium token names the family only when no titanium, magnesium, nickel or zinc leads it. Those
+  // metals have no laser family of their own: the grade falls through to OTHER.
+  const aluminiumAt = firstOf('AL', 'ALU', 'ALUMINIUM', 'ALUMINUM');
+  const otherBaseAt = firstOf('TI', 'TITANIUM', 'MG', 'MAGNESIUM', 'NI', 'NICKEL', 'ZN', 'ZINC');
+  const aluminiumIsAnAddition = aluminiumAt >= 0 && otherBaseAt >= 0 && otherBaseAt < aluminiumAt;
+  if (!aluminiumIsAnAddition && (aluminiumAt >= 0 || has('6061', '6063', '5052', '7075', '2024'))) return 'AL';
   // CUZN/CW are the EN designations for brass (e.g. CuZn39Pb3 = CW614N, free-
   // cutting brass). Found by the same audit as the JIS steel gap below: the
   // sibling classifier normaliseLaserMaterial already matches /BRASS|CUZ|CW/,
