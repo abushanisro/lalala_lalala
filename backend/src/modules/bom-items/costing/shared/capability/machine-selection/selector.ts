@@ -68,6 +68,8 @@ const BASE_COLUMNS =
   'press_cycle_time_s, handling_time_const_s, handling_time_mass_coeff_s_per_kg, setup_time_hr, machine_power_kw, ' +
   'cut_to_length_cycle_const_s, cut_to_length_cycle_mass_coeff_s_per_kg, cut_to_length_cut_speed_s, ' +
   'number_spindles, drum_index_time_s, transfer_time_s, stock_feed_time_s, speed_synchronization_time_s, ' +
+  // The spindle limits are specs keys (migrations 1093, 1136): only those two keys are read, not the whole specs object.
+  'spindle_speed_rpm:specs->spindle_speed_rpm, live_tooling_speed_rpm:specs->live_tooling_speed_rpm, ' +
   // The two components the canonical MHR is DEFINED as (migration 581:
   // MHR = Direct Overhead + Indirect Overhead). Carried so the benchmark
   // override guard can tell a real, self-consistent machine rate apart from
@@ -128,6 +130,8 @@ interface RawMachineRow {
   transfer_time_s?: number | string | null;
   stock_feed_time_s?: number | string | null;
   speed_synchronization_time_s?: number | string | null;
+  spindle_speed_rpm?: number | string | null;
+  live_tooling_speed_rpm?: number | string | null;
   setup_time_hr?: number | string | null;
   machine_power_kw?: number | string | null;
   direct_overhead_rate?: number | string | null;
@@ -458,6 +462,8 @@ export async function fetchMachinePool(
       transferTimeS: num(raw.transfer_time_s),
       stockFeedTimeS: num(raw.stock_feed_time_s),
       speedSynchronizationTimeS: num(raw.speed_synchronization_time_s),
+      maxSpindleRpm: num(raw.spindle_speed_rpm),
+      liveToolingMaxRpm: num(raw.live_tooling_speed_rpm),
       setupTimeHr: num(raw.setup_time_hr),
       machinePowerKw: num(raw.machine_power_kw),
       directOverheadRate: num(raw.direct_overhead_rate),
@@ -1123,6 +1129,8 @@ function makeNoMachineCandidate(cls: MachineClass): MachineCandidate {
     transferTimeS: null,
     stockFeedTimeS: null,
     speedSynchronizationTimeS: null,
+    maxSpindleRpm: null,
+    liveToolingMaxRpm: null,
     setupTimeHr: null,
     machinePowerKw: null,
     directOverheadRate: null,

@@ -4,6 +4,7 @@ import { DatabaseService } from '../../../../../common/database/database.service
 import type { MaterialClass } from '../process/cost-machining-engine';
 import type { MillingFinishingRow } from '../operation/operation-sequencer';
 import type { DrillingTable } from './drilling-table';
+import type { WorkbookTable } from './workbook-cutting-data';
 import type { HobbingReference, KeywayBroachReference, RotaryBroachReference, SurfaceGrindingParams } from '../calculators/machining-lookup-seeds';
 import type { GearQualityRow } from '../operation/gear-routing';
 import {
@@ -184,6 +185,13 @@ export class MachiningLookupService {
   // runs in the pure cost engine, once per real hole diameter on the part.
   async getDrillingTable(): Promise<DrillingTable | null> {
     return this.loadObjectTable('tblDrilling');
+  }
+
+  // ── The machining workbook's cutting data (migration 1137): speeds, feeds,
+  // tool prices and the material map the workbook-form calculators read.
+  // Rows are matched by the pure resolvers in workbook-cutting-data.ts.
+  async getWorkbookTable<T>(key: WorkbookTable): Promise<T[] | null> {
+    return (await this.loadTable(key)) as T[] | null;
   }
 
   // ── Operation size ranges (tblOperationSizeRanges): per-operation L/D and

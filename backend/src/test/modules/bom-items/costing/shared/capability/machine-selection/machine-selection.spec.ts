@@ -70,6 +70,8 @@ function candidate(overrides: {
     transferTimeS: null,
     stockFeedTimeS: null,
     speedSynchronizationTimeS: null,
+    maxSpindleRpm: null,
+    liveToolingMaxRpm: null,
     setupTimeHr: null,
     machinePowerKw: null,
   directOverheadRate: null,

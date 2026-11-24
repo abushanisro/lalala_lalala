@@ -80,6 +80,11 @@ export interface MHRRateInput {
   transferTimeS?: number | null;
   stockFeedTimeS?: number | null;
   speedSynchronizationTimeS?: number | null;
+  // The selected machine's top main-spindle and driven-tool speeds
+  // (mhr_records.specs, migrations 1093 / 1136). A cutting calculator caps
+  // n = 1000 v / (pi D) at these; null when the machine has none staged.
+  maxSpindleRpm?: number | null;
+  liveToolingMaxRpm?: number | null;
   // The selected machine's own mhr_records.setup_time_hr (via
   // MachineCandidate — see its own doc comment). Generic across any class;
   // Compression Molding / Reaction Injection Molding are the first real
