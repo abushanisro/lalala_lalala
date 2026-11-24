@@ -24,6 +24,7 @@ import type { CostContext } from '../casting/casting-finishing';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { LiveToolHole } from '../machining/capability/live-tooling';
 import type { MHRRateInput } from '../shared/core/cost-engine';
+import type { SandMachine } from '../casting/sand/sand-machines';
 
 const SOURCE_VERSION = '2026-Multi-Spindle';
 
@@ -188,41 +189,66 @@ export class MultiSpindleCostService {
     const bar = selectBar({ outsideMm, form: req.form, lengthMm: part.lengthMm }, stockRef, unitSystemFor(req.location));
     if ('missing' in bar) return none(null, part, bar.missing);
 
-    // The operation times: the turning engine on this bar, raw (the station plan replaces its split, the cycle calculator its index line).
-    const engine = computeTurningCostSummary({
-      ...req.turning,
-      mhrRate: { ...req.turningRate, numberSpindles: null },
-      tappingRate: req.tappingRate,
-      roughTurningOpSplit: null,
-      blankResult: {
-        form: `${bar.form}_bar`, sizeLabel: bar.sizeLabel, billetVolMm3: bar.sectionAreaMm2 * (part.lengthMm + bar.facingStockMm),
-        utilizationPct: null, barDiameterMm: bar.circumscribedMm,
-      },
-    }, MULTI_SPINDLE_MACHINE_CLASS as MachineClassId);
-    // The multi-spindle's operations are timed once, on its rate's machine (as the turning engine above times them): its spindle limit.
-    const spindle = spindleLimitSeed(req.turningRate, req.turning.location);
-    const holes = timeHoleGroups({
-      groups: req.turning.holeGroups, liveHoles: req.liveHoles,
-      drill: (d, depth, n, occurrences) => computeDrillCycle(d, req.turning.materialGrade, depth, req.turning.workbook, req.turning.machiningCalculators, n, occurrences, spindle),
-    });
+    // The operation times, as a machine does them: the turning engine on this bar, raw (the station plan replaces its split, the cycle
+    // calculator its index line), with the holes and threads, all timed on that machine's own spindle and live-tool limits (a cutting
+    // calculator caps its spindle speed there, and the multi-spindles' run 3500 to 10 000 rpm). Timed once for each pair of limits.
     const matClass = detectMaterialClass(req.turning.materialGrade);
-    const threads = timeThreadGroups({
-      threads: req.turning.threads,
-      tap: (t, count) => computeTapCycle({ ...t, count }, matClass, req.turning.workbook, req.turning.machiningCalculators, spindle),
-    });
+    const timeOn = (rate: MHRRateInput) => {
+      const engine = computeTurningCostSummary({
+        ...req.turning,
+        mhrRate: { ...rate, numberSpindles: null },
+        tappingRate: req.tappingRate,
+        roughTurningOpSplit: null,
+        blankResult: {
+          form: `${bar.form}_bar`, sizeLabel: bar.sizeLabel, billetVolMm3: bar.sectionAreaMm2 * (part.lengthMm + bar.facingStockMm),
+          utilizationPct: null, barDiameterMm: bar.circumscribedMm,
+        },
+      }, MULTI_SPINDLE_MACHINE_CLASS as MachineClassId);
+      const spindle = spindleLimitSeed(rate, req.turning.location);
+      const holes = timeHoleGroups({
+        groups: req.turning.holeGroups, liveHoles: req.liveHoles,
+        drill: (d, depth, n, occurrences) => computeDrillCycle(d, req.turning.materialGrade, depth, req.turning.workbook, req.turning.machiningCalculators, n, occurrences, spindle),
+      });
+      const threads = timeThreadGroups({
+        threads: req.turning.threads,
+        tap: (t, count) => computeTapCycle({ ...t, count }, matClass, req.turning.workbook, req.turning.machiningCalculators, spindle),
+      });
+      return { engine, holes, threads };
+    };
+    const timings = new Map<string, ReturnType<typeof timeOn>>();
+    const timingFor = (m: SandMachine | null) => {
+      // The machine's own limits (mhr_records.specs, migration 1093), on its own record; with none, the turning rate's.
+      const spindleRpm = m ? Number(m.specs.spindle_speed_rpm) : NaN;
+      const liveRpm = m ? Number(m.specs.live_tooling_speed_rpm) : NaN;
+      const rate: MHRRateInput = m && Number.isFinite(spindleRpm) && spindleRpm > 0 ? {
+        ...req.turningRate, machineName: m.name, mhrRecordId: m.id, maxSpindleRpm: spindleRpm,
+        liveToolingMaxRpm: Number.isFinite(liveRpm) && liveRpm > 0 ? liveRpm : null,
+      } : req.turningRate;
+      const key = rate === req.turningRate ? 'rate' : `${rate.maxSpindleRpm}|${rate.liveToolingMaxRpm}|${m!.id}`;
+      const held = timings.get(key);
+      if (held) return held;
+      const timed = timeOn(rate);
+      timings.set(key, timed);
+      return timed;
+    };
+    const engineFor = (m: SandMachine | null) => {
+      const { engine, holes, threads } = timingFor(m);
+      return {
+        lines: engine.processLines, liveMilling: [...new Set((req.turning.latheMilling ?? []).map((op) => op.name))],
+        holes, threads, turned: cylindersToTurn(turned, bar.circumscribedMm),
+      };
+    };
 
     const keyOf = (v: unknown): MultiSpindleRouteKey | null => MULTI_SPINDLE_ROUTES.find((r) => r.key === v)?.key ?? null;
     const quote = quoteMultiSpindle({
       ref: reference, spec, calculators, machines, rules, bar, part, material: req.material,
       // The cylinders the engine turned from this bar: the same rule on the same bar (turned-diameters.ts). Its milling lines are the
-      // operations on the part's keyways and slots, which a live tool mills.
-      engine: {
-        lines: engine.processLines, liveMilling: [...new Set((req.turning.latheMilling ?? []).map((op) => op.name))],
-        holes, threads, turned: cylindersToTurn(turned, bar.circumscribedMm),
-      },
+      // operations on the part's keyways and slots, which a live tool mills. Each machine's timed on its own spindles.
+      engineFor,
       chosen: keyOf(req.forceRoute) ?? keyOf(req.overrides?.[MULTI_SPINDLE_ROUTE_KEY]),
       batchSize: req.batchSize, costContext: req.costContext, usdToLocal: req.usdToLocal,
     });
-    return { quote, bar, part, missing: [], warnings: [...new Set([...engine.warnings, ...quote.warnings])] };
+    // The engine's warnings on the quoted route's machine.
+    return { quote, bar, part, missing: [], warnings: [...new Set([...timingFor(quote.route?.machine ?? null).engine.warnings, ...quote.warnings])] };
   }
 }

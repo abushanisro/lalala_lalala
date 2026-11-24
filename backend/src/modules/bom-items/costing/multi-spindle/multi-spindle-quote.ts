@@ -110,6 +110,12 @@ export function barStock(input: {
   return run.value == null ? { run: null, missing: run.missing.join('; ') } : { run, missing: null };
 }
 
+/** The part's operations timed for a machine: what the multi-spindle work is built from. */
+export interface MultiSpindleEngine {
+  lines: readonly ProcessLineCost[]; liveMilling: readonly string[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[];
+  turned: readonly { diameterMm: number; lengthMm: number }[];
+}
+
 export function quoteMultiSpindle(input: {
   ref: SandReference;
   spec: DomainCalculatorSpec;
@@ -121,12 +127,10 @@ export function quoteMultiSpindle(input: {
   material: MultiSpindleMaterial;
   /**
    * The turning engine's lines on the bar (in the location's currency), which of them a live tool mills (by name), the holes timed by
-   * diameter group, the threads by size, and the cylinders it turns down from the bar (each one's diameter and length).
+   * diameter group, the threads by size, and the cylinders it turns down from the bar (each one's diameter and length), as a machine does
+   * them: timed on its own spindle limits. null: no machine of the route takes the part, the operations as the turning rate times them.
    */
-  engine: {
-    lines: readonly ProcessLineCost[]; liveMilling: readonly string[]; holes: readonly HoleGroupWork[]; threads: readonly ThreadGroupWork[];
-    turned: readonly { diameterMm: number; lengthMm: number }[];
-  };
+  engineFor: (m: SandMachine | null) => MultiSpindleEngine;
   /** A route set by hand (Cost Guide) or priced on its own (the route comparison). */
   chosen: string | null;
   batchSize: number;
@@ -147,26 +151,39 @@ export function quoteMultiSpindle(input: {
     missing: material.missing,
   };
 
-  const work = multiSpindleWork({
-    lines: input.engine.lines, liveMilling: input.engine.liveMilling, holes: input.engine.holes, threads: input.engine.threads,
-    partLengthMm: part.lengthMm, partVolumeMm3: part.volumeMm3,
-    turned: input.engine.turned, barSectionAreaMm2: bar.sectionAreaMm2, stockLengthMm: part.lengthMm + bar.facingStockMm,
-  });
-  const gapLines = work.gaps.map((g) => gap(g.process, MULTI_SPINDLE_PROCESS_GROUP, MULTI_SPINDLE_MACHINE_CLASS, g.reason));
+  // The part's work as each machine does it (its operations timed on that machine's spindle limits), built once a machine.
+  const works = new Map<SandMachine | null, ReturnType<typeof multiSpindleWork>>();
+  const workOf = (m: SandMachine | null) => {
+    const held = works.get(m);
+    if (held) return held;
+    const engine = input.engineFor(m);
+    const work = multiSpindleWork({
+      lines: engine.lines, liveMilling: engine.liveMilling, holes: engine.holes, threads: engine.threads,
+      partLengthMm: part.lengthMm, partVolumeMm3: part.volumeMm3,
+      turned: engine.turned, barSectionAreaMm2: bar.sectionAreaMm2, stockLengthMm: part.lengthMm + bar.facingStockMm,
+    });
+    works.set(m, work);
+    return work;
+  };
   const built = buildMultiSpindleRoutes({
     ref: input.ref, spec: input.spec, calculators: input.calculators, machines: input.machines, rules: input.rules,
-    work: { ops: work.ops, barCircumscribedMm: bar.circumscribedMm, lengthPerPartMm: bar.lengthPerPartMm },
+    workFor: (m) => ({ ops: workOf(m).ops, barCircumscribedMm: bar.circumscribedMm, lengthPerPartMm: bar.lengthPerPartMm }),
     batchSize: input.batchSize, costContext: input.costContext,
   });
+  // A route's lines are its machine's: the operations it cannot time, and those off the machine, as that machine's work states them.
+  const gapsOf = (m: SandMachine | null) => workOf(m).gaps;
   const routes: MultiSpindleRouteQuote[] = built.map(({ line, ...route }) => {
+    const work = workOf(route.machine);
+    const gapLines = work.gaps.map((g) => gap(g.process, MULTI_SPINDLE_PROCESS_GROUP, MULTI_SPINDLE_MACHINE_CLASS, g.reason));
     const lines = [lineToLocal(line, input.usdToLocal), ...gapLines, ...work.offMachine];
     return { ...route, lines, total: round(lines.reduce((s, l) => s + l.totalCost, 0) + (stock.cost ?? 0), 2) };
   });
   const quoted = chooseMultiSpindleRoute(routes, input.chosen, (r) => r.total);
+  const gaps = gapsOf(quoted?.machine ?? null);
   const warnings = [
     ...(quoted?.warnings ?? []),
     ...(stock.missing ? [`The bar is not priced: ${stock.missing}. The total excludes it.`] : []),
-    ...(work.gaps.length ? [`Not timed on the machine: ${work.gaps.map((g) => g.process).join(', ')}. The total excludes them.`] : []),
+    ...(gaps.length ? [`Not timed on the machine: ${gaps.map((g) => g.process).join(', ')}. The total excludes them.`] : []),
   ];
-  return { stock, routes, route: quoted, complete: !!quoted?.complete && work.gaps.length === 0 && stock.cost != null, warnings };
+  return { stock, routes, route: quoted, complete: !!quoted?.complete && gaps.length === 0 && stock.cost != null, warnings };
 }

@@ -28,7 +28,7 @@ const work = (over: Partial<MultiSpindleWork> = {}): MultiSpindleWork => ({
 });
 const build = (w: MultiSpindleWork = work(), machines: SandMachine[] = multiSpindleMachinesFromMemory()) => buildMultiSpindleRoutes({
   ref: stockReferenceFromMemory(), spec: loadMultiSpindleCalculatorSpec(), calculators: multiSpindleCalculatorsByName(),
-  machines, work: w, rules: splitRulesFromMemory(), batchSize: 1000, costContext: ZERO_CONTEXT,
+  machines, workFor: () => w, rules: splitRulesFromMemory(), batchSize: 1000, costContext: ZERO_CONTEXT,
 });
 const spindlesOf = (key: string) => MULTI_SPINDLE_ROUTES.find((r) => r.key === key)!.spindles;
 const machine = (name: string) => multiSpindleMachinesFromMemory().find((m) => m.name === name)!;
