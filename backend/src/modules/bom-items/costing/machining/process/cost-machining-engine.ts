@@ -17,6 +17,7 @@ import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost }
 import type { MachiningCapabilityRules } from '../capability-rules';
 import { INSPECTION_TABLE, INSPECTION_TIME_COLUMN, type InspectionReference } from '../inspection-reference';
 import { lookupSeed, variableSeed } from '../calculators/machining-source-refs';
+import type { StockFacing } from '../../stock/stock-facing';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
 import type { OperationLine } from '../operation/operation-sequencer';
@@ -157,6 +158,8 @@ export interface MachiningCostInput {
     endAllowanceMm?: number;
     /** A tube's bore: its part-off cuts the wall, not to the centre. */
     tubeIdMm?: number;
+    /** What a mill faces off the piece before the part's features (stock/stock-facing.ts). Absent: nothing to face. */
+    facing?: StockFacing;
   };
   /**
    * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = it is loaded as a piece cut to
@@ -1914,6 +1917,9 @@ export function computeMillingCostSummary(
   let millRun: CalcRun | null = null;
   // Without feature data: what the bulk milling and the drilling lack of their real inputs.
   const unpricedWithoutFeatures: string[] = [];
+  // Without feature data: the steps and the tool wear of the operations the line times (Facing, Bulk Milling, Drilling, Boring).
+  let fallbackSteps: CalculationTraceStep[] = [];
+  let fallbackToolInr = 0;
   if (Array.isArray(input.featureOps) && input.featureOps.length > 0) {
     // Root-caused live (2026-09-18): buildOperationSequence() (the feature
     // sequencer) emits its OWN "Tapping" entry for every tapped hole (real
@@ -1933,9 +1939,22 @@ export function computeMillingCostSummary(
     }));
     cncMillingMin = (millRun.sec ?? 0) / 60;
   } else {
-    // No feature graph (the CAD engine did not return feature_graph_v2): the whole stock-to-part volume is one Bulk Milling operation,
-    // timed by its calculator.
-    const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume);
+    // No feature graph (the CAD engine did not return feature_graph_v2): the stock piece's faces faced as the sequenced route faces them
+    // (the stock model's facing, stock/stock-facing.ts), the rest of the stock-to-part volume one Bulk Milling operation, the holes drilled
+    // and a hole the drills do not reach bored to size, each timed by its calculator on this mill's spindle.
+    const machine = spindleLimitSeed(mhrRate, input.location);
+    const facing = input.blankResult?.facing;
+    const faced = facing ? workbookCycle('Facing', input.workbook, input.machiningCalculators, matClass, {
+      'Face Length': { value: facing.lengthMm, source: `Stock: ${facing.basis}` },
+      'Face Width': { value: facing.widthMm, source: `Stock: ${facing.basis}` },
+      'Stock Depth': { value: facing.depthMm, source: `Stock: ${facing.basis}` },
+      'Faces': { value: facing.faces, source: `Stock: ${facing.basis}` },
+    }, machine) : null;
+    const facingMin = (faced?.sec ?? 0) / 60;
+    const facingMissing = faced && faced.sec == null ? faced.missing : [];
+    if (facingMissing.length > 0) warnings.push(`Facing not priced — missing real input: ${facingMissing.join('; ')}.`);
+    // What Facing takes off the piece is not milled again in bulk.
+    const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume - (facing?.volumeMm3 ?? 0));
     const rate = input.millingRemovalRateMm3PerMin;
     const bulk = runMachiningCalculator(input.machiningCalculators, 'Bulk Milling', {
       'Removed Volume': { value: materialRemovalMm3, source: 'Stock volume less the CAD part volume' },
@@ -1949,12 +1968,27 @@ export function computeMillingCostSummary(
     if (bulkMissing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulkMissing.join('; ')}.`);
     const roughingMin = materialRemovalMm3 > 0 ? (bulk.sec ?? 0) / 60 : 0;
 
-    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
+    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.workbook, input.machiningCalculators, machine);
     const drillingMin = drilling.min;
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
+    // A hole the drills do not reach: drilled at the largest of them (above), then bored to size on the mill.
+    const bores = drilling.oversize.length > 0 && drilling.largestDrillMm != null
+      ? boreHoleGroups('Boring', drilling.oversize, drilling.largestDrillMm, matClass, input.workbook, input.machiningCalculators, machine)
+      : null;
+    const boringMin = (bores?.run.sec ?? 0) / 60;
+    const boringMissing = bores ? bores.run.missing : [];
+    if (boringMissing.length > 0) warnings.push(`Boring not priced for: ${boringMissing.join('; ')}.`);
 
-    cncMillingMin = roughingMin + drillingMin;
-    unpricedWithoutFeatures.push(...bulkMissing, ...drilling.missing);
+    cncMillingMin = facingMin + roughingMin + drillingMin + boringMin;
+    unpricedWithoutFeatures.push(...facingMissing, ...bulkMissing, ...drilling.missing, ...boringMissing);
+    fallbackSteps = [
+      ...(faced ? prefixTrace('Facing ·', faced.trace) : []),
+      ...(materialRemovalMm3 > 0 ? prefixTrace('Bulk Milling ·', bulk.trace) : []),
+      ...prefixTrace('Drilling ·', drilling.trace),
+      ...(bores ? prefixTrace('Boring ·', bores.run.trace) : []),
+      traceCalc(`${realProcessName(machineClass)} cycle time`, cncMillingMin * 60, 's', 'Facing + Bulk Milling + Drilling + Boring'),
+    ];
+    fallbackToolInr = (drilling.outputs['Tool Cost per Part'] ?? 0) + (bores?.run.outputs['Tool Cost per Part'] ?? 0);
   }
   // An operation the sequencer could not price leaves the line short of its time: the line is a named gap, so the
   // route is not fully costed and cannot be applied at a total that silently leaves the operation out.
@@ -1990,8 +2024,10 @@ export function computeMillingCostSummary(
       .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
       .flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
     // The tool wear of the operations the mill line times (the workbook's drills, step drills and boring bars), on the mill line.
-    const millToolInr = (input.featureOps ?? []).filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name)).reduce((t, o) => t + (o.toolCostInr ?? 0), 0);
-    const millLineCosted = millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, [], millLacks);
+    const millToolInr = millRun
+      ? (input.featureOps ?? []).filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name)).reduce((t, o) => t + (o.toolCostInr ?? 0), 0)
+      : fallbackToolInr;
+    const millLineCosted = millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, fallbackSteps, millLacks);
     processLines.push(withToolCost(millLineCosted, { outputs: { 'Tool Cost per Part': millToolInr } }, input.workbook, warnings));
   }
   if (cncMillingMin <= 0) {
