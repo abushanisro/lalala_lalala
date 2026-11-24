@@ -15,6 +15,25 @@ import type { TurretPunchMachineParams } from '../../shared/core/manufacturing-p
 // to the table" — never a guess dressed up as a lookup result.
 
 // ── Normalise material names to match the seeded sm_lookup_laser_cut values ───
+/** A cast iron's grade, by its name or its designation (EN-GJL/GJS/GJM, DIN GG/GGG, ASTM A48/A536, IS FG/SG). */
+const CAST_IRON = /CAST\s*IRON|GR[AE]Y\s*IRON|DUCTILE|NODULAR|MALLEABLE|EN-?GJ[LSM]|\bGJ[LSM]\b|\bGGG?\s?-?\d|ASTM\s*A\s?(48|536)\b|\bFG\s?\d{3}|\bSG\s?IRON/;
+
+/**
+ * The material a grade is cut as in the thermal cutting data (the plasma and oxyfuel rows of sm_reference_data name Steel, Stainless Steel
+ * and Cast Iron): a cast iron its own rows, a stainless steel its own, an aluminium or a copper alloy none (the data holds no rows of a
+ * non-ferrous metal, and its plasma cut is not a steel's), any other grade the steel rows, as before.
+ */
+export function thermalCutMaterial(grade: string | null | undefined): 'Steel' | 'Stainless Steel' | 'Cast Iron' | null {
+  if (CAST_IRON.test((grade ?? '').toUpperCase())) return 'Cast Iron';
+  const family = classifyLaserMaterial(grade ?? null);
+  if (family === 'SS') return 'Stainless Steel';
+  if (family === 'AL' || family === 'CU') return null;
+  return 'Steel';
+}
+
+/** The machining workbook's plasma curve (tblThermalCutFeed, migration 1137): its feed and kerf by plate thickness, the same for every material. */
+export const WORKBOOK_PLASMA = { table: 'tblThermalCutFeed', machine: 'Plasma Cutting Machine', sourceVersion: '2026-03' } as const;
+
 export function normaliseLaserMaterial(grade: string | null | undefined): string {
   const g = (grade ?? '').toUpperCase();
   // classifyLaserMaterial is the capability gate's classifier and reads bare
@@ -136,12 +155,16 @@ export interface PlasmaCutParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 export interface PlasmaPunchParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 interface RollBendingMachineParams {
@@ -308,7 +331,8 @@ export class SheetMetalLookupService {
   ): Promise<{ table: string; material: string | null; minThicknessMm: number | null; maxThicknessMm: number | null }> {
     const family = classifyLaserMaterial(grade ?? null);
     const named =
-      family === 'MS' ? 'Carbon Steel'
+      CAST_IRON.test((grade ?? '').toUpperCase()) ? 'Cast Iron'
+      : family === 'MS' ? 'Carbon Steel'
       : family === 'SS' ? 'Stainless Steel'
       : family === 'AL' ? 'Aluminium'
       : family === 'CU' && normaliseLaserMaterial(grade) === 'Brass' ? 'Brass'
@@ -327,9 +351,19 @@ export class SheetMetalLookupService {
       const { data } = await db.from('sm_lookup_waterjet_cut').select('thickness_mm').eq('material', named).not('cutting_speed_mm_per_min', 'is', null);
       thicknesses = (data ?? []).map((r: { thickness_mm: unknown }) => Number(r.thickness_mm));
     } else {
-      // The plasma and oxyfuel rows name their materials Steel, Cast Iron and Stainless Steel.
-      if (named !== 'Carbon Steel' && named !== 'Stainless Steel') return none;
-      material = named === 'Carbon Steel' ? 'Steel' : named;
+      // The plasma and oxyfuel rows name their materials Steel, Cast Iron and Stainless Steel (thermalCutMaterial). A non-ferrous plate
+      // has no rows: plasma cuts it at the machining workbook's curve, the same for every material; oxyfuel does not cut it.
+      const thermal = thermalCutMaterial(grade);
+      if (thermal == null) {
+        if (machineClass !== 'plasma_cut') return none;
+        const curve = await this.workbookPlasmaRows();
+        if (!curve.length) return none;
+        return {
+          table: `${WORKBOOK_PLASMA.table} (machining workbook plasma curve)`, material: named,
+          minThicknessMm: Math.min(...curve.map((r) => r.thicknessMm)), maxThicknessMm: Math.max(...curve.map((r) => r.thicknessMm)),
+        };
+      }
+      material = thermal;
       const { data } = await db.from('sm_reference_data').select('raw').eq('category', 'lookup_table').like('key', `nestingCutRate:%:${cut}:%`);
       thicknesses = (data ?? []).filter((r: any) => r.raw?.materialTypeName === material).map((r: any) => Number(r.raw?.thicknessMm));
     }
@@ -471,7 +505,9 @@ export class SheetMetalLookupService {
     // carbon steel 'Carbon Steel' not 'Steel'). Remapped here rather than
     // widening normaliseLaserMaterial itself, which every laser/waterjet
     // caller also depends on staying exactly as-is.
-    const oxyfuelMaterial = material === 'Stainless Steel' ? 'Stainless Steel' : 'Steel';
+    // A cast iron its own rows (thermalCutMaterial); a non-ferrous grade keeps the steel rows it was read at before (oxyfuel does not
+    // cut it: the route is the caller's to refuse, getCutFeedCoverage).
+    const oxyfuelMaterial = thermalCutMaterial(grade) ?? 'Steel';
 
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data, error } = await db
@@ -666,10 +702,22 @@ export class SheetMetalLookupService {
     powerWatts: number,
     grade: string | null | undefined,
     thicknessMm: number,
-  ): Promise<{ feedRateLargeFeaturesMmPerMin: number; pierceTimeSec: number; dataFound: boolean }> {
+  ): Promise<{ feedRateLargeFeaturesMmPerMin: number; pierceTimeSec: number; dataFound: boolean; source?: string }> {
     const noData = { feedRateLargeFeaturesMmPerMin: 0, pierceTimeSec: 0, dataFound: false };
-    const material = normaliseLaserMaterial(grade);
-    const plasmaMaterial = material === 'Stainless Steel' ? 'Stainless Steel' : 'Steel';
+    const plasmaMaterial = thermalCutMaterial(grade);
+    // A non-ferrous plate (aluminium, a copper alloy): the plasma data holds no rows of it, and it was fed at a steel's rate. The machining
+    // workbook's plasma curve states one feed for every material, by thickness: the first of its thicknesses that holds the plate.
+    if (plasmaMaterial == null) {
+      const curve = await this.workbookPlasmaRows();
+      const row = curve.find((r) => r.thicknessMm >= thicknessMm);
+      if (!row) return noData;
+      return {
+        feedRateLargeFeaturesMmPerMin: row.feedMmPerMin, pierceTimeSec: 0, dataFound: true,
+        source: `${machineTypeKeyFragment === 'PlasmaCut' ? 'Plasma Cut' : 'Plasma Punch'}: the plasma cut data holds no rows of ${normaliseLaserMaterial(grade)}; `
+          + `fed at the machining workbook's plasma curve (${WORKBOOK_PLASMA.table}, the same for every material): ${row.feedMmPerMin} mm/min at its `
+          + `${row.thicknessMm} mm row for ${thicknessMm} mm plate, with no pierce time (the workbook times plasma by its feed alone)`,
+      };
+    }
 
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data, error } = await db
@@ -696,6 +744,20 @@ export class SheetMetalLookupService {
       return noData;
     }
     return { feedRateLargeFeaturesMmPerMin: feedRate, pierceTimeSec: pierceTimeS, dataFound: true };
+  }
+
+  /** The machining workbook's plasma curve (tblThermalCutFeed), ascending by thickness; empty when it is not staged. */
+  @ReferenceMemo()
+  async workbookPlasmaRows(): Promise<Array<{ thicknessMm: number; feedMmPerMin: number; kerfMm: number }>> {
+    const { data, error } = await this.referenceClient()
+      .from('machining_reference_data').select('raw')
+      .eq('category', 'lookup_table').eq('source_version', WORKBOOK_PLASMA.sourceVersion).eq('key', WORKBOOK_PLASMA.table).maybeSingle();
+    if (error || !Array.isArray(data?.raw)) return [];
+    return (data!.raw as Array<Record<string, unknown>>)
+      .filter((r) => r.Machine === WORKBOOK_PLASMA.machine)
+      .map((r) => ({ thicknessMm: Number(r.ThicknessMm), feedMmPerMin: Number(r.FeedMmPerMin), kerfMm: Number(r.KerfMm) }))
+      .filter((r) => r.thicknessMm > 0 && r.feedMmPerMin > 0)
+      .sort((a, b) => a.thicknessMm - b.thicknessMm);
   }
 
   async getPlasmaCutParams(

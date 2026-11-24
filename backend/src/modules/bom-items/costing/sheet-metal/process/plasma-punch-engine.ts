@@ -116,7 +116,7 @@ export class PlasmaPunchEngine extends BaseCuttingEngine {
   readonly processLabel = 'Plasma Punch';
 
   computeCost(context: CuttingProcessContext): CuttingProcessResult {
-    return computePlasmaPunchCost({
+    const result = computePlasmaPunchCost({
       sheetThicknessMm: context.sheetThicknessMm,
       cutLengthMm: context.cutLengthMm,
       pierceCount: context.pierceCount,
@@ -137,5 +137,8 @@ export class PlasmaPunchEngine extends BaseCuttingEngine {
         pierceTimeSec: context.plasmaPunchParams.pierceTimeSec,
       } : {}),
     });
+    // A feed read elsewhere than the plasma cut data (the machining workbook's curve for a non-ferrous plate) is said on the line.
+    const source = context.plasmaPunchParams?.dataFound ? context.plasmaPunchParams.source : undefined;
+    return source ? { ...result, warnings: [...result.warnings, source] } : result;
   }
 }
