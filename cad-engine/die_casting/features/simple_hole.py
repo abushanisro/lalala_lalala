@@ -1,124 +1,93 @@
 """
 Die Casting SimpleHole / MultiStepHole.
 
-Stage 1 candidate source: shared/machining_geometry.collect_cylinders — the
-same domain-agnostic cylinder collector Sheet Metal already reuses (imported
-from shared/, never from the machining package, so Die Casting gains no
-Machining dependency). Its kind classification (through_hole / blind_hole,
-via a real envelope-span test) IS the real Stage-2 evidence for a plain
-SimpleHole — not re-guessed here.
+The holes come from the recogniser every shell- and die-formed analysis shares (injection_molding/recognition/holes.recognize_holes, used by
+the molding, forging, powder metal, additive, composite and roto/blow analyses): one hole however many faces carry its wall, only a cylinder
+that wraps a full turn (an arc is a fillet, not a hole), in any direction (a cross hole across the pull is kept), blind when a face closes an
+end, and bores stacked on one line as one MultiStepHole. The casting's own reading of a hole is kept: its axis, tool axis, L/D and, for a blind
+hole, that L/D against the generic ceiling below.
 
-MultiStepHole: shared/machining_geometry.detect_multistep_holes groups
-coaxial bores and rejects any group whose diameters are not strictly
-monotonic (a real tie means it is not one genuine tapered sequence) — that
-rejection IS its own Stage-2 test, run before any bore is considered a plain
-SimpleHole (per detect_multistep_holes' own docstring: must run first so a
-genuine 3-step hole is never also reported as overlapping 2-way pairs).
+Real sourced threshold used: memory/Die Casting/Lookup/tblDTCLimits.csv's one generic (process "Other", i.e. material/process-agnostic)
+blind-hole L/D ceiling of 2.00, annotated as a disclosed fact, never a pass/fail verdict.
 
-Real sourced threshold used: memory/Die Casting/Lookup/tblDTCLimits.csv's one
-generic (process "Other", i.e. material/process-agnostic) blind-hole L/D
-ceiling of 2.00 — the only Die Casting hole threshold that does not first
-require a material/process choice (every other Lookup table is split by
-Material Type and/or Process Name, which Phase 1 deliberately does not
-select; see the Die Casting Phase 1 plan's "Explicitly out of scope"). This
-Phase 1 annotates the real measured L/D against that one generic ceiling as
-a disclosed fact, never a pass/fail verdict.
-
-Not yet implemented in this phase (disclosed, not silently dropped): Ring and
-RingedHole, also real catalog feature types, are deferred — any geometry that
-would need them is left to fall through to NotSupported this phase.
+Not yet implemented (disclosed, not silently dropped): Ring and RingedHole, also real catalog feature types, are deferred.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
-from shared.machining_geometry import collect_cylinders, detect_multistep_holes, part_bounding_box
+from shared.machining_geometry import part_bounding_box
 
 # memory/Die Casting/Lookup/tblDTCLimits.csv: Process="Other" (generic, not
 # material/process-specific), Name="Blind Hole LD Ratio", Limit=2.00.
 BLIND_HOLE_LD_CEILING = 2.00
 
 
-class _BoreStub:
-    """Minimal duck-typed object matching what detect_counterbores/
-    detect_multistep_holes expect (.id/.params/.face_ids) — plain data, no
-    Machining-package class."""
-
-    __slots__ = ("id", "params", "face_ids")
-
-    def __init__(self, id_: str, params: Dict[str, Any], face_ids: List[int]):
-        self.id = id_
-        self.params = params
-        self.face_ids = face_ids
-
-
 def detect_holes(
     shape: Any,
     bbox_minmax: Optional[Dict[str, float]],
     primary_setup_axis: Optional[List[float]],
+    meshes: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
-    main_axis: Tuple[float, float, float] = (
-        tuple(primary_setup_axis) if primary_setup_axis else (0.0, 0.0, 1.0)
-    )
-    bbox = bbox_minmax if bbox_minmax else part_bounding_box(shape)
-    cylinders = collect_cylinders(shape, main_axis, bbox)
-    bores = [c for c in cylinders if c["kind"] in ("through_hole", "blind_hole")]
+    """
+    The casting's holes, from the hole recogniser the molding, forging, powder metal, additive, composite and roto/blow analyses share
+    (injection_molding/recognition/holes.recognize_holes): the faces of one bore however many there are, a cylinder that wraps at least
+    FULL_SWEEP_DEG (a fillet or a boss's rounded corner is an arc, not a hole), any direction (a cross hole across the pull is kept), blind when
+    a face closes an end. A stack of bores on one line is a MultiStepHole. The old candidate source (collect_cylinders about the setup axis)
+    kept only through/blind bores about that axis and took each split face for a hole of its own.
+    """
+    from injection_molding.recognition.holes import recognize_holes
+    from injection_molding.recognition.mesh import tessellate_faces
 
-    bore_features: List[_BoreStub] = []
-    bore_id_to_cyl: Dict[str, Dict] = {}
-    for idx, cyl in enumerate(bores):
-        fid = f"dc_bore_{idx}"
-        diameter_mm = round(cyl["radius"] * 2.0, 3)
-        depth_mm = round(cyl["length"], 3)
-        bore_features.append(_BoreStub(
-            fid, {"diameter_mm": diameter_mm, "depth_mm": depth_mm}, list(cyl.get("face_indices", [])),
-        ))
-        bore_id_to_cyl[fid] = cyl
-
-    # MultiStepHole groups FIRST (detect_multistep_holes' own tie-rejection is
-    # its Stage-2 test) -- claimed bores are excluded from the plain-hole pass.
-    multistep_groups = detect_multistep_holes(bore_features, bore_id_to_cyl)
-    claimed_ids = {bid for ids, _params in multistep_groups for bid in ids}
-
-    multi_step_hole_candidates: List[Dict[str, Any]] = []
-    for ids, params in multistep_groups:
-        centroid = params.get("centroid")
-        multi_step_hole_candidates.append({
-            "recognition_status": "recognized",
-            "recognition_evidence": (
-                f"{params['step_count']} coaxial bores, strictly monotonic diameters "
-                f"{[s['diameter_mm'] for s in params['steps']]}"
-            ),
-            "member_bore_ids": ids,
-            "face_ids": params.get("face_ids", []),
-            "centroid_mm": list(centroid) if centroid else None,
-            "steps": params["steps"],
-            "step_count": params["step_count"],
-            "max_diameter_mm": max(s["diameter_mm"] for s in params["steps"]),
-            "min_diameter_mm": min(s["diameter_mm"] for s in params["steps"]),
-            "monotonic": True,
-        })
+    pull: Tuple[float, float, float] = tuple(primary_setup_axis) if primary_setup_axis else (0.0, 0.0, 1.0)
+    if meshes is None:
+        bbox = bbox_minmax if bbox_minmax else part_bounding_box(shape)
+        diagonal = math.sqrt(sum((bbox[f"{a}max"] - bbox[f"{a}min"]) ** 2 for a in "xyz"))
+        meshes = tessellate_faces(shape, linear_deflection=max(0.1, diagonal * 0.001))
+    found = recognize_holes(meshes, pull)
 
     simple_hole_candidates: List[Dict[str, Any]] = []
-    for bore in bore_features:
-        if bore.id in claimed_ids:
+    multi_step_hole_candidates: List[Dict[str, Any]] = []
+    claimed: List[int] = []
+    for h in found["holes"]:
+        face_ids = list(h["face_ids"])
+        claimed += face_ids
+        centroid = _faces_centroid(shape, face_ids)
+        # The bores of a stack, widest first (as detect_multistep_holes listed them); cones (countersinks, drill points) are not steps.
+        steps = sorted(
+            ({"diameter_mm": st["diameter_mm"], "depth_mm": st["length_mm"]} for st in h.get("steps", []) if st.get("kind") == "cylinder"),
+            key=lambda st: st["diameter_mm"], reverse=True,
+        )
+        if h["feature_type"] != "SimpleHole" and len(steps) >= 2:
+            along = [st["diameter_mm"] for st in h["steps"] if st.get("kind") == "cylinder"]
+            monotonic = all(a > b for a, b in zip(along, along[1:])) or all(a < b for a, b in zip(along, along[1:]))
+            multi_step_hole_candidates.append({
+                "recognition_status": "recognized",
+                "recognition_evidence": f"{len(steps)} coaxial bores, diameters {[st['diameter_mm'] for st in steps]}",
+                "face_ids": face_ids,
+                "centroid_mm": list(centroid) if centroid else None,
+                "steps": steps,
+                "step_count": len(steps),
+                "max_diameter_mm": steps[0]["diameter_mm"],
+                "min_diameter_mm": steps[-1]["diameter_mm"],
+                "monotonic": monotonic,
+            })
             continue
-        cyl = bore_id_to_cyl[bore.id]
-        is_through = cyl["kind"] == "through_hole"
-        diameter_mm = bore.params["diameter_mm"]
-        depth_mm = bore.params["depth_mm"]
+        is_through = h["variant"] == "through"
+        diameter_mm = float(h["diameter_mm"])
+        depth_mm = float(h["depth_mm"])
         ld_ratio = round(depth_mm / diameter_mm, 2) if diameter_mm > 0 else None
         occ: Dict[str, Any] = {
             "recognition_status": "recognized",
             "recognition_evidence": (
-                "through-hole: envelope broken on both ends" if is_through
-                else "blind hole: real distinct floor face"
+                "through-hole: neither end closed" if is_through else "blind hole: a face closes one end"
             ),
-            "face_ids": bore.face_ids,
-            "centroid_mm": list(cyl["centroid"]),
+            "face_ids": face_ids,
+            "centroid_mm": list(centroid) if centroid else None,
             # Unit direction of the bore axis: with the centroid it locates the
             # axis line (hole-to-hole wall thickness for castability).
-            "axis": [round(v, 6) for v in cyl["axis"]],
+            "axis": [round(v, 6) for v in h["axis"]],
             "diameter_mm": diameter_mm,
             "depth_mm": depth_mm,
             "ld_ratio": ld_ratio,
@@ -128,7 +97,7 @@ def detect_holes(
         if not is_through and ld_ratio is not None:
             occ["exceeds_blind_hole_ld_ceiling"] = ld_ratio > BLIND_HOLE_LD_CEILING
             occ["blind_hole_ld_ceiling"] = BLIND_HOLE_LD_CEILING
-        occ.update(_hole_tool_axis(shape, bore.face_ids, cyl["axis"], depth_mm, is_through))
+        occ.update(_hole_tool_axis(shape, face_ids, h["axis"], depth_mm, is_through))
         simple_hole_candidates.append(occ)
 
     return {
@@ -136,9 +105,9 @@ def detect_holes(
         "simple_hole_count": len(simple_hole_candidates),
         "multi_step_hole_candidates": multi_step_hole_candidates,
         "multi_step_hole_count": len(multi_step_hole_candidates),
-        # Every bore's own face ids -- the base extractor subtracts this set
+        # Every hole's own face ids -- the base extractor subtracts this set
         # when building the NotSupported bucket.
-        "claimed_face_ids": [fid for b in bore_features for fid in b.face_ids],
+        "claimed_face_ids": claimed,
     }
 
 
