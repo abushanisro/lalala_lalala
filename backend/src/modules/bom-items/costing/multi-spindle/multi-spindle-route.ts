@@ -107,7 +107,11 @@ export function buildMultiSpindleRoutes(input: {
   spec: DomainCalculatorSpec;
   calculators: Readonly<Record<string, ReferenceCalculatorDef>>;
   machines: readonly SandMachine[];
-  work: MultiSpindleWork;
+  /**
+   * The part's work as a machine does it: its operations timed on that machine's own spindles (a cutting calculator caps its spindle speed
+   * at the machine's limit, and the multi-spindles' run 3500 to 10 000 rpm), the bar and the length each part takes.
+   */
+  workFor: (m: SandMachine) => MultiSpindleWork;
   rules: SplitRules;
   batchSize: number;
   costContext: CostContext;
@@ -118,10 +122,11 @@ export function buildMultiSpindleRoutes(input: {
     const evaluate = (m: SandMachine): StepOutcome => {
       const layout = layoutOf(m);
       if (!layout) return { ok: false, reasons: ['no spindle or slide configuration on file (migration 1093)'] };
-      const reasons = capacityReasons(m, input.work);
+      const work = input.workFor(m);
+      const reasons = capacityReasons(m, work);
       if (reasons.length) return { ok: false, reasons };
       if (!calc) return { ok: false, reasons: [`${MULTI_SPINDLE_CALC.cycle} is not in the calculator spec`] };
-      const { ops, notes } = splitOps(input.work.ops, layout.spindles, input.rules);
+      const { ops, notes } = splitOps(work.ops, layout.spindles, input.rules);
       const plan = planStations(ops, layout, {
         toolPositioningSec: num(m.specs.tool_positioning_time_s) ?? 0, partEjectSec: num(m.specs.part_eject_time_s) ?? 0,
       });

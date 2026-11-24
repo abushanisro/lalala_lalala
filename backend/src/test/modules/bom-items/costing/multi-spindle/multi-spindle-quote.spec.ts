@@ -30,7 +30,7 @@ const barFor = (system: 'US' | 'metric'): SelectedBar => {
 const quote = (over: Partial<Parameters<typeof quoteMultiSpindle>[0]> = {}) => quoteMultiSpindle({
   ref: stockReferenceFromMemory(), spec: loadMultiSpindleCalculatorSpec(), calculators: multiSpindleCalculatorsByName(),
   machines: multiSpindleMachinesFromMemory(), rules: splitRulesFromMemory(), bar: barFor('US'), part, material: steel,
-  engine: { lines: engineLines(), liveMilling: [], holes: [], threads: [], turned }, chosen: null, batchSize: 1000, costContext: ZERO_CONTEXT, usdToLocal: 1, ...over,
+  engineFor: () => ({ lines: engineLines(), liveMilling: [], holes: [], threads: [], turned }), chosen: null, batchSize: 1000, costContext: ZERO_CONTEXT, usdToLocal: 1, ...over,
 });
 
 describe('quoteMultiSpindle', () => {
@@ -57,6 +57,36 @@ describe('quoteMultiSpindle', () => {
     expect(q.route!.total).toBeCloseTo(Math.round(sum * 100) / 100, 9);
   });
 
+  it('times the part on each machine\'s own spindles: a machine whose operations take longer is slower on its route, the others are not', () => {
+    // The engine for one machine (its spindle caps the turning to half the speed: twice the time), the same for every other.
+    const base = quote();
+    const chosen = base.route!.machine!;
+    const slowOn = (m: { id: string } | null) => m?.id === chosen.id;
+    const lines = (slow: boolean) => engineLines().map((l) => (slow && l.process.endsWith('Turning') ? { ...l, cycleTimeMin: l.cycleTimeMin * 2 } : l));
+    const seen: Array<string | null> = [];
+    const q = quote({ engineFor: (m) => { seen.push(m?.id ?? null); return { lines: lines(slowOn(m)), liveMilling: [], holes: [], threads: [], turned }; } });
+    // Every machine a route weighs was timed for itself.
+    expect(new Set(seen).size).toBeGreaterThan(1);
+    const before = base.routes.find((r) => r.machine?.id === chosen.id)!;
+    const after = q.routes.find((r) => r.key === before.key)!;
+    // On the slowed machine the cycle is longer, or the route now takes another machine of the same spindle count.
+    expect(after.machine?.id !== chosen.id || after.cycleSec! > before.cycleSec!).toBe(true);
+    // A route whose machine was not slowed is as it was.
+    for (const r of base.routes.filter((x) => x.machine && x.machine.id !== chosen.id && x.key !== before.key)) {
+      expect(q.routes.find((x) => x.key === r.key)!.cycleSec).toBe(r.cycleSec);
+    }
+  });
+
+  it('a route\'s lines are its own machine\'s: an operation its machine cannot time is that route\'s gap only', () => {
+    const base = quote();
+    const chosen = base.route!.machine!;
+    const q = quote({ engineFor: (m) => ({ lines: engineLines(m?.id === chosen.id ? 'Not priced — missing real input: the parting data for this machine.' : undefined), liveMilling: [], holes: [], threads: [], turned }) });
+    const own = q.routes.find((r) => r.machine?.id === chosen.id);
+    const other = q.routes.find((r) => r.machine && r.machine.id !== chosen.id);
+    if (own) expect(own.lines.some((l) => l.physicsGap)).toBe(true);
+    if (other) expect(other.lines.some((l) => l.physicsGap)).toBe(false);
+  });
+
   it('quotes the route set in the Cost Guide', () => {
     expect(quote({ chosen: 'twin' }).route!.key).toBe('twin');
   });
@@ -80,7 +110,7 @@ describe('quoteMultiSpindle', () => {
   });
 
   it('never fails: an operation the data cannot time is a named gap line, and the route keeps the rest', () => {
-    const q = quote({ engine: { lines: engineLines('Not priced — missing real input: tblVirtualPartoffInsertCutData row.'), liveMilling: [], holes: [], threads: [], turned } });
+    const q = quote({ engineFor: () => ({ lines: engineLines('Not priced — missing real input: tblVirtualPartoffInsertCutData row.'), liveMilling: [], holes: [], threads: [], turned }) });
     expect(q.complete).toBe(false);
     const gapLine = q.route!.lines.find((l) => l.process === 'Parting')!;
     expect(gapLine).toMatchObject({ totalCost: 0, processGroup: 'Multi-Spindle Machining', physicsGap: { reason: expect.stringContaining('tblVirtualPartoffInsertCutData') } });
