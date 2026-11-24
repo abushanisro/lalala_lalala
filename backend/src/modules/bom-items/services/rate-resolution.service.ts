@@ -42,7 +42,7 @@ export const MHR_RATE_MACHINE_CLASSES: readonly MachineClass[] = [
   '2_axis_lathe', '3_axis_lathe', '2_axis_bar_feed_lathe_with_sub_spindle', '3_axis_bar_feed_lathe_with_sub_spindle',
   'injection_molding', 'compression_molding', 'structural_foam_molding', 'reaction_injection_molding', 'assembly_molding_insert_injection_molding', 'drill_press', 'pem_press', 'hole_forming',
   'gun_drill', 'deep_bore_machine', 'manual_deburr', 'manual_bench_cell', 'cylindrical_grinder', 'jig_bore', 'jig_grind', 'internal_grinder', 'broach', 'machining_millturn', 'wire_edm', 'hob_machine', 'simultaneous_turning',
-  'machining_inspection', 'special_inspection',
+  'machining_inspection', 'special_inspection', 'xrf_analyzer',
 ];
 
 /** The catalog identity of a machine class: its process_calculator_mappings row
@@ -142,6 +142,8 @@ export class RateResolutionService {
     // preferRealRate() pattern already used for manualDeburr vs. deburring).
     machiningInspection: MHRRateInput;
     specialInspection: MHRRateInput;
+    /** The XRF analyzer of a raw material lot's composition check (class xrf_analyzer, migration 1145). */
+    xrf: MHRRateInput;
     turret: MHRRateInput;
     waterjet: MHRRateInput;
     router: MHRRateInput;
@@ -272,6 +274,7 @@ export class RateResolutionService {
       hobMachine:       get('hob_machine'),
       machiningInspection: get('machining_inspection'),
       specialInspection:   get('special_inspection'),
+      xrf:                 get('xrf_analyzer'),
       turret:           get('turret_punch'),
       waterjet:         get('waterjet'),
       router:           get('router_2axis'),

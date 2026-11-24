@@ -24,7 +24,7 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(committed).toContain('tblInspection');
     // The engine sees only the current entry.
     expect(spec.calculators.filter((c) => c.name === 'Machining - Inspection').map((c) => c.fields.map((f) => f.name))).toEqual([
-      ['Time Per Analysis', 'Inspection Sample Ratio', 'Final Inspection Time', 'Cycle Time'],
+      ['Time Per Analysis', 'Inspection Sample Ratio', 'Final Inspection Time', 'Tool Price', 'Tool Life', 'Tool Cost per Part', 'Cycle Time'],
     ]);
     expect(buildMachiningCalculatorsMigrationSql()).toContain('Positioning Time');
   });
@@ -202,6 +202,15 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     const part = (bore: number) => sheet('Parting', { 'Bar Diameter': 50, 'Bore Diameter': bore, 'Cutting Speed': 18, 'Feed': 0.8, 'Tool Price': 732.4, 'Tool Life': 1000 });
     expect(part(0).sec).toBe(23);
     expect(part(40).sec).toBe(10);
+  });
+
+  it('the inspection gauge and the XRF composition check ship in 1146', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1146_machining_inspection_gauge_and_xrf.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1146, spec));
+  });
+
+  it('RM Composition Analysis reproduces the workbook\'s sheet: 60 s a lot over its 300 parts, 0.2 s a part', () => {
+    // The sheet: Time/part = 60 / (MOQ 0.6256 t x 1000 / part weight 2.0855 kg) = 60 / 300 = 0.2 s.
+    expect(sheet('RM Composition Analysis', { 'Lot Size': 300 }).sec).toBeCloseTo(0.2, 9);
   });
 
   it('the milling line times its moves from data (1142): tool changes and rapids, not a flat 15 %; Stock Prep Mill keeps what it shipped', () => {

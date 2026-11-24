@@ -53,7 +53,8 @@
     "demask": "DeMask",
     "spline_roller": "Spline Roller",
     "profile_gear_grinder": "Profile Gear Grinder",
-    "threaded_wheel_gear_grinder": "Threaded Wheel Gear Grinder"
+    "threaded_wheel_gear_grinder": "Threaded Wheel Gear Grinder",
+    "xrf_analyzer": "Inspection"
   },
   "calculators": [
     {
@@ -2374,6 +2375,70 @@
           "source": "lookup",
           "table": "variables",
           "column": "value"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Time Per Analysis} * {Inspection Sample Ratio} + {Final Inspection Time} * 60"
+        }
+      ],
+      "supersededBy": 1146
+    },
+    {
+      "name": "Machining - Inspection",
+      "operation": "Inspection",
+      "machineClasses": [
+        "machining_inspection",
+        "special_inspection"
+      ],
+      "description": "Inspection time per part from memory/Machining: one analysis of the default inspection type (variables defaultInspectionType, its time from tblInspection) on the share of parts inspected (variables defaultInspectionSampleRatio), plus every part's final quality inspection (variables defaultFinalInspectionTime, min). The holes inspected (Special Inspection: Feature Inspection of SimpleHole, MultiStepHole, RingedHole) are listed on the line; the reference does not make the time per hole, so one analysis is one inspected part. The inspection gauge's wear is the line's tool cost: its price over its life, from the workbook's Inspection sheet (Rs 3500 over 10 000 parts).",
+      "migration": 1146,
+      "fields": [
+        {
+          "name": "Time Per Analysis",
+          "unit": "s",
+          "source": "lookup",
+          "table": "tblInspection",
+          "column": "Time Per Analysis (s)"
+        },
+        {
+          "name": "Inspection Sample Ratio",
+          "unit": null,
+          "source": "lookup",
+          "table": "variables",
+          "column": "value"
+        },
+        {
+          "name": "Final Inspection Time",
+          "unit": "min",
+          "source": "lookup",
+          "table": "variables",
+          "column": "value"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Inspection gauge"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Inspection gauge"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
         },
         {
           "name": "Cycle Time",
@@ -5809,6 +5874,34 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Slots} * {Time per Slot}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - RM Composition Analysis",
+      "operation": "RM Composition Analysis",
+      "machineClasses": [
+        "xrf_analyzer"
+      ],
+      "migration": 1146,
+      "description": "Checking the composition of each raw material lot on an XRF analyzer, as the Machining calculator workbook's RM Composition Analysis sheet times it: 60 s a lot (Time/batch), shared over the parts the lot makes. The lot is the batch: the sheet's lot is its part volume (the MOQ it states in tons is the part weight x that volume). No tool. An incoming-material inspection: the catalog's Machining Inspection process, as its own operation. (A line no quote had: HR Rates had no XRF work centre; migration 1145 adds it.)",
+      "fields": [
+        {
+          "name": "Time per Lot",
+          "unit": "s",
+          "source": "default",
+          "default": 60,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), RM Composition Analysis sheet K5: Time/batch 60 s."
+        },
+        {
+          "name": "Lot Size",
+          "unit": null,
+          "source": "bom"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Time per Lot} / {Lot Size}"
         }
       ]
     }

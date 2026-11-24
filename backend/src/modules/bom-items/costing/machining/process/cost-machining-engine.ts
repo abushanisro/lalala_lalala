@@ -108,6 +108,11 @@ export interface MachiningCostInput {
   tappingRate: MHRRateInput;
   deburrRate: MHRRateInput;
   inspectionRate: MHRRateInput; // CMM / inspection station — carries amortized MHR when a DB record exists
+  /**
+   * The XRF analyzer that checks each raw material lot's composition (class xrf_analyzer, migration 1145): the RM Composition Analysis
+   * line. Absent: a caller that quotes no raw material lot of its own (a sheet metal part's inspection), and no such line.
+   */
+  xrfRate?: MHRRateInput;
   // Surface treatment callout from the drawing / coating field ("Type III Hardcoat
   // Black Anodize"); null when the part has none.
   surfaceTreatment: string | null;
@@ -1585,16 +1590,22 @@ function computeInspectionLine(
   calculators: MachiningCalculators | null | undefined,
   warnings: string[],
   processIdentityByMachineClass?: Record<string, { processGroup: string; processRoute: string; operation: string }>,
+  /** The machining workbook's tables: the inspection gauge's price and life (tblCuttingToolCost), the line's tool cost. */
+  workbook?: MachiningWorkbookInput | null,
+  matClass: MaterialClass = 'mild_steel',
 ): ProcessLineCost {
   const batch = Math.max(batchSize, 1);
-  const run = runMachiningCalculator(calculators, 'Inspection', reference ? {
+  const seeds: Record<string, CalcSeed> = reference ? {
     'Time Per Analysis': lookupSeed(
       reference.timePerAnalysisS, `${INSPECTION_TABLE}: ${reference.inspectionType} (variables defaultInspectionType)`,
       { table: INSPECTION_TABLE, row: { Name: reference.inspectionType } }, INSPECTION_TIME_COLUMN,
     ),
     'Inspection Sample Ratio': variableSeed(reference.sampleRatio, 'defaultInspectionSampleRatio'),
     'Final Inspection Time': variableSeed(reference.finalInspectionMin, 'defaultFinalInspectionTime'),
-  } : {});
+  } : {};
+  // The gauge's price and life, from the workbook's tool table (the same for every material).
+  const gauge = workbookSeeds(workbook, 'Inspection', null, matClass, seeds);
+  const run = runMachiningCalculator(calculators, 'Inspection', { ...seeds, ...gauge.seeds });
   if (!reference) warnings.push('Inspection not priced: the memory/Machining inspection reference (tblInspection and its variables) is not staged.');
   const cycleMin = (run.sec ?? 0) / 60;
   // Real per-CMM mhr_records.setup_time_hr first, then the cited class
@@ -1623,7 +1634,30 @@ function computeInspectionLine(
       occurrenceRefs: [...inspected],
     }];
   }
-  return line;
+  // The inspection gauge's wear (the workbook's Rs 3500 over 10 000 parts), on the line as every workbook tool's.
+  return run.sec != null ? withToolCost(line, run, workbook, warnings) : line;
+}
+
+// ── RM Composition Analysis (the machining workbook's sheet of that name) ─────
+// Each raw material lot's composition checked on an XRF analyzer: 60 s a lot, shared over the parts the lot makes. The lot is the batch.
+// On the XRF work centre of HR Rates (class xrf_analyzer, migration 1145), its machine and labour rate; no setup of its own.
+function computeRmCompositionLine(
+  xrfRate: MHRRateInput,
+  batchSize: number,
+  calculators: MachiningCalculators | null | undefined,
+  warnings: string[],
+  processIdentityByMachineClass?: Record<string, { processGroup: string; processRoute: string; operation: string }>,
+): ProcessLineCost {
+  const batch = Math.max(batchSize, 1);
+  const run = runMachiningCalculator(calculators, 'RM Composition Analysis', {
+    'Lot Size': { value: batch, source: 'BOM: the batch size, one raw material lot (the workbook\'s lot is its part volume)' },
+  });
+  if (run.missing.length > 0) warnings.push(`RM Composition Analysis not priced — missing real input: ${run.missing.join('; ')}.`);
+  const cycleMin = (run.sec ?? 0) / 60;
+  const line = makeLine('RM Composition Analysis', 0, (cycleMin / 60) * xrfRate.rate, cycleMin, xrfRate, processIdentityByMachineClass, {
+    setupTimeMin: 0, setupTimeSource: 'none',
+  });
+  return withRun(line, run, []);
 }
 
 // Surface treatment is now in its own module to avoid circular dep with cost-engine.ts.
@@ -2093,8 +2127,10 @@ export function computeMillingCostSummary(
   // ── Inspection (batch-sampled; CMM amortization rides on the MHR rate) ───
   processLines.push(computeInspectionLine(
     input.inspectionReference, input.inspectedFeatures ?? [], inspectionRate, batchSize,
-    input.machiningCalculators, warnings, input.processIdentityByMachineClass,
+    input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
+  // ── The raw material lot's composition check (XRF) ─────────────────────────
+  if (input.xrfRate) processLines.push(computeRmCompositionLine(input.xrfRate, batchSize, input.machiningCalculators, warnings, input.processIdentityByMachineClass));
 
   warnings.push(...missingOperatorLabourWarnings(processLines));
   // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
@@ -2678,8 +2714,10 @@ export function computeTurningCostSummary(
   // and would inflate the hole-sampling time for turned parts.
   processLines.push(computeInspectionLine(
     input.inspectionReference, input.inspectedFeatures ?? [], inspectionRate, batchSize,
-    input.machiningCalculators, warnings, input.processIdentityByMachineClass,
+    input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
+  // ── The raw material lot's composition check (XRF) ─────────────────────────
+  if (input.xrfRate) processLines.push(computeRmCompositionLine(input.xrfRate, batchSize, input.machiningCalculators, warnings, input.processIdentityByMachineClass));
 
   warnings.push(...missingOperatorLabourWarnings(processLines));
   // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
