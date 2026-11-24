@@ -5465,16 +5465,18 @@ export class BomItemCostingService {
     const usdToLocal = locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code);
     const costOverrides = await this.overrides.fetchCostOverrides(item.id, accessToken, location);
     const summary = ((item.featureGraph as { summary?: Record<string, unknown> } | undefined)?.summary ?? {});
+    // The board's components as BOM children (their purchase cost is their own rollup): they say the board is assembled when no Pick Place file does.
+    const bomComponents = (await this.items.findChildren(item.id, accessToken)).reduce((s, c) => s + (Number(c.quantity) > 0 ? Number(c.quantity) : 1), 0);
     const pcb: PcbCostResult = this.pcbCostService
       ? await this.pcbCostService.price({
         client: this.databaseService.getClient(accessToken), accessToken, location,
         geometry: (summary['pcbGeometry'] ?? null) as PcbGeometrySummary | null,
         ...(forceRoute ? { forceRoute } : {}),
         overrides: item.scenarioOverrides, batchSize, annualVolume: annualVolume ?? null,
-        amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null, usdToLocal,
+        amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null, usdToLocal, bomComponents,
         costContext: { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 },
       })
-      : { route: null, routes: [], gaps: [], part: null, stackup: null, nest: null, finishOptions: [], note: null, missing: ['the PCB cost service is not available'], warnings: [] };
+      : { route: null, routes: [], gaps: [], part: null, stackup: null, nest: null, finishOptions: [], assembly: null, note: null, missing: ['the PCB cost service is not available'], warnings: [] };
     const result = {
       ...buildPcbCostSummary({ pcb, batchSize, warnings: [], ratesSource: RATES_SOURCE_LABEL }),
       currency: locInfo.code, currencySymbol: locInfo.symbol, toUsdRate: 1,

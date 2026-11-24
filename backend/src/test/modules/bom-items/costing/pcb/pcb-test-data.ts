@@ -5,10 +5,13 @@ import { resolveSandReference } from '../../../../../modules/bom-items/costing/c
 import type { SandMachine } from '../../../../../modules/bom-items/costing/casting/sand/sand-machines';
 import { laminateOf } from '../../../../../modules/bom-items/costing/pcb/pcb-laminates';
 import { PCB_CLASS, type PcbLaminate } from '../../../../../modules/bom-items/costing/pcb/pcb-route';
+import { PCBA_CLASS } from '../../../../../modules/bom-items/costing/pcb/pcb-assembly';
 import { machineOf } from '../additive/additive-test-data';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { readCsv, specKey } = require('../../../../../../migrations/scripts/lib/memory-machine-seed.js');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { pcbaAssemblyMachines } = require('../../../../../../scripts/lib/pcba-assembly-machines.js');
 export const PCB_DIR = join(__dirname, '../../../../../../../memory/PCBA');
 const rows = (rel: string): Array<Record<string, any>> => readCsv(join(PCB_DIR, rel)).rows;
 
@@ -17,6 +20,8 @@ const stagedVariables = rows('pcb_variables.csv').map((r) => ({ key: String(r['V
 const stagedLookups = [
   ...readdirSync(join(PCB_DIR, 'Lookup')).filter((f) => f.endsWith('.csv')).map((f) => ({ key: f.replace(/\.csv$/, ''), raw: { rows: rows(`Lookup/${f}`) } })),
   ...['consumables', 'process_times', 'yield'].map((t) => ({ key: t, raw: { rows: rows(`${t}.csv`) } })),
+  // The sourced assembly tables (migration 1133).
+  ...['assembly_rates', 'assembly_costs'].map((t) => ({ key: t, raw: { rows: rows(`Assembly/${t}.csv`) } })),
 ];
 export const realPcbReference = () => resolveSandReference({ variables: stagedVariables, lookups: stagedLookups });
 
@@ -47,6 +52,15 @@ export function allPcbMachines(): Record<string, SandMachine[]> {
       const key = specKey(String(h).replace(/^\uFEFF/, ''));
       return [HEADER_ALIAS[key] ?? key, v];
     })), cls, i));
+  }
+  // The assembly machines as migration 1133 seeds them (the same lib), at their USA rates.
+  type Assembled = { p: { cls: string; usaLabour: number; operators: number; setup: number }; name: string; kw: number; usa: { direct: number; indirect: number }; specs: Record<string, unknown> };
+  const { machines } = pcbaAssemblyMachines(join(PCB_DIR, '..')) as { machines: Assembled[] };
+  for (const cls of Object.values(PCBA_CLASS).filter((c) => c !== PCBA_CLASS.bench)) {
+    out[cls] = machines.filter((m) => m.p.cls === cls).map((m, i) => machineOf({
+      name: m.name, labor_rate_usd_per_hr: m.p.usaLabour, direct_overhead_rate_usd_per_hr: m.usa.direct, indirect_overhead_rate_usd_per_hr: m.usa.indirect,
+      number_of_operators: m.p.operators, setup_time_hr: m.p.setup, machine_power_kw: m.kw, ...m.specs,
+    }, cls, i));
   }
   return out;
 }

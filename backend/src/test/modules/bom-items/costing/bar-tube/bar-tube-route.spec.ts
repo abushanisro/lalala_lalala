@@ -230,13 +230,15 @@ describe('bending: each bend on the cheapest method that can make it', () => {
     expect(saw.lines.find((l) => l.process === 'Rotary Draw Bending')?.machineName).toBe('Rotary Draw Bender - 75mm Max Tube Diameter');
   });
 
-  it('usePreferredMachines decides it: switched off, the cheapest capable bender is used (Pines Model 1, no dearer than the preferred one)', () => {
+  it('usePreferredMachines decides it: switched off, the cheapest capable bender is used (Silfax SE 32 LR, no dearer than the preferred one)', () => {
     const part = { ...TUBE, bends: [{ clrMm: 50, angleDeg: 90 }] };
     const bend = (ref: BarTubeRouteInput['ref']) => buildBarTubeRoutes(input(part, { ref })).routes.find((x) => x.key === 'saw')
       ?.lines.find((l) => l.process === 'Rotary Draw Bending');
     const preferred = bend(realBarTubeReference());
     const cheapest = bend(realBarTubeReference().withOverrides(new Map([['usePreferredMachines', 'false']])));
-    expect([preferred?.machineName, cheapest?.machineName]).toEqual(['Rotary Draw Bender - 75mm Max Tube Diameter', 'Pines Model 1']);
+    // Silfax, Pines Model 1 and the preferred bender all cost 0.72 a part to the cent: the machine and labour cost per part, kept finer, is
+    // Silfax's lowest, so it is the cheapest (the name used to decide the tie).
+    expect([preferred?.machineName, cheapest?.machineName]).toEqual(['Rotary Draw Bender - 75mm Max Tube Diameter', 'Silfax SE 32 LR']);
     expect(cheapest?.totalCost).toBeLessThanOrEqual(preferred?.totalCost ?? 0);
   });
 

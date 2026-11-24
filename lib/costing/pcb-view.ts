@@ -7,7 +7,40 @@ export type PcbFact = PcbSummary['board']['layers'];
 export const PCB_SCENARIO_KEYS = {
   route: 'pcbRoute', layers: 'pcbLayers', thickness: 'pcbThicknessMm', outerOz: 'pcbOuterCopperOz', innerOz: 'pcbInnerCopperOz', finish: 'pcbFinish',
   maskSides: 'pcbSolderMaskSides', legendSides: 'pcbLegendSides', testPoints: 'pcbTestPoints', stackup: 'pcbStackupPreference', viaPlugging: 'pcbViaPlugging',
+  assembly: 'pcbAssembly', thtSolder: 'pcbThtSolder', assemblyTest: 'pcbAssemblyTest',
 } as const;
+
+export type PcbAssemblyView = NonNullable<PcbSummary['assembly']>;
+
+/** Whether the board is assembled (backend pcb-assembly.ts PCBA_MODES): Auto includes it when the board has parts to place or BOM children. */
+export const PCB_ASSEMBLY_OPTIONS = [
+  { key: 'include', label: 'Include (board + assembly)' },
+  { key: 'bare', label: 'Bare board only' },
+] as const;
+
+/** Through-hole soldering (backend PCBA_THT_SOLDERS): Auto takes the cheapest that can solder the board. */
+export const PCB_THT_SOLDER_OPTIONS = [
+  { key: 'wave', label: 'Wave solder' },
+  { key: 'selective', label: 'Selective solder' },
+  { key: 'hand', label: 'Hand solder' },
+] as const;
+
+/** The assembly test (backend PCBA_TESTS): Auto takes the cheaper over the job, the in-circuit fixture included. */
+export const PCB_ASSEMBLY_TEST_OPTIONS = [
+  { key: 'ict', label: 'In-circuit test (fixture)' },
+  { key: 'flying_probe', label: 'Flying probe' },
+] as const;
+
+/** A Cost Guide choice that is one of its options, or '' (Auto). */
+export function choiceOf(overrides: Record<string, unknown> | null | undefined, key: string, options: readonly { key: string }[]): string {
+  const v = overrides?.[key];
+  return typeof v === 'string' && options.some((o) => o.key === v) ? v : '';
+}
+
+/** "Processes included", one line a group: "SMT top: Stencil Print, ... (auto)". */
+export function processesIncluded(a: PcbAssemblyView | null | undefined): string[] {
+  return (a?.processes ?? []).map((p) => `${p.group}: ${p.steps.join(', ')}${p.basis === 'user' ? ' (set)' : ''}`);
+}
 
 /** The four fabrication routes (backend pcb-route.ts PCB_ROUTES). */
 export const PCB_ROUTE_OPTIONS = [

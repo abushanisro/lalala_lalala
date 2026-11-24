@@ -17,6 +17,7 @@ import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
 import { seedsFor, type SeedProvider, type SeedProviders } from '../casting/sand/sand-seeds';
 import { selectAndCost, type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
+import { buildPcbAssembly, type PcbAssembly, type PcbAssemblyChoice, type PcbAssemblyRegion } from './pcb-assembly';
 import { nestPcb, type PcbNest } from './pcb-panel';
 import { holeTotals, PCB_FINISH_LABEL, type PcbFinish, type PcbPart } from './pcb-part';
 import { consumable, consumableForDiameter, fabYield, micronsOfPlating, processTime, saySourced, type SourcedValue } from './pcb-reference';
@@ -87,6 +88,8 @@ export interface PcbRouteInput {
   machinesByClass: Readonly<Record<string, readonly SandMachine[]>>;
   scenario: PcbScenario;
   costContext: CostContext;
+  /** The assembly as the Cost Guide states it, the region priced and the board's BOM components; absent, the board is priced bare. */
+  assembly?: { choice: PcbAssemblyChoice; region: PcbAssemblyRegion; bomComponents: number };
 }
 
 /** A tool the route needs (a stamping die, a test fixture, a test program): an investment kept out of the piece cost, spread over the job. */
@@ -120,12 +123,14 @@ export interface PcbBuild {
   stackup: PcbStackup | null;
   nest: PcbNest | null;
   finishOptions: PcbFinishOption[];
+  /** The board's assembly (every route carries its lines and tooling); null when not asked for. */
+  assembly: PcbAssembly | null;
 }
 
 /** Every route of the board (each complete or with its gaps), the routes it cannot take and why, and what keeps any route from being built. */
 export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   const { ref, part, scenario } = input;
-  const none = (...missing: string[]): PcbBuild => ({ routes: [], gaps: [], missing, stackup: null, nest: null, finishOptions: [] });
+  const none = (...missing: string[]): PcbBuild => ({ routes: [], gaps: [], missing, stackup: null, nest: null, finishOptions: [], assembly: null });
   const num = (name: string) => ref.number(name);
 
   // ── The stack-up, the working panel and the nest ──────────────────────────────────────────────────────────────────────────────────
@@ -436,6 +441,12 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   consumableLines.push(...finished.lines);
   if (finish === 'hasl') warnings.push('The HASL solder is not priced: no consumption per area was sourced.');
 
+  // ── The assembly: the same on every route (pcb-assembly.ts) ─────────────────────────────────────────────────────────────────────────
+  const assembly = input.assembly ? buildPcbAssembly({
+    ref, part, nest, batchSize: scenario.batchSize, amortizationParts: scenario.amortizationParts, annualVolume: scenario.annualVolume,
+    machinesByClass: input.machinesByClass, step, timed, run, fail, consumableLine, gapLine,
+  }, input.assembly.choice, input.assembly.region, input.assembly.bomComponents) : null;
+
   // ── The routes: the profile x the electrical test, each with its tooling ─────────────────────────────────────────────────────────────
   const shared = steps;
   const routes: PcbRoute[] = [];
@@ -535,17 +546,22 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     } else {
       lines.unshift(gapLine('Material Stock', 'material_stock', `the board's laminate cannot be priced: ${material.warnings.join('; ') || 'no laminate price'}`));
     }
-    const complete = !lines.some(isGap);
     const boardUsd = lines.reduce((s, l) => s + l.totalCost, 0);
     const y = fabYield(ref, layers);
     if (y) {
       const scrap = run(PCB_HELPER.yield, null, { board_cost_usd: seed(r4(boardUsd), 'the board\'s material, process and consumables'), fab_yield_pct: sourced(y, `first-pass yield at ${y.layersRead} layers${y.layersRead !== layers ? ` (the nearest count the source gives for ${layers})` : ''}`) });
       if ('run' in scrap) lines.push(consumableLine('Fabrication yield', PCB_CLASS.avi, scrap.run, `${saySourced(y, 2)} first-pass yield at ${y.layersRead} layers: the scrapped boards charged on the good ones`));
     } else warnings.push('No fabrication yield is applied: memory/PCBA/yield.csv has no keyed row.');
+    // The assembly follows the bare board (the fabrication yield is the bare board's); its tooling is the job's, with the route's.
+    if (assembly?.included) {
+      lines.push(...assembly.lines.map((l) => ({ ...l, actsOnWholePart: true })));
+      tooling.push(...assembly.tooling.map((t) => tool(t.key, t.description, t.costUsd, t.detail)));
+    }
+    const complete = !lines.some(isGap);
     routes.push({
       key: r.key, label: r.label, profile: r.profile, test: r.test, lines, material: { costUsd: material.costUsd, run: material.run, uses: material.uses },
       tooling, totalUsd: complete ? r2(lines.reduce((s, l) => s + l.totalCost, 0)) : null, complete,
-      warnings: [...warnings, ...material.warnings, ...allSteps.flatMap((s) => s.warnings)],
+      warnings: [...warnings, ...material.warnings, ...allSteps.flatMap((s) => s.warnings), ...(assembly?.included ? assembly.warnings : [])],
     });
   }
 
@@ -559,7 +575,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     const total = best.totalUsd! - own + other.steps.reduce((s, x) => s + x.line.totalCost, 0) + other.lines.reduce((s, l) => s + l.totalCost, 0);
     return { finish: f, label: PCB_FINISH_LABEL[f], totalUsd: r2(total), reason: null };
   });
-  return { routes, gaps, missing: [], stackup, nest, finishOptions };
+  return { routes, gaps, missing: [], stackup, nest, finishOptions, assembly };
 
   // ── Lines that are not machine time ──────────────────────────────────────────────────────────────────────────────────────────────
   function consumableLine(process: string, machineClass: string, r: ReferenceCalcRun, detail: string): ProcessLineCost {

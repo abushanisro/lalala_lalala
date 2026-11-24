@@ -1068,6 +1068,24 @@ export interface PcbBreakdown {
   complete: boolean;
   /** Every route: the total per board (summary currency) when complete, or why it is not a route for the board. */
   options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  /** The board's assembly (pcb-assembly.ts): whether it is included and why, the processes included, the counts it is priced from and the choices made. */
+  assembly: PcbAssemblyBreakdown | null;
+}
+
+export interface PcbAssemblyBreakdown {
+  included: boolean;
+  /** The Cost Guide's setting: auto (included when the board has parts to place or BOM children), include, or bare (the board only). */
+  mode: 'auto' | 'include' | 'bare';
+  basis: string;
+  /** "Processes included": each group (Bare board fab, SMT top, SMT bottom, THT, Test, Depanel) with its steps, decided automatically or set by the user. */
+  processes: Array<{ group: string; steps: string[]; basis: 'auto' | 'user' }>;
+  counts: { placements: number; placementsTop: number; placementsBottom: number; feeders: number; sides: string[]; thtParts: number; joints: number; nets: number | null; bomComponents: number };
+  /** The SMT line: the placers it runs in series (the cheapest line of 1 to the most a line study runs) and its takt per board (s). */
+  smtLine: { placers: number; maxPlacers: number; taktSec: number } | null;
+  /** Through-hole soldering: the method quoted and each method's cost per board (summary currency), or why it cannot. */
+  thtSolder: { chosen: string | null; basis: 'auto' | 'user'; options: Array<{ key: string; label: string; costPerBoard: number | null; reason: string | null }> } | null;
+  /** The assembly test: in-circuit (with its fixture) or flying probe, each per board over the job (summary currency), or why it cannot. */
+  test: { chosen: string | null; basis: 'auto' | 'user'; options: Array<{ key: string; label: string; costPerBoard: number | null; reason: string | null }> } | null;
 }
 
 export interface RotoBlowBreakdown {

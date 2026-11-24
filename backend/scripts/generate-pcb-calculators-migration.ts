@@ -1,12 +1,20 @@
 /**
- * Writes migration 1132 (the PCB calculators) from the calculator spec (src/modules/bom-items/costing/pcb/calculators/pcb-calculators.json).
- * Re-run after editing the spec, until the migration is applied anywhere; after that a changed calculator ships in a new migration:
+ * Writes migrations 1132 (the PCB fabrication calculators) and 1134 (the PCB assembly calculators) from the calculator spec
+ * (src/modules/bom-items/costing/pcb/calculators/pcb-calculators.json). A calculator in use is changed by a new migration, marked on its
+ * spec entry; an applied migration regenerates byte-identical:
  *   npx ts-node --transpile-only scripts/generate-pcb-calculators-migration.ts
  */
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { buildPcbCalculatorsMigrationSql, PCB_CALCULATORS_MIGRATION } from '../src/modules/bom-items/costing/pcb/calculators/pcb-calculators-migration';
+import {
+  buildPcbAssemblyCalculatorsMigrationSql, buildPcbCalculatorsMigrationSql, PCB_ASSEMBLY_CALCULATORS_MIGRATION, PCB_CALCULATORS_MIGRATION,
+} from '../src/modules/bom-items/costing/pcb/calculators/pcb-calculators-migration';
 
-const OUT = join(__dirname, `../migrations/${PCB_CALCULATORS_MIGRATION}_pcb_calculators.sql`);
-writeFileSync(OUT, buildPcbCalculatorsMigrationSql());
-console.log(`wrote ${OUT}`);
+for (const [number, name, sql] of [
+  [PCB_CALCULATORS_MIGRATION, 'pcb_calculators', buildPcbCalculatorsMigrationSql()],
+  [PCB_ASSEMBLY_CALCULATORS_MIGRATION, 'pcba_assembly_calculators', buildPcbAssemblyCalculatorsMigrationSql()],
+] as const) {
+  const out = join(__dirname, `../migrations/${number}_${name}.sql`);
+  writeFileSync(out, sql);
+  console.log(`wrote ${out}`);
+}

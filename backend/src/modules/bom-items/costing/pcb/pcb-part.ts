@@ -47,6 +47,8 @@ export interface PcbMeasured {
   pins?: number | null;
   /** The paste openings (SMD pads) on both sides, mm²: the pads a surface finish covers. */
   pasteAreaMm2?: number | null;
+  /** The paste openings of each side, mm² (the stencil of that side prints them). */
+  pasteAreaBySideMm2?: { top?: number | null; bottom?: number | null } | null;
   /** The copper on the outer layers, both sides, mm². */
   copperAreaMm2?: number | null;
   nets?: number | null;
@@ -101,6 +103,12 @@ export interface PcbPart {
   pasteAreaMm2: number | null;
   /** The outer copper, mm²; null when not measured. */
   copperAreaMm2: number | null;
+  /** The paste openings of each side, mm²; null when the board files have no paste layer. */
+  pasteAreaBySideMm2: { top?: number; bottom?: number } | null;
+  /** The nets with pins the board files trace (what an in-circuit fixture puts a nail on); null when not traced. */
+  nets: PcbFact<number> | null;
+  /** Where the placements and through-hole parts were read from (for the lines' sources). */
+  placementsSource: string | null;
   placements: readonly PcbPlacement[];
   thtParts: readonly PcbThtPart[];
   sidesPopulated: readonly BoardSide[];
@@ -174,10 +182,21 @@ export function resolvePcbPart(measured: PcbMeasured | null, o: PcbOverrides, d:
       areaMm2: area, perimeterMm: perimeter, thicknessMm: thickness, layers, outerCopperOz: outer, innerCopperOz: inner, finish, holes: holesFact,
       soldermaskSides: maskSides, silkscreenSides: legendSides, testPoints, stackupPreference: preference, viaPlugging: plugging,
       pasteAreaMm2: positive(measured.pasteAreaMm2) ? measured.pasteAreaMm2 : null, copperAreaMm2: positive(measured.copperAreaMm2) ? measured.copperAreaMm2 : null,
+      pasteAreaBySideMm2: pasteBySide(measured.pasteAreaBySideMm2),
+      nets: wholePositive(measured.nets) ? fact(measured.nets, from, `${src}: nets with pins traced through the copper`) : null,
+      placementsSource: measured.placements?.length || measured.thtParts?.length ? `${src}: the Pick Place file` : null,
       placements: measured.placements ?? [], thtParts: measured.thtParts ?? [], sidesPopulated: measured.sidesPopulated ?? [],
     },
     missing: [],
   };
+}
+
+function pasteBySide(p: PcbMeasured['pasteAreaBySideMm2']): PcbPart['pasteAreaBySideMm2'] {
+  if (!p) return null;
+  const out: { top?: number; bottom?: number } = {};
+  if (positive(p.top)) out.top = p.top;
+  if (positive(p.bottom)) out.bottom = p.bottom;
+  return out.top != null || out.bottom != null ? out : null;
 }
 
 /** Drilled hits on one board, and the distinct drill diameters (each a tool change). */

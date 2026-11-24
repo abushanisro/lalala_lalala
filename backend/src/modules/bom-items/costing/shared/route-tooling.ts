@@ -55,7 +55,10 @@ export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'fam
   for (const t of summary.barTubeTooling ?? []) items.push(...fromPerPart(`bar-tube-${t.key}`, 'die', t.description, t.detail, t.costUsd, t.perPartUsd));
   for (const t of summary.rotoBlowTooling ?? []) items.push(...fromPerPart(`roto-blow-${t.key}`, 'mold', t.description, t.detail, t.costUsd, t.perPartUsd));
   // A printed circuit board's stamping die, bed-of-nails fixture or flying-probe program.
-  const PCB_TOOL_TYPE: Readonly<Record<string, string>> = { 'stamp-die': 'die', 'bed-of-nails-fixture': 'fixture', 'flying-probe-program': 'test_program' };
+  const PCB_TOOL_TYPE: Readonly<Record<string, string>> = {
+    'stamp-die': 'die', 'bed-of-nails-fixture': 'fixture', 'flying-probe-program': 'test_program',
+    'smt-stencils': 'stencil', 'ict-fixture': 'fixture', 'pcba-test-program': 'test_program',
+  };
   for (const t of summary.pcbTooling ?? []) items.push(...fromPerPart(`pcb-${t.key}`, PCB_TOOL_TYPE[t.key] ?? 'fixture', t.description, t.detail, t.costUsd, t.perPartUsd, t.amortizationParts));
   // The hydroform tools the job wears out (its costUsd is that whole investment, over the parts the engine spread it); the blanking die, not
   // costed, is not written.
