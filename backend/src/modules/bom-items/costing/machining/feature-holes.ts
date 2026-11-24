@@ -131,3 +131,24 @@ export function normalizeThreadSpecs(threads: readonly ThreadInput[]): ThreadEnt
     ...(g.liveCount > 0 ? { liveCount: g.liveCount } : {}),
   }));
 }
+
+/**
+ * The part's threads from its drawing and its CAD together, size by size. The drawing states a thread's size and pitch; the CAD states each
+ * tapped hole's size, depth, through flag and place. Neither alone is the part: a drawing's callout may count one where the CAD finds ten
+ * holes, carries no depth, and lists only what its text says (a drawn "M3" beside two M4 holes the CAD found). So, by size:
+ *   a size the CAD tapped:      the CAD's holes (count, depth, through, the holes to light), with the drawing's pitch where the CAD has none;
+ *   a size only the drawing:    the drawing's thread (its depth then the tapping calculator's engagement rule, computeTapCycle);
+ *   a size only the CAD:        the CAD's holes.
+ */
+export function mergeThreads(drawing: readonly ThreadInput[], cad: readonly ThreadInput[]): ThreadEntry[] {
+  const drawn = normalizeThreadSpecs(drawing);
+  const found = normalizeThreadSpecs(cad);
+  const bySize = new Map(found.map((t) => [t.size, t]));
+  const merged = drawn.map((d) => {
+    const c = bySize.get(d.size);
+    if (!c) return d;
+    bySize.delete(d.size);
+    return { ...c, ...(c.pitchMm == null && d.pitchMm != null ? { pitchMm: d.pitchMm } : {}) };
+  });
+  return [...merged, ...bySize.values()];
+}

@@ -4,7 +4,7 @@
 // its diameter (hole_diameter_mm) and its thread (tap_spec) were not found.
 import { liveToolHoles } from '../../../../../modules/bom-items/costing/machining/capability/live-tooling';
 import {
-  holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type MachiningFeatureLike,
+  holeGroupsOfFeatures, mergeThreads, normalizeThreadSpecs, tappedHolesOfFeatures, type MachiningFeatureLike,
 } from '../../../../../modules/bom-items/costing/machining/feature-holes';
 import { timeHoleGroups, timeThreadGroups } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-cost.service';
 import { multiSpindleWork } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-work';
@@ -82,5 +82,39 @@ describe('the shaft on a multi-spindle', () => {
       ['Drilling Ø6 mm x 1', 'end'],
       ['Live-tool tapping M2 x 2', 'live'],
     ]);
+  });
+});
+
+describe('mergeThreads: the drawing\'s threads and the CAD\'s tapped holes together, size by size', () => {
+  // R_M-0230-031 CANNULA END BEARING HOUSING: its drawing calls out "M3" once; the CAD tapped two M3 holes 24.018 mm deep, two 5.418 and two
+  // 6.418, and two M4 holes 2.773 deep, which the drawing's text does not name. The drawing alone left the M3s without a depth (the
+  // Tapping line was a gap) and the M4s out of the quote.
+  const cad = [
+    { size: 'M3×0.5', count: 2, depthMm: 24.018, occurrences: [{ featureId: 'h1', occurrenceIndex: 0 }] },
+    { size: 'M3×0.5', count: 2, depthMm: 5.418 },
+    { size: 'M3×0.5', count: 2, depthMm: 6.418 },
+    { size: 'M4×0.7', count: 2, depthMm: 2.773 },
+  ];
+
+  it('a size both name is the CAD\'s holes: their count, their depth, the holes to light', () => {
+    const [m3, m4] = mergeThreads([{ size: 'M3', count: 1, pitchMm: 0.5 }], cad);
+    expect(m3).toMatchObject({ size: 'M3', count: 6, pitchMm: 0.5, occurrences: [{ featureId: 'h1', occurrenceIndex: 0 }] });
+    // The depth averaged over the six holes: (2 x 24.018 + 2 x 5.418 + 2 x 6.418) / 6.
+    expect(m3!.depthMm).toBeCloseTo((24.018 + 5.418 + 6.418) / 3, 2); // kept to 0.01 mm (normalizeThreadSpecs)
+    // A size only the CAD tapped is in the quote too.
+    expect(m4).toMatchObject({ size: 'M4', count: 2, depthMm: 2.77, pitchMm: 0.7 });
+  });
+
+  it('the drawing\'s pitch is kept where the CAD states none; a size only the drawing names keeps the drawing\'s thread', () => {
+    const [m3, m8] = mergeThreads([{ size: 'M3', count: 1, pitchMm: 0.35 }, { size: 'M8', count: 4 }], [{ size: 'M3', count: 2, depthMm: 6 }]);
+    expect(m3).toMatchObject({ size: 'M3', count: 2, depthMm: 6, pitchMm: 0.35 });
+    // No CAD hole of the size: its depth is the tapping calculator's engagement rule (cost-machining-engine.ts THREAD_ENGAGEMENT).
+    expect(m8).toMatchObject({ size: 'M8', count: 4 });
+    expect(m8!.depthMm).toBeUndefined();
+  });
+
+  it('no drawing: the CAD\'s holes as they are; no CAD holes: the drawing\'s threads', () => {
+    expect(mergeThreads([], cad).map((t) => [t.size, t.count])).toEqual([['M3', 6], ['M4', 2]]);
+    expect(mergeThreads([{ size: 'M5', count: 3 }], []).map((t) => [t.size, t.count])).toEqual([['M5', 3]]);
   });
 });

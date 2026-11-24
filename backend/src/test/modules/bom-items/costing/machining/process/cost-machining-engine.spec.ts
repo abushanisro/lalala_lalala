@@ -1092,7 +1092,7 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
     expect(r.warnings.join(' ')).not.toContain('Tapping not priced');
   });
 
-  it('uses the real thread depth and never an assumed one', () => {
+  it('uses the real thread depth; a thread with none is tapped to its material\'s engagement (1 x D in steel), never left unpriced', () => {
     const tapMin = (depthMm?: number) => computeMillingCostSummary(
       milledInput({ materialGrade: 'AISI 1018', workbook: workbookFixture(), threads: [{ size: 'M6', count: 4, depthMm }] }),
       mc('3_axis_mill'),
@@ -1100,8 +1100,14 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
     expect(tapMin(30).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin)
       .toBeGreaterThan(tapMin(5).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin);
     const noDepth = tapMin(undefined);
-    expect(noDepth.processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin).toBe(0);
-    expect(noDepth.warnings.join(' ')).toContain('Thread Depth');
+    const tap = noDepth.processLines.find((l) => l.process === 'Tapping')!;
+    // An M6 in steel: 1 x 6 mm, the same time as a 6 mm deep thread on file.
+    expect(tap.cycleTimeMin).toBe(tapMin(6).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin);
+    expect(tap.physicsGap).toBeUndefined();
+    const depth = tap.calculationTrace!.find((s) => s.fieldName === 'Thread Depth')!;
+    expect(depth.value).toBe(6);
+    expect(depth.source).toContain('Thread engagement rule: 1 x the 6 mm nominal diameter in mild steel');
+    expect(noDepth.warnings.join(' ')).not.toContain('Thread Depth');
   });
 
   it('turned parts: boring/drilling is also material-aware now', () => {

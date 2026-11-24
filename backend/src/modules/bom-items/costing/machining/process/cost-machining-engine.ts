@@ -1536,10 +1536,31 @@ export function computeTapCycle(
       ? { value: pitchMm, source: 'CAD/drawing: thread pitch' }
       : { value: pitchMm, source: `ISO 261 coarse pitch of M${diameterMm}` };
   }
-  if (thread.depthMm != null && thread.depthMm > 0) seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
+  if (thread.depthMm != null && thread.depthMm > 0) {
+    seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
+  } else {
+    // No depth on file (a thread the drawing names and the CAD did not find tapped): the thread engagement a tapped hole is cut for, by
+    // the material it is tapped in.
+    const factor = THREAD_ENGAGEMENT[matClass];
+    seeds['Thread Depth'] = {
+      value: Math.round(factor * diameterMm * 1000) / 1000,
+      source: `Thread engagement rule: ${factor} x the ${diameterMm} mm nominal diameter in ${matClass.replace('_', ' ')} (${THREAD_ENGAGEMENT_SOURCE}); no tapped hole of this size in the CAD`,
+    };
+  }
   if (pitchMm == null) return none([`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`]);
   return workbookCycle('Tapping', workbook, calculators, matClass, seeds, machine);
 }
+
+/**
+ * The thread engagement a tapped hole is cut for, as a multiple of the nominal diameter, by the material it is tapped in: the common
+ * engineering rule of 1 x D in steel, 1.5 x D in cast iron and brass, 2 x D in aluminium (the softer the parent metal, the longer the
+ * engagement that holds the screw). Titanium and the tool and stainless steels are at least as strong as steel; a plastic is softer than
+ * aluminium and takes its 2 x D. Used only for a thread with no depth on file.
+ */
+export const THREAD_ENGAGEMENT: Readonly<Record<MaterialClass, number>> = {
+  mild_steel: 1, stainless: 1, tool_steel: 1, titanium: 1, copper_alloy: 1.5, aluminum: 2, plastic: 2,
+};
+export const THREAD_ENGAGEMENT_SOURCE = 'Project Materials, Thread engagement; Tameson, Thread engagement chart: 1 x D steel, 1.5 x D cast iron and brass, 2 x D aluminium';
 
 /** Tapping time for every thread on the part: one calculator run per thread-size group. */
 function tapThreadGroups(

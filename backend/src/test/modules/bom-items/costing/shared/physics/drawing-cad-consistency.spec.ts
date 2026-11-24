@@ -1,4 +1,4 @@
-import { detectDrawingCadMismatches, drawingStatedBendCount, type DrawingFacts, type CadFacts } from '../../../../../../modules/bom-items/costing/shared/physics/drawing-cad-consistency';
+import { detectDrawingCadMismatches, drawingStatedBendCount, drawingStatedThreadCount, type DrawingFacts, type CadFacts } from '../../../../../../modules/bom-items/costing/shared/physics/drawing-cad-consistency';
 
 const bothEmpty: DrawingFacts = { bendCount: null, sheetThicknessMm: null, threadCount: null, dimensionsMm: null };
 const cadEmpty: CadFacts = { bendCount: null, sheetThicknessMm: null, threadCount: null, dimensionsMm: null };
@@ -102,6 +102,34 @@ describe('drawingStatedBendCount', () => {
     const r = find(detectDrawingCadMismatches(
       { ...bothEmpty, bendCount: drawingStatedBendCount(null) }, { ...cadEmpty, bendCount: 2 },
     ), 'bendCount');
+    expect(r.status).toBe('cad_only');
+    expect(r.severity).toBe('info');
+    expect(r.message).not.toMatch(/drawing says/);
+  });
+});
+
+describe('drawingStatedThreadCount', () => {
+  it('sums the counts when every callout states one', () => {
+    expect(drawingStatedThreadCount([{ count: 4, countStated: true }, { count: 2, countStated: true }])).toBe(6);
+    // An AI reading's count, or a text count above 1 from before the analyser marked countStated, was stated.
+    expect(drawingStatedThreadCount([{ count: 1, extractionSource: 'drawing_ai' }, { count: 3, extractionSource: 'drawing_text' }])).toBe(4);
+  });
+
+  it('is null when a callout names the size alone, or there are no callouts', () => {
+    expect(drawingStatedThreadCount([{ count: 1, countStated: false }])).toBeNull();
+    expect(drawingStatedThreadCount([{ count: 4, countStated: true }, { count: 1, countStated: false }])).toBeNull();
+    // A record from before countStated: a text count of 1 is the analyser's default.
+    expect(drawingStatedThreadCount([{ count: 1, extractionSource: 'drawing_text' }])).toBeNull();
+    expect(drawingStatedThreadCount([])).toBeNull();
+    expect(drawingStatedThreadCount(null)).toBeNull();
+  });
+
+  it('so a bare "M3" callout on a part the model taps twelve times is "only the 3D model has this", never "drawing says 1 threads"', () => {
+    // R_M-0230-031 CANNULA END BEARING HOUSING: its drawing calls out "M3" once; the CAD taps six M3 and two M4 holes (twelve in its count).
+    const r = find(detectDrawingCadMismatches(
+      { ...bothEmpty, threadCount: drawingStatedThreadCount([{ size: 'M3', count: 1, countStated: false, extractionSource: 'drawing_text' }]) },
+      { ...cadEmpty, threadCount: 12 },
+    ), 'threadCount');
     expect(r.status).toBe('cad_only');
     expect(r.severity).toBe('info');
     expect(r.message).not.toMatch(/drawing says/);
