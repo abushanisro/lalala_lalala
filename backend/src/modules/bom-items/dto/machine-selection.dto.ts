@@ -67,6 +67,12 @@ export interface MachineCandidate {
   transferTimeS: number | null;
   stockFeedTimeS: number | null;
   speedSynchronizationTimeS: number | null;
+  // mhr_records.specs spindle_speed_rpm / live_tooling_speed_rpm — the
+  // machine's top main-spindle and driven-tool speeds (migrations 1093, 1136;
+  // source memory/machining/machine/*.csv). A cutting calculator caps its
+  // spindle speed n = 1000 v / (pi D) at these. null when not staged.
+  maxSpindleRpm: number | null;
+  liveToolingMaxRpm: number | null;
   // mhr_records.setup_time_hr — real per-machine setup time, generically
   // available for any class (2026-09-02, added for Compression Molding /
   // Reaction Injection Molding, which have no per-operation lookup table
