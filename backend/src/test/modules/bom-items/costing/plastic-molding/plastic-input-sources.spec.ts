@@ -124,15 +124,17 @@ describe('the injection molding cycle inputs carry where they were read', () => 
 describe('the secondary operations', () => {
   const result = computeInjectionMoldedCostSummary(part());
 
+  // Material drying is costed on the molding line (user decision 2026-11-25): its steps are the line's, named "Material Drying · ...".
+  const molding = () => lineNamed(result.processLines, 'Injection Molding - Cycle Time').calculationTrace ?? [];
+  const drying = (field: string) => molding().find((t) => t.fieldName === `Material Drying · ${field}`);
+
   it('material drying: its press time opens the molding cycle calculation, step by step', () => {
-    const cycle = lineNamed(result.processLines, 'Injection Molding - Cycle Time');
-    const ref = refOf(lineNamed(result.processLines, 'Injection Molding - Material Drying').calculationTrace, 'Press Time Per Part');
-    expect(ref).toEqual({ kind: 'calculation', name: 'Injection Molding - Cycle Time', evidence: null, steps: cycle.calculationTrace });
+    expect(drying('Press Time Per Part')?.ref).toEqual({ kind: 'calculation', name: 'Injection Molding - Cycle Time', evidence: null, steps: molding().filter((t) => !t.group) });
   });
 
   it('material drying: the bundled reference package values carry none (no viewer serves them)', () => {
-    const trace = lineNamed(result.processLines, 'Injection Molding - Material Drying').calculationTrace;
-    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Electricity Price', 'Equipment Life']) expect(refOf(trace, field)).toBeUndefined();
+    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Electricity Price', 'Equipment Life']) expect(drying(field)).toBeDefined();
+    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Electricity Price', 'Equipment Life']) expect(drying(field)?.ref).toBeUndefined();
   });
 
   it('deflashing: the trimming rate is the staged variable; the CAD parting line has no face evidence yet', () => {

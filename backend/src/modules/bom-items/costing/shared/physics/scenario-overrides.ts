@@ -178,6 +178,19 @@ export function resolveScenarioCavityCount(
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
+// ── Molding secondary checks (Cost Guide switches) ──
+//
+// A molded part is quoted without the insert pull test and the weight check unless the Cost Guide switches them on for it (user decision
+// 2026-11-25). Only a literal true switches one on.
+export function resolveMoldingSecondaryChecks(
+  scenarioOverrides: Record<string, unknown> | null | undefined,
+): { insertPullTest: boolean; weightCheck: boolean } {
+  return {
+    insertPullTest: scenarioOverrides?.['moldingInsertPullTest'] === true,
+    weightCheck: scenarioOverrides?.['moldingWeightCheck'] === true,
+  };
+}
+
 // ── Machining Stock Form (the stock model's form, set by hand) ──
 //
 // Persisted scenario stock-form choice for machined parts, e.g. "Round Bar" picked explicitly over the
