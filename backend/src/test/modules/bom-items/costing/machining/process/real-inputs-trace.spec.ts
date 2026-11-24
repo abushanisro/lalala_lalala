@@ -7,14 +7,13 @@ import {
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 
 const CALCS = specAsCalculators();
-import { resolveDrillingParams } from '../../../../../../modules/bom-items/costing/machining/lookup/drilling-table';
 import { resolvePartoffParams } from '../../../../../../modules/bom-items/costing/machining/lookup/partoff-table';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import { findRouteDataGaps } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
 import { stockReference } from '../../../../../../modules/bom-items/costing/stock/stock-reference';
 import { stockBlankResult } from '../../../../../../modules/bom-items/costing/stock-machining/stock-machining-cost-summary';
 import { chooseStockMachining } from '../../../../../../modules/bom-items/costing/stock-machining/stock-machining-cost.service';
-import { realDrillingTable, realHobbingReference, realPartoffTable } from '../real-reference-tables';
+import { realHobbingReference, realPartoffTable } from '../real-reference-tables';
 import { realStockMachiningReference } from '../../stock/stock-test-data';
 import { workbookFixture } from '../workbook-fixture';
 
@@ -27,59 +26,40 @@ const mc = (s: string) => s as MachineClassId;
 const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass: 'x', machineName: 'M', commodityCode: null, ...extra } as MHRRateInput);
 
-describe('tblDrilling resolution', () => {
-  const table = realDrillingTable();
-
-  it('a Ø4 mm drill is a Solid drill with feed interpolated between the Solid band breakpoints', () => {
-    const p = resolveDrillingParams(table, 4, 'aluminum')!;
-    expect(p.construction).toBe('Solid');
-    const row = table.materials!.find((m) => m.material_cut_code === p.materialCutCode)!;
-    expect(p.cuttingSpeedMPerMin).toBe(row.cutting_speed_m_min!.solid);
-    const lo = row.feed_mm_rev_by_diameter!['0.1']!;
-    const hi = row.feed_mm_rev_by_diameter!['19.9']!;
-    expect(p.feedMmPerRev).toBeCloseTo(lo + ((4 - 0.1) / (19.9 - 0.1)) * (hi - lo), 5);
-    expect(p.feedDerivation).toContain('linear');
-  });
-
-  it('a Ø30 mm drill is Insert-Based, with the insert speed', () => {
-    const p = resolveDrillingParams(table, 30, 'mild_steel')!;
-    expect(p.construction).toBe('Insert-Based');
-    const row = table.materials!.find((m) => m.material_cut_code === p.materialCutCode)!;
-    expect(p.cuttingSpeedMPerMin).toBe(row.cutting_speed_m_min!.insert_based);
-  });
-});
-
-describe('computeDrillCycle — CAD + tblDrilling, gaps instead of guesses', () => {
+// Drilling, as the machining workbook's Drilling sheet times it (calculator of migration 1139): a Ø4 hole in aluminium is in the
+// 4-6 mm band of its drilling table (feed 0.13 mm/rev, 75-110 m/min, 92.5 at the middle); n = 92 500 / (pi x 4) = 7360.9 rpm on a
+// 10 000 rpm machine; (3.029 + 10) / (0.13 x 7360.9) = 0.013615 min = 0.817 s -> 1 s.
+const MILL_10K = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
+describe('computeDrillCycle — the workbook\'s drilling data, gaps instead of guesses', () => {
   it('without a CAD depth the hole is not priced and the missing input is named', () => {
-    const c = computeDrillCycle(4, 'AL6061-T6', undefined, realDrillingTable(), CALCS);
+    const c = computeDrillCycle(4, 'AL6061-T6', undefined, workbookFixture(), CALCS, 1, undefined, MILL_10K);
     expect(c.sec).toBeNull();
     expect(c.missing).toContain('Drilling: Hole Depth');
   });
 
-  it('without the drilling table the hole is not priced', () => {
-    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, null, CALCS);
+  it('without the workbook\'s tables the hole is not priced', () => {
+    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, null, CALCS, 1, undefined, MILL_10K);
     expect(c.sec).toBeNull();
-    expect(c.missing).toContain('tblDrilling (machining_reference_data) could not be read');
+    expect(c.missing.join(' ')).toContain('tblDrillReamData (machining_reference_data) could not be read');
   });
 
-  it('times the hole from its CAD depth, and every trace input names its source', () => {
-    const table = realDrillingTable();
-    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, table, CALCS);
-    const p = resolveDrillingParams(table, 4, 'aluminum')!;
-    const rpm = (p.cuttingSpeedMPerMin * 1000) / (Math.PI * 4);
-    expect(c.sec).toBeCloseTo((3.029 / (rpm * p.feedMmPerRev)) * 60, 6);
-    const inputs = c.trace.filter((s) => s.kind === 'input');
-    expect(inputs.map((s) => s.source)).toEqual([
-      'CAD: hole diameter',
-      'CAD: hole depth',
-      'CAD: holes of this diameter',
-      expect.stringContaining('tblDrilling'),
-      expect.stringContaining('tblDrilling'),
-    ]);
-    // The time comes from the Drilling calculator's own stored formula.
+  it('without a machine there is no spindle limit: planned, not timed', () => {
+    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, workbookFixture(), CALCS);
+    expect(c.sec).toBeNull();
+    expect(c.missing.join(' ')).toContain('Max Spindle Speed');
+    expect(c.plan?.operation).toBe('Drilling');
+  });
+
+  it('times the hole from its CAD depth + 10 mm, whole seconds, and every trace input names its source', () => {
+    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, workbookFixture(), CALCS, 1, undefined, MILL_10K);
+    expect(c.sec).toBe(1);
+    const step = (name: string) => c.trace.find((s) => s.fieldName === name);
+    expect(step('Feed')).toMatchObject({ value: 0.13, source: expect.stringContaining('tblDrillReamData: ALUMINUM ALLOY CAST AND WROUGHT, Hole Diameter 4 in 4-6') });
+    expect(step('Cutting Speed')).toMatchObject({ value: 92.5 });
+    expect(step('Spindle Speed')).toMatchObject({ value: 7360.92 });
     expect(c.calculatorId).toBe('Machining - Drilling');
-    expect(c.trace.find((s) => s.fieldName === 'Time per Hole')?.formula).toBe('{Hole Depth} / {Feed Rate} * 60');
-    expect(inputs.some((s) => s.source?.startsWith('Assumption'))).toBe(false);
+    // The drill's wear: Rs 624.80 over 600 parts.
+    expect(step('Tool Cost per Part')).toMatchObject({ value: 1.0413 });
   });
 });
 
@@ -123,7 +103,6 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     },
     blankResult: { form: 'round_bar', sizeLabel: 'Ø20 round bar', billetVolMm3: Math.PI * 10 ** 2 * 8, utilizationPct: 50, barDiameterMm: 20, endAllowanceMm: 0.5 },
     workbook: workbookFixture(),
-    drillingTable: realDrillingTable(),
     partoffTable: realPartoffTable(),
     ...overrides,
   });
@@ -182,9 +161,10 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
 
   it('drills the Ø4 hole to its real 3.029 mm CAD depth', () => {
     const drilling = line('Drilling');
-    expect(drilling.confidence).toBe('verified');
+    // Derived: its 10 mm approach (the workbook's Drilling sheet) is a stated allowance.
+    expect(drilling.confidence).toBe('derived');
     expect(drilling.calculationTrace!.find((s) => s.fieldName === 'Hole Depth')).toMatchObject({ value: 3.029, source: 'CAD: hole depth' });
-    expect(drilling.cycleTimeMin * 60).toBeCloseTo(computeDrillCycle(4, 'Aluminum, ANSI 6061', 3.029, realDrillingTable(), CALCS).sec!, 1);
+    expect(drilling.cycleTimeMin * 60).toBeCloseTo(computeDrillCycle(4, 'Aluminum, ANSI 6061', 3.029, workbookFixture(), CALCS, 1, undefined, { 'Max Spindle Speed': { value: 4000, source: 'test' } }).sec!, 1);
   });
 
   it('parts off through the bar radius with a real insert', () => {
@@ -254,16 +234,16 @@ describe('gear teeth recognised by CAD (AxiGroove) are hobbed from tblHobbing / 
 });
 
 describe('lookup-table viewer: the row a machining input came from is identifiable in the flattened table', () => {
-  it('the Drilling match outlines exactly the two tblDrilling breakpoint rows the feed was interpolated between', () => {
+  it('the Drilling match outlines exactly the one row of the workbook\'s drilling table the feed and speed came from', () => {
     const { flattenMachiningLookupTable } = require('../../../../../../modules/bom-items/costing/machining/lookup/machining-lookup-tables');
-    const table = realDrillingTable();
-    const flat = flattenMachiningLookupTable('tblDrilling', table);
-    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, table, CALCS);
+    const table = workbookFixture();
+    const flat = flattenMachiningLookupTable('tblDrillReamData', table.tables.tblDrillReamData);
+    const c = computeDrillCycle(4, 'AL6061-T6', 3.029, table, CALCS, 1, undefined, { 'Max Spindle Speed': { value: 10000, source: 'test' } });
     const match = c.lookups['Feed']!;
-    expect(match.table).toBe('tblDrilling');
+    expect(match.table).toBe('tblDrillReamData');
     const outlined = flat.rows.filter((r: any) => Object.entries(match.row).every(([k, v]) => r[k] === v));
-    expect(outlined.map((r: any) => r.diameter_mm)).toEqual([0.1, 19.9]);
-    expect(outlined.every((r: any) => r.cutting_speed_m_min === c.trace.find((s) => s.fieldName === 'Cutting Speed')!.value)).toBe(true);
+    expect(outlined).toHaveLength(1);
+    expect(outlined[0]).toMatchObject({ WorkMaterial: 'ALUMINUM ALLOY CAST AND WROUGHT', Operation: 'Drilling', DiameterMinMm: 4, FeedMmPerRev: 0.13 });
   });
 });
 

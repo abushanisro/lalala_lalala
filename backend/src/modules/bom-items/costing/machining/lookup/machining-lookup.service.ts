@@ -3,7 +3,6 @@ import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../../../common/database/database.service';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import type { MillingFinishingRow } from '../operation/operation-sequencer';
-import type { DrillingTable } from './drilling-table';
 import type { WorkbookTable } from './workbook-cutting-data';
 import type { HobbingReference, KeywayBroachReference, RotaryBroachReference, SurfaceGrindingParams } from '../calculators/machining-lookup-seeds';
 import type { GearQualityRow } from '../operation/gear-routing';
@@ -166,14 +165,6 @@ export class MachiningLookupService {
     const raw = data?.raw && typeof data.raw === 'object' && !Array.isArray(data.raw) ? data.raw : null;
     if (raw) this.tableCache.set(key, raw); // an absent table is read again next request
     return raw;
-  }
-
-  // ── Straight drilling (tblDrilling — whole source object staged as `raw`:
-  // a materials array plus table-level construction/depth-by-diameter maps).
-  // Returned whole; the per-hole match (resolveDrillingParams, drilling-table.ts)
-  // runs in the pure cost engine, once per real hole diameter on the part.
-  async getDrillingTable(): Promise<DrillingTable | null> {
-    return this.loadObjectTable('tblDrilling');
   }
 
   // ── The machining workbook's cutting data (migration 1137): speeds, feeds,
@@ -362,17 +353,6 @@ export class MachiningLookupService {
     };
   }
 
-  // Raw rows, for callers that need to resolve MULTIPLE real diameters in
-  // one request (e.g. operation-sequencer.ts matching each real counterbore
-  // occurrence on the part, which can have different real diameters) —
-  // fetched once here (this table is cached after the first call, see
-  // loadTable), matched per-occurrence with the exported nearestByDiameterThenHardness
-  // in that pure, no-DB-calls sync function rather than one DB round trip
-  // per occurrence.
-  async getCounterboreTable(): Promise<any[] | null> {
-    return this.loadTable('tblCounterboring');
-  }
-
   // ── Reaming (tblReaming.json, 316 real rows, bare top-level array,
   // CamelCase field names — a genuinely different real source-file shape
   // from tblCounterboring, not a typo) ──────────────────────────────────
@@ -388,13 +368,6 @@ export class MachiningLookupService {
       feedMm: row.FeedMm,
       dataFound: true,
     };
-  }
-
-  // Raw rows — cost-machining-engine.ts resolves the real diameter to ream AFTER
-  // choosing the smallest real hole group (see computeReamCycleSec's own
-  // doc comment), so it needs the table, not a single pre-resolved rate.
-  async getReamTable(): Promise<any[] | null> {
-    return this.loadTable('tblReaming');
   }
 
   // ── Hobbing — tblHobbing (809), tblAnsiHobbing (740), variables
@@ -479,13 +452,6 @@ export class MachiningLookupService {
       pilotDiameterRatio: { ...(hex != null ? { 6: hex } : {}), ...(square != null ? { 4: square } : {}) },
       pilotLengthRatio: v('pilotRotaryBroachHoleLengthPercentIncrease'),
     };
-  }
-
-  // ── Tapping (tblTapping, migration 809) — raw rows; the calculator's
-  // cutting speed is chosen per thread by material hardness and pitch
-  // (machining-lookup-seeds.ts resolveTappingRow).
-  async getTappingTable(): Promise<any[] | null> {
-    return this.loadTable('tblTapping');
   }
 
   // ── Chamfering (tblChamfering_lookup_table.json, 92 real rows) ──────────

@@ -12,12 +12,11 @@ import {
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import {
-  realCapabilityRules, realDrillingTable, realPartoffTable, realRotaryBroachReference, realTappingTable,
-} from '../real-reference-tables';
+  realCapabilityRules, realPartoffTable, realRotaryBroachReference, } from '../real-reference-tables';
 import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
-const DRILLING = realDrillingTable();
+const DRILLING = workbookFixture();
 const mc = (v: string): MachineClassId => v as MachineClassId;
 
 function rate(value: number, o: Partial<MHRRateInput> = {}): MHRRateInput {
@@ -42,19 +41,22 @@ function input(o: Partial<MachiningCostInput> = {}): MachiningCostInput {
   };
 }
 
-// ── Reference values, read off the staged CSVs ──────────────────────────────
-// tblDrilling, material code 1.0 (125 HB, the mild-steel row): solid-drill
-// cutting speed 86.0 m/min; feed 0.145 mm/rev at the 19.9 mm breakpoint.
-const DRILL_SPEED = 86.0;
-const DRILL_FEED_AT_19_9 = 0.145;
+// ── Reference values, read off the machining workbook's drilling table ─────────
+// "STEEL-LOW & MEDIUM STRENGTH WROUGHT" (the mild-steel row), Drilling: 9-25 m/min (17 at the middle of the range);
+// feed 0.46 mm/rev in the 19-26 mm band.
+const DRILL_SPEED = 17;
+const DRILL_FEED_AT_19_9 = 0.46;
+const MILL_8K = { 'Max Spindle Speed': { value: 8000, source: 'Machine: test spindle_speed_rpm' } };
 
 describe('hand-calculated cost chain', () => {
-  it('drilling: 3 holes of Ø19.9 x 40 mm = depth / (rpm x feed) x 60 x holes (tblDrilling 1.0)', () => {
+  it('drilling: 3 holes of Ø19.9 x 40 mm = holes x ceil((depth + 10) / (rpm x feed) x 60), as the workbook\'s Drilling sheet times them', () => {
+    // n = 17 000 / (pi x 19.9) = 271.93 rpm (under the 8000 rpm spindle); (40 + 10) / (0.46 x 271.93) = 0.3997 min = 23.98 s -> 24 s a hole.
     const rpm = (DRILL_SPEED * 1000) / (Math.PI * 19.9);
-    const expectedSec = (40 / (rpm * DRILL_FEED_AT_19_9)) * 60 * 3;
-    const cycle = computeDrillCycle(19.9, 'AISI 1018', 40, DRILLING, CALCS, 3);
+    const perHole = Math.ceil(((40 + 10) / (rpm * DRILL_FEED_AT_19_9)) * 60);
+    expect(perHole).toBe(24);
+    const cycle = computeDrillCycle(19.9, 'AISI 1018', 40, DRILLING, CALCS, 3, undefined, MILL_8K);
     expect(cycle.missing).toEqual([]);
-    expect(cycle.sec).toBeCloseTo(expectedSec, 6);
+    expect(cycle.sec).toBe(3 * perHole);
   });
 
   it('material: the weight of the stock chosen for the part x price (no markup)', () => {
@@ -126,7 +128,7 @@ describe('regression: rotary broaching shares the part machine, so its setup is 
       blankResult: billet(100, 50, 20), batchSize: 10,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
       featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 'fixed' }],
-      drillingTable: DRILLING,
+      workbook: workbookFixture(),
       polygons: [{ kind: 'socket', sides: 6, acrossFlatsMm: 10, depthMm: 5, count: 1 }],
       rotaryBroach: realRotaryBroachReference(),
     }), mc('3_axis_mill'));
@@ -147,7 +149,7 @@ const milled = (batchSize: number) => input({
   holeCount: 6, holeGroups: [{ diameter_mm: 8, count: 4, depth_mm: 20 }, { diameter_mm: 5, count: 2, depth_mm: 12 }],
   threads: [{ size: 'M6', count: 2, depthMm: 10 }],
   tightestToleranceMm: 0.1, sharpEdgeLengthMm: 900, deburrLinearSpeedMmPerSec: 5,
-  drillingTable: DRILLING, tappingTable: realTappingTable(),
+  workbook: workbookFixture(),
   mhrRate: rate(600, { setupTimeHr: 0.5 }),
   inspectionRate: rate(450, { machineClass: 'cmm', setupTimeHr: 0.25, machineName: 'CMM' }),
   tappingRate: rate(600, { machineClass: 'tapping', hostMachineClass: '3_axis_mill' }),
@@ -157,11 +159,10 @@ const milled = (batchSize: number) => input({
 const turned = (batchSize: number) => input({
   batchSize, family: 'turned', maxLength: 80, maxWidth: 32, maxHeight: 32, volume: 50_000,
   holeCount: 1, holeGroups: [{ diameter_mm: 8, count: 1, depth_mm: 30 }],
-  drillingTable: DRILLING, partoffTable: realPartoffTable(), sharpEdgeLengthMm: 400, deburrLinearSpeedMmPerSec: 5,
+  workbook: workbookFixture(), partoffTable: realPartoffTable(), sharpEdgeLengthMm: 400, deburrLinearSpeedMmPerSec: 5,
   mhrRate: rate(900, { machineClass: '2_axis_lathe', setupTimeHr: 0.5, maxSpindleRpm: 4000 }),
   inspectionRate: rate(450, { machineClass: 'cmm', setupTimeHr: 0.25, machineName: 'CMM' }),
   blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50, endAllowanceMm: 0.5 },
-  workbook: workbookFixture(),
 });
 
 const cases: Array<[string, (b: number) => MachiningCostInput, (i: MachiningCostInput) => ReturnType<typeof computeMillingCostSummary>]> = [

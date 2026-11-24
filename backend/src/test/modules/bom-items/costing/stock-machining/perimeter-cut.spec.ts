@@ -11,7 +11,7 @@
 // teeth, 76 m/min, 0.008). Max Spindle Speed 10 000 rpm and Slotting Depth Ratio 0.2 are read off the keyway's stored calculator,
 // "Machining - Obround Slot Milling". Every expected number is worked out by hand from these.
 import { specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
-import { buildOperationSequence, type MillingFinishingRow } from '../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
+import { buildOperationSequence, type MillingFinishingRow, type SequenceOptions } from '../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { isReferenceOperation } from '../../../../../modules/bom-items/costing/shared/reference-features.generated';
 import { loadStockMachiningCalculatorSpec, stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
 import {
@@ -132,8 +132,8 @@ describe('what the perimeter cut needs', () => {
 
 describe('the perimeter cut in the mill\'s sequence', () => {
   const features = [{ id: 'PlanarFace-default_c1', feature_type: 'PlanarFace', variant: 'default', occurrences: [{ area_mm2: 1000 }] }];
-  const sequence = (stockOps: Parameters<typeof buildOperationSequence>[13]) =>
-    buildOperationSequence(features, 'aluminum', 1, 'Aluminum, ANSI 6061', null, null, null, null, MACHINING, null, 60000, ALUMINIUM, null, stockOps);
+  const sequence = (stockOps: SequenceOptions['stockOps']) =>
+    buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1, materialGrade: 'Aluminum, ANSI 6061', calculators: MACHINING, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockOps });
 
   it('takes its place among the operations, with its own time and steps', () => {
     const op = cutOf();

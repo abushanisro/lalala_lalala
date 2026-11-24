@@ -18,7 +18,8 @@ import { resolvePmiRecords, type PmiReviewRow } from '../../../../../modules/bom
 import { resolveCapabilityTable, resolveIsoTable } from '../../../../../modules/bom-items/costing/shared/tolerance/process-capability';
 import { evaluateToleranceDecisions, toleranceProfileOf } from '../../../../../modules/bom-items/costing/shared/tolerance/process-profile';
 import { priceSecondaryMachining } from '../../../../../modules/bom-items/costing/shared/tolerance/secondary-machining-cost';
-import { readMachiningMemoryCsv, realCapabilityRules, realDrillingTable, realSurfaceGrindingParams } from '../machining/real-reference-tables';
+import { readMachiningMemoryCsv, realCapabilityRules, realSurfaceGrindingParams } from '../machining/real-reference-tables';
+import { workbookFixture } from '../machining/workbook-fixture';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { readCsv } = require('../../../../../../migrations/scripts/lib/memory-machine-seed.js');
@@ -85,17 +86,15 @@ const detected = (r: ReturnType<typeof run>, ref: string) => r.detection.detecte
 const machine = (machineClass: string, machineName: string, rate: number): MHRRateInput => ({
   rate, source: 'mhr_database', machineClass, machineName, commodityCode: null, labourRate: 30, operators: 1, setupTimeHr: 1,
 });
-const mill = machine('3_axis_mill', 'Mill A', 60);
+// The mill's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136): its drilling and reaming are capped at it.
+const mill = { ...machine('3_axis_mill', 'Mill A', 60), maxSpindleRpm: 8000 };
 const grinder = machine('reciprocating_surface_grinder', 'Grinder B', 45);
 function price(r: ReturnType<typeof run>) {
   if (!r.need || r.profile.cost !== 'priced') return { lines: [] as ProcessLineCost[], warnings: [] as string[] };
   return priceSecondaryMachining({
     need: r.need, instances: r.instances, calculators: specAsCalculators(),
     lookupContext: {
-      matClass: 'aluminum' as const, drillingTable: realDrillingTable(),
-      reamTable: readMachiningMemoryCsv('lookup/tblReaming.csv').map((x) => ({
-        ...x, Hardness: Number(x['Hardness']), DiameterMm: Number(x['DiameterMm']), CuttingSpeedMPerMin: Number(x['CuttingSpeedMPerMin']), FeedMm: Number(x['FeedMm']),
-      })),
+      matClass: 'aluminum' as const, workbook: workbookFixture(),
       surfaceGrindingParams: realSurfaceGrindingParams('30.11'), capabilityRules: realCapabilityRules(),
     },
     machineFor: (calc) => (calc === 'Surface Grinding' ? grinder : ['Drilling', 'Reaming'].includes(calc) ? mill : undefined),

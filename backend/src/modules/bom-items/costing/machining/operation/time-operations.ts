@@ -25,11 +25,13 @@ export function timeOperations(
     const trace = runs.length === 1
       ? runs[0]!.run.trace
       : [...runs.flatMap((r) => prefixTrace(`${r.p.label ?? r.p.operation} ·`, r.run.trace)), traceCalc(`${op.name} cycle time`, timeSec / factor, 's', 'Sum of every run\'s Cycle Time')];
-    const { missing: _planned, ...rest } = op;
+    const toolCostInr = runs.reduce((t, r) => t + Number(r.run.outputs?.['Tool Cost per Part'] ?? 0), 0);
+    const { missing: _planned, toolCostInr: _plannedTool, ...rest } = op;
     return {
       ...rest,
       timeSec,
       trace,
+      ...(toolCostInr > 0 ? { toolCostInr } : {}),
       ...(first?.calculatorId ? { calculator: { id: first.calculatorId, version: first.calculatorVersion, lookups: Object.assign({}, ...runs.map((r) => r.run.lookups)) } } : {}),
       ...(missing.length > 0 ? { missing: missing.join('; ') } : {}),
     };

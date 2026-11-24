@@ -8,7 +8,7 @@ import {
   computeDrillCycle, computeMillingCostSummary, type MachiningCostInput, type MachineClassId,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
-import { realDrillingTable } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const seed = (value: number): CalcSeed => ({ value, source: 'test' });
@@ -45,10 +45,10 @@ describe('timeOperations', () => {
   });
 
   it('a stepped hole is one run per step, each under its step\'s name, then their sum', () => {
-    const step = (d: number, depth: number) => ({ ...computeDrillCycle(d, 'Aluminum, ANSI 6061', depth, realDrillingTable(), CALCS).plan!, label: `Step Ø${d}` });
+    const step = (d: number, depth: number) => ({ ...computeDrillCycle(d, 'Aluminum, ANSI 6061', depth, workbookFixture(), CALCS).plan!, label: `Step Ø${d}` });
     const plan = [step(6, 10), step(10, 5)];
     const [timed] = timeOperations([{ name: 'Drilling', timeSec: 0, source: 'feature', plan }], CALCS);
-    const each = plan.map((p) => computeDrillCycle(Number(p.seeds['Hole Diameter']!.value), 'Aluminum, ANSI 6061', Number(p.seeds['Hole Depth']!.value), realDrillingTable(), CALCS).sec!);
+    const each = plan.map((p) => computeDrillCycle(Number(p.seeds['Hole Diameter']!.value), 'Aluminum, ANSI 6061', Number(p.seeds['Hole Depth']!.value), workbookFixture(), CALCS).sec!);
     expect(timed!.timeSec).toBeCloseTo(each[0]! + each[1]!, 6);
     expect(timed!.trace!.some((s) => s.fieldName.startsWith('Step Ø6 ·'))).toBe(true);
     expect(timed!.trace!.at(-1)).toMatchObject({ fieldName: 'Drilling cycle time', kind: 'calculated' });

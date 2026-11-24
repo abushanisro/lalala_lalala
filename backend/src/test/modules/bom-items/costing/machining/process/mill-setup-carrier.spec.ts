@@ -13,10 +13,11 @@ import {
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { findRouteDataGaps, lineDataGap } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
-import { realCapabilityRules, realInspectionReference, realTappingTable } from '../real-reference-tables';
+import { realCapabilityRules, realInspectionReference } from '../real-reference-tables';
 
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { ProcessLineCost } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const MILL = '3_axis_mill';
@@ -25,7 +26,8 @@ const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass: MILL, machineName: 'Test VMC', commodityCode: null, ...extra } as MHRRateInput);
 
 const SETUP_COST = 4.5;
-const MILL_RATE = rate(900, { setupTimeHr: 0.5 });
+// The mill's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136): the tapping it does runs on that spindle.
+const MILL_RATE = rate(900, { setupTimeHr: 0.5, maxSpindleRpm: 8000 });
 // Tapping on the machining centre itself, as the service passes it when the location has no tapping machine of its own (inheritCncTappingRate).
 const TAPPING_ON_THE_MILL = rate(900, { machineClass: 'tapping', hostMachineClass: MILL });
 // componentLoadTime, the row for a part handled by hand (memory/Machining/lookup): weight kg, longest side mm, seconds.
@@ -51,7 +53,7 @@ function block(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     millingRemovalRateMm3PerMin: 60_000,
     capabilityRules: realCapabilityRules(),
     inspectionReference: realInspectionReference(),
-    tappingTable: realTappingTable(),
+    workbook: workbookFixture(),
     partSetup: PART_SETUP,
     blankResult: billet(40_000),
     ...overrides,
@@ -114,7 +116,7 @@ describe('the mill has nothing to mill (the stock holds no more than the part, a
   });
 
   it('a tapping machine of its own is set up as itself, never with the mill\'s setup', () => {
-    const own = rate(600, { machineClass: 'tapping', machineName: 'Tapping machine', setupTimeHr: 0.25 });
+    const own = rate(600, { machineClass: 'tapping', machineName: 'Tapping machine', setupTimeHr: 0.25, maxSpindleRpm: 3000 });
     const { processLines, warnings } = cost(nothingToMill({ partSetup: undefined, threads: [{ size: 'M4', count: 2, depthMm: 8 }], tappingRate: own }));
     // 15 min over 100 parts at 600 per hour = 1.50: the tapping machine's own setup.
     expect(lineOf(processLines, 'Tapping')).toMatchObject({ setupCost: 1.5, setupTimeMin: 15, setupTimeSource: 'machine' });

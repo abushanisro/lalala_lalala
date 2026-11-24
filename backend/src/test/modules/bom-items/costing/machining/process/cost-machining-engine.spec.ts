@@ -29,9 +29,11 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(line.physicsGap?.gapType).toBe('unsupported_operation');
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
-import { realCapabilityRules, realDrillingTable, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams, realTappingTable, realInspectionReference } from '../real-reference-tables';
+import { realCapabilityRules, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams, realInspectionReference } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
-const TAPPING = realTappingTable();
+const TAPPING = workbookFixture();
 const INSPECTION = realInspectionReference();
 // Finishing-process rules from the real staged files (capability-rules.ts).
 const RULES = realCapabilityRules();
@@ -50,7 +52,6 @@ import {
   shapeRankForFamily,
   isDiscouragedShapeForFamily,
 } from '../../../../../../modules/raw-materials/constants/material-shape-ranking';
-import { workbookFixture } from '../workbook-fixture';
 
 // The stock a fixture part is cut from, unless the test states one: a billet of the part's own box. The engine sizes no stock itself (the
 // stock model chooses it, costing/stock), so every test that prices a part gives it one.
@@ -63,6 +64,8 @@ function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInpu
     machineClass: '3_axis_mill',
     machineName: 'Test VMC',
     commodityCode: 'CNC-VMC-3AX',
+    // The test machine's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+    maxSpindleRpm: 8000,
     ...overrides,
   };
 }
@@ -306,7 +309,7 @@ describe('machining inputs light exactly the features they counted', () => {
 
   it('a drilled-hole group\'s diameter, depth and count open those holes', () => {
     const r = computeTurningCostSummary(milledInput({
-      family: 'turned', holeGroups: [{ diameter_mm: 4, count: 2, depth_mm: 10, occurrences: holes }], holeCount: 2, drillingTable: realDrillingTable(),
+      family: 'turned', holeGroups: [{ diameter_mm: 4, count: 2, depth_mm: 10, occurrences: holes }], holeCount: 2, workbook: workbookFixture(),
     }), mc('2_axis_lathe'));
     const drill = r.processLines.find((l) => (l.calculationTrace ?? []).some((s) => s.fieldName === 'Holes'))!;
     for (const f of ['Holes', 'Hole Diameter', 'Hole Depth']) {
@@ -316,14 +319,14 @@ describe('machining inputs light exactly the features they counted', () => {
 
   it('CAD threads open their tapped holes, and the Tapping line lists them for the Process tree', () => {
     const tapped = [{ featureId: 'SimpleHole-threaded_d1.6_c4', occurrenceIndex: 2 }];
-    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 1, depthMm: 8, occurrences: tapped }], tappingTable: TAPPING, materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 1, depthMm: 8, occurrences: tapped }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
     expect(step(tap.calculationTrace, 'Threads')!.ref).toEqual({ kind: 'features', label: 'M4 tapped holes', features: tapped });
     expect(tap.featureBreakdown).toEqual([expect.objectContaining({ name: 'M4 tapped ×1', occurrenceRefs: tapped })]);
   });
 
   it('drawing threads name no holes: no ref, no rows', () => {
-    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 3, depthMm: 8 }], tappingTable: TAPPING, materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 3, depthMm: 8 }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
     expect(step(tap.calculationTrace, 'Threads')!.ref).toBeUndefined();
     expect(tap.featureBreakdown).toBeUndefined();
@@ -344,7 +347,7 @@ describe('machining inputs light exactly the features they counted', () => {
   });
 
   it('a line run once per thread size fills its calculator from the first size, under the calculator\'s own field names', () => {
-    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M2', count: 4, depthMm: 5 }, { size: 'M3', count: 4, depthMm: 6 }], tappingTable: TAPPING, materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M2', count: 4, depthMm: 5 }, { size: 'M3', count: 4, depthMm: 6 }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
     const steps = calculatorInputSteps(r.processLines.find((l) => l.process === 'Tapping')!.calculationTrace!);
     const byName = Object.fromEntries(steps.map((s) => [s.fieldName, s]));
     expect(byName['Thread Diameter']!.value).toBe(2);
@@ -881,8 +884,8 @@ describe('Fix 4 — machinabilityRating: scales MRR in both engines', () => {
       { feature_type: 'PocketV2', variant: 'default', diameter_mm: 0,
         occurrences: [{ depth_mm: 12, material_removed_mm3: 15_000 }] },
     ];
-    const alOps = buildOperationSequence(fgv2, 'aluminum', 2.0, null, null, null, null, null, CALCS, null, 60000);
-    const steelOps = buildOperationSequence(fgv2, 'mild_steel', 1.0, null, null, null, null, null, CALCS, null, 12000);
+    const alOps = buildOperationSequence(fgv2, { matClass: 'aluminum', machinabilityFactor: 2.0, calculators: CALCS, removalRateMm3PerMin: 60000 });
+    const steelOps = buildOperationSequence(fgv2, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: 12000 });
     const alTime = alOps.find((o) => o.name === 'Rough Milling')!.timeSec;
     const steelTime = steelOps.find((o) => o.name === 'Rough Milling')!.timeSec;
     expect(alTime).toBeLessThan(steelTime);
@@ -969,42 +972,42 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
     expect(ssMilling).toBeGreaterThan(aluMilling);
   });
 
-  it('prices tapping from tblTapping: M8 x 10 mm in mild steel at code 1.0, pitch 1.25 on the 1.0 mm row (22.6 m/min)', () => {
+  it('prices tapping as the workbook\'s Tapping sheet times it, corrected: M8 x 10 mm in mild steel, the HSS tapping speed, feed = pitch, in and out', () => {
     const r = computeMillingCostSummary(
-      milledInput({ materialGrade: 'AISI 1018', tappingTable: TAPPING, threads: [{ size: 'M8', count: 3, depthMm: 10 }] }),
+      milledInput({ materialGrade: 'AISI 1018', workbook: workbookFixture(), threads: [{ size: 'M8', count: 3, depthMm: 10 }] }),
       mc('3_axis_mill'),
     );
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
-    const rpm = (22.6 * 1000) / (Math.PI * 8);
-    const perThreadSec = (2 * 10) / (rpm * 1.25) * 60; // in and reversed out, one pitch per revolution
-    expect(tap.cycleTimeMin).toBeCloseTo((perThreadSec * 3) / 60, 3);
-    const speed = tap.calculationTrace!.find((st) => st.fieldName === 'Cutting Speed')!;
-    expect(speed.source).toContain('tblTapping: material code 1');
+    // "Mild steels" HSS tapping 11-12 m/min -> 11.5; n = 11 500 / (pi x 8) = 457.57 rpm; one pitch (1.25) a turn, in and back out over
+    // the depth + 4 mm: 2 x 14 / (1.25 x 457.57) = 0.04896 min = 2.94 s -> 3 s a thread; 3 threads = 9 s.
+    expect(tap.cycleTimeMin * 60).toBeCloseTo(9, 1);
+    const speed = tap.calculationTrace!.find((st) => st.fieldName === 'Speed Min')!;
+    expect(speed.source).toContain('tblHssHoleSpeeds: Mild steels');
     expect(tap.calculationTrace!.find((st) => st.fieldName === 'Thread Pitch')!.source).toBe('ISO 261 coarse pitch of M8');
   });
 
   it('tapping a stainless part takes longer than the identical mild-steel part (tblTapping speeds)', () => {
     const tapMin = (grade: string) => computeMillingCostSummary(
-      milledInput({ materialGrade: grade, tappingTable: TAPPING, threads: [{ size: 'M6', count: 4, depthMm: 12 }] }),
+      milledInput({ materialGrade: grade, workbook: workbookFixture(), threads: [{ size: 'M6', count: 4, depthMm: 12 }] }),
       mc('3_axis_mill'),
     ).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin;
     expect(tapMin('SS304')).toBeGreaterThan(tapMin('AISI 1018'));
   });
 
-  it('prices aluminium tapping from its own cut code row (30.11, 27.2 m/min fine band)', () => {
+  it('prices aluminium tapping from its own workbook row (Aluminium alloys, 14-18 m/min)', () => {
     const r = computeMillingCostSummary(
-      milledInput({ materialGrade: 'AL6061-T6', tappingTable: TAPPING, threads: [{ size: 'M3×0.5', count: 4, depthMm: 5 }] }),
+      milledInput({ materialGrade: 'AL6061-T6', workbook: workbookFixture(), threads: [{ size: 'M3×0.5', count: 4, depthMm: 5 }] }),
       mc('3_axis_mill'),
     );
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
     expect(tap.cycleTimeMin).toBeGreaterThan(0);
-    expect(JSON.stringify(tap.calculationTrace)).toContain('material code 30.11');
+    expect(JSON.stringify(tap.calculationTrace)).toContain('tblHssHoleSpeeds: Aluminium alloys');
     expect(r.warnings.join(' ')).not.toContain('Tapping not priced');
   });
 
   it('a pitch finer than the table (M2 x 0.4) takes the fine-band speed', () => {
     const r = computeMillingCostSummary(
-      milledInput({ materialGrade: 'AL6061-T6', tappingTable: TAPPING, threads: [{ size: 'M2', count: 4, depthMm: 5 }] }),
+      milledInput({ materialGrade: 'AL6061-T6', workbook: workbookFixture(), threads: [{ size: 'M2', count: 4, depthMm: 5 }] }),
       mc('3_axis_mill'),
     );
     expect(r.processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin).toBeGreaterThan(0);
@@ -1013,7 +1016,7 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
 
   it('uses the real thread depth and never an assumed one', () => {
     const tapMin = (depthMm?: number) => computeMillingCostSummary(
-      milledInput({ materialGrade: 'AISI 1018', tappingTable: TAPPING, threads: [{ size: 'M6', count: 4, depthMm }] }),
+      milledInput({ materialGrade: 'AISI 1018', workbook: workbookFixture(), threads: [{ size: 'M6', count: 4, depthMm }] }),
       mc('3_axis_mill'),
     );
     expect(tapMin(30).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin)
@@ -1036,7 +1039,7 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      drillingTable: realDrillingTable(),
+      workbook: workbookFixture(),
       ...overrides,
     });
     const alu = computeTurningCostSummary(turnedInput({ materialGrade: 'AL6061-T6' }), mc('2_axis_lathe'));
@@ -1054,21 +1057,24 @@ describe('Fix — operation-sequencer.ts shares one MRR/drill/tap source of trut
       diameter_mm: dia,
       occurrences: [{ depth_mm: 10 }],
     }];
-    const aluOps = buildOperationSequence(throughHole(6), 'aluminum', 1.0, 'AL6061-T6', null, null, null, realDrillingTable(), CALCS);
-    const ssOps = buildOperationSequence(throughHole(6), 'stainless', 1.0, 'SS304', null, null, null, realDrillingTable(), CALCS);
+    // Planned before the machine is chosen, timed on one (an 8000 rpm spindle), as a route times them.
+    const onMill = (ops: OperationLine[]) => timeOperations(ops, CALCS, { 'Max Spindle Speed': { value: 8000, source: 'test' } });
+    const aluOps = onMill(buildOperationSequence(throughHole(6), { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'AL6061-T6', workbook: workbookFixture(), calculators: CALCS }));
+    const ssOps = onMill(buildOperationSequence(throughHole(6), { matClass: 'stainless', machinabilityFactor: 1.0, materialGrade: 'SS304', workbook: workbookFixture(), calculators: CALCS }));
     const aluDrill = aluOps.find((o) => o.name === 'Drilling')!.timeSec;
     const ssDrill = ssOps.find((o) => o.name === 'Drilling')!.timeSec;
     expect(ssDrill).toBeGreaterThan(aluDrill);
   });
 
-  it('feature-driven tapping reads the same tblTapping calculator (stainless slower than mild steel)', () => {
+  it('feature-driven tapping reads the same workbook tapping speeds (stainless slower than mild steel)', () => {
     const tappedHole = [{
       feature_type: 'SimpleHole', variant: 'threaded',
       diameter_mm: 6,
       occurrences: [{ depth_mm: 12, spec: 'M6' }],
     }];
     const tapSec = (cls: 'mild_steel' | 'stainless', grade: string) =>
-      buildOperationSequence(tappedHole, cls, 1.0, grade, null, null, null, null, CALCS, TAPPING).find((o) => o.name === 'Tapping')!.timeSec;
+      timeOperations(buildOperationSequence(tappedHole, { matClass: cls, machinabilityFactor: 1.0, materialGrade: grade, workbook: workbookFixture(), calculators: CALCS }), CALCS,
+        { 'Max Spindle Speed': { value: 8000, source: 'test' } }).find((o) => o.name === 'Tapping')!.timeSec;
     expect(tapSec('stainless', 'SS304')).toBeGreaterThan(tapSec('mild_steel', 'AISI 1018'));
   });
 
@@ -1140,49 +1146,36 @@ describe('checkMachiningCapability — real per-machine envelope (migration 755)
   });
 });
 
-// Root-caused 2026-09-16: Reaming had ZERO implementation before (no case
-// in operation-sequencer.ts's switch, no line in either cost function) —
-// a real, sourced tblReaming table (316 rows) existed and was completely
-// unused. Deburring used an uncited flat "surfaceArea/10000*0.5" constant
-// with no material sensitivity and no dedicated line on turned parts at
-// all (a pre-existing mislabel: cycleTimes.deburrMin reported boringMin).
-const REAM_TABLE = [
-  { ToolType: 'Ream', MaterialCutCodeName: '1.0', Hardness: 125, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 22.6, FeedMm: 0.15 },
-  { ToolType: 'Ream', MaterialCutCodeName: '5.0', Hardness: 275, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 8.0, FeedMm: 0.10 },
-  // Real row copied verbatim from memory/Machining/lookup (tblReaming.csv): the aluminum-range
-  // entry, so an aluminum part is inside the table's own hardness range.
-  { ToolType: 'Ream', MaterialCutCodeName: '30.11', Hardness: 60, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 27.2, FeedMm: 0.3 },
-];
-
+// Reaming is timed by the workbook's Reaming sheet (migration 1139): speed and feed from tblDrillReamData.
 // Every fixture below uses 0.04mm, not the tighter values a real Reaming
 // scenario might use in the field — 0.04 sits strictly between the real
 // RULES.jigBorePositionToleranceMm (variables jigBoreMaxPosTol 0.0254)
 // and TIGHT_TOLERANCE_REAM_THRESHOLD_MM (0.05), so these tests exercise
 // Reaming specifically without also entering Jig Boring's tier.
 
-describe('Reaming — new operation, tolerance-triggered, real tblReaming physics', () => {
-  it('adds no Reaming line when tolerance is not tight, even with real reamTable data', () => {
+describe('Reaming — tolerance-triggered, the workbook\'s Reaming sheet', () => {
+  it('adds no Reaming line when tolerance is not tight, even with the workbook\'s reaming data', () => {
     const result = computeMillingCostSummary(
-      milledInput({ tightestToleranceMm: 0.2, reamTable: REAM_TABLE } as any),
+      milledInput({ tightestToleranceMm: 0.2, workbook: workbookFixture() } as any),
       mc('3_axis_mill'),
     );
     expect(result.processLines.some((l) => l.process === 'Reaming')).toBe(false);
   });
 
-  it('shows the Reaming gap when tolerance is tight but no real reamTable was resolved (not fabricated)', () => {
+  it('shows the Reaming gap when tolerance is tight but the workbook\'s tables were not read (not fabricated)', () => {
     const result = computeMillingCostSummary(
-      milledInput({ tightestToleranceMm: 0.04, reamTable: null } as any),
+      milledInput({ tightestToleranceMm: 0.04, workbook: workbookFixture({ tables: {} }) } as any),
       mc('3_axis_mill'),
     );
     expectGapLine(result, 'Reaming');
   });
 
-  it('adds a real Reaming line when tolerance is tight AND real reamTable data is available', () => {
+  it('adds a real Reaming line when tolerance is tight AND the workbook\'s reaming data is available', () => {
     const result = computeMillingCostSummary(
       milledInput({
         tightestToleranceMm: 0.04,
         holeGroups: [{ diameter_mm: 3, count: 4, depth_mm: 7.5 }],
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -1196,15 +1189,11 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
       milledInput({
         tightestToleranceMm: 0.04,
         holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }, { diameter_mm: 20, count: 1, depth_mm: 50 }],
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
-    // REAM_TABLE only has real rows at diameter 3mm -- if the smallest (3mm)
-    // hole were NOT the one chosen, the nearest-diameter match would still
-    // resolve (real data exists at 3mm either way), so instead prove the
-    // stainless-vs-aluminum material sensitivity carries through the reamed
-    // diameter selection by checking a real, distinct cycle time exists.
+    // The 3 mm group and the 20 mm group both have a workbook reaming band; the line is the smallest group's.
     const reamLine = withSmall.processLines.find((l) => l.process === 'Reaming');
     expect(reamLine).toBeDefined();
   });
@@ -1213,14 +1202,14 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
     const alu = computeMillingCostSummary(
       milledInput({
         materialGrade: 'AL6061-T6', tightestToleranceMm: 0.04,
-        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], reamTable: REAM_TABLE,
+        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
     const stainless = computeMillingCostSummary(
       milledInput({
         materialGrade: 'SS304', tightestToleranceMm: 0.04,
-        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], reamTable: REAM_TABLE,
+        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -1242,7 +1231,7 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      reamTable: REAM_TABLE,
+      workbook: workbookFixture(),
       ...overrides,
     });
     const result = computeTurningCostSummary(turnedInput(), mc('2_axis_lathe'));
@@ -1309,7 +1298,7 @@ describe('Deburring — real hardness-matched tblDeburring speed, fixed a pre-ex
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      drillingTable: realDrillingTable(),
+      workbook: workbookFixture(),
       sharpEdgeLengthMm: 400,
       deburrLinearSpeedMmPerSec: 18.8,
       ...overrides,
@@ -1639,7 +1628,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
       milledInput({
         tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 2, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE, jigBoreRate: rate(2000, { machineClass: 'jig_bore' }),
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -2303,7 +2292,7 @@ describe('Cannula Holder bottom (aluminum 6061, milled): every operation is pric
       materialGrade: 'Aluminum, ANSI 6061', batchSize: 2500, tightestToleranceMm: null, gdtFeatureCount: 0, gdtFeatures: [],
       holeCount: 5, holeGroups: [{ diameter_mm: 4, count: 4, depth_mm: 5.208 }, { diameter_mm: 18.4, count: 1, depth_mm: 21.73 }],
       threads: [{ size: 'M2', count: 4, pitchMm: 0.4, depthMm: 5.1 }, { size: 'M3', count: 4, pitchMm: 0.5, depthMm: 5.04 }],
-      tappingTable: TAPPING, drillingTable: realDrillingTable(), keywayBroach: realKeywayBroachReference(), keywayCandidates: [],
+      workbook: workbookFixture(), keywayBroach: realKeywayBroachReference(), keywayCandidates: [],
       // CAD sharp-edge length; tblDeburring Wire Wheel Brush (the reference default edge tool) speed for cut code 30.11.
       sharpEdgeLengthMm: 1442.715, deburrLinearSpeedMmPerSec: 27.4, deburrMaterialCutCode: '30.11',
     } as any),
@@ -2314,7 +2303,7 @@ describe('Cannula Holder bottom (aluminum 6061, milled): every operation is pric
     const tap = result.processLines.find((l) => l.process === 'Tapping')!;
     expect(tap.cycleTimeMin).toBeGreaterThan(0);
     expect(tap.physicsGap).toBeUndefined();
-    expect(JSON.stringify(tap.calculationTrace)).toContain('material code 30.11');
+    expect(JSON.stringify(tap.calculationTrace)).toContain('tblHssHoleSpeeds: Aluminium alloys');
   });
 
   it('every line states its setup, so the route counts as fully costed (tapping on the mill and deburring were refused as "setup time was not resolved")', () => {
