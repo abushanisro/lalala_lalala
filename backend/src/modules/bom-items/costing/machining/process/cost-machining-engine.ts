@@ -1297,18 +1297,37 @@ export function workbookSeeds(
   return specLookupSeeds(fields, { matClass, tables: workbook?.tables ?? {}, variables: {}, cutCode: null }, keys);
 }
 
-/** The selected machine's top spindle speed (mhr_records.specs, migration 1136), which a cutting calculator caps its spindle at. */
-export function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
-  const value = liveTool ? rate.liveToolingMaxRpm : rate.maxSpindleRpm;
+/** A machine record's top speeds, as mhr_records.specs holds them (migration 1136). */
+export interface SpindleMachine {
+  id: string | null;
+  name: string | null;
+  machineClass: string;
+  maxSpindleRpm: number | null;
+  liveToolingMaxRpm: number | null;
+}
+
+/** The mhr_records.specs column a cutting calculator's spindle cap reads: a lathe's live tool for milling on the lathe, else the spindle. */
+export const spindleColumn = (liveTool: boolean) => liveTool ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm';
+
+/** A machine's top spindle speed, which a cutting calculator caps its spindle at, read from the machine's own record. */
+export function machineSpindleSeed(machine: SpindleMachine, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+  const value = liveTool ? machine.liveToolingMaxRpm : machine.maxSpindleRpm;
   if (value == null) return {};
-  const column = liveTool ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm';
-  const machineId = machineRecordId(rate);
+  const column = spindleColumn(liveTool);
   return {
     'Max Spindle Speed': {
-      value, source: `Machine: ${rate.machineName ?? 'selected machine'} ${column} (mhr_records)`,
-      ...(machineId ? { ref: { kind: 'machine' as const, machineId, machineName: rate.machineName ?? '', machineClass: rate.machineClass, location: location ?? null, column } } : {}),
+      value, source: `Machine: ${machine.name ?? 'selected machine'} ${column} (mhr_records)`,
+      ...(machine.id ? { ref: { kind: 'machine' as const, machineId: machine.id, machineName: machine.name ?? '', machineClass: machine.machineClass, location: location ?? null, column } } : {}),
     },
   };
+}
+
+/** The selected machine's top spindle speed (mhr_records.specs, migration 1136), which a cutting calculator caps its spindle at. */
+export function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+  return machineSpindleSeed({
+    id: machineRecordId(rate), name: rate.machineName ?? null, machineClass: rate.machineClass,
+    maxSpindleRpm: rate.maxSpindleRpm ?? null, liveToolingMaxRpm: rate.liveToolingMaxRpm ?? null,
+  }, location, liveTool);
 }
 
 /**

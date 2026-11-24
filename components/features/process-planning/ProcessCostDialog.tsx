@@ -39,6 +39,7 @@ import { calculationOfRecord, NO_CALCULATION, runOfCalculator, type LineCalculat
 import type { EngineCalculatorSeed } from '@/lib/calculators/engine-calculator-seeds';
 import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
 import { columnValue, isMatchedLookupRow } from '@/lib/calculators/lookup-row-match';
+import { allReadFrom, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
 import { describeStrokeLookup, strokeComplexity as strokeComplexityOf } from '@/lib/calculators/stroke-lookup';
 import { formatFieldValue } from '@/lib/costing/cycle-fields';
 import { formatCycleMin, formatStoredCycleSec, storableCycleSec } from '@/lib/costing/format-cycle';
@@ -453,6 +454,11 @@ export function ProcessCostDialog({
   // Key inputs (Hole Diameter, Bar Diameter, ...) the engineer typed; the
   // lookup-table inputs are re-resolved from the database for them.
   const machiningEditedRef = useRef<Set<string>>(new Set());
+  // The inputs a machining calculator reads from its machine (Max Spindle Speed): read from the machine chosen in this dialog, and read
+  // again whenever that machine changes.
+  const machiningMachineFieldsRef = useRef<Set<string>>(new Set());
+  // Each machining input as it was filled (cost engine, database, machine): a field left without a change keeps the source it came with.
+  const machiningFilledRef = useRef<Record<string, unknown>>({});
   const [calculatorResults, setCalculatorResults] = useState<Record<string, any> | null>(null);
   // The inputs the results on screen were calculated from. An input edited afterwards leaves the results as they are until Calculate, so
   // the working is written in the numbers they were reached with, not the ones now in the boxes. Display only: nothing is saved from it.
@@ -1441,27 +1447,37 @@ export function ProcessCostDialog({
   const resolveMachiningInputs = async (calculatorId: string, keys: Record<string, number>, onlyLookups: boolean) => {
     if (!bomItemData?.id) return;
     try {
+      // The spindle the engine's run capped this calculator at: a lathe's live tool (milling on the lathe) or its spindle.
+      const seed = engineSeedRef.current?.calculatorId === calculatorId ? engineSeedRef.current : engineSeedsRef.current[calculatorId] ?? null;
+      const liveTool = runsOnLiveTool(seed?.refs);
       const d = await apiClient.post<{
         inputs: Record<string, number>;
         provenance: Record<string, string>;
         lookupMatches: Record<string, { table: string; row: Record<string, string | number> }>;
         refs?: Record<string, SourceRef>;
         missing: string[];
+        machineFields?: string[];
       }>(`/bom-items/${bomItemData.id}/machining-calculator-inputs`, {
         calculatorId,
         keys,
         // The Digital Factory this part is costed in: the server costs the part
         // there and returns the inputs the engine actually used.
         ...(defaultLocation ? { location: defaultLocation } : {}),
+        // The machine chosen here: the inputs the calculator reads from its machine (top spindle speed) are read from its record.
+        ...(selectedMHR?.id ? { machineId: selectedMHR.id, liveTool } : {}),
       });
       if (!d || selectedCalculatorIdRef.current !== calculatorId) return;
-      const lookupFields = new Set(
-        (selectedCalculator?.fields ?? [])
+      machiningMachineFieldsRef.current = new Set(d.machineFields ?? []);
+      const lookupFields = new Set([
+        ...(selectedCalculator?.fields ?? [])
           .filter((f: CalculatorField) => f.dataSource === MACHINING_LOOKUP_DATA_SOURCE)
           .map((f: CalculatorField) => f.fieldName as string),
-      );
+        // Read from the chosen machine's record, as a lookup is read from its table.
+        ...(d.machineFields ?? []),
+      ]);
       const pick = <T,>(rec: Record<string, T>) =>
         onlyLookups ? Object.fromEntries(Object.entries(rec).filter(([f]) => lookupFields.has(f))) : rec;
+      machiningFilledRef.current = { ...machiningFilledRef.current, ...pick(d.inputs) };
       setCalculatorInputs((prev: Record<string, any>) => ({ ...prev, ...pick(d.inputs) }));
       setCalculatorInputProvenance((prev) => ({ ...prev, ...pick(d.provenance) }));
       setCalculatorMatchedRowKeys((prev) => ({
@@ -1481,20 +1497,26 @@ export function ProcessCostDialog({
 
   // Engineer changed a key input of a machining calculator (e.g. Hole
   // Diameter): re-resolve the lookup-table inputs from the database for it.
-  const onMachiningKeyEdited = (fieldName: string) => {
-    if (!selectedCalculatorId || !machiningCalculatorIds.has(selectedCalculatorId)) return;
-    const field = (selectedCalculator?.fields ?? []).find((f: CalculatorField) => f.fieldName === fieldName);
-    if (!field || field.dataSource === MACHINING_LOOKUP_DATA_SOURCE) return;
-    machiningEditedRef.current.add(fieldName);
-    setCalculatorInputProvenance((prev) => ({ ...prev, [fieldName]: 'Entered in the calculator' }));
-    setCalculatorInputRefs((prev) => ({ ...prev, [fieldName]: null }));
+  // The key inputs the engineer typed, as the keys the database re-resolves the lookups for.
+  const editedMachiningKeys = () => {
     const current = calculatorInputsRef.current;
-    const keys = Object.fromEntries(
+    return Object.fromEntries(
       [...machiningEditedRef.current]
         .map((f) => [f, Number(current[f])] as const)
         .filter(([, v]) => Number.isFinite(v)),
     );
-    void resolveMachiningInputs(selectedCalculatorId, keys, true);
+  };
+
+  const onMachiningKeyEdited = (fieldName: string) => {
+    if (!selectedCalculatorId || !machiningCalculatorIds.has(selectedCalculatorId)) return;
+    const field = (selectedCalculator?.fields ?? []).find((f: CalculatorField) => f.fieldName === fieldName);
+    if (!field || field.dataSource === MACHINING_LOOKUP_DATA_SOURCE) return;
+    // Leaving a field without changing it enters nothing: it keeps the value and the source it was filled with.
+    if (!isEntry(machiningEditedRef.current.has(fieldName), machiningFilledRef.current[fieldName], calculatorInputsRef.current[fieldName])) return;
+    machiningEditedRef.current.add(fieldName);
+    setCalculatorInputProvenance((prev) => ({ ...prev, [fieldName]: 'Entered in the calculator' }));
+    setCalculatorInputRefs((prev) => ({ ...prev, [fieldName]: null }));
+    void resolveMachiningInputs(selectedCalculatorId, editedMachiningKeys(), true);
   };
 
   // Auto-populate calculator inputs from BOM data
@@ -1511,6 +1533,8 @@ export function ProcessCostDialog({
         ? engineSeedRef.current
         : engineSeedsRef.current[selectedCalculatorId] ?? null;
       machiningEditedRef.current = new Set();
+      machiningFilledRef.current = seed ? { ...seed.inputs } : {};
+      machiningMachineFieldsRef.current = machineFieldsOf(seed?.refs);
       setCalculatorInputs(seed ? { ...seed.inputs } : {});
       setCalculatorInputProvenance(seed ? { ...seed.provenance } : {});
       setCalculatorInputRefs({});
@@ -1522,7 +1546,9 @@ export function ProcessCostDialog({
       const fields: any[] = selectedCalculator?.fields ?? [];
       const unfilled = fields.some((f) => f.fieldType !== 'calculated' && !(seed && f.fieldName in seed.inputs)
         && (f.defaultValue == null || f.defaultValue === ''));
-      if (!seed || unfilled) await resolveMachiningInputs(selectedCalculatorId, {}, !!seed);
+      // The engine ran the calculator on its own machine; the machine chosen here may be another, whose record the machine inputs are read from.
+      const onOtherMachine = readFromAnotherMachine(seed?.refs, selectedMHR?.id);
+      if (!seed || unfilled || onOtherMachine) await resolveMachiningInputs(selectedCalculatorId, {}, !!seed);
       return;
     }
 
@@ -2298,7 +2324,16 @@ export function ProcessCostDialog({
     const previous = lastMHRIdRef.current;
     if (previous === loadedMHRId) return;
     lastMHRIdRef.current = loadedMHRId;
-    if (!selectedCalculator || !bomItemData || machiningCalculatorIds.has(selectedCalculatorId)) return;
+    if (!selectedCalculator || !bomItemData) return;
+    if (machiningCalculatorIds.has(selectedCalculatorId)) {
+      // The machine inputs (top spindle speed) are the chosen machine's, a typed one too: choosing a machine selects its speed. Already read
+      // from it (the engine ran on it, or they were read for it), there is nothing to read.
+      const shown = [...machiningMachineFieldsRef.current].filter((f) => !machiningEditedRef.current.has(f)).map((f) => sourceRefFor(f));
+      if (allReadFrom(shown, loadedMHRId)) return;
+      for (const f of machiningMachineFieldsRef.current) machiningEditedRef.current.delete(f);
+      void resolveMachiningInputs(selectedCalculatorId, editedMachiningKeys(), true);
+      return;
+    }
     // The saved machine arriving on open is not a change: only fill the
     // machine fields still blank (auto-fill never overwrites a value).
     if (!previous) {

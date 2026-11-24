@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsObject, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsObject, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 import type { SourceRef } from './cost-breakdown.dto';
 
 export class MachiningCalculatorInputsRequestDto {
@@ -26,6 +26,16 @@ export class MachiningCalculatorInputsRequestDto {
   @IsInt()
   @Min(1)
   batchSize?: number;
+
+  @ApiPropertyOptional({ description: 'The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it' })
+  @IsOptional()
+  @IsUUID()
+  machineId?: string;
+
+  @ApiPropertyOptional({ description: 'The calculator runs on a lathe\'s live tool (milling on the lathe), as the cost engine ran it: its spindle cap is the live tool\'s' })
+  @IsOptional()
+  @IsBoolean()
+  liveTool?: boolean;
 }
 
 export class CalculatorInputsRequestDto extends MachiningCalculatorInputsRequestDto {
@@ -50,4 +60,6 @@ export interface MachiningCalculatorInputsDto {
   refs: Record<string, SourceRef>;
   /** Inputs that could not be resolved, each with the reason. */
   missing: string[];
+  /** The inputs read from the machine the calculator runs on (Max Spindle Speed): re-read whenever the dialog's machine changes. */
+  machineFields: string[];
 }

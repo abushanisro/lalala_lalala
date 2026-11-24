@@ -435,7 +435,8 @@ export class BOMItemsController {
     const keys = Object.fromEntries(Object.entries(body.keys ?? {})
       .map(([k, v]) => [k, Number(v)] as const)
       .filter(([, v]) => Number.isFinite(v)));
-    return this.costing.resolveMachiningCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize);
+    return this.costing.resolveMachiningCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize,
+      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined);
   }
 
   // Any reference calculator (Machining, Die Casting): its inputs for this
@@ -452,7 +453,8 @@ export class BOMItemsController {
     const keys = Object.fromEntries(Object.entries(body.keys ?? {})
       .map(([k, v]) => [k, Number(v)] as const)
       .filter(([, v]) => Number.isFinite(v)));
-    return this.costing.resolveCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize, body.runKey);
+    return this.costing.resolveCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize, body.runKey,
+      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined);
   }
 
   // ── Required tolerances per feature instance (GD&T tab, migration 881) ────

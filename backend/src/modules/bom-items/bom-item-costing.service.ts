@@ -61,8 +61,8 @@ import {
   meetsRequiredMilledClass, hasMachineRate, machiningRouteStanding,
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
-import type { MachiningCostInput, MachineClassId, MachiningRouteStanding, MachiningWorkbookInput } from './costing/machining/process/cost-machining-engine';
-import { spindleLimitSeed } from './costing/machining/process/cost-machining-engine';
+import type { MachiningCostInput, MachineClassId, MachiningRouteStanding, MachiningWorkbookInput, SpindleMachine } from './costing/machining/process/cost-machining-engine';
+import { machineSpindleSeed, spindleColumn, spindleLimitSeed } from './costing/machining/process/cost-machining-engine';
 import { timeOperations } from './costing/machining/operation/time-operations';
 import { WORKBOOK_TABLES } from './costing/machining/lookup/workbook-cutting-data';
 import { machiningFeatureCounts } from './costing/machining/operation/machining-feature-counts';
@@ -75,7 +75,7 @@ import { SecondaryProcessService } from './services/secondary-process.service';
 import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
 import { detectDrawingCadMismatches, drawingStatedBendCount, drawingStatedThreadCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
-import { loadMachiningCalculatorSpec } from './costing/machining/calculators/machining-calculator-spec';
+import { loadMachiningCalculatorSpec, machineSourcedFields } from './costing/machining/calculators/machining-calculator-spec';
 import { isWorkbookField, specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
 
 /** Lookup tables read by the generic spec resolver (specLookupSeeds), not by a resolver of their own. */
@@ -8283,10 +8283,11 @@ export class BomItemCostingService {
     location?: string,
     batchSize?: number,
     runKey?: string,
+    machine?: { id: string; liveTool: boolean },
   ): Promise<CalculatorInputsDto> {
     const machining = await this.resolveMachiningCalculators(accessToken);
     if (Object.values(machining).some((c) => c.calculatorId === calculatorId)) {
-      return { ...(await this.resolveMachiningCalculatorInputs(id, calculatorId, keys, userId, accessToken, location, batchSize)), processGroup: 'Machining' };
+      return { ...(await this.resolveMachiningCalculatorInputs(id, calculatorId, keys, userId, accessToken, location, batchSize, machine)), processGroup: 'Machining' };
     }
     const heat = await this.calculatorCatalogService.loadHeatTreatmentCalculators(accessToken);
     if (Object.values(heat).some((c) => c.calculatorId === calculatorId)) {
@@ -8376,6 +8377,7 @@ export class BomItemCostingService {
     accessToken: string,
     location?: string,
     batchSize?: number,
+    machine?: { id: string; liveTool: boolean },
   ): Promise<MachiningCalculatorInputsDto> {
     const item = await this.items.findOne(id, userId, accessToken);
     const calculators = await this.resolveMachiningCalculators(accessToken);
@@ -8545,13 +8547,55 @@ export class BomItemCostingService {
       else delete refs[field];
     }
 
+    // The inputs read from the machine (its top spindle speed): from the machine chosen in the dialog, its own record every time, so a
+    // changed machine or an edited key never leaves another machine's value, or none. The column is the one the engine's run read (a
+    // lathe's live tool for milling on the lathe), else the one the dialog names.
+    const machineFields = machineSourcedFields(def.name).filter((f) => inputFields.has(f));
+    if (machine && machineFields.length > 0) {
+      const ran = refs['Max Spindle Speed'];
+      const liveTool = ran?.kind === 'machine' ? ran.column === spindleColumn(true) : machine.liveTool;
+      const record = await this.spindleMachine(machine.id, accessToken);
+      const seeds = record ? machineSpindleSeed(record, location ?? record.location, liveTool) : {};
+      for (const field of machineFields) {
+        // A speed the engineer typed is theirs (a key), never replaced by the machine's.
+        if (field in keys) continue;
+        delete inputs[field];
+        delete provenance[field];
+        delete refs[field];
+        const seed = seeds[field];
+        if (seed) set(field, seed.value, seed.source, seed.ref);
+        else {
+          unresolved.push(record
+            ? `${field}: ${record.name ?? 'the chosen machine'} has no ${spindleColumn(liveTool)} on file (mhr_records) — choose a cutting machine`
+            : `${field}: the chosen machine (${machine.id}) is not on file (mhr_records)`);
+        }
+      }
+    }
+
     const missing = [...unresolved, ...(lookup?.missing ?? []).filter((m) => !Object.keys(inputs).some((f) => m.startsWith(`${f}`)))];
     for (const f of def.fields) {
       if (f.field_type === 'calculated' || f.field_name in inputs) continue;
       if (f.default_value != null && f.default_value !== '') continue;
       if (!missing.some((m) => m.includes(f.field_name))) missing.push(`${f.field_name}: not on this part (${f.data_source ?? 'input'}) — enter it`);
     }
-    return { calculatorId, operation, materialClass: matClass, inputs, provenance, lookupMatches, refs, missing };
+    return { calculatorId, operation, materialClass: matClass, inputs, provenance, lookupMatches, refs, missing, machineFields };
+  }
+
+  /** A machine's top speeds from its mhr_records row (specs, migration 1136), or null when no such machine is on file. */
+  private async spindleMachine(machineId: string, accessToken: string): Promise<(SpindleMachine & { location: string | null }) | null> {
+    const { data, error } = await this.databaseService.getClient(accessToken)
+      .from('mhr_records')
+      .select('id, machine_name, machine_class, location, specs')
+      .eq('id', machineId)
+      .maybeSingle();
+    if (error) throw new Error(`mhr_records ${machineId}: ${error.message}`);
+    if (!data) return null;
+    const specs = (data.specs ?? {}) as Record<string, unknown>;
+    const rpm = (v: unknown) => (Number(v) > 0 ? Number(v) : null);
+    return {
+      id: String(data.id), name: data.machine_name ?? null, machineClass: String(data.machine_class ?? ''), location: data.location ?? null,
+      maxSpindleRpm: rpm(specs.spindle_speed_rpm), liveToolingMaxRpm: rpm(specs.live_tooling_speed_rpm),
+    };
   }
 
   /**
