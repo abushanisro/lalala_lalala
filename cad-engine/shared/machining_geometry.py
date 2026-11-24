@@ -98,6 +98,59 @@ def classify_hole(diameter_mm: float, through: bool, full_turn: bool = True) -> 
     return ("through" if through else "blind"), None, False
 
 
+# The hole variants a family's recogniser reports that can be a tapped hole: a plain round hole. A countersink, a perforation, a stepped bore
+# and a hole the recogniser already threaded are not read again.
+THREADABLE_HOLE_VARIANTS = ("through", "blind")
+# Holes that are never tapped, and so neither is a plain hole that is one of them (a perforation listed again as through holes) or that one
+# of them opens into (the countersink at the mouth of a hole: the hole is a clearance hole for a countersunk screw).
+UNTAPPED_HOLE_VARIANTS = ("countersunk", "countersink", "perforated")
+
+
+def annotate_hole_threads(feature_graph_v2: Optional[Dict[str, Any]], face_neighbours: Optional[Dict[int, set]] = None) -> int:
+    """
+    The tap-drill check the machining recogniser runs on every hole, for every other family's holes (a casting's, a forging's, a sheet-metal
+    part's...): each SimpleHole occurrence of a plain through or blind hole at a tap-drill size is tapped. It gets tapped True, spec (e.g.
+    "M3×0.5"), detection "geometry_heuristic" and helicoil_candidate, as a machined hole carries them; its variant is kept (a casting's hole
+    stays through or blind, which decides whether it is cast or drilled). The families' hole recognisers report only holes whose wall goes
+    all the way round (recognize_holes, the sheet-metal and bar/tube full-circle tests), so the check is run as for a full turn.
+    Not tapped either: a hole that is a perforation or a countersunk hole by its own faces, or that a countersink opens into (its wall shares
+    an edge with the countersink's cone; face_neighbours, shared.face_attributes.face_neighbours: without it only the shared faces are seen).
+    Returns how many occurrences were found tapped. A hole that already carries a thread is left as it is.
+    """
+    if not isinstance(feature_graph_v2, dict):
+        return 0
+    features = feature_graph_v2.get("features") or []
+    untapped_faces = {
+        fid for f in features if f.get("variant") in UNTAPPED_HOLE_VARIANTS
+        for occ in f.get("occurrences") or [] for fid in occ.get("face_ids") or []
+    }
+    near_untapped = set(untapped_faces)
+    for fid in untapped_faces:
+        near_untapped |= (face_neighbours or {}).get(fid, set())
+    tapped = 0
+    for feature in features:
+        if feature.get("feature_type") != "SimpleHole" or feature.get("variant") not in THREADABLE_HOLE_VARIANTS:
+            continue
+        for occ in feature.get("occurrences") or []:
+            if occ.get("spec") or occ.get("tapped"):
+                continue
+            if near_untapped & set(occ.get("face_ids") or []):
+                continue
+            diameter = occ.get("diameter_mm", feature.get("diameter_mm"))
+            if not isinstance(diameter, (int, float)) or diameter <= 0:
+                continue
+            _, spec, helicoil = classify_hole(float(diameter), through=feature.get("variant") == "through", full_turn=True)
+            if not spec:
+                continue
+            occ["tapped"] = True
+            occ["spec"] = spec
+            occ["detection"] = "geometry_heuristic"
+            if helicoil:
+                occ["helicoil_candidate"] = True
+            tapped += 1
+    return tapped
+
+
 def annotate_hole_depth(params: Dict, diameter_mm: float, depth_mm: float) -> None:
     """
     Depth-driven machinability annotations shared by all hole emit sites:

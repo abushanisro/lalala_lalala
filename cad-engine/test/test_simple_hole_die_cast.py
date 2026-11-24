@@ -45,13 +45,19 @@ def test_three_coaxial_decreasing_diameters_is_one_multistep_hole():
     assert result["simple_hole_count"] == 0
 
 
-def test_two_coaxial_cylinders_is_not_a_multistep_hole():
+def test_two_coaxial_cylinders_is_one_stepped_hole():
+    # A counterbore: Ø10 x 10 then Ø6 to 20. One hole with two steps, as the shared hole recogniser reads it for every die- and
+    # mold-formed part (forging, powder metal, molding); it was two separate holes here when casting had a bore collector of its own.
     box = _box()
     tool = _stepped_tool(30.0, 25.0, 40.0, [(5.0, 10.0), (3.0, 20.0)])
     shape = BRepAlgoAPI_Cut(box, tool).Shape()
     bbox = part_bounding_box(shape)
     result = detect_holes(shape, bbox, primary_setup_axis=[0.0, 0.0, 1.0])
-    assert result["multi_step_hole_count"] == 0
+    assert result["multi_step_hole_count"] == 1
+    assert result["simple_hole_count"] == 0
+    occ = result["multi_step_hole_candidates"][0]
+    assert occ["step_count"] == 2
+    assert [round(st["diameter_mm"], 1) for st in occ["steps"]] == [10.0, 6.0]
 
 
 def test_blind_hole_exceeding_generic_ld_ceiling_is_flagged():
@@ -69,3 +75,32 @@ def test_blind_hole_exceeding_generic_ld_ceiling_is_flagged():
     assert occ["ld_ratio"] > BLIND_HOLE_LD_CEILING
     assert occ["exceeds_blind_hole_ld_ceiling"] is True
     assert occ["blind_hole_ld_ceiling"] == BLIND_HOLE_LD_CEILING
+
+
+def test_a_cross_hole_across_the_pull_is_a_hole():
+    # Ø5 through the box along X, across the pull (Z): the old bore collector kept only holes about the setup axis.
+    cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-1.0, 25.0, 20.0), gp_Dir(1, 0, 0)), 2.5, 62.0).Shape()
+    shape = BRepAlgoAPI_Cut(_box(), cutter).Shape()
+    result = detect_holes(shape, part_bounding_box(shape), primary_setup_axis=[0.0, 0.0, 1.0])
+    assert result["simple_hole_count"] == 1
+    occ = result["simple_hole_candidates"][0]
+    assert occ["variant"] == "through"
+    assert occ["diameter_mm"] == pytest.approx(5.0, abs=0.01)
+    assert [abs(round(v, 3)) for v in occ["axis"]] == [1.0, 0.0, 0.0]
+
+
+def test_a_rounded_corner_is_no_hole():
+    # A box whose vertical edge is filleted R3: a quarter of a cylinder, an arc, not a hole.
+    from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopAbs import TopAbs_EDGE
+    from OCC.Core.TopoDS import topods
+
+    box = _box()
+    fillet = BRepFilletAPI_MakeFillet(box)
+    exp = TopExp_Explorer(box, TopAbs_EDGE)
+    fillet.Add(3.0, topods.Edge(exp.Current()))
+    shape = fillet.Shape()
+    result = detect_holes(shape, part_bounding_box(shape), primary_setup_axis=[0.0, 0.0, 1.0])
+    assert result["simple_hole_count"] == 0
+    assert result["multi_step_hole_count"] == 0
