@@ -18,7 +18,7 @@ import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock
 import { latheMillingOps } from './costing/machining/process/lathe-milling';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
-import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
+import { inspectedOccurrences } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
 import {
@@ -2595,7 +2595,7 @@ export class BomItemCostingService {
         surfaceTreatment: null,
         surfaceTreatmentDbRate,
         // memory/Machining inspection (inspection-reference.ts): the reference values and the holes it inspects.
-        inspectionReference: (await this.machiningLookup.getInspectionReference()).reference, inspectedFeatures: inspectedOccurrences(fg?.feature_graph_v2?.features as any),
+        inspectedFeatures: inspectedOccurrences(fg?.feature_graph_v2?.features as any),
         location,
         machinabilityRating: machinabilityRating ?? undefined,
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(grade)),
@@ -8031,7 +8031,6 @@ export class BomItemCostingService {
         holeCount: (summary.holeCount ?? item.holeCount ?? 0) as number,
         materialCostPerKg, materialDensityKgM3, materialSource, batchSize, mhrRates, location,
         stockAllowancePerSideMm: milledAllowance.allowancePerSideMm,
-        inspectionReference: (await this.machiningLookup.getInspectionReference()).reference,
         machiningCalculators: await this.resolveMachiningCalculators(accessToken),
         // The alternative is costed with no grade: the engine's default material class.
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(null)),
@@ -8143,12 +8142,10 @@ export class BomItemCostingService {
     millingRemovalRateMm3PerMin: number | null;
     /** Reference per-side stock allowance of the bounding-box billet (BlankOptimizerService.stockAllowanceFor); null = rule not staged. */
     stockAllowancePerSideMm: number | null;
-    /** The memory/Machining inspection reference (MachiningLookupService.getInspectionReference); null = inspection is a named gap. */
-    inspectionReference: InspectionReference | null;
   }): CandidateRouteDto | null {
     const { volume, surfaceArea, maxLength, maxWidth, maxHeight, finishedWeightKg,
             holeCount, materialCostPerKg, materialDensityKgM3, materialSource,
-            batchSize, mhrRates, location, stockAllowancePerSideMm, inspectionReference } = args;
+            batchSize, mhrRates, location, stockAllowancePerSideMm } = args;
 
     // The ONE bounding-box billet definition (blank-stock-candidates.ts),
     // with the reference stock-allowance rule — not a copy of its formula.
@@ -8165,7 +8162,7 @@ export class BomItemCostingService {
       batchSize, family: 'milled', finishedWeightKg,
       deburrRate: preferRealRate(mhrRates.manualDeburr, mhrRates.deburring), inspectionRate: preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment: null, surfaceTreatmentDbRate: null,
-      inspectionReference, inspectedFeatures: [],
+      inspectedFeatures: [],
       location, blankResult,
       machinabilityRating: undefined, featureOps: undefined,
       // No feature graph on this path: the stock-to-part volume is one Bulk Milling operation, timed by its calculator.
@@ -9121,7 +9118,6 @@ export class BomItemCostingService {
       inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment:     null,
       surfaceTreatmentDbRate: surfaceTreatmentDbRate ?? null,
-      inspectionReference:  (await this.machiningLookup.getInspectionReference()).reference,
       inspectedFeatures:    inspectedOccurrences(fg?.feature_graph_v2?.features as any),
       location,
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,
@@ -9658,7 +9654,6 @@ export class BomItemCostingService {
       inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment:     null,
       surfaceTreatmentDbRate: surfaceTreatmentDbRate ?? null,
-      inspectionReference:  (await this.machiningLookup.getInspectionReference()).reference,
       inspectedFeatures:    inspectedOccurrences(fg?.feature_graph_v2?.features as any),
       location,
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,

@@ -15,7 +15,6 @@ import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
 import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 import type { MachiningCapabilityRules } from '../capability-rules';
-import { INSPECTION_TABLE, INSPECTION_TIME_COLUMN, type InspectionReference } from '../inspection-reference';
 import { lookupSeed, variableSeed } from '../calculators/machining-source-refs';
 import type { StockFacing } from '../../stock/stock-facing';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
@@ -290,9 +289,7 @@ export interface MachiningCostInput {
   // = not staged: no grinding / jig line is added and capabilityRulesMissing
   // names what is absent.
   capabilityRules?: MachiningCapabilityRules | null;
-  /** The memory/Machining inspection reference (inspection-reference.ts); null/absent = the inspection line is a named gap. */
-  inspectionReference?: InspectionReference | null;
-  /** The occurrences the reference inspects (inspectedFeatures over the part's feature_graph_v2): listed and lit on the inspection line. */
+  /** The occurrences the inspection covers (inspectedFeatures over the part's feature_graph_v2): listed and lit on the inspection line. */
   inspectedFeatures?: Array<{ featureId: string; occurrenceIndex: number }>;
   capabilityRulesMissing?: string[];
   // Jig Grind (new) -- shares Jig Boring's real tolerance ceiling, routed
@@ -1638,12 +1635,11 @@ function tapThreadGroups(
 }
 
 
-// ── Inspection line (memory/Machining reference: inspection-reference.ts) ───────
-// Per part: one analysis of the default inspection type (tblInspection) on the share of parts inspected, plus every part's final quality
-// inspection. Every input is read from the reference and opens there (SourceRef); the holes inspected are listed on the line for the
-// Process tree and lit on the model. Without the reference the line is a named gap, never a coded allowance.
+// ── Inspection line (the machining workbook's Inspection sheet) ────────────────
+// A batch is inspected by sample: 60 s a batch for its 5 sampled parts of every 50 it starts (the whole batch when smaller than its
+// sample), the time shared over the parts the batch makes (user decision 2026-11-25; migration 1151). The holes the part has that are
+// inspected (Special Inspection: Feature Inspection) are listed on the line for the Process tree and lit on the model.
 function computeInspectionLine(
-  reference: InspectionReference | null | undefined,
   inspected: ReadonlyArray<{ featureId: string; occurrenceIndex: number }>,
   inspectionRate: MHRRateInput,
   batchSize: number,
@@ -1655,18 +1651,13 @@ function computeInspectionLine(
   matClass: MaterialClass = 'mild_steel',
 ): ProcessLineCost {
   const batch = Math.max(batchSize, 1);
-  const seeds: Record<string, CalcSeed> = reference ? {
-    'Time Per Analysis': lookupSeed(
-      reference.timePerAnalysisS, `${INSPECTION_TABLE}: ${reference.inspectionType} (variables defaultInspectionType)`,
-      { table: INSPECTION_TABLE, row: { Name: reference.inspectionType } }, INSPECTION_TIME_COLUMN,
-    ),
-    'Inspection Sample Ratio': variableSeed(reference.sampleRatio, 'defaultInspectionSampleRatio'),
-    'Final Inspection Time': variableSeed(reference.finalInspectionMin, 'defaultFinalInspectionTime'),
-  } : {};
+  const seeds: Record<string, CalcSeed> = {
+    'Batch Size': { value: batch, source: 'BOM: the batch size, the batch the sample is taken from' },
+  };
   // The gauge's price and life, from the workbook's tool table (the same for every material).
   const gauge = workbookSeeds(workbook, 'Inspection', null, matClass, seeds);
   const run = runMachiningCalculator(calculators, 'Inspection', { ...seeds, ...gauge.seeds });
-  if (!reference) warnings.push('Inspection not priced: the memory/Machining inspection reference (tblInspection and its variables) is not staged.');
+  if (run.missing.length > 0) warnings.push(`Inspection not priced — missing real input: ${run.missing.join('; ')}.`);
   const cycleMin = (run.sec ?? 0) / 60;
   // Real per-CMM mhr_records.setup_time_hr first, then the cited class
   // constant — see resolveSetupMinutes().
@@ -1683,11 +1674,11 @@ function computeInspectionLine(
   const line = withRun(makeLine('Inspection', setupCost, runCost, cycleMin, inspectionRate, processIdentityByMachineClass, {
     setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source,
   }), run, setupTraceSteps(setupResolution, inspectionRate.machineName, batchSize));
-  // The holes the reference inspects (Special Inspection: Feature Inspection), for the Process tree: one analysis covers them all.
-  if (inspected.length > 0 && reference) {
+  // The holes inspected (Special Inspection: Feature Inspection), for the Process tree: the batch's sample inspection covers them all.
+  if (inspected.length > 0) {
     line.featureBreakdown = [{
       name: `Feature Inspection ×${inspected.length}`,
-      timeSec: reference.timePerAnalysisS * reference.sampleRatio,
+      timeSec: run.sec ?? 0,
       featureType: 'inspection',
       count: inspected.length,
       featureIds: [...new Set(inspected.map((o) => o.featureId))],
@@ -2259,7 +2250,7 @@ export function computeMillingCostSummary(
 
   // ── Inspection (batch-sampled; CMM amortization rides on the MHR rate) ───
   processLines.push(computeInspectionLine(
-    input.inspectionReference, input.inspectedFeatures ?? [], inspectionRate, batchSize,
+    input.inspectedFeatures ?? [], inspectionRate, batchSize,
     input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
   // ── The raw material lot's composition check (XRF) ─────────────────────────
@@ -2846,7 +2837,7 @@ export function computeTurningCostSummary(
   // drilledHoleCount, not raw holeCount — the raw count includes OD steps/grooves
   // and would inflate the hole-sampling time for turned parts.
   processLines.push(computeInspectionLine(
-    input.inspectionReference, input.inspectedFeatures ?? [], inspectionRate, batchSize,
+    input.inspectedFeatures ?? [], inspectionRate, batchSize,
     input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
   // ── The raw material lot's composition check (XRF) ─────────────────────────

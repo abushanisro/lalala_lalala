@@ -2445,6 +2445,85 @@
           "unit": "s",
           "formula": "{Time Per Analysis} * {Inspection Sample Ratio} + {Final Inspection Time} * 60"
         }
+      ],
+      "supersededBy": 1151
+    },
+    {
+      "name": "Machining - Inspection",
+      "operation": "Inspection",
+      "machineClasses": [
+        "machining_inspection",
+        "special_inspection"
+      ],
+      "migration": 1151,
+      "description": "Inspecting a batch, as the Machining calculator workbook's Inspection sheet times it: 60 s a batch (Time/batch) inspects its sampled parts, 5 of every 50 the batch starts (Part inspection quantity 5, Batch size 50), so each sampled part takes 60 / 5 = 12 s; a batch smaller than its sample is inspected whole. The batch's inspection time is shared over the parts it makes: the sheet's 50-part batch gives 60 / 50 = 1.2 s a part (Time/part). The inspection gauge's wear is the line's tool cost: its price over its life, from the same sheet (Rs 3500 over 10 000 parts). Replaces the memory/Machining reference model (an analysis of tblInspection on a sampled share plus a final inspection of every part), which the workbook supersedes (user decision 2026-11-25).",
+      "fields": [
+        {
+          "name": "Batch Inspection Time",
+          "unit": "s",
+          "source": "default",
+          "default": 60,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Inspection sheet L5: Time/batch 60 s, the time to inspect one sample of the batch (Part inspection quantity H4)."
+        },
+        {
+          "name": "Sample Quantity",
+          "unit": "parts",
+          "source": "default",
+          "default": 5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Inspection sheet H4: Part inspection quantity 5."
+        },
+        {
+          "name": "Sample Lot Size",
+          "unit": "parts",
+          "source": "default",
+          "default": 50,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Inspection sheet H5: Batch size 50; the sample quantity is taken from every lot of this size."
+        },
+        {
+          "name": "Batch Size",
+          "unit": "parts",
+          "source": "bom"
+        },
+        {
+          "name": "Sampled Parts",
+          "unit": "parts",
+          "formula": "min({Batch Size}, {Sample Quantity} * ceil({Batch Size} / {Sample Lot Size}))"
+        },
+        {
+          "name": "Time per Sampled Part",
+          "unit": "s",
+          "formula": "{Batch Inspection Time} / {Sample Quantity}"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Inspection gauge"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Inspection gauge"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Sampled Parts} * {Time per Sampled Part} / {Batch Size}"
+        }
       ]
     },
     {

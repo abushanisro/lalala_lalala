@@ -13,7 +13,7 @@ import {
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { findRouteDataGaps, lineDataGap } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
-import { realCapabilityRules, realInspectionReference } from '../real-reference-tables';
+import { realCapabilityRules } from '../real-reference-tables';
 
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { ProcessLineCost } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
@@ -52,7 +52,6 @@ function block(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     machiningCalculators: CALCS,
     millingRemovalRateMm3PerMin: 60_000,
     capabilityRules: realCapabilityRules(),
-    inspectionReference: realInspectionReference(),
     workbook: workbookFixture(),
     partSetup: PART_SETUP,
     blankResult: billet(40_000),
