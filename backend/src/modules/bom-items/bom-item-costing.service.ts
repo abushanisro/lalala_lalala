@@ -20,7 +20,7 @@ import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/proc
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
-import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
+import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
 import {
   ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, PCB_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
   MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, STOCK_MACHINING_PROCESS_GROUP, familiesOfProcessGroup,
@@ -2289,11 +2289,15 @@ export class BomItemCostingService {
         : (summary.holeCount ?? item.holeCount ?? 0)
     ) as number;
     // Drawing analysis returns threads as [{ spec, count }] or [{ size, count }] — normalise to { size, count }
-    const threads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
+    const drawingThreads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
       size: String(t.size ?? t.spec ?? '').trim(),
       count: Number(t.count) || 1,
       ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
     })) as Array<{ size: string; count: number; pitchMm?: number }>;
+    // The threads every non-machining family taps (sheet metal after its holes are cut): the drawing's merged with the CAD's own tapped
+    // holes (resolveThreads), so a part with no drawing callout is still tapped where its model is. A machining family merges them where
+    // its engine input is built (resolveThreads), from its machining features.
+    const threads = isMachiningFamily(family) ? drawingThreads : this.resolveThreads(drawingThreads, fg);
 
     // Reconcile bend count + blank area across CAD / drawing / route before costing
     const geo = family === 'sheet_metal'
@@ -6185,11 +6189,15 @@ export class BomItemCostingService {
     // deliberately excluded upstream, so this is evidence, never a guess.
     const rcRolledFormCount = Number((fg?.summary as any)?.rolledFormCount ?? 0) || 0;
     const flatPatternAreaMm2 = geo?.flatPatternAreaMm2 ?? measuredFlatAreaMm2;
-    const threads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
+    const drawingThreads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
       size: String(t.size ?? t.spec ?? '').trim(),
       count: Number(t.count) || 1,
       ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
     })) as Array<{ size: string; count: number; pitchMm?: number }>;
+    // The threads every non-machining family taps (sheet metal after its holes are cut): the drawing's merged with the CAD's own tapped
+    // holes (resolveThreads), so a part with no drawing callout is still tapped where its model is. A machining family merges them where
+    // its engine input is built (resolveThreads), from its machining features.
+    const threads = isMachiningFamily(family) ? drawingThreads : this.resolveThreads(drawingThreads, fg);
 
     // Does the 2D drawing describe the same part as the 3D CAD model? Same
     // resolver as getCostSummary — the summary ≡ route invariant extends to
@@ -8769,11 +8777,16 @@ export class BomItemCostingService {
     drawingThreads: Array<{ size: string; count: number; pitchMm?: number }>,
     fg: any,
   ): ThreadEntry[] {
-    // The tapped holes of the CAD engine's machining features (threaded holes and tapped bolt circles), with their real depth and through
-    // flag, the holes to light, and how many are off the turning centreline (tapped with a live tool), merged by size with the drawing's
-    // threads (feature-holes.ts mergeThreads): the CAD's holes for a size it tapped, the drawing's pitch and its sizes the CAD did not find.
+    // The tapped holes of the CAD engine's machining features (threaded holes, tapped cross holes and tapped bolt circles), with their real
+    // depth and through flag, the holes to light, and how many are off the turning centreline (tapped with a live tool); a part with no
+    // machining features (a casting, a forging, a sheet-metal part) has its own analysis' tapped holes (feature_graph_v2, tappedHolesOfGraph).
+    // Merged by size with the drawing's threads (feature-holes.ts mergeThreads): the CAD's holes for a size it tapped, the drawing's pitch
+    // and its sizes the CAD did not find.
+    const machiningFeatures = fg?.machining_features?.features;
     const byFace = occurrenceByFace(fg?.feature_graph_v2?.features);
-    const tapped = tappedHolesOfFeatures(fg?.machining_features?.features ?? [], (faceIds) => occurrencesOfFaces(faceIds, byFace));
+    const tapped = Array.isArray(machiningFeatures)
+      ? tappedHolesOfFeatures(machiningFeatures, (faceIds) => occurrencesOfFaces(faceIds, byFace))
+      : tappedHolesOfGraph(fg?.feature_graph_v2?.features);
     return mergeThreads(drawingThreads, tapped);
   }
 

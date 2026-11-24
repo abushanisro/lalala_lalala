@@ -104,6 +104,34 @@ export function tappedHolesOfFeatures(features: readonly MachiningFeatureLike[],
 }
 
 /**
+ * The tapped holes of a part's own analysis (feature_graph_v2), for a part with no machining features: a casting, a forging, a sheet-metal
+ * part... The CAD engine checks every family's plain holes against the tap-drill table (shared.machining_geometry.annotate_hole_threads)
+ * and marks an occurrence tapped with its spec. One entry per feature and thread size, its count the occurrences (a pattern's hole_count
+ * holes), its depth the deepest, through when the feature is a through hole, the occurrences to light, and no live-tool count (these parts
+ * are not tapped on a lathe).
+ */
+export function tappedHolesOfGraph(features: unknown): ThreadEntry[] {
+  if (!Array.isArray(features)) return [];
+  const out: ThreadEntry[] = [];
+  for (const f of features as Array<Record<string, any>>) {
+    if (f?.feature_type !== 'SimpleHole' || typeof f.id !== 'string') continue;
+    const bySize = new Map<string, ThreadEntry>();
+    (Array.isArray(f.occurrences) ? f.occurrences : []).forEach((o: Record<string, any>, occurrenceIndex: number) => {
+      const size = text(o?.spec);
+      if (o?.tapped !== true || size === '') return;
+      const entry = bySize.get(size) ?? { size, count: 0, isThrough: f.variant === 'through', occurrences: [], liveCount: 0 };
+      entry.count += Number(o?.hole_count) > 0 ? Number(o.hole_count) : 1;
+      const depth = Number(o?.depth_mm);
+      if (depth > 0) entry.depthMm = Math.max(entry.depthMm ?? 0, depth);
+      entry.occurrences = [...(entry.occurrences ?? []), { featureId: f.id, occurrenceIndex }];
+      bySize.set(size, entry);
+    });
+    out.push(...bySize.values());
+  }
+  return out;
+}
+
+/**
  * Threads by size: "M4×0.7" / "M4x0.7 - 6H" -> "M4", so the tapping lookups hit the size key instead of silently falling back to a default.
  * Merges duplicate sizes: the count and the live-tool count add up, the depth is averaged, and through only when every merged hole is.
  */

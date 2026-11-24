@@ -4,7 +4,7 @@
 // its diameter (hole_diameter_mm) and its thread (tap_spec) were not found.
 import { liveToolHoles } from '../../../../../modules/bom-items/costing/machining/capability/live-tooling';
 import {
-  holeGroupsOfFeatures, mergeThreads, normalizeThreadSpecs, tappedHolesOfFeatures, type MachiningFeatureLike,
+  holeGroupsOfFeatures, mergeThreads, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, type MachiningFeatureLike,
 } from '../../../../../modules/bom-items/costing/machining/feature-holes';
 import { timeHoleGroups, timeThreadGroups } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-cost.service';
 import { multiSpindleWork } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-work';
@@ -58,6 +58,53 @@ describe('tappedHolesOfFeatures', () => {
   it('a threaded hole on the centreline is tapped from an end slide, one off it with a live tool', () => {
     const threaded = (distance: number): MachiningFeatureLike => ({ type: 'SimpleHole', variant: 'threaded', params: { spec: 'M5x0.8', depth_mm: 8, distance_from_axis_mm: distance, through: false } });
     expect(tappedHolesOfFeatures([threaded(0.002), threaded(6)], noOccurrences).map((t) => t.liveCount)).toEqual([0, 1]);
+  });
+});
+
+describe('tappedHolesOfGraph: a part with no machining features', () => {
+  // As the CAD engine writes them (annotate_hole_threads): R_M-0230-021 MAIN CHASSIS (sheet metal) has Ø2.529 holes tapped M3 and two Ø3.2
+  // holes tapped M4 on one feature each; a casting's blind Ø2.53 holes carry their depth on the occurrence.
+  const chassis = [
+    { id: 'SimpleHole-through_d2.5_c3', feature_type: 'SimpleHole', variant: 'through', diameter_mm: 2.5, occurrences: [
+      { face_ids: [2], tapped: true, spec: 'M3×0.5' }, { face_ids: [5], tapped: true, spec: 'M3×0.5' }, { face_ids: [7] },
+    ] },
+    { id: 'SimpleHole-through_d3.2_c2', feature_type: 'SimpleHole', variant: 'through', diameter_mm: 3.2, occurrences: [
+      { face_ids: [0], tapped: true, spec: 'M4×0.7' }, { face_ids: [1], tapped: true, spec: 'M4×0.7' },
+    ] },
+    { id: 'SimpleHole-perforated_d1.6_c1', feature_type: 'SimpleHole', variant: 'perforated', occurrences: [{ face_ids: [19] }] },
+  ];
+
+  it('taps the occurrences the engine marked tapped, by feature and size, with the occurrences to light and no live tool', () => {
+    expect(tappedHolesOfGraph(chassis)).toEqual([
+      { size: 'M3×0.5', count: 2, isThrough: true, liveCount: 0, occurrences: [
+        { featureId: 'SimpleHole-through_d2.5_c3', occurrenceIndex: 0 }, { featureId: 'SimpleHole-through_d2.5_c3', occurrenceIndex: 1 },
+      ] },
+      { size: 'M4×0.7', count: 2, isThrough: true, liveCount: 0, occurrences: [
+        { featureId: 'SimpleHole-through_d3.2_c2', occurrenceIndex: 0 }, { featureId: 'SimpleHole-through_d3.2_c2', occurrenceIndex: 1 },
+      ] },
+    ]);
+  });
+
+  it('a blind hole carries its deepest depth; a hole with a spec the engine did not mark tapped is not tapped', () => {
+    const casting = [{ id: 'simple_hole_blind', feature_type: 'SimpleHole', variant: 'blind', occurrences: [
+      { face_ids: [1], tapped: true, spec: 'M3×0.5', depth_mm: 6.2 }, { face_ids: [2], tapped: true, spec: 'M3×0.5', depth_mm: 7.5 },
+      { face_ids: [3], spec: 'M3×0.5' },
+    ] }];
+    expect(tappedHolesOfGraph(casting)).toEqual([
+      { size: 'M3×0.5', count: 2, depthMm: 7.5, isThrough: false, liveCount: 0, occurrences: [
+        { featureId: 'simple_hole_blind', occurrenceIndex: 0 }, { featureId: 'simple_hole_blind', occurrenceIndex: 1 },
+      ] },
+    ]);
+  });
+
+  it('merged with a drawing that calls out the same size: the holes of the model are tapped, plus the other sizes of the drawing', () => {
+    const merged = normalizeThreadSpecs(mergeThreads([{ size: 'M3', count: 1 }, { size: 'M6', count: 4 }], tappedHolesOfGraph(chassis)));
+    expect(merged.map((t) => [t.size, t.count]).sort()).toEqual([['M3', 2], ['M4', 2], ['M6', 4]]);
+  });
+
+  it('nothing for a part with no analysis', () => {
+    expect(tappedHolesOfGraph(undefined)).toEqual([]);
+    expect(tappedHolesOfGraph([{ id: 'x', feature_type: 'Void', occurrences: [{ tapped: true, spec: 'M3' }] }])).toEqual([]);
   });
 });
 
