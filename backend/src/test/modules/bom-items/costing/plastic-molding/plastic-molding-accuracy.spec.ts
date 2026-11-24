@@ -363,10 +363,12 @@ describe('characterization: what the mold cost depends on today', () => {
       expect(m.bom).toBe(one.bom); // the same purchased components for any number of cavities
       expect(m.perMold).toBeGreaterThanOrEqual(one.perMold); // a larger layout never needs a smaller base
     }
-    // 8 cavities of a 100 x 100 mm part in a row need a base over 1.6 m wide: no standard base holds it, so the tooling is a named gap, not a guess.
-    const eight = computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 8 }));
-    expect(eight.tooling).toBeUndefined();
-    expect(eight.warnings.join(' ')).toMatch(/Tooling not costed: .*no standard mold base.*custom base is not modelled/);
+    // 8 cavities of a 100 x 100 mm part fit a standard base laid out 2 x 4; 64 need a base no standard size holds, whatever the layout, so the
+    // tooling is a named gap, not a guess.
+    expect(computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 8 })).tooling).toBeDefined();
+    const many = computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 64 }));
+    expect(many.tooling).toBeUndefined();
+    expect(many.warnings.join(' ')).toMatch(/Tooling not costed: .*no standard mold base.*custom base is not modelled/);
     expect(mold({ cavityCountOverride: 4 }).molds).toBe(1);
     expect(mold({ cavityCountOverride: 4 }).total).toBeLessThan(one.total); // a 4-cavity tool is priced below a 1-cavity one only because fewer molds wear out
   });

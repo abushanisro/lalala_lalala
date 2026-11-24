@@ -1584,6 +1584,17 @@ export interface DieCastingBreakdown {
   };
 }
 
+/** One mold layout priced on the press that holds it (USD): mirrors the backend's CavityOption. */
+export interface CavityOption {
+  cavityCount: number;
+  machineName: string | null;
+  clampMachineT: number;
+  pieceCostUsd: number;
+  moldCostPerPartUsd: number | null;
+  costPerPartUsd: number;
+  chosen: boolean;
+}
+
 /**
  * Mirrors the backend's InjectionMoldingBreakdown (cost-breakdown.dto.ts).
  * The clamp/shot fields are the same real per-polymer-family formula
@@ -1594,10 +1605,14 @@ export interface DieCastingBreakdown {
 export interface InjectionMoldingBreakdown {
   moldingSubtype: 'standard' | 'lsr' | 'insert' | 'overmold' | 'gas_assisted' | 'two_shot' | 'unscrewing';
   cavityCount: number;
-  /** 'user': set in the Cost Guide; 'default': reference defaultNumCavities; 'unverified': press / clamp / layout check failed. */
-  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'unverified';
+  /** 'user': set in the Cost Guide; 'default': reference defaultNumCavities; 'lowest_cost': the layout with the lowest cost per part, mold included; 'unverified': press / clamp / layout check failed. */
+  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'lowest_cost' | 'unverified';
   /** Reference mold layouts (layoutNumCav) a cavity count may take. */
   cavityLayouts?: number[];
+  /** With 'lowest_cost': each layout a press holds, at its cheapest press, cheapest first (the costed one is `chosen`). */
+  cavityOptions?: CavityOption[];
+  /** With 'default' where the layouts could have been compared: why they were not. */
+  cavityNote?: string;
   /** Reference defaultNumCavities. */
   defaultCavityCount?: number | null;
   runnerSystemType: 'hot' | 'cold';

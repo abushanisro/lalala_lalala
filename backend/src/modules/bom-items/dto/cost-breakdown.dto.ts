@@ -1484,14 +1484,30 @@ interface DieCastingBreakdown {
   };
 }
 
+/** One mold layout priced on the press that holds it: the piece cost, the mold's cost per part, and their sum (USD). */
+export interface CavityOption {
+  cavityCount: number;
+  machineName: string | null;
+  clampMachineT: number;
+  pieceCostUsd: number;
+  moldCostPerPartUsd: number | null;
+  costPerPartUsd: number;
+  chosen: boolean;
+}
+
 export interface InjectionMoldingBreakdown {
   moldingSubtype: 'standard' | 'lsr' | 'insert' | 'overmold' | 'gas_assisted' | 'two_shot' | 'unscrewing';
   cavityCount: number;
   // 'user': the Cost Guide cavity count; 'default': the reference defaultNumCavities;
+  // 'lowest_cost': the reference layout with the lowest cost per part, mold included (cavityOptions);
   // 'unverified': the press / clamp / layout check failed (the molding line carries a physicsGap).
-  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'unverified';
+  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'lowest_cost' | 'unverified';
   /** The reference mold layouts (layoutNumCav) a cavity count may take. */
   cavityLayouts: number[];
+  /** With 'lowest_cost': each layout a press holds, at its cheapest press, cheapest first (the one costed is `chosen`). */
+  cavityOptions?: CavityOption[];
+  /** With 'default' where the layouts could have been compared: why they were not (no mold price, and what it lacks). */
+  cavityNote?: string;
   /** The reference defaultNumCavities. */
   defaultCavityCount: number | null;
   runnerSystemType: 'hot' | 'cold';
