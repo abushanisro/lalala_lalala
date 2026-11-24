@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/icons';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useProjects, useVendors, useRawMaterials, useMHRRecords, useLHRCount } from '@/lib/api/hooks';
 import { formatProjectMoney, projectCostCurrency, projectSavings, summarizeProjectCosts } from '@/lib/costing/project-costs';
 
@@ -221,199 +222,176 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Manufacturing Control Center"
-        description="Comprehensive manufacturing cost analysis and project orchestration"
-      >
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => router.push('/projects')}>
-            <BarChart3 className="h-4 w-4 mr-2" />
-            Analytics
-          </Button>
-          <Link href="/projects">
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
+      <div className="border-b border-border pb-5">
+        <PageHeader
+          title="Manufacturing Control Center"
+          description="Comprehensive manufacturing cost analysis and project orchestration"
+          className="mb-0"
+        >
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => router.push('/projects')}>
+              <BarChart3 className="h-4 w-4 mr-2" />
+              Analytics
             </Button>
-          </Link>
-        </div>
-      </PageHeader>
+            <Link href="/projects">
+              <Button className="bg-foreground text-background hover:bg-foreground/90">
+                <Plus className="h-4 w-4 mr-2" />
+                New Project
+              </Button>
+            </Link>
+          </div>
+        </PageHeader>
+      </div>
 
       {/* Row 1: KPI cards */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
+      <Card className="rounded-xl shadow-sm">
+      <div className="grid grid-cols-1 divide-y divide-border xl:grid-cols-4 xl:divide-x xl:divide-y-0">
+        <div className="p-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">Total Projects</p>
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 text-primary"><FolderKanban className="h-5 w-5" /></span>
+              <p className="text-sm font-medium text-muted-foreground">Total Projects</p>
+              <FolderKanban className="h-4 w-4 text-muted-foreground" />
             </div>
-            <div className="mt-4 flex items-end justify-between gap-4">
-              <p className="text-3xl font-semibold tabular-nums tracking-tight text-foreground">{projects.length}</p>
-              <div className="flex h-10 items-end gap-1" aria-hidden="true">
-                {projectTrendData.map((data, i) => (
-                  <div
-                    key={i}
-                    className="w-2 rounded-full bg-primary/70"
-                    style={{
-                      height: `${Math.max(8, (data.value / Math.max(...projectTrendData.map(d => d.value), 1)) * 40)}px`,
-                    }}
-                  />
-                ))}
-              </div>
+            <div className="mt-3 flex items-end justify-between gap-4">
+              <p className="text-3xl font-semibold tabular-nums tracking-tight text-primary">{projects.length}</p>
+              <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-10 w-28 text-primary" aria-hidden="true">
+                <polygon
+                  fill="currentColor"
+                  fillOpacity="0.15"
+                  points={`0,40 ${projectTrendData.map((d, i) => `${(i / Math.max(projectTrendData.length - 1, 1)) * 100},${40 - (d.value / Math.max(...projectTrendData.map(t => t.value), 1)) * 36}`).join(' ')} 100,40`}
+                />
+                <polyline
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  vectorEffect="non-scaling-stroke"
+                  points={projectTrendData.map((d, i) => `${(i / Math.max(projectTrendData.length - 1, 1)) * 100},${40 - (d.value / Math.max(...projectTrendData.map(t => t.value), 1)) * 36}`).join(' ')}
+                />
+              </svg>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">Created per week, last 7 weeks</p>
-          </CardContent>
-        </Card>
+        </div>
 
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
+        <div className="p-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">System Efficiency</p>
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-success/15 text-success"><Gauge className="h-5 w-5" /></span>
+              <p className="text-sm font-medium text-muted-foreground">System Efficiency</p>
+              <Gauge className="h-4 w-4 text-muted-foreground" />
             </div>
-            <p className="mt-4 text-3xl font-bold tabular-nums tracking-tight text-foreground">{systemEfficiency.toFixed(1)}%</p>
-            <div className="mt-4 h-2 w-full rounded-full bg-secondary">
-              <div
-                className="h-2 rounded-full bg-success transition-all duration-300"
-                style={{ width: `${systemEfficiency}%` }}
-              />
+            <div className="mt-3 flex items-center gap-3">
+              <svg viewBox="0 0 36 36" className="h-9 w-9 -rotate-90" aria-hidden="true">
+                <circle cx="18" cy="18" r="15" fill="none" stroke="hsl(var(--secondary))" strokeWidth="4" />
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="15"
+                  fill="none"
+                  stroke="hsl(var(--primary))"
+                  strokeWidth="4"
+                  strokeDasharray={`${(Math.min(100, Math.max(0, systemEfficiency)) / 100) * 94.25} 94.25`}
+                  className="transition-all duration-300"
+                />
+              </svg>
+              <p className="text-3xl font-semibold tabular-nums tracking-tight text-primary">{systemEfficiency.toFixed(1)}%</p>
             </div>
-            <div className="mt-3 flex gap-6 text-xs">
-              <p>
-                <span className="font-semibold tabular-nums text-foreground">{totalBomItems}</span>{' '}
+            <div className="mt-4 space-y-2 text-sm">
+              <p className="flex items-center justify-between">
                 <span className="text-muted-foreground">BOM Items</span>
+                <span className="font-medium tabular-nums text-primary">{totalBomItems}</span>
               </p>
-              <p>
-                <span className="font-semibold tabular-nums text-foreground">
-                  {projects.reduce((s, p) => s + (p.bomCount || 0), 0)}
-                </span>{' '}
+              <p className="flex items-center justify-between">
                 <span className="text-muted-foreground">BOMs</span>
+                <span className="font-medium tabular-nums text-primary">
+                  {projects.reduce((s, p) => s + (p.bomCount || 0), 0)}
+                </span>
               </p>
             </div>
-          </CardContent>
-        </Card>
+        </div>
 
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
+        <div className="p-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">Total Vendors</p>
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-info/15 text-info"><Users className="h-5 w-5" /></span>
+              <p className="text-sm font-medium text-muted-foreground">Total Vendors</p>
+              <Users className="h-4 w-4 text-muted-foreground" />
             </div>
-            <p className="mt-4 text-3xl font-bold tabular-nums tracking-tight text-foreground">{vendorsData?.total || vendors.length}</p>
-            <div className="mt-3 flex gap-5 text-xs">
-              <p>
-                <span className="font-semibold tabular-nums text-foreground">{vendorsData?.total || vendors.filter(v => v.status === 'active').length}</span>{' '}
+            <p className="mt-3 text-3xl font-semibold tabular-nums tracking-tight text-primary">{vendorsData?.total || vendors.length}</p>
+            <div className="mt-4 space-y-2 text-sm">
+              <p className="flex items-center justify-between">
                 <span className="text-muted-foreground">Active</span>
+                <span className="font-medium tabular-nums text-primary">{vendorsData?.total || vendors.filter(v => v.status === 'active').length}</span>
               </p>
-              <p>
-                <span className="font-semibold tabular-nums text-foreground">{vendors.filter(v => v.status === 'pending').length}</span>{' '}
+              <p className="flex items-center justify-between">
                 <span className="text-muted-foreground">Pending</span>
+                <span className="font-medium tabular-nums text-primary">{vendors.filter(v => v.status === 'pending').length}</span>
               </p>
-              <p>
-                <span className="font-semibold tabular-nums text-foreground">{vendors.filter(v => v.status === 'inactive').length}</span>{' '}
+              <p className="flex items-center justify-between">
                 <span className="text-muted-foreground">Inactive</span>
+                <span className="font-medium tabular-nums text-primary">{vendors.filter(v => v.status === 'inactive').length}</span>
               </p>
             </div>
-          </CardContent>
-        </Card>
+        </div>
 
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
+        <div className="p-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">Cost Savings</p>
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-warning/15 text-warning"><PiggyBank className="h-5 w-5" /></span>
+              <p className="text-sm font-medium text-muted-foreground">Cost Savings</p>
+              <PiggyBank className="h-4 w-4 text-muted-foreground" />
             </div>
-            <div className="mt-4 flex items-baseline gap-2">
+            <div className="mt-3 flex items-baseline gap-2">
               <p className="text-3xl font-bold tabular-nums tracking-tight text-success">
                 {savings != null && savings >= 0 ? '+' : ''}{formatProjectMoney(savings)}
               </p>
               <p className="text-sm font-medium tabular-nums text-success">{savingsLabel}</p>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">Target vs Actual BOM Cost</p>
-          </CardContent>
-        </Card>
+        </div>
       </div>
+      </Card>
 
-      {projectsForCharts.length < projects.length && (
-        <p className="text-sm text-muted-foreground">Cost charts exclude projects with unresolved costs or non-comparable currencies.</p>
-      )}
+      {/* Row 2: one performance card, Semrush-style source tabs over the charts */}
+      <Card className="rounded-xl shadow-sm">
+        <Tabs defaultValue="cost">
+          <div className="border-b border-border px-6 py-4">
+            <TabsList aria-label="Dashboard charts" className="h-auto max-w-full flex-wrap gap-0 overflow-hidden rounded-md border border-border p-0">
+              <TabsTrigger value="cost" className="gap-2 rounded-none border-0 border-r border-border px-4 py-2 pb-2 text-sm font-normal text-foreground last:border-r-0 hover:bg-muted/60 data-[state=active]:bg-primary/10 data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-[inset_0_0_0_1px_hsl(var(--primary))]">
+                <PiggyBank className="h-4 w-4" aria-hidden="true" />
+                Manufacturing Cost Analysis
+              </TabsTrigger>
+              <TabsTrigger value="trend" className="gap-2 rounded-none border-0 border-r border-border px-4 py-2 pb-2 text-sm font-normal text-foreground last:border-r-0 hover:bg-muted/60 data-[state=active]:bg-primary/10 data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-[inset_0_0_0_1px_hsl(var(--primary))]">
+                <FolderKanban className="h-4 w-4" aria-hidden="true" />
+                Project Trend
+              </TabsTrigger>
+              <TabsTrigger value="savings" className="gap-2 rounded-none border-0 border-r border-border px-4 py-2 pb-2 text-sm font-normal text-foreground last:border-r-0 hover:bg-muted/60 data-[state=active]:bg-primary/10 data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-[inset_0_0_0_1px_hsl(var(--primary))]">
+                <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                Cost Savings
+              </TabsTrigger>
+              <TabsTrigger value="modules" className="gap-2 rounded-none border-0 border-r border-border px-4 py-2 pb-2 text-sm font-normal text-foreground last:border-r-0 hover:bg-muted/60 data-[state=active]:bg-primary/10 data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-[inset_0_0_0_1px_hsl(var(--primary))]">
+                <Gauge className="h-4 w-4" aria-hidden="true" />
+                Module Performance & Efficiency
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
-      {/* Row 2: charts and action list */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:col-span-2">
-          <Card className="rounded-2xl shadow-sm md:col-span-2">
-            <CardHeader className="p-6 pb-2">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <CardTitle className="text-lg font-bold">Module Performance & Efficiency</CardTitle>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Active vs total projects across manufacturing modules
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary">{manufacturingModules.length} Active Modules</Badge>
-                  <Badge variant="outline">
-                    {totalTarget == null ? '—' : `${(totalTarget / 1000).toFixed(0)}K`} Portfolio Value
-                  </Badge>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-6 pt-2">
-              <ManufacturingPerformanceChart modules={manufacturingModules} />
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader className="p-6 pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-lg font-bold">Project Trend</CardTitle>
-                <Badge variant="outline">Last 30 Days</Badge>
-              </div>
-              <p className="text-sm text-muted-foreground">Project creation trends and volume</p>
-            </CardHeader>
-            <CardContent className="p-6 pt-2">
-              <ProjectTrendChart projects={projects} />
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader className="p-6 pb-2">
-              <CardTitle className="text-lg font-bold">Cost Savings</CardTitle>
-              <p className="text-sm text-muted-foreground">Target BOM cost vs actual BOM cost, by project</p>
-            </CardHeader>
-            <CardContent className="p-6 pt-2">
-              <CostSavingsChart projects={projectsForCharts} />
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl shadow-sm md:col-span-2">
-            <CardHeader className="p-6 pb-2">
-              <CardTitle className="text-lg font-bold">Manufacturing Cost Analysis</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Target BOM cost vs actual BOM cost derived from process-planned items
-              </p>
-            </CardHeader>
-            <CardContent className="p-6 pt-2">
+          <TabsContent value="cost" className="mt-0 p-6">
+            <p className="mb-4 text-sm text-muted-foreground">
+              Target BOM cost vs actual BOM cost derived from process-planned items
+            </p>
               {projects.length > 0 ? (
                 <div className="space-y-6">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div className="rounded-xl bg-muted/60 p-4">
-                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total Target</p>
-                      <p className="mt-1 text-xl font-bold tabular-nums text-foreground">
+                  <div className="grid grid-cols-1 divide-y rounded-lg border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                    <div className="p-4">
+                      <p className="text-sm text-muted-foreground">Total Target</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums text-primary">
                         {formatProjectMoney(totalTarget)}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">from {projects.filter(p => (p.targetBomCost ?? 0) > 0).length} projects with targets</p>
                     </div>
-                    <div className="rounded-xl bg-muted/60 p-4">
-                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Actual BOM Cost</p>
-                      <p className="mt-1 text-xl font-bold tabular-nums text-foreground">
+                    <div className="p-4">
+                      <p className="text-sm text-muted-foreground">Actual BOM Cost</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums text-primary">
                         {formatProjectMoney(totalActual)}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">{totalBomItems} items across all BOMs</p>
                     </div>
-                    <div className="rounded-xl bg-muted/60 p-4">
-                      <p className="text-xs font-medium uppercase tracking-wide text-success">Savings</p>
-                      <p className="mt-1 text-xl font-bold tabular-nums text-success">
+                    <div className="p-4">
+                      <p className="text-sm text-muted-foreground">Savings</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums text-success">
                         {formatProjectMoney(savings)}
                       </p>
                       <p className="mt-1 text-xs text-success">{savingsLabel} reduction</p>
@@ -436,35 +414,66 @@ export default function DashboardPage() {
                   </Link>
                 </EmptyState>
               )}
-            </CardContent>
-          </Card>
-        </div>
+          </TabsContent>
 
-        <div className="space-y-6">
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader className="p-6 pb-2">
-              <CardTitle className="text-lg font-bold">Project Status</CardTitle>
-              <p className="text-sm text-muted-foreground">Current breakdown by status</p>
-            </CardHeader>
-            <CardContent className="p-6 pt-2">
-              {statusDistribution.length > 0 ? (
-                <StatusPieChart statusDistribution={statusDistribution} />
-              ) : (
-                <EmptyState
-                  icon={FolderKanban}
-                  title="No project status data available"
-                  className="h-48 py-0"
-                />
-              )}
-            </CardContent>
-          </Card>
+          <TabsContent value="trend" className="mt-0 p-6">
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <p className="text-sm text-muted-foreground">Project creation trends and volume</p>
+              <Badge variant="outline">Last 30 Days</Badge>
+            </div>
+            <ProjectTrendChart projects={projects} />
+          </TabsContent>
 
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader className="p-6 pb-2">
-              <CardTitle className="text-lg font-bold">Modules</CardTitle>
-              <p className="text-sm text-muted-foreground">Jump to a manufacturing module</p>
-            </CardHeader>
-            <CardContent className="p-3 pt-1">
+          <TabsContent value="savings" className="mt-0 p-6">
+            <p className="mb-4 text-sm text-muted-foreground">Target BOM cost vs actual BOM cost, by project</p>
+            <CostSavingsChart projects={projectsForCharts} />
+          </TabsContent>
+
+          <TabsContent value="modules" className="mt-0 p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm text-muted-foreground">Active vs total projects across manufacturing modules</p>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">{manufacturingModules.length} Active Modules</Badge>
+                <Badge variant="outline">
+                  {totalTarget == null ? '—' : `${(totalTarget / 1000).toFixed(0)}K`} Portfolio Value
+                </Badge>
+              </div>
+            </div>
+            <ManufacturingPerformanceChart modules={manufacturingModules} />
+          </TabsContent>
+        </Tabs>
+
+        {projectsForCharts.length < projects.length && (
+          <p className="border-t border-border px-6 py-3 text-xs text-muted-foreground">Cost charts exclude projects with unresolved costs or non-comparable currencies.</p>
+        )}
+      </Card>
+
+      {/* Row 3: status and modules */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card className="rounded-xl shadow-sm">
+          <CardHeader className="border-b border-border p-6 pb-4">
+            <CardTitle className="text-lg font-semibold">Project Status</CardTitle>
+            <p className="text-sm text-muted-foreground">Current breakdown by status</p>
+          </CardHeader>
+          <CardContent className="p-6">
+            {statusDistribution.length > 0 ? (
+              <StatusPieChart statusDistribution={statusDistribution} />
+            ) : (
+              <EmptyState
+                icon={FolderKanban}
+                title="No project status data available"
+                className="h-48 py-0"
+              />
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-xl shadow-sm">
+          <CardHeader className="border-b border-border p-6 pb-4">
+            <CardTitle className="text-lg font-semibold">Modules</CardTitle>
+            <p className="text-sm text-muted-foreground">Jump to a manufacturing module</p>
+          </CardHeader>
+          <CardContent className="p-3">
               <ul className="divide-y">
                 {manufacturingModules.map((module) => {
                   const row = (
@@ -496,20 +505,14 @@ export default function DashboardPage() {
                   );
                 })}
               </ul>
-            </CardContent>
-          </Card>
-        </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* Row 3: recent projects */}
-      <Card className="rounded-2xl shadow-sm">
-        <CardHeader className="p-6 pb-4">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg font-bold">Recent Projects</CardTitle>
-            <Link href="/projects" className="flex items-center gap-1 text-sm font-medium text-primary hover:underline">
-              View all <ArrowRight className="h-3 w-3" />
-            </Link>
-          </div>
+      {/* Row 4: recent projects */}
+      <Card className="rounded-xl shadow-sm">
+        <CardHeader className="border-b border-border p-6 pb-4">
+          <CardTitle className="text-lg font-semibold">Recent Projects</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {projects.length > 0 ? (
@@ -565,6 +568,15 @@ export default function DashboardPage() {
             </EmptyState>
           )}
         </CardContent>
+        {projects.length > 0 && (
+          <div className="border-t border-border px-6 py-4">
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/projects" className="flex items-center gap-1">
+                View all <ArrowRight className="h-3 w-3" />
+              </Link>
+            </Button>
+          </div>
+        )}
       </Card>
     </div>
   );
