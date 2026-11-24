@@ -1,11 +1,17 @@
 // Cost Summary of a printed circuit board, from its route (pcb-route.ts) in the location's currency. Pure. A board that could not be priced is
 // one named, uncosted line saying why; never priced as another process.
-import type { CostSummaryDto, PcbBreakdown, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CostSummaryDto, PcbAssemblyBreakdown, PcbBreakdown, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import { runView } from '../casting/casting-calculator-seeds';
 import { computeSustainability } from '../shared/core/cost-engine';
 import type { PcbCostResult } from './pcb-cost.service';
 import { PCB_FINISH_LABEL, type PcbFact } from './pcb-part';
 import { PCB_HELPER, PCB_PROCESS_GROUP } from './pcb-route';
+
+/** The lines the assembly adds (pcb-assembly.ts): not counted as fabrication steps. */
+const ASSEMBLY_PROCESSES: ReadonlySet<string> = new Set([
+  'Stencil Print', 'Solder Paste Inspection', 'Pick and Place', 'Reflow Solder', 'Assembly AOI', 'SMT Line Changeover', 'SMT Line Balance', 'Solder Paste',
+  'THT Insertion', 'Wave Solder', 'Selective Solder', 'Hand Solder', 'In-Circuit Test', 'Assembly Flying Probe', 'Depanel Router',
+]);
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -23,6 +29,25 @@ function uncosted(reason: string): ProcessLineCost {
 }
 
 const fact = <T>(f: PcbFact<T>) => ({ value: f.value, basis: f.basis, source: f.source });
+
+/** The assembly as the Cost Guide shows it; the bare board's own fabrication is the first process group included. */
+function assemblyView(pcb: PcbCostResult, laminated: boolean): PcbAssemblyBreakdown | null {
+  const a = pcb.assembly;
+  if (!a) return null;
+  const fabSteps = (pcb.route?.lines ?? []).filter((l) => !ASSEMBLY_PROCESSES.has(l.process) && l.machineName != null).length;
+  const opt = <K extends string>(o: { key: K; label: string; perBoardUsd: number | null; reason: string | null }) => ({ key: o.key, label: o.label, costPerBoard: o.perBoardUsd, reason: o.reason });
+  return {
+    included: a.included, mode: a.mode, basis: a.basis,
+    processes: [{ group: 'Bare board fab', steps: [`${fabSteps} steps${laminated ? ', laminated' : ''}`], basis: 'auto' }, ...a.processes],
+    counts: {
+      placements: a.counts.placements, placementsTop: a.counts.placementsBySide.top ?? 0, placementsBottom: a.counts.placementsBySide.bottom ?? 0,
+      feeders: a.counts.feeders, sides: a.counts.sides, thtParts: a.counts.thtParts, joints: a.counts.joints, nets: a.counts.nets, bomComponents: a.counts.bomComponents,
+    },
+    smtLine: a.smtLine,
+    thtSolder: a.thtSolder ? { chosen: a.thtSolder.chosen, basis: a.thtSolder.basis, options: a.thtSolder.options.map(opt) } : null,
+    test: a.test ? { chosen: a.test.chosen, basis: a.test.basis, options: a.test.options.map(opt) } : null,
+  };
+}
 
 export function buildPcbCostSummary(input: { pcb: PcbCostResult; batchSize: number; warnings: string[]; ratesSource: string }): CostSummaryDto {
   const { route, part, stackup, nest } = input.pcb;
@@ -59,6 +84,7 @@ export function buildPcbCostSummary(input: { pcb: PcbCostResult; batchSize: numb
       })),
       ...input.pcb.gaps.map((g) => ({ route: g.key, label: g.label, complete: false, totalCost: null, reason: g.reason })),
     ],
+    assembly: assemblyView(input.pcb, stackup?.laminated ?? false),
   } : null;
   return {
     materialCost: r2(materialCost),
@@ -76,7 +102,8 @@ export function buildPcbCostSummary(input: { pcb: PcbCostResult; batchSize: numb
     warnings: warnings.filter(Boolean),
     ratesSource: input.ratesSource,
     ...(route && run ? { calculatorRuns: { 'PCB board material': runView(PCB_HELPER.material, 'Material Cost', run) } } : {}),
-    // The stamping die, the bed-of-nails fixture or the flying-probe program (USD): listed in the Cost Guide's tooling and written on Apply, not in the piece cost.
+    // The stamping die, the bed-of-nails fixture or the flying-probe program, and the assembly's stencils and test tooling (USD): listed in the
+    // Cost Guide's tooling and written on Apply, not in the piece cost.
     ...(route && route.tooling.length ? { pcbTooling: route.tooling } : {}),
     ...(breakdown ? { pcb: breakdown } : {}),
   };

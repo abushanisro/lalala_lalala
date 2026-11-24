@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { PCB_ROUTE_OPTIONS, basisLabel, isPcbItem, numberOf, pcbRouteOf } from '@/lib/costing/pcb-view';
+import {
+  PCB_ASSEMBLY_OPTIONS, PCB_ASSEMBLY_TEST_OPTIONS, PCB_ROUTE_OPTIONS, PCB_SCENARIO_KEYS, PCB_THT_SOLDER_OPTIONS, basisLabel, choiceOf, isPcbItem, numberOf, pcbRouteOf,
+  processesIncluded, type PcbAssemblyView,
+} from '@/lib/costing/pcb-view';
 import { pcbRouteKeyOf } from '@/lib/routing/pcb-route-id';
 import { routePickKeyOf, routePicksOf } from '@/lib/routing/route-pick';
 
@@ -27,5 +30,28 @@ describe('a PCB in the Cost Guide', () => {
   it('says where each board value came from', () => {
     expect(basisLabel('board_files')).toBe('measured from the board files');
     expect(basisLabel('reference_default')).toBe('reference default');
+  });
+});
+
+// The assembly a board's quote includes: Auto unless the Cost Guide sets it, and the processes included said one group a line.
+describe('a PCB assembly in the Cost Guide', () => {
+  it('reads a known choice only, else Auto', () => {
+    expect(choiceOf({ [PCB_SCENARIO_KEYS.assembly]: 'bare' }, PCB_SCENARIO_KEYS.assembly, PCB_ASSEMBLY_OPTIONS)).toBe('bare');
+    expect(choiceOf({ [PCB_SCENARIO_KEYS.assembly]: 'sometimes' }, PCB_SCENARIO_KEYS.assembly, PCB_ASSEMBLY_OPTIONS)).toBe('');
+    expect(choiceOf({ pcbThtSolder: 'wave' }, PCB_SCENARIO_KEYS.thtSolder, PCB_THT_SOLDER_OPTIONS)).toBe('wave');
+    expect(choiceOf(null, PCB_SCENARIO_KEYS.assemblyTest, PCB_ASSEMBLY_TEST_OPTIONS)).toBe('');
+  });
+
+  it('lists the processes included, marking the ones the user set', () => {
+    const a = {
+      included: true, mode: 'auto', basis: 'Assembly included automatically', counts: {} as never, thtSolder: null, test: null,
+      processes: [
+        { group: 'Bare board fab', steps: ['22 steps'], basis: 'auto' },
+        { group: 'SMT top', steps: ['Stencil Print', 'Pick and Place'], basis: 'auto' },
+        { group: 'THT', steps: ['THT Insertion', 'Hand Solder'], basis: 'user' },
+      ],
+    } as PcbAssemblyView;
+    expect(processesIncluded(a)).toEqual(['Bare board fab: 22 steps', 'SMT top: Stencil Print, Pick and Place', 'THT: THT Insertion, Hand Solder (set)']);
+    expect(processesIncluded(null)).toEqual([]);
   });
 });

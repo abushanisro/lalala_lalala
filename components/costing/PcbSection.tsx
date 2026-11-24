@@ -1,12 +1,13 @@
 'use client';
 
 import {
-  PCB_COPPER_OZ, PCB_FINISH_OPTIONS, PCB_ROUTE_OPTIONS, PCB_SCENARIO_KEYS, basisLabel, numberOf, pcbRouteOf, type PcbFact, type PcbSummary,
+  PCB_ASSEMBLY_OPTIONS, PCB_ASSEMBLY_TEST_OPTIONS, PCB_COPPER_OZ, PCB_FINISH_OPTIONS, PCB_ROUTE_OPTIONS, PCB_SCENARIO_KEYS, PCB_THT_SOLDER_OPTIONS,
+  basisLabel, choiceOf, numberOf, pcbRouteOf, processesIncluded, type PcbFact, type PcbSummary,
 } from '@/lib/costing/pcb-view';
 
 interface Props {
   pcb: PcbSummary | null | undefined;
-  /** The quoted route's stamping die, bed-of-nails fixture or flying-probe program (USD): an investment each, spread over the job. */
+  /** The quoted route's stamping die, bed-of-nails fixture or flying-probe program, and the assembly's stencils and test tooling (USD): an investment each, spread over the job. */
   tooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }[] | undefined;
   /** The part's scenario overrides (unset keys: the board files or the reference decide). */
   overrides: Record<string, unknown> | null | undefined;
@@ -35,12 +36,18 @@ function Fact({ fact, unit }: { fact: PcbFact | { value: string; basis: PcbFact[
 /**
  * The Cost Guide's PCB panel: the board the CAD engine measured from its files (each value with where it came from), what the files cannot
  * state (layers of a model-only board, thickness, copper, finish, test points), the stack-up and the panel nest, the laminates, the finishes
- * priced beside the specified one, the tooling, and the four routes (the cheapest complete one quoted unless one is set here).
+ * priced beside the specified one, the assembly (included automatically when the board has parts, with the processes it includes and the
+ * soldering and test chosen), the tooling, and the four routes (the cheapest complete one quoted unless one is set here).
  */
 export function PcbSection({ pcb: p, tooling, overrides, onChange }: Props) {
   const forced = pcbRouteOf(overrides);
   const finish = typeof overrides?.[PCB_SCENARIO_KEYS.finish] === 'string' ? String(overrides[PCB_SCENARIO_KEYS.finish]) : '';
   const plugging = overrides?.[PCB_SCENARIO_KEYS.viaPlugging];
+  const assemblyMode = choiceOf(overrides, PCB_SCENARIO_KEYS.assembly, PCB_ASSEMBLY_OPTIONS);
+  const thtSolder = choiceOf(overrides, PCB_SCENARIO_KEYS.thtSolder, PCB_THT_SOLDER_OPTIONS);
+  const assemblyTest = choiceOf(overrides, PCB_SCENARIO_KEYS.assemblyTest, PCB_ASSEMBLY_TEST_OPTIONS);
+  const a = p?.assembly ?? null;
+  const chosenLabel = (key: string | null | undefined, options: readonly { key: string; label: string }[]) => options.find((o) => o.key === key)?.label ?? null;
   const setNumber = (key: string, value: string, whole = true) => {
     onChange({ [key]: value === '' ? null : whole ? Math.max(0, Math.floor(Number(value))) : Math.max(0, Number(value)) });
   };
@@ -128,6 +135,41 @@ export function PcbSection({ pcb: p, tooling, overrides, onChange }: Props) {
           </label>
         </span>
       </div>
+      <div className={rowClass}>
+        <span className={labelClass}>Assembly</span>
+        <select
+          className={`${controlClass} cursor-pointer`}
+          value={assemblyMode}
+          onChange={(e) => { onChange({ [PCB_SCENARIO_KEYS.assembly]: e.target.value || null }); }}
+          title="Auto: the board is assembled when its Pick Place file places parts or it has components as BOM children; the parts' own cost stays with the BOM children."
+        >
+          <option value="">Auto{a ? ` (${a.included ? 'board + assembly' : 'bare board'})` : ''}</option>
+          {PCB_ASSEMBLY_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+        </select>
+      </div>
+      {(a?.included === true || assemblyMode === 'include') && (
+        <div className={rowClass}>
+          <span className={labelClass}>THT, test</span>
+          <span className="flex-1 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <label className="flex items-center gap-1" title="Through-hole soldering. Auto: the cheapest method that can solder the board (wave cannot with surface-mount parts on the bottom).">
+              solder
+              <select className={`${inputClass} w-auto cursor-pointer`} value={thtSolder}
+                onChange={(e) => { onChange({ [PCB_SCENARIO_KEYS.thtSolder]: e.target.value || null }); }}>
+                <option value="">Auto{a?.thtSolder && !thtSolder ? ` (${chosenLabel(a.thtSolder.chosen, PCB_THT_SOLDER_OPTIONS) ?? '-'})` : ''}</option>
+                {PCB_THT_SOLDER_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1" title="The assembled board's test. Auto: the cheaper over the job, the in-circuit fixture and program spread over it.">
+              test
+              <select className={`${inputClass} w-auto cursor-pointer`} value={assemblyTest}
+                onChange={(e) => { onChange({ [PCB_SCENARIO_KEYS.assemblyTest]: e.target.value || null }); }}>
+                <option value="">Auto{a?.test && !assemblyTest ? ` (${chosenLabel(a.test.chosen, PCB_ASSEMBLY_TEST_OPTIONS) ?? '-'})` : ''}</option>
+                {PCB_ASSEMBLY_TEST_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            </label>
+          </span>
+        </div>
+      )}
 
       {!p || !b ? (
         <p className="text-xs text-muted-foreground">Not costed as a PCB yet: upload the board files (Gerber set) and press Refresh analysis, or see the warning on the Cost tab.</p>
@@ -164,6 +206,37 @@ export function PcbSection({ pcb: p, tooling, overrides, onChange }: Props) {
               <span className={labelClass}>Panel</span>
               <span className="flex-1 min-w-0 tabular-nums">
                 {p.nest.boardsPerPanel} board(s) on a {p.nest.panelMm.map((v) => Math.round(v)).join(' x ')} mm panel ({p.nest.arraysPerPanel} array(s) of {p.nest.boardsPerArray}) · {Math.round(p.nest.utilization * 100)} % used
+              </span>
+            </div>
+          )}
+          {a && (
+            <div className={rowClass} title={a.basis}>
+              <span className={labelClass}>Included</span>
+              <span className="flex-1 min-w-0 space-y-0.5">
+                <span className="block text-muted-foreground">{a.basis}</span>
+                {processesIncluded(a).map((line) => <span key={line} className="block">{line}</span>)}
+                {a.included && (a.counts.placements > 0 || a.counts.thtParts > 0) && (
+                  <span className="block tabular-nums text-muted-foreground">
+                    {a.counts.placements} SMD ({a.counts.placementsTop} top, {a.counts.placementsBottom} bottom) · {a.counts.feeders} feeder(s)
+                    {a.counts.thtParts > 0 ? ` · ${a.counts.thtParts} THT, ${a.counts.joints} joint(s)` : ''}{a.counts.nets != null ? ` · ${a.counts.nets} nets` : ''}
+                    {a.smtLine ? ` · line takt ${a.smtLine.taktSec} s with ${a.smtLine.placers} placer(s)` : ''}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+          {a?.included && [a.thtSolder, a.test].some((c) => c && c.options.length > 1) && (
+            <div className={rowClass} title="The alternatives, priced per board beside the one quoted (the test over the job, its tooling included).">
+              <span className={labelClass}>Alternatives</span>
+              <span className="flex-1 min-w-0 space-y-0.5">
+                {[a.thtSolder, a.test].flatMap((c) => c?.options ?? []).map((o) => {
+                  const chosen = o.key === a.thtSolder?.chosen || o.key === a.test?.chosen;
+                  return (
+                    <span key={o.key} className={`block ${chosen ? 'text-foreground' : 'text-muted-foreground'}`} title={o.reason ?? undefined}>
+                      {o.label}{o.costPerBoard != null ? ` · ${o.costPerBoard.toFixed(2)} a board` : o.reason ? ` · ${o.reason}` : ''}{chosen ? ' (quoted)' : ''}
+                    </span>
+                  );
+                })}
               </span>
             </div>
           )}

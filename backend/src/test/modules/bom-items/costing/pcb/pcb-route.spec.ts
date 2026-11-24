@@ -182,7 +182,7 @@ describe('the summary and the route comparison', () => {
     const { part } = resolvePcbPart(FL285182, {}, DEFAULTS);
     const { route, note } = choosePcbRoute(b.routes, b.gaps, null);
     const summary = buildPcbCostSummary({
-      pcb: { route, routes: b.routes, gaps: b.gaps, part, stackup: b.stackup, nest: b.nest, finishOptions: b.finishOptions, note, missing: [], warnings: route!.warnings },
+      pcb: { route, routes: b.routes, gaps: b.gaps, part, stackup: b.stackup, nest: b.nest, finishOptions: b.finishOptions, assembly: b.assembly, note, missing: [], warnings: route!.warnings },
       batchSize: 500, warnings: [], ratesSource: 'test',
     });
     expect(summary).toMatchObject({ family: 'pcb', materialCost: 0, totalCost: route!.totalUsd });

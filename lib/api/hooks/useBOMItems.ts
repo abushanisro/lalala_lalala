@@ -1367,8 +1367,17 @@ export interface CostSummaryDto {
     finishOptions: { finish: string; label: string; totalCost: number | null; reason: string | null }[];
     complete: boolean;
     options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+    /** The board's assembly (backend PcbAssemblyBreakdown): whether it is included and why, the processes included, the counts and the choices. */
+    assembly: {
+      included: boolean; mode: 'auto' | 'include' | 'bare'; basis: string;
+      processes: { group: string; steps: string[]; basis: 'auto' | 'user' }[];
+      counts: { placements: number; placementsTop: number; placementsBottom: number; feeders: number; sides: string[]; thtParts: number; joints: number; nets: number | null; bomComponents: number };
+      smtLine: { placers: number; maxPlacers: number; taktSec: number } | null;
+      thtSolder: { chosen: string | null; basis: 'auto' | 'user'; options: { key: string; label: string; costPerBoard: number | null; reason: string | null }[] } | null;
+      test: { chosen: string | null; basis: 'auto' | 'user'; options: { key: string; label: string; costPerBoard: number | null; reason: string | null }[] } | null;
+    } | null;
   };
-  /** PCB: the stamping die, the bed-of-nails fixture or the flying-probe program (USD), kept out of the piece cost. */
+  /** PCB: the stamping die, the bed-of-nails fixture or the flying-probe program, the stencils and the assembly test tooling (USD), kept out of the piece cost. */
   pcbTooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }[];
   /**
    * Sheet Metal - Hydroforming: memory's route rule, the draws, the blank and its nest, the press, the tray, the route quoted and both routes

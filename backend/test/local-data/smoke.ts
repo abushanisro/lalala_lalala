@@ -135,9 +135,13 @@ async function main(): Promise<void> {
     const bob = await (await api('/projects?select=name', minter.forUser('22222222-2222-4222-8222-222222222222'))).json() as { name: string }[];
     must(alice.length === 1 && bob.length === 0, `alice ${alice.length}, bob ${bob.length}`);
   });
+  // The PCB catalog's assembly processes (migration 1133).
+  const PCB_ASSEMBLY = ['Stencil Print', 'Solder Paste Inspection', 'Pick and Place', 'Reflow Solder', 'Assembly AOI', 'Wave Solder', 'Selective Solder', 'In-Circuit Test',
+    'Assembly Flying Probe', 'Depanel Router', 'THT Insertion', 'Hand Solder'];
   await check('migration 1129 twinned the 98 PCB fabrication machines in India at the 3 - Metal / 4 - Metal India labour, and 1130 staged the sourced PCB reference', async () => {
-    const india = await (await api('/mhr_records?process_group=eq.PCB&location=eq.India&select=machine_class,machine_name,usd_labor_rate_per_hr', minter.forService())).json() as
-      { machine_class: string; machine_name: string; usd_labor_rate_per_hr: number | string | null }[];
+    // The fabrication machines (migration 1133 adds the assembly ones, classes pcba_*, beside them).
+    const india = (await (await api('/mhr_records?process_group=eq.PCB&location=eq.India&select=machine_class,machine_name,usd_labor_rate_per_hr', minter.forService())).json() as
+      { machine_class: string; machine_name: string; usd_labor_rate_per_hr: number | string | null }[]).filter((r) => !r.machine_class.startsWith('pcba_'));
     must(india.length === 98, `India PCB rows ${india.length}`);
     must(india.every((r) => [0, 1.73, 2.3].includes(Number(r.usd_labor_rate_per_hr))), `India labour ${JSON.stringify([...new Set(india.map((r) => r.usd_labor_rate_per_hr))])}`);
     must(india.some((r) => r.machine_class === 'cure_plugged_vias' && r.machine_name === 'Tampprinter PCB Drying Oven'), 'the dryer is twinned under its USA name');
@@ -148,8 +152,22 @@ async function main(): Promise<void> {
   await check('migration 1132 linked the PCB calculators to every PCB catalog row but Material Stock and made each active', async () => {
     const rows = await (await api('/process_calculator_mappings?process_group=eq.PCB&select=operation,calculator_name,is_active&order=operation', minter.forService())).json() as
       { operation: string; calculator_name: string | null; is_active: boolean }[];
-    const linked = rows.filter((r) => r.operation !== 'Material Stock');
+    const linked = rows.filter((r) => r.operation !== 'Material Stock' && !PCB_ASSEMBLY.includes(r.operation));
     must(linked.length === 31 && linked.every((r) => r.calculator_name === `PCB - ${r.operation}` && r.is_active), `rows ${JSON.stringify(rows.filter((r) => !r.is_active || !r.calculator_name))}`);
+  });
+  await check('migration 1133 seeded the 24 PCB assembly machines in USA and India, staged the assembly reference and added 12 catalog processes, and 1134 bound each', async () => {
+    const machines = await (await api('/mhr_records?process_group=eq.PCB&machine_class=like.pcba_*&select=location,machine_class,mhr_usd_per_hour,usd_labor_rate_per_hr', minter.forService())).json() as
+      { location: string; machine_class: string; mhr_usd_per_hour: number | string | null; usd_labor_rate_per_hr: number | string | null }[];
+    const at = (loc: string) => machines.filter((m) => m.location === loc);
+    must(at('USA').length === 24 && at('India').length === 24, `USA ${at('USA').length}, India ${at('India').length}`);
+    must(machines.every((m) => Number(m.mhr_usd_per_hour) > 0), 'every assembly machine has its machine hour rate');
+    must(at('India').every((m) => [1.73, 2.3].includes(Number(m.usd_labor_rate_per_hr))), `India labour ${JSON.stringify([...new Set(at('India').map((m) => m.usd_labor_rate_per_hr))])}`);
+    const staged = await (await api('/machining_reference_data?source_version=eq.2026-PCB&category=eq.lookup_table&key=in.(assembly_rates,assembly_costs)&select=key,value', minter.forService())).json() as { key: string; value: string | null }[];
+    must(staged.length === 2 && staged.every((r) => Number(r.value) > 0), `staged ${JSON.stringify(staged)}`);
+    const rows = await (await api('/process_calculator_mappings?process_group=eq.PCB&select=operation,calculator_name,machine_class,is_active', minter.forService())).json() as
+      { operation: string; calculator_name: string | null; machine_class: string | null; is_active: boolean }[];
+    const assembly = rows.filter((r) => PCB_ASSEMBLY.includes(r.operation));
+    must(assembly.length === 12 && assembly.every((r) => r.calculator_name === `PCB - ${r.operation}` && r.machine_class && r.is_active), `rows ${JSON.stringify(assembly.filter((r) => !r.is_active || !r.calculator_name))}`);
   });
   await check("migration 1121 lets a signed-in user read the consumable prices (a waterjet's garnet), and not write them", async () => {
     const bob = minter.forUser('22222222-2222-4222-8222-222222222222');

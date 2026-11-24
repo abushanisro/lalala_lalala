@@ -216,6 +216,15 @@ ALTER TABLE public.mhr_records ADD COLUMN created_at timestamptz DEFAULT now();
 INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
 SELECT DISTINCT 'PCB', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1129_pcb_machines_india_and_classes.sql'),
   '\(\$str\$([a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+, [0-9.]+, [0-9.]+, \$str\$', 'g') AS m;
+-- the rest of the machine columns the memory seeds write (migrations 797, 862: memory-machine-seed.js COLUMNS) as the real database has them:
+-- migration 1133 seeds the PCB assembly machines with them; IF NOT EXISTS keeps the ones above
+ALTER TABLE public.mhr_records ADD COLUMN IF NOT EXISTS machine_description text, ADD COLUMN IF NOT EXISTS source_type varchar,
+  ADD COLUMN IF NOT EXISTS operators numeric, ADD COLUMN IF NOT EXISTS direct_overhead_rate numeric, ADD COLUMN IF NOT EXISTS indirect_overhead_rate numeric,
+  ADD COLUMN IF NOT EXISTS benchmark_direct_overhead_rate_usd_hr numeric, ADD COLUMN IF NOT EXISTS benchmark_indirect_overhead_rate_usd_hr numeric,
+  ADD COLUMN IF NOT EXISTS total_machine_hour_rate numeric, ADD COLUMN IF NOT EXISTS mhr_usd_per_hour numeric, ADD COLUMN IF NOT EXISTS machine_length_mm numeric,
+  ADD COLUMN IF NOT EXISTS max_x_mm numeric, ADD COLUMN IF NOT EXISTS max_workpiece_weight_kg numeric;
+-- and the taxonomy's tool shop column (migration 609): migration 1133 adds the PCB assembly processes with it
+ALTER TABLE public.process_taxonomy ADD COLUMN IF NOT EXISTS default_tool_shop_name varchar(200);
 -- a material of its group (migration 855): migration 1112 links Sheet Metal Roll Forming to its own group and fails when the group holds none
 INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 1100', 'Sheet Metal Roll Forming');
 -- the machine envelope columns as the real database has them (migration 755 fills them for the lathes): migration 1093 fills them for the multi-spindle machines

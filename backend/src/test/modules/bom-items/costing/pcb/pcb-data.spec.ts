@@ -91,3 +91,61 @@ describe('the sourced PCB fabrication reference (migration 1130)', () => {
     expect(keyed('PCBA/yield.csv', 'fab_yield_pct').map((r) => Number(r.layer_count_min))).toEqual(expect.arrayContaining([4, 8, 12, 16, 20]));
   });
 });
+
+describe('the PCB assembly data (migration 1133)', () => {
+  const assemblySql = () => readFileSync(join(MIGRATIONS, '1133_pcba_assembly_machines_and_reference.sql'), 'utf8');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { pcbaAssemblyMachines } = require('../../../../../../scripts/lib/pcba-assembly-machines.js');
+  const built = () => pcbaAssemblyMachines(MEMORY) as {
+    RULE: Record<'USA' | 'India', { n: number; worst: number }>;
+    machines: { p: { cls: string; operators: number; setup: number; grade: string }; name: string; price: number; usa: { direct: number; indirect: number }; india: { direct: number; indirect: number }; specs: Record<string, unknown> }[];
+    skipped: { used: string[]; unpriced: string[]; other: string[] };
+  };
+
+  it('is what the generator writes from memory/', () => {
+    const committed = assemblySql();
+    execFileSync('node', [join(BACKEND, 'scripts/generate-pcba-assembly-migration.js')], { stdio: 'ignore' });
+    expect(assemblySql()).toBe(committed);
+  });
+
+  it('prices each machine by the reference\'s own overhead rule, which reproduces every reference PCB machine to the cent', () => {
+    const { RULE, machines } = built();
+    expect(RULE.USA.n).toBeGreaterThan(90);
+    expect(RULE.India.n).toBeGreaterThan(90);
+    expect(RULE.USA.worst).toBeLessThan(0.01);
+    expect(RULE.India.worst).toBeLessThan(0.01);
+    // The placer: 67,000 USD, no power stated. USA direct 6.0535e-5 x 67,000 = 4.06; indirect 13.83 + 0.0855 x its floor area (0.22).
+    const placer = machines.find((m) => m.name === 'Yamaha YSM20R')!;
+    expect(placer.usa.direct).toBeCloseTo(4.06, 2);
+    expect(placer.usa.direct + placer.usa.indirect).toBeCloseTo(18.11, 2);
+    expect(placer.specs).toMatchObject({ rated_cph: 95000, ipc_cph: 57000, power_note: expect.any(String) });
+    // The Juki rate the maker states at IPC-9850 is a used listing: not seeded.
+    expect(machines.some((m) => m.name.startsWith('Juki'))).toBe(false);
+  });
+
+  it('seeds new listings only, a listing range at its midpoint, and the crew of the analogous fabrication machine', () => {
+    const { machines, skipped } = built();
+    expect(machines).toHaveLength(24);
+    expect(skipped.used).toEqual(expect.arrayContaining(['Juki RS-1R', 'Desen DSP-1008 (listing price low)', 'Teradyne Spectrum 9 TSE 8862 (used 2006)']));
+    expect(machines.find((m) => m.name === 'GKG G5')!.price).toBe((24915 + 38000) / 2);
+    expect(machines.find((m) => m.name === 'I.C.T-Q588A online ICT')!.price).toBe((13500 + 35800) / 2);
+    const crew = Object.fromEntries(machines.map((m) => [m.p.cls, [m.p.operators, m.p.setup, m.p.grade]]));
+    // An SMT line machine's setup is the line changeover; the SPI shares an operator as the reference's in-line vision inspection does.
+    expect(crew['pcba_stencil_printer']).toEqual([1, 0, '4 - Metal']);
+    expect(crew['pcba_solder_paste_inspection']).toEqual([0.5, 0, '3 - Metal']);
+    expect(crew['pcba_reflow']).toEqual([0, 0, '3 - Metal']);
+    expect(crew['pcba_in_circuit_test']).toEqual([1, 0.17, '3 - Metal']);
+    expect(crew['pcba_flying_probe']).toEqual([0, 0.17, '4 - Metal']);
+  });
+
+  it('stages the assembly rates and costs, every row sourced, and adds the catalog\'s assembly processes with their machine classes', () => {
+    for (const name of ['assembly_rates', 'assembly_costs']) {
+      const t = readCsv(join(MEMORY, `PCBA/Assembly/${name}.csv`));
+      expect(assemblySql()).toContain(`($str$lookup_table$str$, 'USA', $str$2026-PCB$str$, $str$${name}$str$, $str$${t.rows.length}$str$,`);
+      for (const r of t.rows) expect(String(r.source_url)).toMatch(/^https?:\/\//);
+    }
+    for (const [process, cls] of [['Stencil Print', 'pcba_stencil_printer'], ['Pick and Place', 'pcba_pick_and_place'], ['THT Insertion', 'pcb_bench_operation'], ['Depanel Router', 'pcba_depanel_router']]) {
+      expect(assemblySql()).toContain(`($str$PCB$str$, $str$${process}$str$, $str$${cls}$str$,`);
+    }
+  });
+});
