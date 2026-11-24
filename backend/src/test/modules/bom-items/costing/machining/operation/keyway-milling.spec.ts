@@ -10,7 +10,8 @@
 //   Path per Pass = max(Keyway Length - Keyway Width, 0) + Keyway Depth / Passes                                [mm]
 //   Cycle Time    = Keyways * Passes * Path per Pass / Feed Rate * 60                                           [s]
 //
-// Max Spindle Speed 10 000 rpm and Slotting Depth Ratio 0.2 are the calculator's defaults. Cutting Speed, Teeth and Feed per Tooth per
+// Slotting Depth Ratio 0.2 is the calculator's default; Max Spindle Speed is the machine's own top speed (migration 1150), here a
+// 10 000 rpm test mill. Cutting Speed, Teeth and Feed per Tooth per
 // Diameter are the material class's tblMillingFinishing row: aluminium 183 m/min, 3 teeth, 0.008; mild steel 76 m/min, 4 teeth, 0.008.
 // Every expected number below is worked out by hand from these.
 import { runMachiningCalculator, type CalcSeed } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator';
@@ -35,6 +36,8 @@ import { timeOperations } from '../../../../../../modules/bom-items/costing/mach
 import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
+// Every route times its operations on its own machine (timeOperations): here a 10 000 rpm test mill.
+const TEST_MACHINE = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
 const cutter = (teeth: number, cuttingSpeedMPerMin: number, feedPerToothPerDiameter: number): MillingFinishingRow => ({ toolDiameterMm: 10, teeth, cuttingSpeedMPerMin, feedPerToothPerDiameter });
 const ALUMINIUM = cutter(3, 183, 0.008);
 const MILD_STEEL = cutter(4, 76, 0.008);
@@ -46,6 +49,7 @@ function run(lengthMm: number, widthMm: number, depthMm: number, row: MillingFin
   return runMachiningCalculator(CALCS, 'Obround Slot Milling', {
     'Keyway Length': seed(lengthMm), 'Keyway Width': seed(widthMm), 'Keyway Depth': seed(depthMm), 'Keyways': seed(keyways),
     'Teeth': seed(row.teeth), 'Cutting Speed': seed(row.cuttingSpeedMPerMin), 'Feed per Tooth per Diameter': seed(row.feedPerToothPerDiameter),
+    ...TEST_MACHINE,
     ...extra,
   });
 }
@@ -128,18 +132,29 @@ describe('Machining - Obround Slot Milling: the calculator, by hand', () => {
     expect(r.sec).toBeCloseTo(3.691, 3);
   });
 
-  it('its two defaults are the calculator\'s own, shown as such; the depth of a pass has its source in the spec', () => {
+  it('its one default is the calculator\'s own, shown as such; the spindle limit is the machine\'s; the depth of a pass has its source in the spec', () => {
     const r = run(9.971, 4, 2.951);
     const assumed = 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source';
     expect(r.trace.find((s) => s.fieldName === 'Slotting Depth Ratio')).toMatchObject({ kind: 'input', value: 0.2, source: assumed });
-    expect(r.trace.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ kind: 'input', value: 10000, source: assumed });
+    expect(r.trace.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ kind: 'input', value: 10000, source: 'Machine: test spindle_speed_rpm' });
     const field = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Obround Slot Milling')!.fields.find((f) => f.name === 'Slotting Depth Ratio')!;
     expect(field.default).toBe(0.2);
     expect(field.note).toContain('0.05 to 0.2 of the cutter diameter');
     expect(field.note).toContain('Mitsubishi Materials');
-    // The spindle limit is the one the finishing calculator has: a small cutter is held to the same speed on both.
-    const finishing = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Fine Finish Milling')!.fields.find((f) => f.name === 'Max Spindle Speed')!;
-    expect(finishing.default).toBe(10000);
+    // The spindle limit is the machine's, on the keyway and the finishing passes alike (migration 1150): no flat 10 000 rpm.
+    for (const name of ['Machining - Obround Slot Milling', 'Machining - Fine Finish Milling', 'Machining - Contouring', 'Machining - Perimeter Milling']) {
+      const field = loadMachiningCalculatorSpec().calculators.find((c) => c.name === name)!.fields.find((f) => f.name === 'Max Spindle Speed')!;
+      expect([name, field.source, field.default]).toEqual([name, 'machine', undefined]);
+    }
+  });
+
+  it('with no machine the spindle limit is a named input, never a stand-in', () => {
+    const noMachine = runMachiningCalculator(CALCS, 'Obround Slot Milling', {
+      'Keyway Length': { value: 9.971, source: 'test' }, 'Keyway Width': { value: 4, source: 'test' }, 'Keyway Depth': { value: 2.951, source: 'test' }, 'Keyways': { value: 1, source: 'test' },
+      'Teeth': { value: 3, source: 'test' }, 'Cutting Speed': { value: 183, source: 'test' }, 'Feed per Tooth per Diameter': { value: 0.008, source: 'test' },
+    });
+    expect(noMachine.sec).toBeNull();
+    expect(noMachine.missing).toEqual(['Obround Slot Milling: Max Spindle Speed']);
   });
 
   it('a shallower pass is the engineer\'s to set: half the ratio is twice the passes', () => {
@@ -154,7 +169,7 @@ describe('Machining - Obround Slot Milling: the calculator, by hand', () => {
       'Keyway Length': { value: 9.971, source: 'test' }, 'Keyway Width': { value: 4, source: 'test' }, 'Keyway Depth': { value: 2.951, source: 'test' }, 'Keyways': { value: 1, source: 'test' },
     });
     expect(noCutter.sec).toBeNull();
-    expect(noCutter.missing).toEqual(['Obround Slot Milling: Teeth, Cutting Speed, Feed per Tooth per Diameter']);
+    expect(noCutter.missing).toEqual(['Obround Slot Milling: Teeth, Cutting Speed, Feed per Tooth per Diameter, Max Spindle Speed']);
   });
 });
 
@@ -172,11 +187,11 @@ const POCKET = { id: 'PocketV2-default_c1', feature_type: 'PocketV2', variant: '
 const FACE = { id: 'PlanarFace-default_c1', feature_type: 'PlanarFace', variant: 'default', occurrences: [{ area_mm2: 2000 }] };
 
 const FINISHING: Partial<Record<MaterialClass, MillingFinishingRow>> = { aluminum: ALUMINIUM, mild_steel: MILD_STEEL };
+// The operations as a route times them: planned, then timed on its machine.
 const sequence = (features: unknown[], matClass: MaterialClass = 'aluminum', finishing: MillingFinishingRow | null | undefined = FINISHING[matClass], machinabilityFactor = 1.0) =>
-  buildOperationSequence(features, { matClass, machinabilityFactor, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: finishing ?? null });
+  timeOperations(buildOperationSequence(features, { matClass, machinabilityFactor, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: finishing ?? null }), CALCS, TEST_MACHINE);
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
-// The slot and the pocket are timed on the workbook (migration 1137), each route on its own machine: here a 10 000 rpm test mill.
-const TEST_MACHINE = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
+// The slot and the pocket are timed on the workbook (migration 1137), each route on its own machine (TEST_MACHINE above).
 const onMachine = (features: unknown[], matClass: MaterialClass) =>
   timeOperations(buildOperationSequence(features, {
     matClass, machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: FINISHING[matClass] ?? null, workbook: workbookFixture(),
@@ -199,7 +214,7 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
       ['Teeth', 3, 'tblMillingFinishing: aluminum Teeth'],
       ['Cutting Speed', 183, 'tblMillingFinishing: aluminum CuttingSpeedMPerMin 183 m/min x machinability factor 1'],
       ['Feed per Tooth per Diameter', 0.008, 'tblMillingFinishing: aluminum FeedPerToothPerDiameter'],
-      ['Max Spindle Speed', 10000, 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source'],
+      ['Max Spindle Speed', 10000, 'Machine: test spindle_speed_rpm'],
       ['Slotting Depth Ratio', 0.2, 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source'],
     ]);
     const row = { table: 'tblMillingFinishing', row: { MaterialClass: 'aluminum' } };
@@ -213,7 +228,7 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
     const [op] = named(ops, 'Obround Slot Milling');
     expect(op!.trace!.some((s) => s.fieldName === 'Removed Volume' || s.fieldName === 'Material Removal Rate')).toBe(false);
     // The removal rate does not time it: the same with none on file.
-    const noRate = buildOperationSequence([KEYWAY], { matClass: 'aluminum', machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: null, finishing: ALUMINIUM });
+    const noRate = timeOperations(buildOperationSequence([KEYWAY], { matClass: 'aluminum', machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: null, finishing: ALUMINIUM }), CALCS, TEST_MACHINE);
     expect(named(noRate, 'Obround Slot Milling')[0]!.timeSec).toBeCloseTo(1.6771875, 9);
   });
 
@@ -336,7 +351,7 @@ function milled(featureOps: OperationLine[]) {
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'milled', finishedWeightKg: 0.108,
     // The mill's rapid traverse rate (migration 1141) and the machining variables' rapid transfer factor (migration 639): its moves.
-    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, rapidTraverseMmPerMin: 30000 }), rapidTransferDistanceFactor: 0.5,
+    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, rapidTraverseMmPerMin: 30000, maxSpindleRpm: 10000 }), rapidTransferDistanceFactor: 0.5,
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),

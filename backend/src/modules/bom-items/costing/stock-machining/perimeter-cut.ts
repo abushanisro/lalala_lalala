@@ -16,23 +16,26 @@ export const PERIMETER_MILLING = 'Perimeter Milling';
 export const PERIMETER_FEATURE = 'Perimeter';
 export const PERIMETER_CUT_CALC = 'Stock Machining - Perimeter Cut';
 
-/** The slotting rule of a solid end mill: the depth of a pass over the cutter's diameter, and the fastest the spindle turns it. */
+/** The slotting rule of a solid end mill: the depth of a pass over the cutter's diameter. */
 export interface SlottingRule {
   depthRatio: number;
-  maxSpindleRpm: number;
 }
+
+/** Before a mill is chosen (the drop-off techniques compared), the cut is timed with no spindle limit; the mill's line times it on its own. */
+const NO_MILL_YET: CalcSeed = { value: 1e12, source: 'No mill yet: the drop-off techniques are compared with no spindle limit; the mill line times the cut on its own spindle' };
 
 const stated = (def: ReferenceCalculatorDef | undefined, field: string): number | null => {
   const value = Number(def?.fields.find((f) => f.field_name === field)?.default_value);
   return Number.isFinite(value) && value > 0 ? value : null;
 };
 
-/** The slotting rule as the keyway's stored calculator states it (its Slotting Depth Ratio and Max Spindle Speed); null when it is not on file. */
+/**
+ * The slotting rule as the keyway's stored calculator states it (its Slotting Depth Ratio); null when it is not on file. The spindle is the
+ * mill's own (migration 1150): the cut is timed on the mill that makes it, not at a stated speed.
+ */
 export function slottingRuleOf(machiningCalculators: ReferenceCalculators | null | undefined): SlottingRule | null {
-  const keyway = machiningCalculators?.[KEYWAY_MILLING];
-  const depthRatio = stated(keyway, 'Slotting Depth Ratio');
-  const maxSpindleRpm = stated(keyway, 'Max Spindle Speed');
-  return depthRatio != null && maxSpindleRpm != null ? { depthRatio, maxSpindleRpm } : null;
+  const depthRatio = stated(machiningCalculators?.[KEYWAY_MILLING], 'Slotting Depth Ratio');
+  return depthRatio != null ? { depthRatio } : null;
 }
 
 /** What the mill cuts the outline with: the material's standard end mill and how it runs, and the slotting rule. */
@@ -75,12 +78,13 @@ export function perimeterCutOperation(input: {
     'Plate Thickness': { value: input.plateThicknessMm, source: 'Stock Machining stock: the plate\'s thickness (tblPreferredSizes)' },
     'Cutter Diameter': finishingTableSeed(input.matClass, input.finishing.toolDiameterMm, 'ToolDiameterMm'),
     ...cutterRunSeeds(input.finishing, input.matClass, input.machinabilityFactor),
-    'Max Spindle Speed': { value: input.slotting.maxSpindleRpm, source: 'Machining - Obround Slot Milling: Max Spindle Speed (the stored calculator\'s value)' },
     'Slotting Depth Ratio': { value: input.slotting.depthRatio, source: 'Machining - Obround Slot Milling: Slotting Depth Ratio (the stored calculator\'s value)' },
   };
-  const run = runReferenceCalculator(input.calculators, PERIMETER_CUT_CALC, seeds);
+  const run = runReferenceCalculator(input.calculators, PERIMETER_CUT_CALC, { ...seeds, 'Max Spindle Speed': NO_MILL_YET });
   return {
     name: PERIMETER_MILLING, timeSec: run.sec ?? 0, trace: run.trace, source: 'stock', cadFeatureType: PERIMETER_FEATURE, count: 1,
+    // The mill's line times it again on its machine, its spindle capped at the machine's own top speed (timeOperations).
+    plan: [{ operation: PERIMETER_CUT_CALC, seeds, calculators: input.calculators }],
     ...(run.calculatorId ? { calculator: { id: run.calculatorId, version: run.calculatorVersion, lookups: run.lookups } } : {}),
     ...(run.missing.length > 0 ? { missing: run.missing.join('; ') } : {}),
   };

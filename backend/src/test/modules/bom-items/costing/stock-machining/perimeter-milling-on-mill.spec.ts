@@ -110,7 +110,9 @@ describe('on the mill line, the perimeter cut', () => {
   });
 
   it('a cut that could not be timed makes the mill line a named gap', () => {
-    const untimed: OperationLine = { ...CUT, timeSec: 0, missing: 'Stock Machining - Perimeter Cut: Cutter Diameter' };
+    // A plan the mill cannot complete (its cutter diameter not read): re-timed on the mill, the cut is still untimed.
+    const plan = CUT.plan!.map((p) => ({ ...p, seeds: Object.fromEntries(Object.entries(p.seeds).filter(([k]) => k !== 'Cutter Diameter')) }));
+    const untimed: OperationLine = { ...CUT, timeSec: 0, missing: 'Stock Machining - Perimeter Cut: Cutter Diameter', plan };
     const gap = millLineOf(milled(sequence([POCKET, FACE], [untimed])));
     expect((gap.physicsGap as { reason?: string } | undefined)?.reason).toContain('Stock Machining - Perimeter Cut: Cutter Diameter');
   });
