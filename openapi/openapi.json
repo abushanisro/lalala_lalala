@@ -841,8 +841,16 @@
             "description": "Key inputs the engineer entered (e.g. {\"Hole Diameter\": 6}); they replace the part CAD values when choosing lookup rows",
             "type": "object"
           },
+          "liveTool": {
+            "description": "The calculator runs on a lathe's live tool (milling on the lathe), as the cost engine ran it: its spindle cap is the live tool's",
+            "type": "boolean"
+          },
           "location": {
             "description": "Digital factory location — when given, the part is costed and the calculator gets the inputs the engine used",
+            "type": "string"
+          },
+          "machineId": {
+            "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
             "type": "string"
           },
           "runKey": {
@@ -5712,8 +5720,16 @@
             "description": "Key inputs the engineer entered (e.g. {\"Hole Diameter\": 6}); they replace the part CAD values when choosing lookup rows",
             "type": "object"
           },
+          "liveTool": {
+            "description": "The calculator runs on a lathe's live tool (milling on the lathe), as the cost engine ran it: its spindle cap is the live tool's",
+            "type": "boolean"
+          },
           "location": {
             "description": "Digital factory location — when given, the part is costed and the calculator gets the inputs the engine used",
+            "type": "string"
+          },
+          "machineId": {
+            "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
             "type": "string"
           }
         },
