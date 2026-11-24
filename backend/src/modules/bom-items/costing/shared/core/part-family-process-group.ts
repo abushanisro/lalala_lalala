@@ -39,6 +39,9 @@ export const CAD_FAMILY_TO_PROCESS_GROUP: Readonly<Record<string, string>> = {
   // A weldment's welding (memory/Part Assembly): its BOM children (or the part itself) loaded and welded by the Cost Guide's weld table
   // (costing/part-assembly). Nothing of it is read from a model: no extractor analyses a part as one.
   part_assembly: 'Part Assembly',
+  // A printed circuit board (memory/PCBA): measured from its board files by the CAD engine's board routes (feature_graph.summary.pcbGeometry)
+  // and completed by the Cost Guide; priced by costing/pcb. Its 3D model, if any, is not what it is costed from.
+  pcb: 'PCB',
 };
 
 /** An assembly's family: its own work (loading and joining its BOM children), costed by costing/assembly. */
@@ -47,8 +50,14 @@ export const ASSEMBLY_FAMILY = 'assembly';
 /** A weldment's family: its welding (memory/Part Assembly), costed by costing/part-assembly. */
 export const PART_ASSEMBLY_FAMILY = 'part_assembly';
 
-/** The families costed from the BOM and the Cost Guide alone: the cad-engine has no extractor for them, so no analysis is run as one. */
-export const NO_CAD_EXTRACTOR_FAMILIES: ReadonlySet<string> = new Set([ASSEMBLY_FAMILY, PART_ASSEMBLY_FAMILY]);
+/** A printed circuit board's family: its fabrication from its board files (costing/pcb). */
+export const PCB_FAMILY = 'pcb';
+
+/**
+ * The families costed without a 3D analysis of their own: an assembly and a weldment from the BOM and the Cost Guide, a printed circuit board
+ * from its board files (measured by the CAD engine's board routes, not its STEP extractor). No analysis is run as one.
+ */
+export const NO_CAD_EXTRACTOR_FAMILIES: ReadonlySet<string> = new Set([ASSEMBLY_FAMILY, PART_ASSEMBLY_FAMILY, PCB_FAMILY]);
 
 /** Insert molding (memory/Assembly molding): costed as a plastic molded part on the insert presses. */
 export const INSERT_MOLDING_PROCESS_GROUP = 'Assembly Molding';

@@ -20,6 +20,7 @@ import { PartAssemblySection } from '@/components/costing/PartAssemblySection';
 import { PowderMetalSection, powderMetalUncostedReason } from '@/components/costing/PowderMetalSection';
 import { RollFormingSection } from '@/components/costing/RollFormingSection';
 import { RotoBlowSection } from '@/components/costing/RotoBlowSection';
+import { PcbSection } from '@/components/costing/PcbSection';
 import { SandCalculatorRuns, SandLineTrace } from '@/components/costing/SandCalculatorRuns';
 import { SandCastingSection } from '@/components/costing/SandCastingSection';
 import { SandMetalBalance } from '@/components/costing/SandMetalBalance';
@@ -4771,6 +4772,17 @@ function CostGuidePanel({
                 <RotoBlowSection
                   rotoBlow={cgpCostSummary.rotoBlow}
                   tooling={cgpCostSummary.rotoBlowTooling}
+                  overrides={item.scenarioOverrides}
+                  onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
+                />
+              </Section>
+            )}
+
+            {cgpCostSummary?.family === 'pcb' && (
+              <Section title="PCB">
+                <PcbSection
+                  pcb={cgpCostSummary.pcb}
+                  tooling={cgpCostSummary.pcbTooling}
                   overrides={item.scenarioOverrides}
                   onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
                 />
