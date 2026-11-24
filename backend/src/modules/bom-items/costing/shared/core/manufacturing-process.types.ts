@@ -84,11 +84,15 @@ export interface PlasmaCutParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 export interface PlasmaPunchParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 // Real, per-SELECTED-MACHINE roll speed/prebend time (2026-09-01), resolved
