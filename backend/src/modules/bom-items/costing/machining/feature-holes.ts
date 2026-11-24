@@ -77,14 +77,20 @@ export function holeGroupsOfFeatures(features: readonly MachiningFeatureLike[], 
   return [...groups.values()];
 }
 
-/** The tapped holes, one entry per feature: a threaded hole, or a tapped bolt circle (always off the centreline, round the axis). */
+/** A cross hole the recognizer found tapped: it stays variant cross (drilled radially) and carries its thread as params.spec. */
+const isTappedCross = (f: MachiningFeatureLike) => f.variant === 'cross' && text(f.params?.spec) !== '';
+
+/**
+ * The tapped holes, one entry per feature: a threaded hole, a tapped cross hole, or a tapped bolt circle. A bolt circle is always off the
+ * centreline and a cross hole is tapped radially, so on a lathe both take a live (driven) tool.
+ */
 export function tappedHolesOfFeatures(features: readonly MachiningFeatureLike[], occurrencesOf: OccurrencesOf): ThreadEntry[] {
   return features
-    .filter((f) => f.type === 'SimpleHole' && (f.variant === 'threaded' || (isPattern(f) && f.params?.hole_type === 'tapped')))
+    .filter((f) => f.type === 'SimpleHole' && (f.variant === 'threaded' || isTappedCross(f) || (isPattern(f) && f.params?.hole_type === 'tapped')))
     .map((f) => {
       const count = holesOf(f);
       const depth = Number(f.params?.depth_mm) || 0;
-      const offAxis = isPattern(f) || (Number(f.params?.distance_from_axis_mm) || 0) > OFF_AXIS_MM;
+      const offAxis = isPattern(f) || isTappedCross(f) || (Number(f.params?.distance_from_axis_mm) || 0) > OFF_AXIS_MM;
       return {
         // No thread spec on the feature: the size is unknown, and tapping names it as a missing input rather than pricing an assumed one.
         size: text(isPattern(f) ? f.params?.tap_spec : f.params?.spec),

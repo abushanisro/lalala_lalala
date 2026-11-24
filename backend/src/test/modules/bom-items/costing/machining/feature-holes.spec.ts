@@ -42,6 +42,19 @@ describe('tappedHolesOfFeatures', () => {
     ]);
   });
 
+  it('taps a cross hole the recognizer found tapped (its thread a param, the hole still cross), radially with a live tool', () => {
+    // FusionComponent's two radial Ø2.529 holes as the recognizer now reports them: M3 tap drills, through the turning axis.
+    const tappedCross = SHAFT.map((f) => (f.variant === 'cross' && f.params?.diameter_mm === 2.529
+      ? { ...f, params: { ...f.params, spec: 'M3×0.5', detection: 'geometry_heuristic' } } : f));
+    expect(tappedHolesOfFeatures(tappedCross, noOccurrences)).toEqual([
+      { size: 'M3×0.5', count: 1, depthMm: 4.518, isThrough: false, occurrences: [], liveCount: 1 },
+      { size: 'M3×0.5', count: 1, depthMm: 3.516, isThrough: false, occurrences: [], liveCount: 1 },
+      { size: 'M2×0.4', count: 2, depthMm: 5.012, isThrough: false, occurrences: [], liveCount: 2 },
+    ]);
+    // A cross hole with no thread found is drilled only.
+    expect(tappedHolesOfFeatures(SHAFT, noOccurrences).map((t) => t.size)).toEqual(['M2×0.4']);
+  });
+
   it('a threaded hole on the centreline is tapped from an end slide, one off it with a live tool', () => {
     const threaded = (distance: number): MachiningFeatureLike => ({ type: 'SimpleHole', variant: 'threaded', params: { spec: 'M5x0.8', depth_mm: 8, distance_from_axis_mm: distance, through: false } });
     expect(tappedHolesOfFeatures([threaded(0.002), threaded(6)], noOccurrences).map((t) => t.liveCount)).toEqual([0, 1]);

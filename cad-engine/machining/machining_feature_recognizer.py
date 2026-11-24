@@ -414,6 +414,16 @@ class MachiningFeatureRecognizer:
                     "centroid": centroid,
                 }
                 _annotate_hole_depth(cross_params, diameter_mm, cyl["length"])
+                # A cross hole is drilled and tapped like a bore: at a tap-drill size, round all the way, it is a tapped hole (an M3 at
+                # Ø2.5 across a shaft). It stays a cross hole, which a lathe drills and taps radially with a live tool; the thread is a param.
+                _, cross_tap_spec, cross_helicoil = _classify_hole(
+                    diameter_mm, through=True, full_turn=cyl.get("u_range", 2.0 * math.pi) >= HOLE_MIN_SWEEP_RAD,
+                )
+                if cross_tap_spec:
+                    cross_params["spec"] = cross_tap_spec
+                    cross_params["detection"] = "geometry_heuristic"
+                    if cross_helicoil:
+                        cross_params["helicoil_candidate"] = True
                 features.append(MachiningFeature(
                     id=fid,
                     type="SimpleHole",
@@ -470,6 +480,14 @@ class MachiningFeatureRecognizer:
                 pcd_face_ids = list(set(
                     fid for gid in group_ids for fid in cross_face_ids_map.get(gid, [])
                 ))
+                # Tapped as its members are, as an axial bolt circle carries it (above): when every member hole is tapped to one size.
+                cross_specs = [f.params.get("spec") for f in group]
+                cross_tap: Dict = (
+                    {"tap_spec": cross_specs[0], "hole_type": "tapped"}
+                    if cross_specs[0] and all(sp == cross_specs[0] for sp in cross_specs) else {}
+                )
+                if cross_tap and any(f.params.get("helicoil_candidate") for f in group):
+                    cross_tap["helicoil_candidate"] = True
                 features.append(MachiningFeature(
                     id=f"pcd_{pcd_feature_idx}",
                     type="SimpleHole",
@@ -482,6 +500,7 @@ class MachiningFeatureRecognizer:
                         # The members' depth, as an axial bolt circle carries it (_detect_pcd_from_axial_bores): the member holes are
                         # absorbed into the pattern, so without it costing would have no depth to drill them to.
                         "depth_mm": round(sum(f.params["depth_mm"] for f in group) / len(group), 3),
+                        **cross_tap,
                     },
                     confidence=0.82,
                     children=group_ids,
@@ -1821,7 +1840,8 @@ def build_machining_feature_graph_v2(
             buckets[(ftype, variant, round(diam / 0.1) * 0.1)].append({
                 **base,
                 "depth_mm": depth,
-                "tapped": variant == "threaded",
+                # A threaded hole, or a cross hole the tap-drill check found tapped (its thread is a param; it stays a cross hole).
+                "tapped": variant == "threaded" or bool(variant == "cross" and p.get("spec")),
                 "spec": p.get("spec"),
                 "material_removed_mm3": round(math.pi * (diam / 2) ** 2 * depth, 2) if depth else 0.0,
             })
@@ -1856,6 +1876,8 @@ def build_machining_feature_graph_v2(
                 "depth_mm": p.get("depth_mm", 0.0) or 0.0,
                 "hole_count": p.get("hole_count", 1),
                 "pcd_mm": p.get("pcd_mm"),
+                "tapped": p.get("hole_type") == "tapped",
+                "spec": p.get("tap_spec"),
                 "material_removed_mm3": 0.0,
             })
 
@@ -1923,6 +1945,8 @@ def build_machining_feature_graph_v2(
                 occ_entry["depth_mm"] = round(depth, 3)
                 occ_entry["hole_count"] = occ["hole_count"]
                 occ_entry["pcd_mm"] = occ["pcd_mm"]
+                occ_entry["tapped"] = occ["tapped"]
+                occ_entry["spec"] = occ["spec"]
             elif shape == _STEPPED:
                 occ_entry["steps"] = occ["steps"]
                 occ_entry["step_count"] = occ["step_count"]
