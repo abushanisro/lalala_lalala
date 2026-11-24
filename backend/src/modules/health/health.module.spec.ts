@@ -3,14 +3,12 @@ import { Test } from '@nestjs/testing';
 
 import { AuditModule } from '../../common/audit/audit.module';
 import { StorageModule } from '../../common/storage/storage.module';
-import { ElectronicsQueueHealthIndicator } from '../electronics-costing/infrastructure/queue/queue.health';
 import { HealthController } from './health.controller';
 import { HealthModule } from './health.module';
 
-// The real module graph: HealthModule imports ElectronicsCostingModule for its queue probe, and that probe must
-// resolve the queue provider the electronics module owns. No database is contacted (providers are only constructed).
+// The real module graph: the controller resolves with every indicator it probes. No database is contacted (providers are only constructed).
 describe('HealthModule wiring', () => {
-  it('resolves the controller with the electronics queue indicator from the real module graph', async () => {
+  it('resolves the controller from the real module graph', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -27,7 +25,6 @@ describe('HealthModule wiring', () => {
               AUTH0_DOMAIN: 'tenant.example.auth0.com',
               AUTH0_AUDIENCE: 'https://api.example.com',
               AUTH0_CLAIM_NAMESPACE: 'https://example.com/',
-              ELECTRONICS_QUEUE_DRIVER: 'memory',
             }),
           ],
         }),
@@ -38,8 +35,6 @@ describe('HealthModule wiring', () => {
     }).compile();
 
     expect(moduleRef.get(HealthController)).toBeDefined();
-    const indicator = moduleRef.get(ElectronicsQueueHealthIndicator, { strict: false });
-    await expect(indicator.check('electronics_queue')).resolves.toEqual({ electronics_queue: { status: 'up', configured: true } });
     await moduleRef.close();
   });
 });

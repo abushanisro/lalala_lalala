@@ -6,10 +6,9 @@ import { DatabaseHealthIndicator } from './indicators/database.health';
 import { CastingWorkerHealthIndicator } from './indicators/casting-worker.health';
 import { EngineHealthIndicator } from './indicators/engine.health';
 import { DatabaseModule } from '../../common/database/database.module';
-import { ElectronicsCostingModule } from '../electronics-costing/electronics-costing.module';
 
 @Module({
-  imports: [TerminusModule, HttpModule, DatabaseModule, ElectronicsCostingModule],
+  imports: [TerminusModule, HttpModule, DatabaseModule],
   controllers: [HealthController],
   providers: [DatabaseHealthIndicator, EngineHealthIndicator, CastingWorkerHealthIndicator],
 })

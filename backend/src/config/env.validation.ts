@@ -202,12 +202,6 @@ class EnvironmentVariables {
   @IsIn(['python', 'rust'])
   CAD_CORE: string = 'python';
 
-  // Electronics costing job queue. 'table' is the job_queue table (migration 920); 'memory' is for local development only.
-  @IsString()
-  @IsOptional()
-  @IsIn(['table', 'memory'])
-  ELECTRONICS_QUEUE_DRIVER: string = 'table';
-
   // The one upload limit in megabytes (see common/upload-limits.ts).
   @IsNumber()
   @IsOptional()
@@ -300,15 +294,6 @@ export function validate(config: Record<string, unknown>) {
       throw new Error(
         'SECURITY ERROR: ALLOW_DEV_AUTH_BYPASS must not be true in production — it turns a missing or ' +
         'invalid token into a signed-in admin. Remove it from the production environment configuration.'
-      );
-    }
-
-    // The in-memory queue runs jobs inside one process: they are lost on restart and a second backend instance never
-    // sees them. Production uses the job_queue table, so it survives restarts and scales out.
-    if (validatedConfig.ELECTRONICS_QUEUE_DRIVER === 'memory') {
-      throw new Error(
-        'CONFIGURATION ERROR: ELECTRONICS_QUEUE_DRIVER=memory is for local development only. In production set ' +
-        'ELECTRONICS_QUEUE_DRIVER=table (the default).'
       );
     }
 

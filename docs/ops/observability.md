@@ -62,14 +62,14 @@ Same contract as the backend: off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set (a
 - **Engine (FastAPI):** `cad-engine/shared/telemetry.py`. It continues the backend's `traceparent`, names the server span by route pattern, skips `/health` and `/ready`, and adds one stage span plus a duration metric around the heavy steps: `step_load`, `geometry_analysis`, `component_features` (the 30-70 s adjacency walk), and for board files `extract_board`, `render_board`. A stage's outcome is `ok`, `error`, or `rejected` (a deterministic refusal such as an unreadable STEP file or a bad board set, not shown as an error). Spans pass through the same allow-list (no URL, query, header, filename, exception message or stack; a span that cannot be sanitised is dropped). Metric labels: stage and outcome, plus HTTP method and status. Logs gain `trace_id` / `span_id` only inside a trace.
 - **cad-engine `GET /ready`** (new): 200, or 503 with reason codes (`temp_dir_not_writable`, `api_key_not_configured` in production). The backend's readiness probes it instead of `/health`, so **deploy cad-engine before the backend**.
 - **Jobs (job queue):** `TracedJobQueue` wraps whichever queue adapter is configured (no adapter or use case changed). The producer's `traceparent` rides in the job payload as `__traceparent` (a trace id and span id, no customer data) and is stripped before any handler sees the payload; each worker attempt is a `job.<queue>` span that continues the producer's trace, with `emithran.job.duration` (queue, outcome) and a `emithran.job.queue.depth` gauge read at collection time (2 s bound per queue). A failing depth read is skipped; note an OpenTelemetry cumulative gauge keeps the last value of a series it stops observing, so use the readiness probe, not the gauge, to detect an unreachable queue.
-- **Readiness** now also probes the electronics queue (`electronics_queue`; `configured: false` when no backend is set up).
+- **Readiness** probed the electronics queue (`electronics_queue`) until the Electronics module was removed (2026-11-24).
 
 ### Health endpoints
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/health` | Unchanged (still the stub the compose healthcheck uses). |
 | `GET /api/health/live` | Process only, depends on nothing. Use for restart decisions. Railway's check stays `/ping`. |
-| `GET /api/health/ready` | Database (one minimal query, 2 s bound), cad-engine (`/ready`), electronics queue. 503 with a per-dependency reason code (`unreachable`, `timeout`, `http_<status>`, `query_failed`) and no addresses or driver messages. An unconfigured engine or queue reports `configured: false` and does not fail readiness. **Alerting only: do not wire it to restart or traffic removal.** |
+| `GET /api/health/ready` | Database (one minimal query, 2 s bound), cad-engine (`/ready`), casting worker. 503 with a per-dependency reason code (`unreachable`, `timeout`, `http_<status>`, `query_failed`) and no addresses or driver messages. An unconfigured engine reports `configured: false` and does not fail readiness. **Alerting only: do not wire it to restart or traffic removal.** |
 
 `/api/health/ready` is public and does real work per call (a database query, two engine probes, a queue read); it is covered by the global rate limit.
 

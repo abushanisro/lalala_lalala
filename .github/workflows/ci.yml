@@ -124,9 +124,6 @@ jobs:
       - name: RLS boundary and secret check
         run: npm run check:rls
 
-      - name: Electronics domain import boundary
-        run: npm run lint:electronics-boundary
-
       - name: Electronics memory data format
         run: npm run check:electronics-memory
 

@@ -160,7 +160,7 @@ export function recordPrivilegedClientCall(site: string): void {
 const DEPTH_READ_TIMEOUT_MS = 2_000;
 
 // The gauge and its callback are registered once per process. Each queue name has one reader (the last registered wins for
-// that name), so several producers (electronics jobs, CAD uploads) can report through the same gauge.
+// that name), so several producers (CAD uploads, and any other job producer) can report through the same gauge.
 const depthReaders = new Map<string, (queue: string) => Promise<number | null>>();
 
 /**

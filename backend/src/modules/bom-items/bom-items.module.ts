@@ -88,7 +88,7 @@ import { SandSnapshotReviewController, SandSnapshotsController } from './sand-sn
 import { PcbBoardAnalysisService } from './costing/pcb/board-graph/pcb-board-analysis.service';
 import { PcbCostService } from './costing/pcb/pcb-cost.service';
 // The board client lives in the electronics module until that module is retired (the PCB plan's last step); it holds no state of its own.
-import { BoardExtractionClient } from '../electronics-costing/infrastructure/cad-engine/board-extraction.client';
+import { BoardExtractionClient } from './costing/pcb/board-graph/board-extraction.client';
 
 @Module({
   imports: [DatabaseModule, LoggerModule, ConfigModule, ManufacturingKnowledgeModule, ManufacturingRulesModule, ExchangeRateModule, MHRModule, SandCastingModule, RawMaterialsModule, ToolingCostsModule],

@@ -41,7 +41,6 @@ import { CopilotModule } from './modules/copilot/copilot.module';
 import { ManufacturingKnowledgeModule } from './modules/manufacturing-knowledge/manufacturing-knowledge.module';
 import { CostingModule } from './modules/costing/costing.module';
 import { ManufacturingRulesModule } from './modules/manufacturing-rules/manufacturing-rules.module';
-import { ElectronicsCostingModule } from './modules/electronics-costing/electronics-costing.module';
 import { FxModule } from './common/fx/fx.module';
 import { LoggerModule } from './common/logger/logger.module';
 import { DatabaseService } from './common/database/database.service';
@@ -109,7 +108,6 @@ import { AppController } from './app.controller';
     ManufacturingKnowledgeModule,
     CostingModule,
     ManufacturingRulesModule,
-    ElectronicsCostingModule,
     FxModule,
     SessionModule,
     AuthModule,

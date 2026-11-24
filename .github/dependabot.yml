@@ -53,7 +53,7 @@ updates:
       # catch and json()). Adopting it is a deliberate migration, not a weekly bump.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
-      # ESLint 10 removed FlatESLint, which the electronics import-boundary check (lint-electronics-boundary, its spec) constructs.
+      # ESLint 10 is a major: the flat config and its plugins move together, a deliberate upgrade, not a weekly bump.
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
       # jose 6 is ESM-only and dropped the KeyLike type: the backend (CommonJS) and Jest cannot load the token verifier.

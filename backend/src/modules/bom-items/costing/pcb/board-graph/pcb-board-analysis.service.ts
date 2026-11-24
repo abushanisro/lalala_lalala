@@ -3,7 +3,7 @@ import { BadRequestException, Injectable, Logger, ServiceUnavailableException, U
 import { BOARD_ARCHIVE_LIMITS, boardSetFiles, entriesOf, MAX_BOARD_FILES } from './board-files';
 import { PCB_GEOMETRY_VERSION, type PcbGeometrySummary } from './pcb-geometry';
 import { expandArchiveInWorker, withHeavyWorkSlot } from '../../../../../common/heavy-work/heavy-work';
-import { BoardExtractionClient, ExtractionRejected, ExtractionUnavailable } from '../../../../electronics-costing/infrastructure/cad-engine/board-extraction.client';
+import { BoardExtractionClient, ExtractionRejected, ExtractionUnavailable } from './board-extraction.client';
 
 export { PCB_GEOMETRY_VERSION, type PcbGeometrySummary } from './pcb-geometry';
 

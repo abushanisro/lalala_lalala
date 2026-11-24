@@ -7,7 +7,6 @@ import { WATERJET_REFERENCE_MACHINE, waterjetSpeedFactor } from '../src/modules/
 
 jest.setTimeout(120_000);
 
-process.env.ELECTRONICS_QUEUE_DRIVER = 'memory'; // no queue polling in a read-only spec
 
 describe('[e2e] waterjet speed factor', () => {
   let moduleRef: TestingModule;

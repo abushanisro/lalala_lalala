@@ -1,6 +1,6 @@
 """Python side of the feature-graph contract: the schemas under pcb/contract/schemas are the single source of truth.
 
-The backend copies them into TypeScript (npm run electronics:sync-contract) and its test fails when the copy is stale.
+The backend stores the board feature graph cad-engine returns as it is (costing/pcb/board-graph/pcb-geometry.ts): these schemas are its contract.
 No example documents are bundled: graphs come from real uploads.
 """
 import json

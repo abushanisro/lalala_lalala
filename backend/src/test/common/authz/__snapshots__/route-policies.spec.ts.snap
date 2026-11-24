@@ -19,8 +19,6 @@ org:admin       DELETE /api/v1/calculators/:id/formulas/:formulaId  CalculatorsC
 org:member      DELETE /api/v1/child-part-costs/:id  ChildPartCostController.remove
 org:member      DELETE /api/v1/copilot/memory  CopilotController.clearMemory
 org:member      DELETE /api/v1/copilot/memory/preferences  CopilotController.deleteMemoryItem
-org:member      DELETE /api/v1/electronic-designs/:designId  ElectronicsController.deleteDesign
-org:member      DELETE /api/v1/electronic-designs/:designId/revisions/:revisionId  ElectronicsController.deleteRevision
 org:admin       DELETE /api/v1/labour-rates  LHRController.removeAll
 org:admin       DELETE /api/v1/labour-rates/:id  LHRController.remove
 org:admin       DELETE /api/v1/machine-rates  MHRController.removeAll
@@ -135,17 +133,6 @@ org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId  CostAnalysisContr
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/excel  CostAnalysisController.downloadBomItemExcel
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/location-comparison  CostAnalysisController.getLocationComparison
 org:viewer      GET /api/v1/currencies  FxController.listCurrencies
-org:viewer      GET /api/v1/electronic-coverage-reports  ElectronicsController.coverage
-org:viewer      GET /api/v1/electronic-designs  ElectronicsController.listDesigns
-org:viewer      GET /api/v1/electronic-designs/:designId  ElectronicsController.getDesign
-org:viewer      GET /api/v1/electronic-file-formats  ElectronicsController.formats
-org:viewer      GET /api/v1/electronic-jobs/:jobId  ElectronicsController.job
-org:viewer      GET /api/v1/electronic-results/:resultId  ElectronicsController.result
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/features  ElectronicsController.features
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/latest-result  ElectronicsController.latestResult
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/preview  ElectronicsController.preview
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/scenario-options  ElectronicsController.scenarioOptions
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/thumbnail  ElectronicsController.thumbnail
 org:viewer      GET /api/v1/exchange-rates  FxController.listExchangeRates
 org:viewer      GET /api/v1/exchange-rates/effective  FxController.getRate
 org:viewer      GET /api/v1/factories  FxController.listFactories
@@ -342,10 +329,6 @@ org:member      POST /api/v1/child-part-costs  ChildPartCostController.create
 org:member      POST /api/v1/child-part-costs/calculations  ChildPartCostController.calculateOnly
 org:member      POST /api/v1/copilot/chat  CopilotController.chat
 org:member      POST /api/v1/copilot/memory-proposals/:id/confirm  CopilotController.confirmMemoryProposal
-org:member      POST /api/v1/electronic-designs  ElectronicsController.createDesign
-org:member      POST /api/v1/electronic-quotes  ElectronicsController.quote
-org:member      POST /api/v1/electronic-uploads  ElectronicsController.upload
-org:member      POST /api/v1/electronic-uploads/:uploadId/reparse  ElectronicsController.reparseUpload
 platform_admin  POST /api/v1/exchange-rates/refresh  FxController.refresh
 org:member      POST /api/v1/feature-process-mappings  ManufacturingKnowledgeController.createFeatureProcessMapping
 org:admin       POST /api/v1/labour-rates  LHRController.create

@@ -6,7 +6,6 @@ import { ProcessesService } from '../src/modules/processes/processes.service';
 
 jest.setTimeout(120_000);
 
-process.env.ELECTRONICS_QUEUE_DRIVER = 'memory'; // no queue polling in a read-only spec
 
 describe('[e2e] Turret Press reference tables', () => {
   let moduleRef: TestingModule;

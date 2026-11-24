@@ -136,7 +136,7 @@ services:
       # Requests one organization may make per ORG_THROTTLE_TTL ms, across all its users and routes.
       ORG_THROTTLE_LIMIT: ${ORG_THROTTLE_LIMIT:-3000}
       ORG_THROTTLE_TTL: ${ORG_THROTTLE_TTL:-60000}
-      # Parse limits (backend/src/common/resource-limits.ts): what a CAD or electronics .zip may expand to, and how many workbook/archive
+      # Parse limits (backend/src/common/resource-limits.ts): what a CAD or circuit board .zip may expand to, and how many workbook/archive
       # parses run at once per process and per organization. Raise only together with the memory limit below.
       ARCHIVE_MAX_EXPANDED_MB: ${ARCHIVE_MAX_EXPANDED_MB:-256}
       HEAVY_WORK_MAX_CONCURRENT: ${HEAVY_WORK_MAX_CONCURRENT:-2}

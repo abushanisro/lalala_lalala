@@ -21,9 +21,9 @@ BEGIN
   ASSERT NOT has_function_privilege('anon', 'public.get_project_cost_analysis(uuid)', 'EXECUTE'), 'anon cannot run the cost analysis';
   ASSERT has_function_privilege('authenticated', 'public.get_project_cost_analysis(uuid)', 'EXECUTE'), 'signed-in users still can';
   ASSERT has_function_privilege('service_role', 'public.get_project_cost_analysis(uuid)', 'EXECUTE'), 'the backend still can';
-  ASSERT NOT has_function_privilege('anon', 'public.claim_next_job(text, integer)', 'EXECUTE'), 'other functions are closed too';
-  ASSERT NOT has_function_privilege('authenticated', 'public.claim_next_job(text, integer)', 'EXECUTE'), 'a service-role-only function does not become callable by signed-in users';
-  ASSERT has_function_privilege('service_role', 'public.claim_next_job(text, integer)', 'EXECUTE'), 'and the backend keeps it';
+  ASSERT NOT has_function_privilege('anon', 'public.prune_old_rows()', 'EXECUTE'), 'other functions are closed too';
+  ASSERT NOT has_function_privilege('authenticated', 'public.prune_old_rows()', 'EXECUTE'), 'a service-role-only function does not become callable by signed-in users';
+  ASSERT has_function_privilege('service_role', 'public.prune_old_rows()', 'EXECUTE'), 'and the backend keeps it';
   -- DB-RLS-01: no API role may write memberships, even with the permissive policy that used to exist
   ASSERT NOT has_table_privilege('authenticated', 'public.organization_members', 'INSERT'), 'no insert grant';
   ASSERT NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'organization_members' AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')), 'no write policy';

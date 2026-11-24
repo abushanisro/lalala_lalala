@@ -9,8 +9,6 @@ import { TerminusModule } from '@nestjs/terminus';
 import request from 'supertest';
 
 import { DatabaseService } from '../../common/database/database.service';
-import { ELECTRONICS_JOB_QUEUE, type QueueHealth } from '../electronics-costing/infrastructure/queue/job-queue.port';
-import { ElectronicsQueueHealthIndicator } from '../electronics-costing/infrastructure/queue/queue.health';
 import { HealthController } from './health.controller';
 import { CastingWorkerHealthIndicator } from './indicators/casting-worker.health';
 import { EngineHealthIndicator } from './indicators/engine.health';
@@ -56,7 +54,6 @@ describe('HealthController: liveness and readiness', () => {
   // Everything a test may change before boot(). Reset for each test.
   let database: ReturnType<typeof databaseReturning>;
   let cadConfigured: boolean;
-  let queueHealth: QueueHealth;
 
   const server = () => app!.getHttpServer();
 
@@ -77,9 +74,7 @@ describe('HealthController: liveness and readiness', () => {
         DatabaseHealthIndicator,
         EngineHealthIndicator,
         CastingWorkerHealthIndicator,
-        ElectronicsQueueHealthIndicator,
         { provide: DatabaseService, useValue: database },
-        { provide: ELECTRONICS_JOB_QUEUE, useValue: { health: async () => queueHealth } },
       ],
     }).compile();
     app = moduleRef.createNestApplication();
@@ -99,7 +94,6 @@ describe('HealthController: liveness and readiness', () => {
     cad.paths = [];
     cadConfigured = true;
     database = databaseReturning(null);
-    queueHealth = { configured: true, ready: true };
   });
   afterEach(async () => {
     await app?.close();
@@ -116,7 +110,6 @@ describe('HealthController: liveness and readiness', () => {
     it('stays 200 while readiness is failing (an outage must not restart a healthy process)', async () => {
       database = databaseReturning({ message: 'connection refused' });
       cad.behaviour = 'http503';
-      queueHealth = { configured: true, ready: false };
       await boot();
 
       await request(server()).get('/api/health/ready').expect(503);
@@ -125,14 +118,13 @@ describe('HealthController: liveness and readiness', () => {
   });
 
   describe('GET /api/health/ready', () => {
-    it('is 200 when the database, the CAD engine and the queue answer', async () => {
+    it('is 200 when the database and the CAD engine answer', async () => {
       await boot();
       const res = await request(server()).get('/api/health/ready').expect(200);
       expect(res.body.status).toBe('ok');
       expect(res.body.info).toMatchObject({
         database: { status: 'up' },
         cad_engine: { status: 'up' },
-        electronics_queue: { status: 'up' },
       });
     });
 
@@ -182,13 +174,6 @@ describe('HealthController: liveness and readiness', () => {
       expect(res.body.error.database).toMatchObject({ status: 'down', reason: 'query_failed' });
     });
 
-    it('is 503 and names electronics_queue when a configured queue does not answer', async () => {
-      queueHealth = { configured: true, ready: false };
-      await boot();
-      const res = await request(server()).get('/api/health/ready').expect(503);
-      expect(res.body.error.electronics_queue).toMatchObject({ status: 'down', configured: true, reason: 'unreachable' });
-      expect(res.body.info.database.status).toBe('up');
-    });
 
     it('does not fail readiness for an engine with no URL configured, and says so', async () => {
       cadConfigured = false;
@@ -197,17 +182,10 @@ describe('HealthController: liveness and readiness', () => {
       expect(res.body.info.cad_engine).toEqual({ status: 'up', configured: false });
     });
 
-    it('does not fail readiness for a queue with no backend configured, and says so', async () => {
-      queueHealth = { configured: false, ready: false };
-      await boot();
-      const res = await request(server()).get('/api/health/ready').expect(200);
-      expect(res.body.info.electronics_queue).toEqual({ status: 'up', configured: false });
-    });
 
     it('never reveals an engine address or a driver error message in the public response', async () => {
       cad.behaviour = 'http503';
       database = databaseReturning({ message: 'password authentication failed for user "postgres" at 10.0.0.5' });
-      queueHealth = { configured: true, ready: false };
       await boot();
       const res = await request(server()).get('/api/health/ready').expect(503);
       const body = JSON.stringify(res.body);
@@ -218,7 +196,6 @@ describe('HealthController: liveness and readiness', () => {
   describe('GET /api/health (existing contract, unchanged)', () => {
     it('still answers 200 with the database indicator and ignores dependency state', async () => {
       cad.behaviour = 'http503';
-      queueHealth = { configured: true, ready: false };
       await boot();
       const res = await request(server()).get('/api/health').expect(200);
       expect(res.body).toMatchObject({ status: 'ok', info: { database: { status: 'up' } } });

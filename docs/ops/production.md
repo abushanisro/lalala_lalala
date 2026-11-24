@@ -7,7 +7,7 @@ Written 2026-11-12 from what is running. It holds no secrets, only where each on
 | Piece | Where | Cost |
 |---|---|---|
 | Web tier: Postgres, PostgREST, backend, frontend, tunnel connector | Oracle `emithran-micro-1` (Always Free x86, 1 GB, 1/8 core), 129.154.34.103 | $0 |
-| CAD + electronics engines (private network, no route out) | Oracle `emithran-micro-2`, 129.225.127.106 | $0 |
+| CAD engine, board files included (private network, no route out) | Oracle `emithran-micro-2`, 129.225.127.106 | $0 |
 | Public address `app.emithran.com` | Cloudflare tunnel `emithran-prod` (connector on micro-1); TLS, caching, rate limits at Cloudflare | $0 |
 | Sign-in | Auth0 tenant `dev-ahu0oilgxwkz8hhf` (custom domain `auth.emithran.com`), app "EMITHRAN Cloud"; sign-ups OFF; email+password only | $0 |
 | Files (CAD uploads) | Cloudflare R2 bucket `emithran-prod` (private) | $0 under 10 GB |

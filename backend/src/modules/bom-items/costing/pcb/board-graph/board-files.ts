@@ -5,12 +5,12 @@
 import JSZip from 'jszip';
 
 import { RESOURCE_LIMITS } from '../../../../../common/resource-limits';
-import { validateDesignFile } from '../../../../electronics-costing/application/validate-design-file';
-import { FILE_ROLES } from '../../../../electronics-costing/domain/lookups/file-roles.generated';
-import { MAX_UPLOAD_BYTES, validateUpload } from '../../../../electronics-costing/domain/uploads/validate-upload';
+import { validateDesignFile } from './validate-design-file';
+import { FILE_ROLES } from './lookups/file-roles.generated';
+import { MAX_UPLOAD_BYTES, validateUpload } from './validate-upload';
 
 import type { ArchiveLimits, ArchiveEntry } from '../../../../../common/archive/expand-archive';
-import type { EngineFile } from '../../../../electronics-costing/infrastructure/cad-engine/board-extraction.client';
+import type { EngineFile } from './board-extraction.client';
 
 /** Files a board set may send the engine (it refuses more: cad-engine MAX_BOARD_FILES). */
 export const MAX_BOARD_FILES = 40;

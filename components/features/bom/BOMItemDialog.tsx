@@ -54,12 +54,10 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { apiClient } from '@/lib/api/client';
 import { createBOMItem, updateBOMItem, analyzeForAutoFill, measureForAutoFill, type AutoFillResponse } from '@/lib/api/hooks/useBOMItems';
-import { useFileFormats } from '@/lib/api/hooks/useElectronics';
 import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculatorMappings';
 import type { DrawingAnalysisResult } from '@/lib/api/vave';
 import { beginProtectedJob } from '@/lib/auth/session-idle/protected-jobs';
-import { describeRejection } from '@/lib/electronics/rejections';
-import { BOARD_SET_ACCEPT, isBoardSetFile } from '@/lib/features/board-files';
+import { BOARD_SET_ACCEPT, describeRejection, isBoardSetFile } from '@/lib/features/board-files';
 import { familyToProcessGroupLabel, processGroupOptionLabel, processGroupOptionsFrom, processGroupToFamilyHint, processesForMaterialGroups } from '@/lib/features/process-group';
 import { BOMItemType, ITEM_TYPE_LABELS } from '@/lib/types/bom.types';
 import { cn } from '@/lib/utils';
@@ -300,8 +298,6 @@ interface BOMItemDialogProps {
   parentItemId?: string | null;
   defaultItemType?: BOMItemType;
   getAutoParent?: (type: BOMItemType) => string | null;
-  /** The Electronics module of this BOM's project. Board files point there; absent, the dialog only says it cannot read them. */
-  electronicsHref?: string;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -365,7 +361,6 @@ export function BOMItemDialog({
   parentItemId,
   defaultItemType,
   getAutoParent,
-  electronicsHref
 }: BOMItemDialogProps) {
   const queryClient = useQueryClient();
 
@@ -1030,21 +1025,14 @@ export function BOMItemDialog({
     });
   }, [activeFileId, populateFormFromResult]);
 
-  // react-dropzone drops files of other types silently, which looked like "no file found". Name them, and when they are
-  // board files (Gerber, drill, Pick Place: types from the electronics file-role table) say where they belong.
-  const { data: boardFormats } = useFileFormats();
+  // react-dropzone drops files of other types silently, which looked like "no file found": name them and say what the form takes.
   const handleFileRejected = useCallback((rejections: FileRejection[]) => {
     const message = describeRejection(
       rejections.map((r) => ({ name: r.file.name, tooLarge: r.errors.some((e) => e.code === 'file-too-large') })),
-      new Set(boardFormats?.boardFiles.map((r) => r.extension) ?? []),
       100,
     );
-    toast.error(message.title, {
-      description: message.description,
-      duration: message.boardFiles ? 12000 : 10000,
-      ...(message.boardFiles && electronicsHref ? { action: { label: 'Open Electronics', onClick: () => window.location.assign(electronicsHref) } } : {}),
-    });
-  }, [boardFormats, electronicsHref]);
+    toast.error(message.title, { description: message.description, duration: 10000 });
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: handleFileDrop,
