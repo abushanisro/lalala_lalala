@@ -62,8 +62,14 @@ describe('the stock around a part', () => {
   it('a plain block cut from a larger piece: all of the difference', () => {
     // A 50 x 30 x 15 block (22 500 mm^3) from a 60 x 40 x 20 piece (48 000 mm^3), no feature: 48 000 - 22 500 = 25 500 mm^3.
     expect(stockExcess({ pieceMm3: 60 * 40 * 20, partMm3: 50 * 30 * 15, featureRemovedMm3: 0 })).toEqual({
-      pieceMm3: 48000, partMm3: 22500, featureRemovedMm3: 0, excessMm3: 25500, inconsistent: false,
+      pieceMm3: 48000, partMm3: 22500, featureRemovedMm3: 0, facedMm3: 0, excessMm3: 25500, inconsistent: false,
     });
+  });
+
+  it('what Facing takes off the piece\'s top and bottom is not milled again in bulk', () => {
+    // The same 60 x 40 x 20 piece and 50 x 30 x 15 block: Facing takes 60 x 40 x (20 - 15) = 12 000 mm^3 off its faces, the bulk the
+    // other 25 500 - 12 000 = 13 500 mm^3 round its sides and ends.
+    expect(stockExcess({ pieceMm3: 48000, partMm3: 22500, featureRemovedMm3: 0, facedMm3: 60 * 40 * 5 })).toMatchObject({ facedMm3: 12000, excessMm3: 13500, inconsistent: false });
   });
 
   it('a part with pockets and holes: the difference less what their own operations remove', () => {
@@ -104,7 +110,7 @@ describe('the stock around a part', () => {
   it('features stated to remove more than the stock holds: nothing to mill in bulk, never a negative volume, and the volumes contradict', () => {
     // 16 000 - 10 000 - 6450 = -450 mm^3.
     expect(stockExcess({ pieceMm3: 16000, partMm3: 10000, featureRemovedMm3: 6450 })).toEqual({
-      pieceMm3: 16000, partMm3: 10000, featureRemovedMm3: 6450, excessMm3: 0, inconsistent: true,
+      pieceMm3: 16000, partMm3: 10000, featureRemovedMm3: 6450, facedMm3: 0, excessMm3: 0, inconsistent: true,
     });
   });
 

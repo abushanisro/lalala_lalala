@@ -138,12 +138,12 @@ describe('the perimeter cut in the mill\'s sequence', () => {
   it('takes its place among the operations, with its own time and steps', () => {
     const op = cutOf();
     const ops = sequence([op]);
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Fine Finish Milling', 'Perimeter Milling', 'Deburr']);
+    expect(ops.map((o) => o.name)).toEqual(['Fine Finish Milling', 'Perimeter Milling', 'Deburr']);
     expect(ops.find((o) => o.name === 'Perimeter Milling')).toBe(op);
   });
 
   it('is absent from a sequence with no stock operation: the sequence is what it was', () => {
     expect(sequence([])).toEqual(sequence(undefined));
-    expect(sequence(undefined).map((o) => o.name)).toEqual(['Facing', 'Fine Finish Milling', 'Deburr']);
+    expect(sequence(undefined).map((o) => o.name)).toEqual(['Fine Finish Milling', 'Deburr']);
   });
 });

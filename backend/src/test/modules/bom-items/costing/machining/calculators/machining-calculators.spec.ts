@@ -204,6 +204,71 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(part(40).sec).toBe(10);
   });
 
+  it('the named milling operations follow the workbook (1140); Bulk Milling keeps the Rough Milling fields 1031 shipped it with', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1140_machining_milling_named_ops_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1140, spec));
+    // Rough Milling is now the End Milling sheet; Bulk Milling (the stock around the part) is still the removed volume at the removal rate.
+    expect(calcs['Bulk Milling']?.fields.map((f) => f.field_name)).toEqual(['Removed Volume', 'Material Removal Rate', 'Roughing Share', 'Finishing Rate Factor', 'Cycle Time']);
+    expect(calcs['Rough Milling']?.fields.map((f) => f.field_name)).toContain('Width Passes');
+  });
+
+  it('Facing reproduces the workbook\'s Face Milling sheet, in whole passes: 4 x 5 passes, 21.99 min (the sheet: 3.62 x 5, 19.91 min)', () => {
+    // D 60, 6 teeth, 40 m/min, 0.1 mm/tooth, 240 x 100 face, 10 mm deep at 2 mm a pass: n = 212.21 rpm; width passes ceil((240 - 30) / 58) =
+    // 4, depth passes 5; (100 + 10 + 30) / (0.1 x 6 x 212.21) x 4 x 5 = 21.9911 min -> 1320 s.
+    const run = sheet('Facing', {
+      'Face Length': 100, 'Face Width': 240, 'Stock Depth': 10, 'Faces': 1, 'Cutter Diameter': 60, 'Teeth': 6,
+      'Speed Min': 40, 'Speed Max': 40, 'Feed per Tooth Min': 0.1, 'Feed per Tooth Max': 0.1, 'Depth of Cut': 2,
+    });
+    expect([run.value('Width Passes'), run.value('Depth Passes')]).toEqual([4, 5]);
+    expect(run.value('Machining Time')).toBeCloseTo(21.9911, 4);
+    expect(run.sec).toBe(1320);
+  });
+
+  it('Rough Milling reproduces the workbook\'s End Milling sheet, in whole passes: 32.99 min (the sheet: 29.87 min on 3.62 width passes)', () => {
+    // D 60, 4 teeth, 40 m/min, 0.1 mm/tooth, 240 x 100 x 10 at 2 mm a pass: the sheet's stepover D - 2 = 58; 4 x 5 passes;
+    // (100 + 10 + 30) / (0.1 x 4 x 212.21) x 20 = 32.9867 min -> 1980 s.
+    const run = sheet('Rough Milling', {
+      'Cut Length': 100, 'Cut Width': 240, 'Cut Depth': 10, 'Cuts': 1, 'Cutter Diameter': 60, 'Teeth': 4,
+      'Speed Min': 40, 'Speed Max': 40, 'Feed per Tooth Min': 0.1, 'Feed per Tooth Max': 0.1, 'Depth of Cut': 2, 'Tool Price': 1337.5, 'Tool Life': 1000,
+    });
+    expect([run.value('Stepover'), run.value('Width Passes'), run.value('Depth Passes')]).toEqual([58, 4, 5]);
+    expect(run.value('Machining Time')).toBeCloseTo(32.9867, 4);
+    expect(run.sec).toBe(1980);
+    expect(run.value('Tool Cost per Part')).toBeCloseTo(1.3375, 4);
+  });
+
+  it('the End Milling stepover is never less than half the cutter: a 3 mm cutter steps 1.5 mm, not D - 2 = 1 mm', () => {
+    const run = sheet('Rough Milling', {
+      'Cut Length': 20, 'Cut Width': 10, 'Cut Depth': 2, 'Cuts': 1, 'Cutter Diameter': 3, 'Teeth': 2,
+      'Speed Min': 100, 'Speed Max': 100, 'Feed per Tooth Min': 0.05, 'Feed per Tooth Max': 0.05, 'Depth of Cut': 2, 'Tool Price': 1337.5, 'Tool Life': 1000,
+    });
+    // ceil((10 - 1.5) / 1.5) = 6 width passes.
+    expect([run.value('Stepover'), run.value('Width Passes')]).toEqual([1.5, 6]);
+  });
+
+  it('Slot Milling reproduces the workbook\'s Slot Milling sheet: 0.35814 min, 22 s (the sheet: 0.35828 min, 22 s)', () => {
+    // 16 x 12 x 6.5 with a 12 mm 4-tooth cutter, 50 m/min, 0.02 mm/tooth, the whole depth in one pass (the sheet cuts 6.5 mm a pass: any
+    // ratio from 6.5 / 12 up does); n = 1326.29 rpm; (16 + 10 + 12) / (0.02 x 4 x 1326.29) = 0.35814 min = 21.49 s -> 22 s.
+    const run = sheet('Slot Milling', {
+      'Slot Length': 16, 'Slot Width': 12, 'Slot Depth': 6.5, 'Slots': 1, 'Cutter Diameter': 12, 'Teeth': 4,
+      'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.02, 'Feed per Tooth Max': 0.02, 'Slotting Depth Ratio': 0.55, 'Tool Price': 1337.5, 'Tool Life': 1000,
+    });
+    expect([run.value('Depth Passes'), run.value('Width Passes')]).toEqual([1, 1]);
+    expect(run.value('Machining Time')).toBeCloseTo(0.3581, 4);
+    expect(run.sec).toBe(22);
+  });
+
+  it('Plunge Milling, corrected: plunges half a cutter apart along the slot (the sheet copies Slot Milling on 3.7 x 3.142 x 10 mm)', () => {
+    // The sheet's 116.254 mm x 10 x 5 deep, a 10 mm 4-tooth cutter, 50 m/min, 0.05 mm/tooth: ceil(116.254 / 5) = 24 plunges, each
+    // (5 + 10) / (0.05 x 4 x 1591.55) = 0.047124 min; 1.13097 min = 67.86 s -> 68 s. (The sheet: 129 s, the slot formula over 5 passes.)
+    const run = sheet('Plunge Milling', {
+      'Slot Length': 116.254, 'Slot Width': 10, 'Slot Depth': 5, 'Slots': 1, 'Cutter Diameter': 10, 'Teeth': 4,
+      'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.05, 'Feed per Tooth Max': 0.05, 'Tool Price': 1337.5, 'Tool Life': 1000,
+    });
+    expect([run.value('Plunges'), run.value('Width Passes')]).toEqual([24, 1]);
+    expect(run.value('Machining Time')).toBeCloseTo(1.131, 3);
+    expect(run.sec).toBe(68);
+  });
+
   it('hole making follows the workbook (1139); Drill Press copies the 1139 Drilling, and what 804 and 1030 shipped is kept', () => {
     expect(readFileSync(join(ROOT, 'migrations/1139_machining_hole_making_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1139, spec));
     expect(calcs['Drill Press']?.fields).toEqual(calcs['Drilling']?.fields);

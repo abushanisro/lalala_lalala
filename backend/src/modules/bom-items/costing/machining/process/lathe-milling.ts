@@ -2,8 +2,8 @@
 //
 // The turning engine turns the part's diameters, drills its holes and taps its threads. A keyway, a slot or a flat it can only mill, with a
 // driven tool (capability/live-tooling.ts: which features, and which lathes have the tool). The operations and their times are the operation
-// sequencer's (operation-sequencer.ts), the ones a mill is priced on: "Obround Slot Milling" of a keyway, "Rough Milling" of the volume a
-// slot or a flat removes and "Slot Milling" of each slot, each timed by its own stored calculator from the feature's CAD measurements. On a lathe
+// sequencer's (operation-sequencer.ts), the ones a mill is priced on: "Obround Slot Milling" of a keyway, "Slot Milling" of a slot (or
+// plunged, when quicker) and "Rough Milling" of a flat, each timed by its own stored calculator from the feature's CAD measurements. On a lathe
 // each operation name is one line: its sequenced operations summed, each one a row of the line naming the features it mills, for the
 // Process tree to list and light.
 import { sumRuns } from './machining-trace';
@@ -28,6 +28,8 @@ export interface LatheMillingLine {
   run: CalcRun;
   /** Each sequenced operation that has a time: the features it mills. */
   rows: FeatureOp[];
+  /** The tool wear its timed operations charge per part (Tool Cost per Part, rupees: the workbook's end mill price over its life). */
+  toolCostInr: number;
 }
 
 /** The calculator run that timed a sequenced operation; one the sequencer could not time has no time and names what it lacks. */
@@ -73,6 +75,7 @@ export function latheMillingLines(ops: readonly LatheMillingOp[] | null | undefi
           ...(op.featureIds?.length ? { featureIds: [...op.featureIds] } : {}),
         }];
       }),
+      toolCostInr: group.filter((op) => !op.missing).reduce((t, op) => t + (op.toolCostInr ?? 0), 0),
     };
   }).filter((line) => (line.run.sec ?? 0) > 0 || line.run.missing.length > 0);
 }

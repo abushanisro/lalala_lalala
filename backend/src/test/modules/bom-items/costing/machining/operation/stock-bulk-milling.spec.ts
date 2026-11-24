@@ -4,7 +4,7 @@
 //
 // The plan of a milled route now has one more operation, "Bulk Milling" of the stock excess (stock-excess.ts):
 //
-//   stock excess = piece volume - part volume - volume the part's features remove
+//   stock excess = piece volume - part volume - volume the part's features remove - volume faced off the piece
 //
 // timed by the stored calculator "Machining - Bulk Milling" (the fields of Rough Milling):
 //
@@ -28,6 +28,7 @@ import { realPartoffTable } from '../real-reference-tables';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { FeatureOp } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
 import { workbookFixture } from '../workbook-fixture';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
 const CALCS = specAsCalculators();
 const ALUMINIUM: MillingFinishingRow = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
@@ -63,9 +64,9 @@ describe('the sequencer mills away the stock around the part', () => {
     expect(AROUND.excessMm3).toBeCloseTo(PIECE_MM3 - 76 * 46 * 21, 6);
   });
 
-  it('as one Bulk Milling operation after Facing, timed by the stored calculator on that volume at the material\'s removal rate', () => {
+  it('as one Bulk Milling operation before the features, timed by the stored calculator on that volume at the material\'s removal rate', () => {
     const ops = sequence(FEATURES, AROUND);
-    expect(ops.slice(0, 2).map((o) => o.name)).toEqual(['Facing', 'Bulk Milling']);
+    expect(ops[0]!.name).toBe('Bulk Milling');
     expect(ops[ops.length - 1]!.name).toBe('Deburr');
     const bulk = named(ops, 'Bulk Milling');
     expect(bulk).toHaveLength(1);
@@ -91,8 +92,23 @@ describe('the sequencer mills away the stock around the part', () => {
     const without = sequence(FEATURES, null);
     expect(named(without, 'Bulk Milling')).toEqual([]);
     expect(sequence(FEATURES, AROUND).filter((o) => o.name !== 'Bulk Milling')).toEqual(without);
-    // The pockets are still roughed on their own volume: 4500 x 1.3 / 1000 = 5.85 s.
-    expect(named(without, 'Rough Milling')[0]!.timeSec).toBeCloseTo(5.85, 6);
+    // The pockets are roughed by their own runs of the workbook's End Milling sheet, one per pocket size, not on their volume.
+    expect(named(without, 'Rough Milling').map((o) => [o.plan?.[0]?.operation, o.count])).toEqual([['Rough Milling', 1], ['Rough Milling', 1]]);
+  });
+
+  it('what Facing takes off the piece\'s top and bottom is faced, and only the rest is bulk milled', () => {
+    // The 80 x 50 x 25 piece round the 76 x 46 x 21 part: Facing takes 80 x 50 x (25 - 21) = 16 000 mm^3 off its top and bottom (2 mm
+    // each), Bulk Milling the other 26 584 - 16 000 = 10 584 mm^3; x 1.3 / 1000 = 13.7592 s.
+    const facing = { faces: 2, lengthMm: 80, widthMm: 50, depthMm: 2, volumeMm3: 16000, basis: 'the 80 x 50 x 25 mm test piece' };
+    const faced = stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(FEATURES), facedMm3: facing.volumeMm3 });
+    expect(faced.excessMm3).toBeCloseTo(10584, 6);
+    const ops = buildOperationSequence(FEATURES, {
+      matClass: 'aluminum', machinabilityFactor: 1, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: 60000,
+      finishing: ALUMINIUM, stockAround: faced, facing,
+    });
+    expect(ops.slice(0, 2).map((o) => o.name)).toEqual(['Facing', 'Bulk Milling']);
+    expect(named(ops, 'Bulk Milling')[0]!.timeSec).toBeCloseTo(13.7592, 6);
+    expect(named(ops, 'Facing')[0]!.plan).toEqual([expect.objectContaining({ operation: 'Facing' })]);
   });
 
   it('the removal rate carries the material\'s machinability, as the roughing of a pocket does', () => {
@@ -171,12 +187,13 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
 
   it('counts toward the station calculator\'s Rough Milling Time, with the roughing of the pockets', () => {
     expect(line.calculatorId).toBe('Machining - Milling');
-    // 34.5592 s of bulk milling + 5.85 s of pocket roughing.
+    // 34.5592 s of bulk milling + 8 s of pocket roughing on the 8000 rpm mill: aluminium 0.15 mm/tooth x 3 teeth x 8000 rpm = 3600 mm/min;
+    // the 30 x 20 x 5 pocket 2 width x 3 depth passes of 45 mm (4.5 s -> 5 s), the 30 x 10 x 5 one 1 x 3 (2.25 s -> 3 s).
     expect(input('Rough Milling Time')).toMatchObject({
-      value: 40.4092, source: 'CAD features: Bulk Milling, Rough Milling (operation sequence)',
+      value: 42.5592, source: 'CAD features: Bulk Milling, Rough Milling (operation sequence)',
       ref: { kind: 'features', label: 'Rough Milling Time', features: [{ featureId: 'PocketV2-default_c2' }] },
     });
-    expect(without.calculationTrace!.find((s) => s.fieldName === 'Rough Milling Time')).toMatchObject({ value: 5.85, source: 'CAD features: Rough Milling (operation sequence)' });
+    expect(without.calculationTrace!.find((s) => s.fieldName === 'Rough Milling Time')).toMatchObject({ value: 8, source: 'CAD features: Rough Milling (operation sequence)' });
     // No other group moved.
     for (const field of ['Facing Time', 'Finish Milling Time', 'Contouring Time', 'Slot and Groove Milling Time', 'Hole Making Time', 'Edge Treatment Time', 'Other Operations Time']) {
       expect(input(field).value).toBe(without.calculationTrace!.find((s) => s.fieldName === field)!.value);
@@ -203,19 +220,18 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
     expect(without.calculationTrace!.some((s) => s.fieldName.startsWith('Bulk Milling ·'))).toBe(false);
   });
 
-  it('is a row of the line\'s feature breakdown, after Facing: named, timed, and tied to no feature', () => {
+  it('is a row of the line\'s feature breakdown, first: named, timed, and tied to no feature', () => {
     const warnings: string[] = [];
     const breakdown = (BomItemCostingService.prototype as unknown as {
       buildMachiningFeatureBreakdown(ops: OperationLine[], machineClass: string, categories: Record<string, string[]> | null, warnings: string[]): FeatureOp[];
     }).buildMachiningFeatureBreakdown;
     // The mills' operation categories name it (memory/Machining operations: "3 Axis Mill:Bulk Milling"): the name is confirmed, with no warning.
-    const rows = breakdown(sequence(FEATURES, AROUND), '3_axis_mill', { '3_axis_mill': ['Facing', 'Bulk Milling', 'Rough Milling', 'Fine Finish Milling', 'Center Drilling', 'Drilling'] }, warnings);
-    expect(rows.slice(0, 2)).toEqual([
-      { name: 'Facing', timeSec: 45, featureType: '', count: 1 },
-      { name: 'Bulk Milling', timeSec: 35, featureType: '', count: 1 },
-    ]);
+    // The plan timed on the 8000 rpm mill, as the route times it.
+    const timed = timeOperations(sequence(FEATURES, AROUND), CALCS, { 'Max Spindle Speed': { value: 8000, source: 'Machine: test mill' } });
+    const rows = breakdown(timed, '3_axis_mill', { '3_axis_mill': ['Facing', 'Bulk Milling', 'Rough Milling', 'Fine Finish Milling', 'Center Drilling', 'Drilling'] }, warnings);
+    expect(rows[0]).toEqual({ name: 'Bulk Milling', timeSec: 35, featureType: '', count: 1 });
     expect(warnings).toEqual([]);
-    expect(rows.find((r) => r.name.startsWith('Rough Milling'))).toMatchObject({ timeSec: 6, featureIds: ['PocketV2-default_c2'] });
+    expect(rows.filter((r) => r.name.startsWith('Rough Milling')).map((r) => [r.timeSec, r.featureIds])).toEqual([[8, ['PocketV2-default_c2']]]);
   });
 
   it('that could not be timed makes the mill line a named gap: the route is not fully costed', () => {

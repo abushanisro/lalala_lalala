@@ -502,11 +502,11 @@ export function computeDrillCycle(
   /** The machine the holes are drilled on (its spindle limit); none when they are planned before the machine is chosen. */
   machine: Record<string, CalcSeed> = {},
 ): DrillCycle {
-  return holeCycle('Drilling', workbook, calculators, detectMaterialClass(materialGrade ?? null), holeSeeds(diameterMm, depthMm, holes, occurrences), machine);
+  return workbookCycle('Drilling', workbook, calculators, detectMaterialClass(materialGrade ?? null), holeSeeds(diameterMm, depthMm, holes, occurrences), machine);
 }
 
-/** A hole-making calculator run (Drilling, Reaming, Step Drilling, Boring) on the workbook's data for the material, planned and run. */
-export function holeCycle(
+/** A workbook-form calculator run (hole making: Drilling, Reaming, Step Drilling, Boring; milling: Facing, Rough, Slot and Plunge Milling) on the workbook's data for the material, planned and run. */
+export function workbookCycle(
   operation: string, workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined,
   matClass: MaterialClass, seeds: Record<string, CalcSeed>, machine: Record<string, CalcSeed>,
 ): DrillCycle {
@@ -541,7 +541,7 @@ export function computeBoreCycle(
     'Bores': withRef({ value: bores, source: 'CAD: holes of this diameter' }),
     ...(lengthMm != null && lengthMm > 0 ? { 'Bore Length': withRef({ value: lengthMm, source: 'CAD: hole depth' }) } : {}),
   };
-  return holeCycle(operation, workbook, calculators, matClass, seeds, machine);
+  return workbookCycle(operation, workbook, calculators, matClass, seeds, machine);
 }
 
 /** A planned run's result as a hole cycle: its time, steps, missing inputs and calculator, with the plan to time it again. */
@@ -688,7 +688,7 @@ function computeReamingLine(
   location?: string | null,
 ): ProcessLineCost {
   const g = smallestGroup(holeGroups);
-  const run = holeCycle('Reaming', workbook, calculators, matClass, holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), spindleLimitSeed(rate, location));
+  const run = workbookCycle('Reaming', workbook, calculators, matClass, holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), spindleLimitSeed(rate, location));
   const gap = run.missing;
   if (gap.length > 0) warnings.push(`Reaming not priced — missing real input: ${gap.join('; ')}.`);
   const min = (run.sec ?? 0) / 60;
@@ -1470,7 +1470,7 @@ export function computeTapCycle(
   }
   if (thread.depthMm != null && thread.depthMm > 0) seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
   if (pitchMm == null) return none([`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`]);
-  return holeCycle('Tapping', workbook, calculators, matClass, seeds, machine);
+  return workbookCycle('Tapping', workbook, calculators, matClass, seeds, machine);
 }
 
 /** Tapping time for every thread on the part: one calculator run per thread-size group. */
@@ -2355,8 +2355,8 @@ export function computeTurningCostSummary(
 
   // ── Live-tool milling ─────────────────────────────────────────────────────
   // The part's keyways that are not broached, its slots and its flats: each
-  // sequenced operation ("Obround Slot Milling" of a keyway; "Rough Milling"
-  // and "Slot Milling" of a slot; "Rough Milling" of a flat) is a line of the
+  // sequenced operation ("Obround Slot Milling" of a keyway; "Slot Milling"
+  // of a slot; "Rough Milling" of a flat) is a line of the
   // lathe, timed by that operation's own calculator, with the features it
   // mills as its rows (lathe-milling.ts).
   // Whether this lathe has the live tool for them is the route's capability
@@ -2368,7 +2368,9 @@ export function computeTurningCostSummary(
     : input.latheMilling;
   for (const milling of latheMillingLines(latheMilled)) {
     if (milling.run.missing.length > 0) warnings.push(`${milling.operation} not priced — missing real input: ${milling.run.missing.join('; ')}.`);
-    processLines.push(withFeatureGroups(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), milling.rows));
+    // The end mills' wear (the workbook's price over life), on the line as the mill line charges it.
+    const milled = withToolCost(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), { outputs: { 'Tool Cost per Part': milling.toolCostInr } }, input.workbook, warnings);
+    processLines.push(withFeatureGroups(milled, milling.rows));
   }
 
   // ── Tapping ───────────────────────────────────────────────────────────────

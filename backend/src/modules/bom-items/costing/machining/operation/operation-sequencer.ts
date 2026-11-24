@@ -64,11 +64,12 @@
  * section (unrelated to this routing engine) — not part of this backlog.
  */
 
-import { computeBoreCycle, computeDrillCycle, computeTapCycle, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass, holeCycle, largestDrillMm, type MachiningWorkbookInput } from '../process/cost-machining-engine';
+import { computeBoreCycle, computeDrillCycle, computeTapCycle, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass, workbookCycle, largestDrillMm, type MachiningWorkbookInput } from '../process/cost-machining-engine';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { isTurnedDiameter, type StockExcess } from './stock-excess';
+import type { StockFacing } from '../../stock/stock-facing';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
 // (computeDrillCycle / computeTapCycle)
@@ -150,6 +151,60 @@ function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketF
     groups.set(toolMm, g);
   }
   return [...groups.values()].sort((a, b) => b.toolMm - a.toolMm);
+}
+
+/** The end mill a cut takes: the material's own, or the cut's width when walls on both sides confine it to less (an open step does not). */
+function cutterFor(widthMm: number, confined: boolean, standardToolMm: number): number {
+  return confined ? Math.max(0.1, Math.min(standardToolMm, Math.floor(widthMm * 10) / 10)) : standardToolMm;
+}
+
+/** Cuts of one size, roughed or slotted alike by one cutter. */
+interface CutGroup { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; toolMm: number; cuts: number }
+
+/**
+ * A feature's occurrences by size and cutter: those of one length, width, depth and cutter are cut alike (the workbook's End, Slot and
+ * Plunge Milling sheets time one cut and multiply it by the uses). `size` reads an occurrence's CAD length, width and depth; null = an
+ * occurrence lacks one, and the whole feature is a named gap, never priced on the others alone.
+ */
+function cutGroups(
+  occurrences: any[],
+  size: (o: any) => { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; confined: boolean } | null,
+  standardToolMm: number,
+): CutGroup[] | null {
+  const groups = new Map<string, CutGroup>();
+  for (const o of occurrences) {
+    const z = size(o);
+    if (!z || !(z.lengthMm > 0 && z.widthMm > 0 && z.depthMm > 0)) return null;
+    const toolMm = cutterFor(z.widthMm, z.confined, standardToolMm);
+    const key = `${z.lengthMm}|${z.widthMm}|${z.depthMm}|${toolMm}`;
+    const g = groups.get(key) ?? { lengthMm: z.lengthMm, widthMm: z.widthMm, depthMm: z.depthMm, depthSource: z.depthSource, toolMm, cuts: 0 };
+    g.cuts += 1;
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * A pocket's or a slot's size: its floor's CAD box (extents_mm, longest first) and its measured depth (an analysis from before that
+ * measurement: the removed volume over the floor's length x width).
+ */
+function floorSize(o: any): { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; confined: boolean } | null {
+  const [lengthMm, widthMm] = (Array.isArray(o.extents_mm) ? o.extents_mm.map(Number) : []).sort((a: number, b: number) => b - a);
+  if (!(lengthMm > 0 && widthMm > 0)) return null;
+  const measured = Number(o.depth_mm) > 0;
+  const depthMm = measured ? Number(o.depth_mm) : Number(o.material_removed_mm3 ?? 0) / (lengthMm * widthMm);
+  return {
+    lengthMm, widthMm, depthMm, confined: o.width_confined !== false,
+    depthSource: measured ? 'CAD: depth' : 'CAD: removed volume over the floor length x width (no measured depth)',
+  };
+}
+
+/** A flat's size: the CAD length along the turned diameter, its chord width and its depth below the diameter. Open: nothing confines the cutter. */
+function flatSize(o: any): { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; confined: boolean } | null {
+  const lengthMm = Number(o.length_mm);
+  const widthMm = Number(o.width_mm);
+  const depthMm = Number(o.depth_mm);
+  return lengthMm > 0 && widthMm > 0 && depthMm > 0 ? { lengthMm, widthMm, depthMm, depthSource: 'CAD: depth below the diameter', confined: false } : null;
 }
 
 /** A value of a material class's tblMillingFinishing row, as a calculator input that names the table, the row and the column. */
@@ -337,18 +392,19 @@ export interface SequenceOptions {
   finishing?: MillingFinishingRow | null;
   stockAround?: StockExcess | null;
   stockOps?: readonly OperationLine[];
+  /** On a milled route, what the mill faces off the stock piece (stock/stock-facing.ts). Null/absent: nothing is faced (no stock chosen, a lathe's plan). */
+  facing?: StockFacing | null;
 }
 
 export function buildOperationSequence(fgv2Features: unknown[] | null | undefined, options: SequenceOptions): OperationLine[] {
   const {
     matClass, machinabilityFactor = 1.0, materialGrade = null, chamferLinearSpeedMmPerSec = null, roundingLinearSpeedMmPerSec = null,
-    workbook = null, calculators = null, removalRateMm3PerMin = null, finishing = null, stockAround = null, stockOps = [],
+    workbook = null, calculators = null, removalRateMm3PerMin = null, finishing = null, stockAround = null, stockOps = [], facing = null,
   } = options;
   if (!Array.isArray(fgv2Features) || fgv2Features.length === 0) return [];
 
   const ops: OperationLine[] = [];
 
-  // Face mill is always first — part has to be squared before any features
   // The inputs every volume- or area-based milling calculator shares, and the per-operation calls.
   const mrrSeed: Record<string, CalcSeed> = removalRateMm3PerMin != null && removalRateMm3PerMin > 0 ? {
     'Material Removal Rate': {
@@ -398,6 +454,54 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     'Keyways': { value: g.keyways, source: 'CAD: keyways of this size' },
     ...cutterRun(),
   });
+  // A workbook-form milling run (the Face, End, Slot and Plunge Milling sheets): its speeds and feeds from the workbook's milling
+  // conditions for the material, planned before any machine is chosen (each route times it again on its own machine).
+  const workbookOp = (operation: string, seeds: Record<string, CalcSeed>): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cycle = workbookCycle(operation, workbook, calculators, matClass, seeds, {});
+    return {
+      timeSec: cycle.sec ?? 0, trace: cycle.trace,
+      ...(cycle.plan ? { plan: [cycle.plan] } : {}),
+      ...(cycle.calculatorId ? { calculator: { id: cycle.calculatorId, version: cycle.calculatorVersion, lookups: cycle.lookups } } : {}),
+      ...(cycle.sec == null ? { missing: cycle.missing.join('; ') } : {}),
+    };
+  };
+  // The end mill a cut is made with, and its teeth: the material's own (tblMillingFinishing), or one as wide as the cut.
+  const noEndMill = `the material's end mill (tblMillingFinishing has no row for ${matClass})`;
+  const endMillSeeds = (toolMm: number, narrower: string): Record<string, CalcSeed> | null => finishing ? {
+    'Cutter Diameter': toolMm === finishing.toolDiameterMm ? finishingTableSeed(matClass, toolMm, 'ToolDiameterMm') : { value: toolMm, source: narrower },
+    'Teeth': finishingTableSeed(matClass, finishing.teeth, 'Teeth'),
+  } : null;
+  // A pocket or a flat roughed with an end mill (the workbook's End Milling sheet), one run per size.
+  const roughOp = (g: CutGroup, what: string): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cutter = endMillSeeds(g.toolMm, `CAD: ${what} width ${g.toolMm} mm, narrower than the material's end mill`);
+    if (!cutter) return { timeSec: 0, missing: noEndMill };
+    return workbookOp('Rough Milling', {
+      'Cut Length': { value: g.lengthMm, source: `CAD: ${what} length` },
+      'Cut Width': { value: g.widthMm, source: `CAD: ${what} width` },
+      'Cut Depth': { value: g.depthMm, source: g.depthSource },
+      'Cuts': { value: g.cuts, source: `CAD: ${what}s of this size` },
+      ...cutter,
+    });
+  };
+  // A slot (the catalog's Slot Milling) cut by the workbook's Slot Milling sheet or by plunging (its Plunge Milling sheet, corrected),
+  // whichever is quicker: plunging wins on a deep slot. Both run the same cutter at the same speed, so a route machine's spindle limit
+  // scales them alike and the quicker one stays the quicker on every machine.
+  const slotOp = (g: CutGroup): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cutter = endMillSeeds(g.toolMm, `CAD: slot width ${g.toolMm} mm, narrower than the material's end mill`);
+    if (!cutter) return { timeSec: 0, missing: noEndMill };
+    const seeds: Record<string, CalcSeed> = {
+      'Slot Length': { value: g.lengthMm, source: 'CAD: slot length' },
+      'Slot Width': { value: g.widthMm, source: 'CAD: slot width' },
+      'Slot Depth': { value: g.depthMm, source: g.depthSource },
+      'Slots': { value: g.cuts, source: 'CAD: slots of this size' },
+      ...cutter,
+    };
+    // Compared before any machine is chosen, with no spindle limit: the limit would slow both alike.
+    const uncapped = { 'Max Spindle Speed': { value: 1e12, source: 'No machine yet: Slot and Plunge Milling compared with no spindle limit' } };
+    const slotted = workbookCycle('Slot Milling', workbook, calculators, matClass, seeds, uncapped).sec;
+    const plunged = workbookCycle('Plunge Milling', workbook, calculators, matClass, seeds, uncapped).sec;
+    return workbookOp(plunged != null && (slotted == null || plunged < slotted) ? 'Plunge Milling' : 'Slot Milling', seeds);
+  };
   const countOp = (operation: string, field: string, n: number) => calcOp(calculators, operation, { [field]: { value: n, source: 'CAD: feature count' } });
   // A counterbore, drilled with a step drill to its diameter and depth (no CAD depth: the drilling depth rule's, stated).
   const stepOp = (diamMm: number, depthMm: number, n: number) => {
@@ -407,7 +511,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     const seeds: Record<string, CalcSeed> = {
       'Step Diameter': { value: diamMm, source: 'CAD: counterbore diameter' }, 'Step Depth': depth, 'Holes': { value: n, source: 'CAD: counterbores' },
     };
-    const cycle = holeCycle('Step Drilling', workbook, calculators, matClass, seeds, {});
+    const cycle = workbookCycle('Step Drilling', workbook, calculators, matClass, seeds, {});
     const plan = cycle.plan ? { plan: [cycle.plan] } : {};
     return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, trace: cycle.trace, ...plan };
   };
@@ -430,7 +534,21 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     });
   };
 
-  ops.push({ name: "Facing", ...calcOp(calculators, 'Facing', {}), source: "fixed" });
+  // The piece's faces, faced down to the part before any feature is cut (the workbook's Face Milling sheet). The stock model states the
+  // faces and the stock on them; a piece with none (no stock chosen, a lathe's plan) is not faced.
+  if (facing) {
+    const from = `Stock: ${facing.basis}`;
+    ops.push({
+      name: "Facing",
+      ...workbookOp('Facing', {
+        'Face Length': { value: facing.lengthMm, source: from },
+        'Face Width': { value: facing.widthMm, source: from },
+        'Stock Depth': { value: facing.depthMm, source: from },
+        'Faces': { value: facing.faces, source: from },
+      }),
+      source: "fixed", count: facing.faces,
+    });
+  }
 
   // The stock around the part: no operation on a feature below removes it, so it is milled away in bulk, at the material's removal rate.
   if (stockAround && stockAround.excessMm3 > 0) {
@@ -492,9 +610,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
     switch (`${ft}:${variant}`) {
       case "PocketV2:default":
-        // "Rough Milling//PocketV2" is the real catalog op; no PocketV2-specific
-        // finish row exists, so the real generic "Fine Finish Milling" is reused.
-        ops.push({ name: "Rough Milling", ...volumeOp('Rough Milling', totalRemovedMm3), source: "feature", cadFeatureType: ft });
+        // "Rough Milling//PocketV2" is the real catalog op, roughed with an end mill (the workbook's End Milling sheet), one run per
+        // pocket size; no PocketV2-specific finish row exists, so the real generic "Fine Finish Milling" is reused.
+        {
+          const rough = cutGroups(occurrences, floorSize, standardToolMm);
+          if (!rough) ops.push({ name: "Rough Milling", timeSec: 0, missing: 'the CAD length, width and depth of every pocket', source: "feature", cadFeatureType: ft });
+          for (const g of rough ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'pocket'), source: "feature", cadFeatureType: ft, count: g.cuts });
+        }
         {
           // One finishing line per cutter the pockets need; a pocket with no CAD size is a named gap.
           const groups = pocketFinishGroups(occurrences, standardToolMm);
@@ -504,10 +626,14 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         break;
 
       case "Slot:straight":
-      case "Slot:radial":
-        ops.push({ name: "Rough Milling", ...volumeOp('Rough Milling', totalRemovedMm3), source: "feature", cadFeatureType: ft });
-        ops.push({ name: "Slot Milling", ...countOp('Slot Milling', 'Slots', count), source: "feature", cadFeatureType: ft });
+      case "Slot:radial": {
+        // The whole slot is cut by its Slot Milling (or plunged, when that is quicker), one run per slot size: no separate roughing of
+        // its volume. Walls on both sides confine the cutter to the slot's width.
+        const slots = cutGroups(occurrences, (o) => { const z = floorSize(o); return z && { ...z, confined: true }; }, standardToolMm);
+        if (!slots) ops.push({ name: "Slot Milling", timeSec: 0, missing: 'the CAD length, width and depth of every slot', source: "feature", cadFeatureType: ft });
+        for (const g of slots ?? []) ops.push({ name: "Slot Milling", ...slotOp(g), source: "feature", cadFeatureType: ft, count: g.cuts });
         break;
+      }
 
       case "Keyway:default":
         // A keyway no broach in the reference cuts (keyway-routing.ts): the catalog's "Obround Slot Milling//Keyway", one line per
@@ -521,20 +647,18 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         }
         break;
 
-      case "Flat:default":
-        // A flat milled on a turned diameter (cad-engine _classify_turned_flat): the catalog's "Rough Milling//Flat", timed by the
-        // stored Rough Milling calculator on the volume the flat cuts off its round (the circular segment over its length, the CAD
-        // material_removed_mm3), at the material's removal rate: a flat is cut in open material, as a pocket is roughed. The calculator
-        // takes the last share of that volume at the finishing rate; the reference stores no calculator of the catalog's "Surface
-        // Finishing//Flat", so no second pass is added. A flat with no removed volume on file is a named gap, never free.
-        ops.push({
-          name: "Rough Milling",
-          ...(totalRemovedMm3 > 0
-            ? volumeOp('Rough Milling', totalRemovedMm3)
-            : { timeSec: 0, missing: `the CAD volume ${count > 1 ? `${count} flats remove` : 'the flat removes'}` }),
-          source: "feature", cadFeatureType: ft,
-        });
+      case "Flat:default": {
+        // A flat milled on a turned diameter (cad-engine _classify_turned_flat): the catalog's "Rough Milling//Flat", roughed with an
+        // end mill as the workbook's End Milling sheet times it, over the flat's CAD length, chord width and depth below the diameter,
+        // one run per flat size. A flat is open: nothing confines the cutter. The reference stores no calculator of the catalog's
+        // "Surface Finishing//Flat", so no second pass is added. A flat with no CAD size is a named gap, never free.
+        const flats = cutGroups(occurrences, flatSize, standardToolMm);
+        if (!flats) {
+          ops.push({ name: "Rough Milling", timeSec: 0, missing: `the CAD length, width and depth of ${count > 1 ? `${count} flats` : 'the flat'}`, source: "feature", cadFeatureType: ft });
+        }
+        for (const g of flats ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'flat'), source: "feature", cadFeatureType: ft, count: g.cuts });
         break;
+      }
 
       case "SimpleHole:through":
       case "SimpleHole:blind":
