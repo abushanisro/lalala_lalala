@@ -9,6 +9,7 @@ import {
   meetsRequiredMilledClass,
   checkMachiningCapability,
   NO_STOCK_WARNING,
+  largestDrillMm,
   type MachiningCostInput,
   type MachineClassId,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
@@ -214,6 +215,44 @@ describe('computeMillingCostSummary — billet and chip loss', () => {
     );
     const tapping = result.processLines.find((l) => l.process === 'Tapping')!;
     expect(tapping.processGroup).toBeUndefined();
+  });
+});
+
+describe('a milled part with no feature data: faced, bulk milled, drilled and bored, each by its calculator, its steps on the line', () => {
+  // The fixture's 83 x 62 x 32 part (100 000 mm^3) from a 90 x 70 x 40 billet (252 000 mm^3), 4 mm faced off its top and bottom.
+  const facing = { faces: 2, lengthMm: 90, widthMm: 70, depthMm: 4, volumeMm3: 90 * 70 * 8, basis: 'the test billet\'s top and bottom' };
+  const blank = { ...boxBillet(90, 70, 40), facing };
+  const millOf = (over: Partial<MachiningCostInput>) => computeMillingCostSummary(milledInput({ workbook: workbookFixture(), blankResult: blank, ...over }), mc('3_axis_mill'))
+    .processLines.find((l) => l.process === '3 Axis Mill')!;
+  const step = (line: ReturnType<typeof millOf>, name: string) => line.calculationTrace!.find((st) => st.fieldName === name);
+
+  it('faces the billet\'s faces and bulk mills only the rest: 252 000 - 100 000 - 50 400 faced = 101 600 mm^3', () => {
+    const line = millOf({});
+    expect(step(line, 'Facing · Faces')!.value).toBe(2);
+    expect(step(line, 'Facing · Stock Depth')!.source).toBe("Stock: the test billet's top and bottom");
+    expect(step(line, 'Bulk Milling · Removed Volume')!.value).toBe(101600);
+    expect(step(line, 'Drilling · Hole Diameter')).toBeDefined();
+    // The line's time is the sum of its operations' (no flat allowance).
+    const total = step(line, '3 Axis Mill cycle time')!.value as number;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(total, 1);
+    expect(line.physicsGap).toBeUndefined();
+  });
+
+  it('with no facing on the stock, the whole stock-to-part volume is bulk milled, as before', () => {
+    const line = millOf({ blankResult: boxBillet(90, 70, 40) });
+    expect(step(line, 'Facing · Faces')).toBeUndefined();
+    expect(step(line, 'Bulk Milling · Removed Volume')!.value).toBe(152000);
+  });
+
+  it('a hole the drills do not reach is drilled at the largest drill and bored to size, with the tools\' wear on the line', () => {
+    const largest = largestDrillMm(workbookFixture(), 'aluminum')!;
+    const line = millOf({ holeCount: 1, holeGroups: [{ diameter_mm: largest + 20, count: 1, depth_mm: 20 }] });
+    expect(step(line, 'Boring · Initial Diameter')!.value).toBe(largest);
+    expect(step(line, 'Boring · Final Diameter')!.value).toBe(largest + 20);
+    expect(step(line, 'Drilling · Hole Diameter')!.value).toBe(largest);
+    // The drill's and the boring bar's price over their lives.
+    expect(line.otherCostPerPart).toBeGreaterThan(0);
+    expect(line.physicsGap).toBeUndefined();
   });
 });
 
