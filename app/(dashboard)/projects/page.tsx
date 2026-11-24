@@ -1,7 +1,7 @@
 'use client';
 
 import { Country, State, City } from 'country-state-city';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo } from 'react';
@@ -25,14 +25,16 @@ import {
   Pause,
   XCircle,
   Pencil,
-  MoreVertical,
+  Settings,
 } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { TableSkeleton } from '@/components/ui/loading-skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { useProjects, useCreateProject, useUpdateProject, useDeleteProject } from '@/lib/api/hooks/useProjects';
+import { formatProjectMoney, projectCostCurrency, projectSavings } from '@/lib/costing/project-costs';
 import { cn } from '@/lib/utils';
 
 const PROJECT_STATUSES = [
@@ -148,7 +150,7 @@ export default function Projects() {
         <Combobox
           id={`${idPrefix}country`}
           modal
-          className="mt-1"
+          className="mt-2 h-11"
           options={countryOptions}
           value={countryCode}
           onValueChange={handleCountryChange}
@@ -163,7 +165,7 @@ export default function Projects() {
         {countryCode && !statesListed ? (
           <Input
             id={`${idPrefix}state`}
-            className="mt-1"
+            className="mt-2 h-11"
             value={state}
             onChange={(e) => setState(e.target.value)}
             placeholder="Enter state/province"
@@ -172,7 +174,7 @@ export default function Projects() {
           <Combobox
             id={`${idPrefix}state`}
             modal
-            className="mt-1"
+            className="mt-2 h-11"
             options={stateOptions}
             value={stateCode}
             onValueChange={handleStateChange}
@@ -189,7 +191,7 @@ export default function Projects() {
         {(stateCode && !citiesListed) || (countryCode && !statesListed) ? (
           <Input
             id={`${idPrefix}city`}
-            className="mt-1"
+            className="mt-2 h-11"
             value={city}
             onChange={(e) => setCity(e.target.value)}
             placeholder="Enter city"
@@ -198,7 +200,7 @@ export default function Projects() {
           <Combobox
             id={`${idPrefix}city`}
             modal
-            className="mt-1"
+            className="mt-2 h-11"
             options={cityOptions}
             value={city}
             onValueChange={handleCityChange}
@@ -338,6 +340,34 @@ export default function Projects() {
     completed: projects.filter((p) => p.status === 'completed').length,
   };
 
+
+  // Figures for the four summary cards, all read from the loaded project list.
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const withinWeek = (iso?: string) => !!iso && now - new Date(iso).getTime() <= WEEK_MS;
+  const byStatus = (st: string) => projects.filter((p) => p.status === st);
+  const activeProjects = byStatus('active');
+  const draftProjects = byStatus('draft');
+  const pct = (n: number) => (stats.total > 0 ? (n / stats.total) * 100 : 0);
+  const lastActive = activeProjects
+    .map((p) => p.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const cardStats = {
+    newThisWeek: projects.filter((p) => withinWeek(p.createdAt)).length,
+    withBoms: projects.filter((p) => (p.bomCount ?? 0) > 0).length,
+    totalItems: projects.reduce((sum, p) => sum + (p.bomItemCount ?? 0), 0),
+    activeWithBoms: activeProjects.filter((p) => (p.bomCount ?? 0) > 0).length,
+    activeWithTarget: activeProjects.filter((p) => (p.targetBomCost ?? 0) > 0).length,
+    lastActive,
+    draftsModifiedThisWeek: draftProjects.filter((p) => withinWeek(p.updatedAt)).length,
+    draftsBomPending: draftProjects.filter((p) => (p.bomItemCount ?? 0) === 0).length,
+    draftsTargetMissing: draftProjects.filter((p) => !((p.targetBomCost ?? 0) > 0)).length,
+    onHold: byStatus('on_hold').length,
+    cancelled: byStatus('cancelled').length,
+  };
+
   // Project status badge: label + icon, coloured by status. The shared StatusBadge has no entries for
   // project statuses, so they get their own clear styling here; anything else falls back to it.
   const renderStatusBadge = (status: string) => {
@@ -370,89 +400,225 @@ export default function Projects() {
         title="Projects"
         description="Manage manufacturing and costing projects"
       >
-        <Button onClick={() => setCreateOpen(true)} className="gap-2">
+        <Button onClick={() => setCreateOpen(true)} className="gap-2 bg-foreground text-background hover:bg-foreground/90">
           <Plus className="h-4 w-4" />
           New Project
         </Button>
       </PageHeader>
 
-      {/* Projects section */}
-      <Card className="overflow-hidden">
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0 border-b px-6 py-4">
+      {/* Summary cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {/* Total */}
+        <Card className="rounded-xl shadow-sm">
+          <CardContent className="flex h-full flex-col p-5">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-base font-semibold text-foreground">Total Projects</p>
+              <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">All time</span>
+            </div>
+            <div className="mt-2 flex items-end justify-between gap-2">
+              <p className="text-4xl font-bold tabular-nums tracking-tight text-foreground">{stats.total}</p>
+              <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                +{cardStats.newThisWeek} this wk
+              </span>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+              <span>With BOMs: <span className="font-medium tabular-nums text-foreground">{cardStats.withBoms}</span></span>
+              <div className="h-1.5 w-24 shrink-0 rounded-full bg-secondary">
+                <div className="h-1.5 rounded-full bg-foreground/70" style={{ width: `${pct(cardStats.withBoms)}%` }} />
+              </div>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              BOM items: <span className="font-medium tabular-nums text-foreground">{cardStats.totalItems}</span>
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Active */}
+        <Card className="rounded-xl shadow-sm">
+          <CardContent className="flex h-full flex-col p-5">
+            <p className="text-base font-semibold text-foreground">Active Projects</p>
+            <div className="mt-2 flex items-end justify-between gap-2">
+              <p className="text-4xl font-bold tabular-nums tracking-tight text-success">{stats.active}</p>
+              <span className="truncate rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                {cardStats.lastActive
+                  ? `Last active ${formatDistanceToNow(new Date(cardStats.lastActive), { addSuffix: true })}`
+                  : 'No activity yet'}
+              </span>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+              <span><span className="font-medium tabular-nums text-foreground">{stats.active}</span> of {stats.total} in progress</span>
+              <div className="h-1.5 w-24 shrink-0 rounded-full bg-secondary">
+                <div className="h-1.5 rounded-full bg-success" style={{ width: `${pct(stats.active)}%` }} />
+              </div>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              With BOMs: <span className="font-medium tabular-nums text-foreground">{cardStats.activeWithBoms}</span>
+              {' • '}With target: <span className="font-medium tabular-nums text-foreground">{cardStats.activeWithTarget}</span>
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Draft */}
+        <Card className="rounded-xl shadow-sm">
+          <CardContent className="flex h-full flex-col p-5">
+            <p className="text-base font-semibold text-foreground">Draft Projects</p>
+            <div className="mt-2 flex items-end justify-between gap-2">
+              <p className="text-4xl font-bold tabular-nums tracking-tight text-foreground">{stats.draft}</p>
+              <span className="text-xs text-muted-foreground">
+                <span className="font-medium tabular-nums text-foreground">{cardStats.draftsModifiedThisWeek}</span> modified within 7 days
+              </span>
+            </div>
+            <div className="mt-3 flex items-start justify-between gap-3 text-sm">
+              <p className="text-muted-foreground">Needs setup</p>
+              <ul className="w-36 shrink-0 divide-y text-xs">
+                <li className="flex items-center justify-between py-1">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><span className="h-1.5 w-1.5 rounded-full bg-warning" />BOM pending</span>
+                  <span className="font-medium tabular-nums text-foreground">{cardStats.draftsBomPending}</span>
+                </li>
+                <li className="flex items-center justify-between py-1">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />Target missing</span>
+                  <span className="font-medium tabular-nums text-foreground">{cardStats.draftsTargetMissing}</span>
+                </li>
+              </ul>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Completed */}
+        <Card className="rounded-xl shadow-sm">
+          <CardContent className="flex h-full flex-col p-5">
+            <p className="text-base font-semibold text-foreground">Completed Projects</p>
+            <p className="mt-2 text-4xl font-bold tabular-nums tracking-tight text-primary">{stats.completed}</p>
+            <div className="mt-3 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+              <span><span className="font-medium tabular-nums text-foreground">{stats.completed}</span> of {stats.total} finalized</span>
+              <div className="h-1.5 w-24 shrink-0 rounded-full bg-secondary">
+                <div className="h-1.5 rounded-full bg-primary" style={{ width: `${pct(stats.completed)}%` }} />
+              </div>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              On hold: <span className="font-medium tabular-nums text-foreground">{cardStats.onHold}</span>
+              {' • '}Cancelled: <span className="font-medium tabular-nums text-foreground">{cardStats.cancelled}</span>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Projects table */}
+      <Card className="overflow-hidden rounded-xl shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b px-6 py-4">
           <CardTitle className="text-lg font-semibold">All Projects</CardTitle>
-          <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
-            <div className="flex items-baseline gap-1.5">
-              <dd className="font-semibold tabular-nums text-foreground">{stats.total}</dd>
-              <dt>Total</dt>
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <dd className="font-semibold tabular-nums text-success">{stats.active}</dd>
-              <dt>Active</dt>
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <dd className="font-semibold tabular-nums text-foreground">{stats.draft}</dd>
-              <dt>Draft</dt>
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <dd className="font-semibold tabular-nums text-primary">{stats.completed}</dd>
-              <dt>Completed</dt>
-            </div>
-          </dl>
         </CardHeader>
-        <CardContent className="bg-muted/30 p-6">
+        <CardContent className="p-0">
           {isLoading ? (
-            <TableSkeleton rows={5} columns={5} label="Loading projects..." />
+            <div className="p-6">
+              <TableSkeleton rows={5} columns={5} label="Loading projects..." />
+            </div>
           ) : projects.length === 0 ? (
-            <EmptyState
-              icon={FolderKanban}
-              title="No Projects Yet"
-              description="Create your first manufacturing project to start managing BOMs and costs"
-              className="rounded-lg border border-dashed bg-card"
-            >
-              <Button onClick={() => setCreateOpen(true)} size="lg" className="gap-2">
-                <Plus className="h-5 w-5" />
-                Create First Project
-              </Button>
-            </EmptyState>
+            <div className="p-6">
+              <EmptyState
+                icon={FolderKanban}
+                title="No Projects Yet"
+                description="Create your first manufacturing project to start managing BOMs and costs"
+                className="rounded-lg border border-dashed bg-card"
+              >
+                <Button onClick={() => setCreateOpen(true)} size="lg" className="gap-2">
+                  <Plus className="h-5 w-5" />
+                  Create First Project
+                </Button>
+              </EmptyState>
+            </div>
           ) : (
-            <ul className="space-y-4">
-              {projects.map((project) => {
-                const location = [project.city, project.state, project.country].filter(Boolean).join(', ');
-                return (
-                  <li
-                    key={project.id}
-                    className="cursor-pointer rounded-lg border bg-card shadow-xs transition-shadow hover:shadow-sm"
-                    onClick={() => router.push(`/projects/${project.id}`)}
-                  >
-                    {/* Project header */}
-                    <div className="flex items-center gap-3 border-b px-5 py-3.5">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                        <FolderKanban className="h-4 w-4" aria-hidden="true" />
-                      </div>
-                      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableHead className="min-w-64 pl-6">Project</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead data-numeric>BOMs</TableHead>
+                  <TableHead data-numeric>Items</TableHead>
+                  <TableHead data-numeric>Annual Volume</TableHead>
+                  <TableHead data-numeric>Target BOM Cost</TableHead>
+                  <TableHead data-numeric>Actual Cost</TableHead>
+                  <TableHead data-numeric>Savings</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="w-16 pr-6 text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {projects.map((project) => {
+                  const location = [project.city, project.state, project.country].filter(Boolean).join(', ');
+                  const industryLabel = project.industry ? project.industry.replace('-', ' ') : '';
+                  const meta = [industryLabel, location].filter(Boolean).join(' · ');
+                  const saved = projectSavings(project);
+                  const target = project.targetBomCost ?? 0;
+                  return (
+                    <TableRow
+                      key={project.id}
+                      className="cursor-pointer"
+                      onClick={() => router.push(`/projects/${project.id}`)}
+                    >
+                      <TableCell className="max-w-80 py-4 pl-6">
                         <Link
                           href={`/projects/${project.id}`}
                           onClick={(e) => {
                             e.stopPropagation();
                           }}
-                          className="truncate text-base font-semibold text-primary hover:underline"
+                          className="block truncate font-semibold text-foreground hover:text-primary hover:underline"
                         >
                           {project.name}
                         </Link>
                         {project.description && (
-                          <span className="line-clamp-1 text-sm text-muted-foreground">{project.description}</span>
+                          <p className="line-clamp-1 text-sm text-muted-foreground">{project.description}</p>
                         )}
-                      </div>
-                      {renderStatusBadge(project.status)}
-                      <div
+                        <p className="truncate text-xs capitalize text-muted-foreground" title={location}>
+                          {meta || '-'}
+                        </p>
+                      </TableCell>
+                      <TableCell>{renderStatusBadge(project.status)}</TableCell>
+                      <TableCell data-numeric>{project.bomCount ?? 0}</TableCell>
+                      <TableCell data-numeric>{project.bomItemCount ?? 0}</TableCell>
+                      <TableCell data-numeric>
+                        {project.estimatedAnnualVolume
+                          ? Number(project.estimatedAnnualVolume).toLocaleString()
+                          : '-'}
+                      </TableCell>
+                      <TableCell data-numeric>
+                        {project.targetBomCost && project.targetBomCostCurrency ? (
+                          <span className="font-medium">
+                            {`${project.targetBomCostCurrency} ${Number(project.targetBomCost).toLocaleString()}`}
+                          </span>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditOpen(project);
+                            }}
+                          >
+                            Set up
+                          </Button>
+                        )}
+                      </TableCell>
+                      <TableCell data-numeric>
+                        {formatProjectMoney(project.actualCost, projectCostCurrency(project))}
+                      </TableCell>
+                      <TableCell data-numeric className="text-success">
+                        {target > 0 && saved != null ? `${(saved / target * 100).toFixed(1)}%` : '—'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">
+                        {format(new Date(project.createdAt), 'MMM d, yyyy')}
+                      </TableCell>
+                      <TableCell
+                        className="pr-6 text-right"
                         onClick={(e) => {
                           e.stopPropagation();
                         }}
                       >
                         <DropdownMenu modal={false}>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground">
-                              <MoreVertical className="h-4 w-4" />
+                            <Button variant="outline" size="icon" className="h-8 w-8 text-muted-foreground">
+                              <Settings className="h-4 w-4" />
                               <span className="sr-only">Open menu for {project.name}</span>
                             </Button>
                           </DropdownMenuTrigger>
@@ -486,63 +652,12 @@ export default function Projects() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
-                      </div>
-                    </div>
-
-                    {/* Metrics */}
-                    <dl className="grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-4 sm:grid-cols-3 lg:grid-cols-5">
-                      <div className="min-w-0">
-                        <dt className="text-sm text-muted-foreground">Industry</dt>
-                        <dd className="mt-1 truncate text-xl font-semibold capitalize text-foreground">
-                          {project.industry ? project.industry.replace('-', ' ') : '-'}
-                        </dd>
-                      </div>
-                      <div className="min-w-0">
-                        <dt className="text-sm text-muted-foreground">Annual Volume</dt>
-                        <dd className="mt-1 truncate text-2xl font-semibold tabular-nums text-primary">
-                          {project.estimatedAnnualVolume
-                            ? Number(project.estimatedAnnualVolume).toLocaleString()
-                            : '-'}
-                        </dd>
-                      </div>
-                      <div className="min-w-0">
-                        <dt className="text-sm text-muted-foreground">Target BOM Cost</dt>
-                        <dd className="mt-1">
-                          {project.targetBomCost && project.targetBomCostCurrency ? (
-                            <span className="block truncate text-2xl font-semibold tabular-nums text-primary">
-                              {`${project.targetBomCostCurrency} ${Number(project.targetBomCost).toLocaleString()}`}
-                            </span>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditOpen(project);
-                              }}
-                            >
-                              Set up
-                            </Button>
-                          )}
-                        </dd>
-                      </div>
-                      <div className="min-w-0">
-                        <dt className="text-sm text-muted-foreground">Location</dt>
-                        <dd className="mt-1 truncate text-xl font-semibold text-foreground" title={location}>
-                          {location || '-'}
-                        </dd>
-                      </div>
-                      <div className="min-w-0">
-                        <dt className="text-sm text-muted-foreground">Created</dt>
-                        <dd className="mt-1 truncate text-xl font-semibold tabular-nums text-foreground">
-                          {format(new Date(project.createdAt), 'MMM d, yyyy')}
-                        </dd>
-                      </div>
-                    </dl>
-                  </li>
-                );
-              })}
-            </ul>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>
@@ -551,30 +666,30 @@ export default function Projects() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-[800px] max-h-[85vh] p-0 pointer-events-auto">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-border">
-            <DialogTitle className="text-xl font-semibold">Create New Project</DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">
+            <DialogTitle className="text-2xl font-bold tracking-tight">Create New Project</DialogTitle>
+            <DialogDescription className="text-[15px] text-muted-foreground">
               Set up a new manufacturing cost analysis project with all essential details
             </DialogDescription>
           </DialogHeader>
           
-          <div className="flex-1 overflow-y-auto px-6 py-4 max-h-[60vh]">
-            <div className="space-y-6">
+          <div className="flex-1 overflow-y-auto max-h-[60vh]">
+            <div className="divide-y divide-border">
               {/* Project Basic Information */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Project Information</h3>
-                  <p className="text-xs text-muted-foreground">Basic details about your project</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Project Information</h3>
+                  <p className="text-sm text-muted-foreground">Basic details about your project</p>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-x-5 gap-y-5 md:grid-cols-2">
                   <div className="md:col-span-2">
-                    <Label htmlFor="name" className="text-sm font-medium">Project Name *</Label>
+                    <Label htmlFor="name" className="text-sm font-medium">Project Name <span className="text-destructive">*</span></Label>
                     <Input
                       id="name"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       placeholder="e.g., Engine Block Manufacturing"
-                      className="mt-1"
+                      className="mt-2 h-11"
                     />
                   </div>
                   
@@ -585,15 +700,15 @@ export default function Projects() {
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
                       placeholder="Describe the project scope and objectives..."
-                      rows={2}
-                      className="mt-1 resize-none"
+                      rows={4}
+                      className="mt-2"
                     />
                   </div>
                   
                   <div>
                     <Label htmlFor="status" className="text-sm font-medium">Status</Label>
                     <Select value={status} onValueChange={(value: any) => setStatus(value)}>
-                      <SelectTrigger id="status" className="mt-1">
+                      <SelectTrigger id="status" className="mt-2 h-11">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -609,7 +724,7 @@ export default function Projects() {
                   <div>
                     <Label htmlFor="industry" className="text-sm font-medium">Industry</Label>
                     <Select value={industry} onValueChange={setIndustry}>
-                      <SelectTrigger id="industry" className="mt-1">
+                      <SelectTrigger id="industry" className="mt-2 h-11">
                         <SelectValue placeholder="Select industry" />
                       </SelectTrigger>
                       <SelectContent>
@@ -627,13 +742,13 @@ export default function Projects() {
                 </div>
               </div>
               {/* Project Metrics */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Project Metrics</h3>
-                  <p className="text-xs text-muted-foreground">Production volume and cost targets</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Project Metrics</h3>
+                  <p className="text-sm text-muted-foreground">Production volume and cost targets</p>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-x-5 gap-y-5 md:grid-cols-2">
                   <div>
                     <Label htmlFor="estimatedAnnualVolume" className="text-sm font-medium">Estimated Annual Volume</Label>
                     <Input
@@ -644,14 +759,14 @@ export default function Projects() {
                       value={estimatedAnnualVolume}
                       onChange={(e) => setEstimatedAnnualVolume(e.target.value)}
                       placeholder="e.g., 10,000"
-                      className="mt-1"
+                      className="mt-2 h-11 font-mono"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">Units per year</p>
+                    <p className="mt-2 text-sm text-muted-foreground">Units per year</p>
                   </div>
                   
                   <div>
                     <Label htmlFor="targetBomCost" className="text-sm font-medium">Target BOM Cost</Label>
-                    <div className="flex gap-2 mt-1">
+                    <div className="mt-2 flex overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
                       <Input
                         id="targetBomCost"
                         type="number"
@@ -661,10 +776,10 @@ export default function Projects() {
                         value={targetBomCost}
                         onChange={(e) => setTargetBomCost(e.target.value)}
                         placeholder="0.00"
-                        className="flex-1"
+                        className="h-11 flex-1 rounded-none border-0 font-mono shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                       />
                       <Select value={targetBomCostCurrency} onValueChange={setTargetBomCostCurrency}>
-                        <SelectTrigger className="w-20">
+                        <SelectTrigger className="h-11 w-24 rounded-none border-0 border-l border-input bg-muted/50 font-mono shadow-none focus:ring-0 focus:ring-offset-0">
                           <SelectValue placeholder="USD" />
                         </SelectTrigger>
                         <SelectContent>
@@ -675,16 +790,16 @@ export default function Projects() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Per unit cost target</p>
+                    <p className="mt-2 text-sm text-muted-foreground">Per unit cost target</p>
                   </div>
                 </div>
               </div>
 
               {/* Location Information */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Location</h3>
-                  <p className="text-xs text-muted-foreground">Manufacturing location details</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Location</h3>
+                  <p className="text-sm text-muted-foreground">Manufacturing location details</p>
                 </div>
                 
                 {renderLocationFields('')}
@@ -692,10 +807,10 @@ export default function Projects() {
             </div>
           </div>
           
-          <div className="border-t border-border bg-background px-6 py-4">
+          <div className="border-t border-border bg-muted/40 px-6 py-4">
             <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground font-medium">
-                * Required fields
+              <div className="text-sm text-muted-foreground">
+                <span className="text-destructive">*</span> Required fields
               </div>
               <div className="flex items-center gap-3">
                 <Button
@@ -703,7 +818,7 @@ export default function Projects() {
                   variant="outline"
                   onClick={() => setCreateOpen(false)}
                   disabled={createMutation.isPending}
-                  className="h-9 px-4 font-medium border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors select-none"
+                  className="h-10 px-5 font-medium border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors select-none"
                 >
                   Cancel
                 </Button>
@@ -711,11 +826,11 @@ export default function Projects() {
                   type="submit"
                   onClick={handleCreate}
                   disabled={!name || createMutation.isPending}
-                  className="h-9 px-6 font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-xs select-none"
+                  className="h-10 px-6 font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors shadow-xs select-none"
                 >
                   {createMutation.isPending ? (
                     <div className="flex items-center gap-2">
-                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-foreground/30 border-t-primary-foreground" />
+                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-background/30 border-t-background" />
                       <span>Creating...</span>
                     </div>
                   ) : (
@@ -732,30 +847,30 @@ export default function Projects() {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="sm:max-w-[800px] max-h-[85vh] p-0 pointer-events-auto">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-border">
-            <DialogTitle className="text-xl font-semibold">Edit Project</DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">
+            <DialogTitle className="text-2xl font-bold tracking-tight">Edit Project</DialogTitle>
+            <DialogDescription className="text-[15px] text-muted-foreground">
               Update project information and settings
             </DialogDescription>
           </DialogHeader>
           
-          <div className="flex-1 overflow-y-auto px-6 py-4 max-h-[60vh]">
-            <div className="space-y-6">
+          <div className="flex-1 overflow-y-auto max-h-[60vh]">
+            <div className="divide-y divide-border">
               {/* Project Basic Information */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Project Information</h3>
-                  <p className="text-xs text-muted-foreground">Update basic project details</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Project Information</h3>
+                  <p className="text-sm text-muted-foreground">Update basic project details</p>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-x-5 gap-y-5 md:grid-cols-2">
                   <div className="md:col-span-2">
-                    <Label htmlFor="edit-name" className="text-sm font-medium">Project Name *</Label>
+                    <Label htmlFor="edit-name" className="text-sm font-medium">Project Name <span className="text-destructive">*</span></Label>
                     <Input
                       id="edit-name"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       placeholder="e.g., Engine Block Manufacturing"
-                      className="mt-1"
+                      className="mt-2 h-11"
                     />
                   </div>
                   
@@ -766,15 +881,15 @@ export default function Projects() {
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
                       placeholder="Describe the project scope and objectives..."
-                      rows={2}
-                      className="mt-1 resize-none"
+                      rows={4}
+                      className="mt-2"
                     />
                   </div>
                   
                   <div>
                     <Label htmlFor="edit-status" className="text-sm font-medium">Status</Label>
                     <Select value={status} onValueChange={(value: any) => setStatus(value)}>
-                      <SelectTrigger id="edit-status" className="mt-1">
+                      <SelectTrigger id="edit-status" className="mt-2 h-11">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -790,7 +905,7 @@ export default function Projects() {
                   <div>
                     <Label htmlFor="edit-industry" className="text-sm font-medium">Industry</Label>
                     <Select value={industry} onValueChange={setIndustry}>
-                      <SelectTrigger id="edit-industry" className="mt-1">
+                      <SelectTrigger id="edit-industry" className="mt-2 h-11">
                         <SelectValue placeholder="Select industry" />
                       </SelectTrigger>
                       <SelectContent>
@@ -809,13 +924,13 @@ export default function Projects() {
               </div>
               
               {/* Project Metrics */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Project Metrics</h3>
-                  <p className="text-xs text-muted-foreground">Production volume and cost targets</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Project Metrics</h3>
+                  <p className="text-sm text-muted-foreground">Production volume and cost targets</p>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-x-5 gap-y-5 md:grid-cols-2">
                   <div>
                     <Label htmlFor="edit-estimatedAnnualVolume" className="text-sm font-medium">Estimated Annual Volume</Label>
                     <Input
@@ -826,14 +941,14 @@ export default function Projects() {
                       value={estimatedAnnualVolume}
                       onChange={(e) => setEstimatedAnnualVolume(e.target.value)}
                       placeholder="e.g., 10,000"
-                      className="mt-1"
+                      className="mt-2 h-11 font-mono"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">Units per year</p>
+                    <p className="mt-2 text-sm text-muted-foreground">Units per year</p>
                   </div>
                   
                   <div>
                     <Label htmlFor="edit-targetBomCost" className="text-sm font-medium">Target BOM Cost</Label>
-                    <div className="flex gap-2 mt-1">
+                    <div className="mt-2 flex overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
                       <Input
                         id="edit-targetBomCost"
                         type="number"
@@ -843,10 +958,10 @@ export default function Projects() {
                         value={targetBomCost}
                         onChange={(e) => setTargetBomCost(e.target.value)}
                         placeholder="0.00"
-                        className="flex-1"
+                        className="h-11 flex-1 rounded-none border-0 font-mono shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                       />
                       <Select value={targetBomCostCurrency} onValueChange={setTargetBomCostCurrency}>
-                        <SelectTrigger className="w-20">
+                        <SelectTrigger className="h-11 w-24 rounded-none border-0 border-l border-input bg-muted/50 font-mono shadow-none focus:ring-0 focus:ring-offset-0">
                           <SelectValue placeholder="USD" />
                         </SelectTrigger>
                         <SelectContent>
@@ -857,16 +972,16 @@ export default function Projects() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Per unit cost target</p>
+                    <p className="mt-2 text-sm text-muted-foreground">Per unit cost target</p>
                   </div>
                 </div>
               </div>
 
               {/* Location Information */}
-              <div className="space-y-4">
-                <div className="border-b border-border pb-2">
-                  <h3 className="text-base font-medium text-foreground">Location</h3>
-                  <p className="text-xs text-muted-foreground">Manufacturing location details</p>
+              <div className="space-y-5 px-6 py-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Location</h3>
+                  <p className="text-sm text-muted-foreground">Manufacturing location details</p>
                 </div>
                 
                 {renderLocationFields('edit-')}
@@ -874,10 +989,10 @@ export default function Projects() {
             </div>
           </div>
           
-          <div className="border-t border-border bg-background px-6 py-4">
+          <div className="border-t border-border bg-muted/40 px-6 py-4">
             <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground font-medium">
-                * Required fields
+              <div className="text-sm text-muted-foreground">
+                <span className="text-destructive">*</span> Required fields
               </div>
               <div className="flex items-center gap-3">
                 <Button
@@ -900,7 +1015,7 @@ export default function Projects() {
                     setStateCode('');
                   }}
                   disabled={updateMutation.isPending}
-                  className="h-9 px-4 font-medium border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors select-none"
+                  className="h-10 px-5 font-medium border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors select-none"
                 >
                   Cancel
                 </Button>
@@ -908,11 +1023,11 @@ export default function Projects() {
                   type="submit"
                   onClick={handleUpdate}
                   disabled={!name || updateMutation.isPending}
-                  className="h-9 px-6 font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-xs select-none"
+                  className="h-10 px-6 font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors shadow-xs select-none"
                 >
                   {updateMutation.isPending ? (
                     <div className="flex items-center gap-2">
-                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-foreground/30 border-t-primary-foreground" />
+                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-background/30 border-t-background" />
                       <span>Updating...</span>
                     </div>
                   ) : (
