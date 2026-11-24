@@ -26,6 +26,13 @@ export interface SpecField {
   materialType?: string;
   /** A lookup row is the first, in ascending order of `column`, that reaches the input's value (the tblChemicalMilling row for a part of this area). */
   band?: { column: string; input: string };
+  /**
+   * A machining workbook table's row is the material's: its `column` holds the name the material class is mapped to in
+   * tblCuttingMaterialGroup's `map` column (tblTurningConditions "WorkGroup": "Mild steels"). No name mapped = a named gap.
+   */
+  group?: { column: string; map: 'TurningGroup' | 'DrillReamMaterial' | 'HssGroup' | 'MillingMaterial' };
+  /** A lookup row is the one whose `min`..`max` band holds the input's value (the workbook's depth-of-cut and hole-diameter bands). */
+  range?: { min: string; max: string; input: string };
   default?: number;
   formula?: string;
   /**
@@ -61,6 +68,14 @@ export interface MachiningCalculatorSpec {
   retire: string[];
 }
 
+/** The migration an entry shipped in: its own, a re-issue's, else 804 (every calculator without one is in 804). */
+const shippedIn = (c: any): number => Number(c.migration ?? c.reissue ?? 804);
+
+/** The entry of `name` that was current at migration `at`: shipped at or before it, superseded only after it. */
+function versionShippedWith(entries: any[], name: string, at: number): any {
+  return entries.find((e) => e.name === name && shippedIn(e) <= at && (e.supersededBy == null || Number(e.supersededBy) > at));
+}
+
 /**
  * The spec's calculators. By default only the current entry of each calculator: one a later migration replaced (supersededBy) is left
  * out. `includeSuperseded` keeps it, for generating the migration that shipped it (804), which must stay byte-identical once applied.
@@ -74,8 +89,9 @@ export function loadMachiningCalculatorSpec(opts: { includeSuperseded?: boolean 
     const classes: string[] = Array.isArray(c.machineClasses)
       ? c.machineClasses
       : String(c.machineClasses).split('+').flatMap((g: string) => groups[g] ?? []);
-    // A superseded entry copies the superseded entry it named, so the migration that shipped it never changes.
-    const copied = entries.find((e: any) => e.name === c.sameFieldsAs && !!e.supersededBy === !!c.supersededBy) ?? byName.get(c.sameFieldsAs);
+    // An entry copies the version of the calculator it names that was current when it shipped (shipped no later, and not yet
+    // superseded then), so the migration that shipped it never changes when that calculator is revised again.
+    const copied = (c.sameFieldsAs ? versionShippedWith(entries, c.sameFieldsAs, shippedIn(c)) : undefined) ?? byName.get(c.sameFieldsAs);
     const fields: SpecField[] = c.fields ?? copied?.fields;
     if (!fields) throw new Error(`machining calculator "${c.name}" has no fields`);
     for (const cls of classes) {

@@ -49,6 +49,7 @@ import {
   shapeRankForFamily,
   isDiscouragedShapeForFamily,
 } from '../../../../../../modules/raw-materials/constants/material-shape-ranking';
+import { workbookFixture } from '../workbook-fixture';
 
 // The stock a fixture part is cut from, unless the test states one: a billet of the part's own box. The engine sizes no stock itself (the
 // stock model chooses it, costing/stock), so every test that prices a part gives it one.
@@ -468,74 +469,45 @@ describe('computeTurningCostSummary — data sanity', () => {
   });
 });
 
-// Real tblGeneralTurning material_cut_code_name '1.0' row (hardness 125):
-// medium_rough_turning cut_depth_mm=1.3/cutting_speed_m_min=250.4/
-// feed_rate_mm_rev=0.3625; finish_turning cut_depth_mm=0.8/
-// cutting_speed_m_min=333.1/feed_rate_mm_rev=0.29 (verified directly against
-// the source data 2026-09-18). Root-caused: OD Turning previously used a
-// flat, uncited TURNING_MRR table (mm3/min) + a fixed x1.2 fudge factor with
-// no real pass-count model at all — replaced with real per-pass depth-of-cut
-// physics (computeTurningCycleSec), same "L/F x N" shape the reference
-// methodology for this domain describes.
-const REAL_TURNING_PARAMS = {
-  roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-  finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29,
-  dataFound: true,
-};
-
-describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)', () => {
-  it('computes exact real rough-pass-count + finish-pass cycle time, split into the real distinct Rough Turning / Finish Turning operations', () => {
+// Turning, as the Machining calculator workbook's Turning sheet times a cut (calculators of migration 1138): the speed and feed of
+// the workbook's Turning cutting conditions for the material on carbide, at the middle of each range (AL6061-T6: rough, 2 mm deep,
+// 270 m/min and 0.25 mm/rev; finish, 0.5 mm deep, 375 m/min and 0.125 mm/rev); whole passes; the spindle capped at the machine's limit;
+// whole seconds per cut. Ø20 from a Ø30 bar, 100 mm long:
+//   rough  finish start 20 + 2 x 0.5 = 21; ceil((30 - 21) / 4) = 3 passes from the bar at 270 * 1000 / (pi * 30) = 2864.79 rpm;
+//          (100 + 10) / (0.25 x 2864.79) x 3 = 0.4608 min = 27.65 s -> 28 s
+//   finish min(4000, 375 * 1000 / (pi * 21)) = 4000 rpm; (100 + 10) / (0.125 x 4000) = 13.2 s -> 14 s
+const ROUGH_SEC = 28;
+const FINISH_SEC = 14;
+describe('OD Turning — the workbook\'s Turning sheet, whole passes and seconds', () => {
+  it('computes the rough passes and the finish pass, split into the distinct Rough Turning / Finish Turning operations', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20,
         blankResult: {
           form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30,
           billetVolMm3: Math.PI * 15 ** 2 * 100, // real equivalent 30mm-diameter round bar, 100mm long
-          utilizationPct: 50,
+          utilizationPct: 50, endAllowanceMm: 0.5,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
       } as any),
       mc('2_axis_lathe'),
     );
-    // "OD Turning" is no longer emitted when real per-pass data resolves —
-    // replaced by the real distinct catalog operations.
     expect(result.processLines.some((l) => l.process === 'OD Turning')).toBe(false);
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
     const finishLine = result.processLines.find((l) => l.process === 'Finish Turning')!;
-    expect(roughLine).toBeDefined();
-    expect(finishLine).toBeDefined();
-    // partDiameterMm = max(20,20) = 20; barDiameterMm = 30 (by construction). Timed as the Machining calculator workbook's Turning
-    // sheet times a cut: spindle speed from the diameter the cut starts at, the length of cut plus 10 mm, passes = stock / depth.
-    // The finish cut starts at 20 + 2 x 0.8 = 21.6 mm; roughing takes (30 - 21.6) / (2 x 1.3) = 3.23 passes from the bar.
-    const passTimeSec = (speedMPerMin: number, feedMmPerRev: number, startDiameterMm: number) => {
-      const rpm = (speedMPerMin * 1000) / (Math.PI * startDiameterMm);
-      const feedMmPerMin = rpm * feedMmPerRev;
-      return ((100 + 10) / feedMmPerMin) * 60;
-    };
-    const expectedRoughSec = ((30 - 21.6) / (2 * 1.3)) * passTimeSec(250.4, 0.3625, 30);
-    const expectedFinishSec = passTimeSec(333.1, 0.29, 21.6);
-    expect(roughLine.cycleTimeMin).toBeCloseTo(expectedRoughSec / 60, 2);
-    expect(finishLine.cycleTimeMin).toBeCloseTo(expectedFinishSec / 60, 2);
-    // Setup folds into Rough Turning only, not Finish Turning. This fixture's
-    // rate has no real setup_time_hr, so the folded setup is disclosed as not
-    // costed ('none') rather than charged.
-    expect(roughLine.setupTimeMin).toBe(0);
-    expect(roughLine.setupTimeSource).toBe('none');
-    // Finish turning runs in the rough-turning setup: it states a zero setup of its own, not an unresolved one.
-    expect(finishLine.setupTimeMin).toBe(0);
-    expect(finishLine.setupTimeSource).toBe('none');
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(ROUGH_SEC, 1);
+    expect(finishLine.cycleTimeMin * 60).toBeCloseTo(FINISH_SEC, 1);
+    // The lathe's setup goes with its first cut, the facing. This fixture's rate has no setup_time_hr, so it is disclosed as not
+    // costed ('none'); the turning lines state a zero setup of their own, not an unresolved one.
+    for (const l of [roughLine, finishLine]) expect(l).toMatchObject({ setupTimeMin: 0, setupTimeSource: 'none' });
   });
 
-  it('reports a gap instead of estimating when real tblGeneralTurning data is not resolved', () => {
+  it('reports a gap instead of estimating when the workbook\'s turning data is not read', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000,
-        blankResult: {
-          form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30,
-          billetVolMm3: Math.PI * 15 ** 2 * 100,
-          utilizationPct: 50,
-        },
-        turningParams: { roughCutDepthMm: 0, roughCuttingSpeedMPerMin: 0, roughFeedMmPerRev: 0, finishCutDepthMm: 0, finishCuttingSpeedMPerMin: 0, finishFeedMmPerRev: 0, dataFound: false },
+        blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: Math.PI * 15 ** 2 * 100, utilizationPct: 50 },
+        workbook: workbookFixture({ tables: {} }),
       } as any),
       mc('2_axis_lathe'),
     );
@@ -544,10 +516,10 @@ describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)'
     expect(line.cycleTimeMin).toBe(0);
     expect(line.physicsGap?.gapType).toBe('unsupported_operation');
     expect(line.confidence).toBe('unsupported');
-    expect(result.warnings.some((w) => w.includes('Turning not priced') && w.includes('tblGeneralTurning'))).toBe(true);
+    expect(result.warnings.some((w) => w.includes('Turning not priced') && w.includes('tblTurningConditions'))).toBe(true);
   });
 
-  it('does not fall back with a warning when there is genuinely no material to remove (radial stock is zero)', () => {
+  it('nothing to remove (the bar is the part\'s diameter) is no turning gap', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000,
@@ -556,11 +528,12 @@ describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)'
           billetVolMm3: Math.PI * 10 ** 2 * 100, // same diameter as the part -- no stock to remove
           utilizationPct: 100,
         },
-        turningParams: { roughCutDepthMm: 0, roughCuttingSpeedMPerMin: 0, roughFeedMmPerRev: 0, finishCutDepthMm: 0, finishCuttingSpeedMPerMin: 0, finishFeedMmPerRev: 0, dataFound: false },
+        workbook: workbookFixture({ tables: {} }),
       } as any),
       mc('2_axis_lathe'),
     );
-    expect(result.warnings.some((w) => w.includes('OD Turning') && w.includes('falling back'))).toBe(false);
+    expect(result.processLines.some((l) => l.process === 'Rough Turning' || l.process === 'Finish Turning')).toBe(false);
+    expect(result.warnings.some((w) => w.includes('Turning not priced'))).toBe(false);
   });
 });
 
@@ -583,19 +556,17 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
     return turnedInput({
       maxLength: 100, maxWidth: 20, maxHeight: 20, volume,
       blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: barVolMm3, utilizationPct: 50 },
-      turningParams: REAL_TURNING_PARAMS,
+      workbook: workbookFixture(),
       mhrRate: rate(1000, {
         machineClass: 'simultaneous_turning', machineName: 'Index MS32-6',
         numberSpindles: 6, drumIndexTimeS: 0.7, transferTimeS: 1.0, stockFeedTimeS: 2.5, speedSynchronizationTimeS: 1.5,
+        maxSpindleRpm: 8000, // the Index MS32-6's own spindle (migration 1093)
       }),
       ...overrides,
     } as any);
   }
-  const baselineRoughSec = (() => {
-    const rpm = (250.4 * 1000) / (Math.PI * 30); // from the Ø30 bar the rough cut starts at
-    const feedMmPerMin = rpm * 0.3625;
-    return ((30 - 21.6) / (2 * 1.3)) * (((100 + 10) / feedMmPerMin) * 60); // 3.23 rough passes, same math as the OD Turning suite
-  })();
+  // The OD Turning suite's rough cut: 3 passes from the Ø30 bar at 2864.79 rpm (under the 8000 rpm spindle), 28 s.
+  const baselineRoughSec = ROUGH_SEC;
 
   it('splits Rough Turning across the real number of stations when the real removal ratio crosses the real threshold', () => {
     // volume=20000 -> materialRemovalMm3 = 70685.83-20000 = 50685.83 -> ratio ≈ 0.717, well over the real 0.22 threshold.
@@ -604,7 +575,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    expect(roughLine.cycleTimeMin).toBeCloseTo((baselineRoughSec / 2) / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec / 2, 1);
     expect(result.warnings.some((w) => w.includes('split across 2 stations'))).toBe(true);
   });
 
@@ -615,7 +586,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    expect(roughLine.cycleTimeMin).toBeCloseTo(baselineRoughSec / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec, 1);
     expect(result.warnings.some((w) => w.includes('split across'))).toBe(false);
   });
 
@@ -625,7 +596,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    expect(roughLine.cycleTimeMin).toBeCloseTo(baselineRoughSec / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec, 1);
     expect(result.warnings.some((w) => w.includes('split across'))).toBe(false);
   });
 
@@ -642,7 +613,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 20000,
         blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: barVolMm3, utilizationPct: 50 },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
       } as any),
       mc('2_axis_lathe'),
     );
@@ -678,7 +649,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         // Includes every real operation this default fixture's holes/
         // threads also trigger (Drilling, Tapping) so the "no warning"
         // assertion below is genuinely testing a full real match, not
@@ -703,7 +674,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         // Real data exists for this class, but "Rough Turning" isn't in it
         // -- e.g. migration 754 partially applied, or a genuinely
         // uncatalogued operation for this specific class.
@@ -727,7 +698,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         realOperationCategories: null,
       } as any),
       mc('2_axis_lathe'),
@@ -877,7 +848,7 @@ describe('the stock the mill starts from is the stock chosen for the part (blank
   });
 
   it('a lathe with no stock chosen has no bar: no material, and turning and parting name the gap', () => {
-    const result = computeTurningCostSummary(turnedInput({ blankResult: undefined, turningParams: REAL_TURNING_PARAMS, partoffTable: realPartoffTable() }), mc('2_axis_lathe'));
+    const result = computeTurningCostSummary(turnedInput({ blankResult: undefined, workbook: workbookFixture(), partoffTable: realPartoffTable() }), mc('2_axis_lathe'));
     expect(result.materialCost).toBe(0);
     expect(result.warnings).toContain(NO_STOCK_WARNING);
     const gaps = findRouteDataGaps(result.processLines).filter((g) => g.reason.includes('no stock is chosen'));
@@ -1495,7 +1466,8 @@ const INTERNAL_GRINDING_PARAMS = realGrindingParams('tblInternalGrinding', '1.0'
 function turnedInput(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput {
   return milledInput({
     family: 'turned',
-    mhrRate: rate(900, { machineClass: '2_axis_lathe' }),
+    // A 2 axis lathe's spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+    mhrRate: rate(900, { machineClass: '2_axis_lathe', maxSpindleRpm: 4000 }),
     ...overrides,
   });
 }
@@ -2496,7 +2468,7 @@ describe('a blank cut from stock: the piece is machined, the stock bought is the
   const boughtVol = Math.PI * 15 ** 2 * 121.92;
   const bar = { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: pieceVol, utilizationPct: 50 };
   const turned = (overrides: Partial<MachiningCostInput> = {}) => computeTurningCostSummary(
-    turnedInput({ maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000, blankResult: bar, turningParams: REAL_TURNING_PARAMS, ...overrides } as any),
+    turnedInput({ maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000, blankResult: bar, workbook: workbookFixture(), ...overrides } as any),
     mc('2_axis_lathe'),
   );
 

@@ -1,6 +1,7 @@
 import { specLookupSeeds, type SpecLookupData } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-lookup-seeds';
 import { loadMachiningCalculatorSpec } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { readMachiningMemoryCsv } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
 
 // The reference tables themselves, with numbers as numbers (as the staged rows are).
 const table = (file: string) => readMachiningMemoryCsv(`lookup/${file}`).map((r) =>
@@ -79,5 +80,43 @@ describe('specLookupSeeds: rows keyed by material type or by a size band (chemic
 
   it('asks for the part area when the band cannot be chosen without it', () => {
     expect(specLookupSeeds(fieldsOf('Machining - DeMask'), chem('aluminum'), {}).missing.join(' ')).toContain('Part Surface Area');
+  });
+});
+
+// The machining workbook's tables (migration 1137): read by the material's workbook group, the band holding an input, or `where` alone.
+describe('specLookupSeeds: the machining workbook\'s tables', () => {
+  const wb = workbookFixture().tables;
+  const workbook = (matClass: SpecLookupData['matClass']): SpecLookupData => ({ matClass, cutCode: null, tables: wb, variables: {} });
+
+  it('Rough Turning: the material\'s group (aluminium), the depth-of-cut band holding its 2 mm, carbide', () => {
+    const { seeds, missing } = specLookupSeeds(fieldsOf('Machining - Rough Turning'), workbook('aluminum'), { 'Rough Depth of Cut': 2 });
+    expect(missing).toEqual([]);
+    expect(seeds['Rough Speed Min']).toMatchObject({
+      value: 90, source: 'tblTurningConditions: Aluminium alloys, Rough Depth of Cut 2 in 0.5-2, ToolMaterial Carbide',
+      match: { table: 'tblTurningConditions', row: { WorkGroup: 'Aluminium alloys', ToolMaterial: 'Carbide', DepthMinMm: 0.5 } },
+    });
+    expect(seeds['Rough Speed Max']!.value).toBe(450);
+    expect(seeds['Rough Feed Min']!.value).toBe(0.2);
+    expect(seeds['Rough Feed Max']!.value).toBe(0.3);
+  });
+
+  it('a deeper cut is the next band: 3 mm on mild steel reads 80-150 m/min', () => {
+    const { seeds } = specLookupSeeds(fieldsOf('Machining - Rough Turning'), workbook('mild_steel'), { 'Rough Depth of Cut': 3 });
+    expect([seeds['Rough Speed Min']!.value, seeds['Rough Speed Max']!.value]).toEqual([80, 150]);
+  });
+
+  it('a tool price by name alone (`where`): the turning insert holder Parting and End Facing wear', () => {
+    const { seeds, missing } = specLookupSeeds(fieldsOf('Machining - End Facing'), workbook('aluminum'), { 'Depth of Cut': 0.5 });
+    expect(missing).toEqual([]);
+    expect([seeds['Tool Price']!.value, seeds['Tool Life']!.value]).toEqual([732.4, 1000]);
+  });
+
+  it('names the gap: a material with no workbook turning row (plastic), a depth outside the bands, a table not read', () => {
+    expect(specLookupSeeds(fieldsOf('Machining - Rough Turning'), workbook('plastic'), { 'Rough Depth of Cut': 2 }).missing)
+      .toContain("Rough Speed Min: the machining workbook's tblTurningConditions has no row for plastic");
+    expect(specLookupSeeds(fieldsOf('Machining - Rough Turning'), workbook('aluminum'), { 'Rough Depth of Cut': 12 }).missing)
+      .toContain('Rough Speed Min: tblTurningConditions Aluminium alloys has no DepthMinMm-DepthMaxMm band for Rough Depth of Cut 12');
+    expect(specLookupSeeds(fieldsOf('Machining - Rough Turning'), { ...workbook('aluminum'), tables: {} }, { 'Rough Depth of Cut': 2 }).missing)
+      .toContain('Rough Speed Min: tblTurningConditions (machining_reference_data) could not be read');
   });
 });

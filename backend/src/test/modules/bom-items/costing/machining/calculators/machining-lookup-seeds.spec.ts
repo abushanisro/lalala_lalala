@@ -1,5 +1,6 @@
 import { machiningLookupSeeds } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-lookup-seeds';
 import { loadMachiningCalculatorSpec } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
+import { isWorkbookField } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-lookup-seeds';
 import { realDrillingTable, realKeywayBroachReference, realPartoffTable, realTappingTable } from '../real-reference-tables';
 
 // The lookup inputs of a machining calculator come from ONE resolver, shared
@@ -7,9 +8,10 @@ import { realDrillingTable, realKeywayBroachReference, realPartoffTable, realTap
 // against the real reference tables (parsed from memory/machining CSVs).
 
 const spec = loadMachiningCalculatorSpec();
+/** The lookups an operation's own resolver fills: every lookup but the machining workbook's (specLookupSeeds reads those). */
 const lookupFieldsOf = (operation: string): Set<string> => {
   const calc = spec.calculators.find((c) => c.operation === operation)!;
-  return new Set(calc.fields.filter((f) => f.source === 'lookup').map((f) => f.name));
+  return new Set(calc.fields.filter((f) => f.source === 'lookup' && !isWorkbookField(f)).map((f) => f.name));
 };
 
 describe('machiningLookupSeeds', () => {
@@ -43,7 +45,8 @@ describe('machiningLookupSeeds', () => {
   });
 
   it('reports the table, not a value, when its data is not available', () => {
-    for (const op of ['Reaming', 'Rough Turning', 'Keyway Broaching', 'Wire EDM', 'Deburring', 'Secondary Setup (Rechuck)']) {
+    // (Rough and Finish Turning read only the workbook's tables: specLookupSeeds names their gaps, spec-lookup-seeds.spec.ts.)
+    for (const op of ['Reaming', 'Keyway Broaching', 'Wire EDM', 'Deburring', 'Secondary Setup (Rechuck)']) {
       const r = machiningLookupSeeds(op, { matClass: 'aluminum' }, { 'Hole Diameter': 6 })!;
       expect(r.missing.length).toBeGreaterThan(0);
     }

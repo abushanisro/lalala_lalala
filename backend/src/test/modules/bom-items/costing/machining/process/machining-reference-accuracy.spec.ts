@@ -14,6 +14,7 @@ import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/s
 import {
   realCapabilityRules, realDrillingTable, realPartoffTable, realRotaryBroachReference, realTappingTable,
 } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const DRILLING = realDrillingTable();
@@ -83,29 +84,26 @@ describe('hand-calculated cost chain', () => {
     expect(line.totalCost).toBeCloseTo(155, 2);
   });
 
-  it('turning, timed as the workbook\'s Turning sheet times a cut: passes = stock / depth of cut, each the length + 10 mm at the start diameter\'s speed (tblGeneralTurning 1.0)', () => {
-    const p = {
-      roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-      finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
-    };
+  it('turning, timed as the workbook\'s Turning sheet times a cut: whole passes over the stock, each the length + 10 mm at the start diameter\'s speed', () => {
     const result = computeTurningCostSummary(input({
       family: 'turned', maxLength: 80, maxWidth: 32, maxHeight: 32, volume: 50_000,
-      mhrRate: rate(900, { machineClass: '2_axis_lathe' }),
-      blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50 },
-      turningParams: p, partoffTable: realPartoffTable(),
+      mhrRate: rate(900, { machineClass: '2_axis_lathe', maxSpindleRpm: 4000 }),
+      blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50, endAllowanceMm: 0.5 },
+      workbook: workbookFixture(), partoffTable: realPartoffTable(),
     }), mc('2_axis_lathe'));
-    // Machining time = pi x D x (L + 10) / (1000 x v x s) x passes, D the diameter the cut starts at: one pass over the 80 mm is
-    const pass = (v: number, f: number, startDiameterMm: number) => ((80 + 10) / (((v * 1000) / (Math.PI * startDiameterMm)) * f)) * 60;
-    // Ø32 from a Ø40 bar. The finish cut starts at 32 + 2 x 0.8 = 33.6 mm, so roughing takes (40 - 33.6) / (2 x 1.3) = 2.46 passes
-    // from the bar (not rounded): 2.46 x 7.476 s = 18.40 s. The finish pass, from Ø33.6: 5.90 s.
-    const roughSec = ((40 - 33.6) / (2 * 1.3)) * pass(250.4, 0.3625, 40);
+    // AISI 1018 is the workbook's "Mild steels" on carbide: rough (2 mm deep) 120-200 m/min and 0.2-0.3 mm/rev -> 160 and 0.25; finish
+    // (0.5 mm deep) 150-450 and 0.05-0.2 -> 300 and 0.125. Machining time = (L + 10) / (feed x n) x passes, n = 1000 v / (pi D) at the
+    // diameter the cut starts at, under the lathe's 4000 rpm.
+    const minutes = (v: number, f: number, startDiameterMm: number, passes: number) => ((80 + 10) / (f * ((v * 1000) / (Math.PI * startDiameterMm)))) * passes;
+    // Ø32 from a Ø40 bar. The finish cut starts at 32 + 2 x 0.5 = 33 mm, so roughing takes ceil((40 - 33) / 4) = 2 passes from the bar,
+    // at 1273.24 rpm: 0.5655 min = 33.93 s -> 34 s. The finish pass, from Ø33 at 2893.73 rpm: 14.93 s -> 15 s.
+    expect(minutes(160, 0.25, 40, 2) * 60).toBeCloseTo(33.93, 2);
+    expect(minutes(300, 0.125, 33, 1) * 60).toBeCloseTo(14.93, 2);
     const rough = result.processLines.find((l) => l.process === 'Rough Turning')!;
     const finish = result.processLines.find((l) => l.process === 'Finish Turning')!;
-    expect(roughSec).toBeCloseTo(18.402, 2);
-    expect(rough.cycleTimeMin).toBeCloseTo(roughSec / 60, 3);
-    expect(finish.cycleTimeMin).toBeCloseTo(pass(333.1, 0.29, 33.6) / 60, 3);
-    expect(finish.cycleTimeMin * 60).toBeCloseTo(5.901, 2);
-    expect(rough.runCost).toBeCloseTo((roughSec / 3600) * 900, 1);
+    expect(rough.cycleTimeMin * 60).toBeCloseTo(34, 1);
+    expect(finish.cycleTimeMin * 60).toBeCloseTo(15, 1);
+    expect(rough.runCost).toBeCloseTo((34 / 3600) * 900, 6);
   });
 });
 
@@ -160,13 +158,10 @@ const turned = (batchSize: number) => input({
   batchSize, family: 'turned', maxLength: 80, maxWidth: 32, maxHeight: 32, volume: 50_000,
   holeCount: 1, holeGroups: [{ diameter_mm: 8, count: 1, depth_mm: 30 }],
   drillingTable: DRILLING, partoffTable: realPartoffTable(), sharpEdgeLengthMm: 400, deburrLinearSpeedMmPerSec: 5,
-  mhrRate: rate(900, { machineClass: '2_axis_lathe', setupTimeHr: 0.5 }),
+  mhrRate: rate(900, { machineClass: '2_axis_lathe', setupTimeHr: 0.5, maxSpindleRpm: 4000 }),
   inspectionRate: rate(450, { machineClass: 'cmm', setupTimeHr: 0.25, machineName: 'CMM' }),
-  blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50 },
-  turningParams: {
-    roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-    finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
-  },
+  blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50, endAllowanceMm: 0.5 },
+  workbook: workbookFixture(),
 });
 
 const cases: Array<[string, (b: number) => MachiningCostInput, (i: MachiningCostInput) => ReturnType<typeof computeMillingCostSummary>]> = [

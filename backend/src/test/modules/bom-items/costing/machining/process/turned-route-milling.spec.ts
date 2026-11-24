@@ -29,6 +29,7 @@ import { realDrillingTable, realPartoffTable } from '../real-reference-tables';
 import type { TurnedRing } from '../../../../../../modules/bom-items/costing/machining/process/turned-diameters';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { ProcessLineCost } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const LATHE = '3_axis_bar_feed_lathe_with_sub_spindle';
@@ -66,6 +67,7 @@ const RINGS: TurnedRing[] = [
 ];
 const bar = (diameterMm: number) => ({
   form: 'round_bar', sizeLabel: `Ø${diameterMm} round bar`, billetVolMm3: Math.PI * (diameterMm / 2) ** 2 * 33, utilizationPct: 60, barDiameterMm: diameterMm,
+  endAllowanceMm: 0.5,
 });
 
 // The lathe: 900 per hour, a 30 min setup over a batch of 100 = 0.3 min per part = 4.50.
@@ -77,7 +79,8 @@ function shaft(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700,
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'turned', finishedWeightKg: 0.011,
-    mhrRate: rate(900, { machineClass: LATHE, setupTimeHr: 0.5 }),
+    // The Haas DS-30's 4000 rpm spindle (migration 1136).
+    mhrRate: rate(900, { machineClass: LATHE, setupTimeHr: 0.5, maxSpindleRpm: 4000 }),
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -90,10 +93,7 @@ function shaft(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
       rings: RINGS,
     },
     blankResult: bar(16),
-    turningParams: {
-      roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-      finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
-    },
+    workbook: workbookFixture(),
     drillingTable: realDrillingTable(),
     partoffTable: realPartoffTable(),
     ...overrides,
@@ -113,7 +113,7 @@ describe('a closed keyway on a turned shaft: milled on the lathe, as a line of t
   const keyway = lineOf(result.processLines, 'Obround Slot Milling')!;
 
   it('is an Obround Slot Milling line on the lathe, after its drilling and before the cut-off', () => {
-    expect(latheLines(result.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Drilling', 'Obround Slot Milling', 'Parting']);
+    expect(latheLines(result.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Drilling', 'Obround Slot Milling', 'Parting']);
     expect(keyway).toMatchObject({ machineClass: LATHE, machineName: 'M', hourlyRate: 900 });
   });
 
@@ -144,8 +144,8 @@ describe('a closed keyway on a turned shaft: milled on the lathe, as a line of t
     });
   });
 
-  it('charges no second setup: the lathe\'s setup stays on Rough Turning', () => {
-    expect(setupCarriers(result.processLines)).toEqual(['Rough Turning']);
+  it('charges no second setup: the lathe\'s setup stays on its first cut, the facing', () => {
+    expect(setupCarriers(result.processLines)).toEqual(['End Machining']);
     expect(keyway).toMatchObject({ setupCost: 0, setupTimeMin: 0, setupTimeSource: 'none' });
     expect(keyway.calculationTrace!.some((s) => s.fieldName === 'Setup time')).toBe(false);
   });
@@ -172,22 +172,21 @@ describe('the lathe\'s setup when the milling is its only work', () => {
     stockCutOff: 'saw', ...overrides,
   });
 
-  it('the keyway\'s Obround Slot Milling carries the setup, once', () => {
+  it('the sawn piece is faced first, which carries the setup once; the keyway charges none', () => {
     const { processLines, warnings } = cost(plain({ latheMilling: millingOf([KEYWAY]) }));
-    expect(latheLines(processLines)).toEqual(['Obround Slot Milling']);
+    expect(latheLines(processLines)).toEqual(['End Machining', 'Obround Slot Milling']);
+    expect(setupCarriers(processLines)).toEqual(['End Machining']);
+    expect(lineOf(processLines, 'End Machining')!.calculationTrace!.find((s) => s.fieldName === 'Setup time')).toMatchObject({ value: 30 });
     const keyway = lineOf(processLines, 'Obround Slot Milling')!;
-    // The setup 4.50 and the keyway's 0.4193.
-    expect(keyway).toMatchObject({ setupCost: SETUP_COST, setupTimeMin: 30, setupTimeSource: 'machine' });
-    expect(keyway.runCost).toBeCloseTo(KEYWAY_COST, 10);
-    expect(keyway.totalCost).toBeCloseTo(SETUP_COST + KEYWAY_COST, 10);
-    expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Setup time')).toMatchObject({ value: 30 });
+    expect(keyway).toMatchObject({ setupCost: 0, setupTimeSource: 'none' });
+    expect(keyway.totalCost).toBeCloseTo(KEYWAY_COST, 10);
     expect(warnings.some((w) => w.includes('setup not charged'))).toBe(false);
   });
 
-  it('a slot: the setup is on the first of its two lines only', () => {
+  it('a slot: its two lines charge no setup, the facing does', () => {
     const { processLines } = cost(plain({ latheMilling: millingOf([SLOT]) }));
-    expect(latheLines(processLines)).toEqual(['Rough Milling', 'Slot Milling']);
-    expect(setupCarriers(processLines)).toEqual(['Rough Milling']);
+    expect(latheLines(processLines)).toEqual(['End Machining', 'Rough Milling', 'Slot Milling']);
+    expect(setupCarriers(processLines)).toEqual(['End Machining']);
   });
 });
 
@@ -197,7 +196,7 @@ describe('a slot on a turned part: roughed, then finished, each a line of the la
   const slot = lineOf(result.processLines, 'Slot Milling')!;
 
   it('Rough Milling of the slot\'s volume, then Slot Milling of the slot', () => {
-    expect(latheLines(result.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Rough Milling', 'Slot Milling', 'Parting']);
+    expect(latheLines(result.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Rough Milling', 'Slot Milling', 'Parting']);
     // Rough: 480 * 0.8 / 60000 = 0.0064 min; 480 * 0.2 / 24000 = 0.004 min; sum 0.0104 min = 0.624 s; at 0.25 per second = 0.156,
     // not rounded to cents.
     expect(sec(rough)).toBeCloseTo(0.624, 2);
@@ -211,14 +210,14 @@ describe('a slot on a turned part: roughed, then finished, each a line of the la
   it('both lines name the slot, and neither charges a setup', () => {
     expect(rough.featureBreakdown).toEqual([{ name: 'Rough Milling // Slot', timeSec: expect.closeTo(0.624, 4), featureType: 'Slot', count: 1, featureIds: ['Slot-radial_c1'] }]);
     expect(slot.featureBreakdown).toEqual([{ name: 'Slot Milling // Slot', timeSec: 20, featureType: 'Slot', count: 1, featureIds: ['Slot-radial_c1'] }]);
-    expect(setupCarriers(result.processLines)).toEqual(['Rough Turning']);
+    expect(setupCarriers(result.processLines)).toEqual(['End Machining']);
     expect(lineDataGap(rough)).toBeNull();
     expect(lineDataGap(slot)).toBeNull();
   });
 
   it('a keyway beside the slot is its own line: the slot\'s two lines are what they are without it', () => {
     const both = cost(shaft({ latheMilling: millingOf([KEYWAY, SLOT]) }));
-    expect(latheLines(both.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Rough Milling', 'Obround Slot Milling', 'Slot Milling', 'Parting']);
+    expect(latheLines(both.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Rough Milling', 'Obround Slot Milling', 'Slot Milling', 'Parting']);
     expect(both.processLines.filter((l) => l.process !== 'Obround Slot Milling')).toEqual(result.processLines);
     const keyway = lineOf(both.processLines, 'Obround Slot Milling')!;
     expect(sec(keyway)).toBeCloseTo(KEYWAY_SEC, 2);
@@ -240,7 +239,7 @@ describe('flats on a turned part: roughed on the lathe, as a line of the lathe',
   const rough = lineOf(result.processLines, 'Rough Milling')!;
 
   it('is a Rough Milling line on the lathe, after the turning and before the cut-off', () => {
-    expect(latheLines(result.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Rough Milling', 'Parting']);
+    expect(latheLines(result.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Rough Milling', 'Parting']);
     expect(rough).toMatchObject({ machineClass: LATHE, machineName: 'M', hourlyRate: 900, setupCost: 0 });
   });
 
@@ -292,7 +291,7 @@ describe('an operation the sequencer could not time is a named gap on its line, 
     const keyway = lineOf(result.processLines, 'Obround Slot Milling')!;
     expect(sec(keyway)).toBeCloseTo(KEYWAY_SEC, 2);
     expect(lineDataGap(keyway)).toBeNull();
-    expect(setupCarriers(result.processLines)).toEqual(['Rough Turning']);
+    expect(setupCarriers(result.processLines)).toEqual(['End Machining']);
   });
 
   it('a keyway with no cutter data for the material is the gap, on its own line', () => {
@@ -318,7 +317,7 @@ describe('an operation the sequencer could not time is a named gap on its line, 
 describe('a part with no keyway or slot is costed as before', () => {
   it('no milling line, and every line and total is what it was without the input', () => {
     const before = cost(shaft());
-    expect(latheLines(before.processLines)).toEqual(['Rough Turning', 'Finish Turning', 'Parting']);
+    expect(latheLines(before.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Parting']);
     expect(cost(shaft({ latheMilling: [] }))).toEqual(before);
     expect(cost(shaft({ latheMilling: millingOf([{ id: 'Ring-outer_diameter_c1', feature_type: 'Ring', variant: 'outer_diameter', occurrences: [{ material_removed_mm3: 900 }] }]) }))).toEqual(before);
   });

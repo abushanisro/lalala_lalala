@@ -22,6 +22,7 @@ import { BAR_FED_LATHE_CLASSES, stockCutOffOf } from '../../../../../modules/bom
 import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { StockPartInput } from '../../../../../modules/bom-items/costing/stock/stock-part';
 import type { CostSummaryDto } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { workbookFixture } from '../machining/workbook-fixture';
 
 const REF = realStockMachiningReference();
 const STOCK = stockReference(REF).reference!;
@@ -83,12 +84,10 @@ function latheRoute(p: StockMachiningPlan, cls: string): CostSummaryDto {
       diameterMm: 14, lengthMm: 32, diameterSource: 'CAD: largest turned outer diameter (Ring feature)', lengthSource: 'CAD: extent along the turning axis',
       rings: [{ id: 'od_0', diameterMm: 14, lengthMm: 8, faceIds: [9] }, { id: 'od_1', diameterMm: 12, lengthMm: 18, faceIds: [17] }, { id: 'od_2', diameterMm: 12, lengthMm: 5, faceIds: [24] }],
     },
-    turningParams: {
-      roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-      finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
-    },
+    workbook: workbookFixture(),
     ...stockEngineInput(p.choice, cutOff, AL.pricePerKgUsd),
-    mhrRate: rate(900, cls),
+    // A lathe's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+    mhrRate: { ...rate(900, cls), maxSpindleRpm: 4000 },
   }, cls as MachineClassId);
   return withStockMachining(engine, p, cutOff);
 }
