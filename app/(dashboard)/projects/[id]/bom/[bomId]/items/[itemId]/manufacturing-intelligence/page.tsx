@@ -43,6 +43,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useSidebar } from '@/components/ui/sidebar';
 import type { HeatmapSource, HeatmapLayerType, HeatmapNormalization } from '@/components/ui/model-viewer';
 import { applyGate } from '@/lib/analysis/analysis-status';
@@ -4651,6 +4652,16 @@ function CostGuidePanel({
               </Section>
             )}
 
+            {cgpCostSummary?.injectionMolding && (
+              <Section title="Secondary Checks">
+                <MoldingSecondaryChecks
+                  insertMolded={cgpCostSummary.insertMolding != null || cgpCostSummary.injectionMolding.moldingSubtype === 'insert'}
+                  overrides={item.scenarioOverrides}
+                  onChange={(patch) => { patchScenarioOverrides.mutate({ id: item.id, patch }); }}
+                />
+              </Section>
+            )}
+
             {(cgpCostSummary?.dieCasting?.cavityLayouts?.length ?? 0) > 0 && (
               <Section title="Die Cavities">
                 <MoldCavitiesSection
@@ -7061,6 +7072,33 @@ function MoldCavitiesSection({
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// The checks a molded part is quoted with only when asked for (user decision 2026-11-25): the insert pull test (insert-molded parts) and the
+// weight check. Each is the scenario override the engine reads (moldingInsertPullTest, moldingWeightCheck); off, the key is cleared.
+function MoldingSecondaryChecks({ insertMolded, overrides, onChange }: {
+  insertMolded: boolean;
+  overrides: Record<string, unknown> | null | undefined;
+  onChange: (patch: Record<string, true | null>) => void;
+}) {
+  const checks = [
+    ...(insertMolded ? [{ key: 'moldingInsertPullTest', label: 'Insert pull test', hint: 'Sampled inserts pulled to failure each batch' }] : []),
+    { key: 'moldingWeightCheck', label: 'Weight check', hint: 'One part weighed every sampling interval' },
+  ];
+  return (
+    <div className="space-y-1">
+      {checks.map((c) => (
+        <label key={c.key} title={c.hint} className="flex items-center gap-2 py-0.5 cursor-pointer">
+          <Checkbox
+            checked={overrides?.[c.key] === true}
+            onCheckedChange={(v) => { onChange({ [c.key]: v === true ? true : null }); }}
+          />
+          <span className="text-xs text-foreground whitespace-nowrap">{c.label}</span>
+        </label>
+      ))}
+      <p className="text-[10px] text-muted-foreground">Off: not in the quote. Drying and slide movement are costed in the molding line.</p>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { type DraftSummary, undercutCountFromDraftSummary } from './draft-signal
 import type { InjectionMoldingCostInput } from './process/cost-injection-molding-engine';
 import { sideActionSignals } from './side-action-signals';
 import { ribSignals } from './process/rib-inserts';
+import { resolveMoldingSecondaryChecks } from '../shared/physics/scenario-overrides';
 import type { PlasticFeatureGraph } from './operation/plastic-catalog-operations.service';
 
 /** The part's three bounding-box sides, longest first. A side CAD did not measure is 0. */
@@ -114,6 +115,8 @@ export function buildMoldingCommonInput(f: MoldingCommonFacts): MoldingCommonInp
     deburrRate: f.deburrRate,
     inspectionRate: f.inspectionRate,
     cavityCountOverride: f.cavityCountOverride,
+    // The insert pull test and the weight check, only when the Cost Guide switches them on for the part.
+    secondaryChecks: resolveMoldingSecondaryChecks(f.item.scenarioOverrides),
     calculators: f.calculators,
     calculatorOverrides: f.calculatorOverrides ?? null,
     cadFaceCount: f.cadFaceCount ?? null,
