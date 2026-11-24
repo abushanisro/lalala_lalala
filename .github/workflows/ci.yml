@@ -136,7 +136,7 @@ jobs:
   # The board-file parsers (cad-engine/pcb) and the board feature-graph contract, in plain Python: they need no OpenCascade, so
   # they run here in seconds. The board routes themselves are tested in the CAD engine image (cad-engine-tests). The job keeps
   # the name the required check has always had.
-  ecad-engine-contract:
+  pcb-board-files:
     name: Electronics extraction engine (Python)
     runs-on: ubuntu-latest
     steps:
