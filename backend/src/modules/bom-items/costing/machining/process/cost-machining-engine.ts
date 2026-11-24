@@ -20,7 +20,9 @@ import { INSPECTION_TABLE, INSPECTION_TIME_COLUMN, type InspectionReference } fr
 import { lookupSeed, variableSeed } from '../calculators/machining-source-refs';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
-import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
+import type { OperationLine } from '../operation/operation-sequencer';
+import { timeOperations } from '../operation/time-operations';
+import { runMachiningCalculator, runPlanned, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
 import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
 import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator-spec';
 import {
@@ -172,7 +174,8 @@ export interface MachiningCostInput {
   // The part's sequenced operations (feature_graph_v2, operation-sequencer.ts): each feature's own, and on a milled route the
   // Bulk Milling of the stock around the part (stock-excess.ts). When absent, the whole stock-to-part volume is one Bulk Milling
   // operation ((stock volume − part volume) / MRR).
-  featureOps?: Array<{ name: string; timeSec: number; source: string; /** feature_graph_v2 ids of the features the operation is performed on. */ featureIds?: string[]; /** The steps of the calculator that timed the operation. */ trace?: CalculationTraceStep[]; /** The inputs the operation could not be priced without (its time is then 0). */ missing?: string }>;
+  /** The part's sequenced operations, planned before the machine is chosen: each route times them on its own machine (timeOperations). */
+  featureOps?: OperationLine[];
   /**
    * The sequenced operations on the features a lathe mills with a live tool: the part's keyways that are not broached, and its slots
    * (lathe-milling.ts). The turning engine prices each operation name as a line of the lathe; the milling engine does not read it
@@ -490,6 +493,8 @@ export function computeRotaryCycleSec(
 interface DrillCycle {
   /** Seconds for the holes; null when a real input or the calculator is missing. */
   sec: number | null;
+  /** The calculator run, with its inputs, to time the holes again on a route's machine (timeOperations). Absent when nothing could be planned. */
+  plan?: PlannedRun;
   trace: CalculationTraceStep[];
   missing: string[];
   calculatorId: string | null;
@@ -514,9 +519,16 @@ export function computeDrillCycle(
 ): DrillCycle {
   const matClass = detectMaterialClass(materialGrade ?? null);
   const lookup = drillingLookupSeeds({ matClass, drillingTable }, { 'Hole Diameter': diameterMm });
-  const run = runMachiningCalculator(calculators, 'Drilling', { ...holeSeeds(diameterMm, depthMm, holes, occurrences), ...lookup.seeds });
-  const missing = run.missing.length > 0 ? [...lookup.missing, ...run.missing] : run.missing;
-  return { sec: run.sec, trace: run.trace, missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups };
+  const plan: PlannedRun = {
+    operation: 'Drilling', seeds: { ...holeSeeds(diameterMm, depthMm, holes, occurrences), ...lookup.seeds },
+    ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}),
+  };
+  return cycleOf(runPlanned(calculators, plan), plan);
+}
+
+/** A planned run's result as a hole cycle: its time, steps, missing inputs and calculator, with the plan to time it again. */
+function cycleOf(run: CalcRun, plan: PlannedRun): DrillCycle {
+  return { sec: run.sec, trace: run.trace, missing: run.missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups, plan };
 }
 
 /**
@@ -1179,7 +1191,7 @@ function workbookSeeds(
 }
 
 /** The selected machine's top spindle speed (mhr_records.specs, migration 1136), which a cutting calculator caps its spindle at. */
-function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+export function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
   const value = liveTool ? rate.liveToolingMaxRpm : rate.maxSpindleRpm;
   if (value == null) return {};
   const column = liveTool ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm';
@@ -1418,9 +1430,8 @@ export function computeTapCycle(
   }
   if (thread.depthMm != null && thread.depthMm > 0) seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
   const lookup = pitchMm != null ? tappingLookupSeeds({ matClass, tappingTable }, { 'Thread Pitch': pitchMm }) : { seeds: {}, missing: [`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`] };
-  const run = runMachiningCalculator(calculators, 'Tapping', { ...seeds, ...lookup.seeds });
-  const missing = run.missing.length > 0 ? [...lookup.missing, ...run.missing] : run.missing;
-  return { sec: run.sec, trace: run.trace, missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups };
+  const plan: PlannedRun = { operation: 'Tapping', seeds: { ...seeds, ...lookup.seeds }, ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}) };
+  return cycleOf(runPlanned(calculators, plan), plan);
 }
 
 /** Tapping time for every thread on the part: one calculator run per thread-size group. */
@@ -1677,9 +1688,13 @@ export const NO_STOCK_WARNING = 'No stock is chosen for the part: its material i
 // ── Milled cost summary ──────────────────────────────────────────────────
 
 export function computeMillingCostSummary(
-  input: MachiningCostInput,
+  given: MachiningCostInput,
   machineClass: MachineClassId,
 ): CostSummaryDto {
+  // The part's operations timed on this route's machine: a calculator caps its spindle at the machine's own limit.
+  const input: MachiningCostInput = given.featureOps
+    ? { ...given, featureOps: timeOperations(given.featureOps, given.machiningCalculators, spindleLimitSeed(given.mhrRate, given.location)) }
+    : given;
   const {
     volume, surfaceArea, maxLength, maxWidth, maxHeight,
     holeCount, holeGroups, materialGrade, materialCostPerKg,
@@ -1808,6 +1823,10 @@ export function computeMillingCostSummary(
   const unpricedOperations = [...new Set((input.featureOps ?? [])
     .filter((o) => o.missing && !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
     .map((o) => o.missing!))];
+  // Each operation this machine could not time, named once (its time is 0, never an estimate).
+  for (const o of input.featureOps ?? []) {
+    if (o.missing) warnings.push(`${o.name} not priced — missing real input: ${o.missing}.`);
+  }
   // What a line with no time at all lacks: the station's calculator or an operation's input; without feature data, the stock or the
   // cutting data. A mill with nothing to mill (stock that holds no more than the part, no holes) lacks nothing.
   const millLacks = cncMillingMin > 0 ? [] : [...(millRun?.missing ?? []), ...unpricedOperations, ...unpricedWithoutFeatures];
@@ -2292,7 +2311,12 @@ export function computeTurningCostSummary(
   // Whether this lathe has the live tool for them is the route's capability
   // (checkLatheCapability), not a cost. An operation the sequencer could not
   // time is a named gap on its line.
-  for (const milling of latheMillingLines(input.latheMilling)) {
+  // Timed on this lathe's driven-tool spindle (its live tooling speed limit), the spindle a lathe mills with.
+  const latheMilled = input.latheMilling
+    ? (timeOperations(input.latheMilling, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location, true)) as LatheMillingOp[])
+    : input.latheMilling;
+  for (const milling of latheMillingLines(latheMilled)) {
+    if (milling.run.missing.length > 0) warnings.push(`${milling.operation} not priced — missing real input: ${milling.run.missing.join('; ')}.`);
     processLines.push(withFeatureGroups(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), milling.rows));
   }
 

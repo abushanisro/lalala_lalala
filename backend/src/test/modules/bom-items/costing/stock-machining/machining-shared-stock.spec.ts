@@ -95,7 +95,7 @@ function latheRoute(p: StockMachiningPlan, cls: string): CostSummaryDto {
 function millRoute(p: StockMachiningPlan): CostSummaryDto {
   const engine = computeMillingCostSummary({
     ...base('milled', STIFFENER.box, STIFFENER.volumeMm3),
-    featureOps: [{ name: 'Rough Mill', timeSec: 120, source: 'test' }],
+    featureOps: [{ name: 'Rough Mill', timeSec: 120, source: 'feature' }],
     ...stockEngineInput(p.choice, 'saw', AL.pricePerKgUsd),
     mhrRate: rate(600, '3_axis_mill'),
   }, '3_axis_mill' as MachineClassId);

@@ -1,4 +1,5 @@
 import type { CalculationTraceStep } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import type { OperationLine } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { calculatorInputSteps } from '../../../../../../modules/bom-items/costing/machining/process/machining-trace';
 import {
   detectMaterialClass,
@@ -842,7 +843,7 @@ describe('the stock the mill starts from is the stock chosen for the part (blank
     // A part with no feature graph is roughed as one Bulk Milling of the stock less the part: with no stock that is not priced, and named.
     expect(result.warnings).toContain('Bulk Milling not priced — missing real input: the stock the part is cut from.');
     // A part with its features recognised is still timed from them: the quote is short of its stock only.
-    const featured = computeMillingCostSummary(milledInput({ blankResult: undefined, featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }] }), mc('3_axis_mill'));
+    const featured = computeMillingCostSummary(milledInput({ blankResult: undefined, featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 'fixed' }] }), mc('3_axis_mill'));
     expect(featured.materialCost).toBe(0);
     expect(featured.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin).toBeGreaterThan(0);
   });
@@ -2328,7 +2329,7 @@ describe('Cannula Holder bottom (aluminum 6061, milled): every operation is pric
 });
 
 describe('the mill line is the Machining - Milling calculator over the part\'s sequenced operations', () => {
-  const featureOps = [
+  const featureOps: OperationLine[] = [
     { name: 'Facing', timeSec: 45, source: 'fixed' }, { name: 'Rough Milling', timeSec: 120, source: 'feature' },
     { name: 'Fine Finish Milling', timeSec: 300, source: 'feature' }, { name: 'Drilling', timeSec: 20, source: 'feature' },
     { name: 'Center Drilling', timeSec: 10, source: 'feature' }, { name: 'Filleting', timeSec: 40, source: 'feature' },

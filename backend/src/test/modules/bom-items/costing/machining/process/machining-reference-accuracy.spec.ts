@@ -72,7 +72,7 @@ describe('hand-calculated cost chain', () => {
     const result = computeMillingCostSummary(input({
       blankResult: billet(100, 50, 20), batchSize: 10, fixtureUnitCostLocal: 100,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
-      featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }, { name: 'Tapping', timeSec: 999, source: 't' }],
+      featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 'fixed' }, { name: 'Tapping', timeSec: 999, source: 'fixed' }],
     }), mc('3_axis_mill'));
     const line = result.processLines.find((l) => l.process === '3 Axis Mill')!;
     // 30 min / 10 parts = 3 min x 600/h = 30.00, + fixture 100 / 10 = 10.00
@@ -125,7 +125,7 @@ describe('regression: rotary broaching shares the part machine, so its setup is 
     const result = computeMillingCostSummary(input({
       blankResult: billet(100, 50, 20), batchSize: 10,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
-      featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 't' }],
+      featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 'fixed' }],
       drillingTable: DRILLING,
       polygons: [{ kind: 'socket', sides: 6, acrossFlatsMm: 10, depthMm: 5, count: 1 }],
       rotaryBroach: realRotaryBroachReference(),
@@ -151,7 +151,7 @@ const milled = (batchSize: number) => input({
   mhrRate: rate(600, { setupTimeHr: 0.5 }),
   inspectionRate: rate(450, { machineClass: 'cmm', setupTimeHr: 0.25, machineName: 'CMM' }),
   tappingRate: rate(600, { machineClass: 'tapping', hostMachineClass: '3_axis_mill' }),
-  featureOps: [{ name: 'Rough Mill', timeSec: 420, source: 't' }, { name: 'Finish Mill', timeSec: 180, source: 't' }],
+  featureOps: [{ name: 'Rough Mill', timeSec: 420, source: 'fixed' }, { name: 'Finish Mill', timeSec: 180, source: 'fixed' }],
 });
 
 const turned = (batchSize: number) => input({

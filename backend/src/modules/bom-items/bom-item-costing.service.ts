@@ -62,6 +62,8 @@ import {
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
 import type { MachiningCostInput, MachineClassId, MachiningRouteStanding, MachiningWorkbookInput } from './costing/machining/process/cost-machining-engine';
+import { spindleLimitSeed } from './costing/machining/process/cost-machining-engine';
+import { timeOperations } from './costing/machining/operation/time-operations';
 import { WORKBOOK_TABLES } from './costing/machining/lookup/workbook-cutting-data';
 import { machiningFeatureCounts } from './costing/machining/operation/machining-feature-counts';
 import { requiredMilledClassFromToolAxes } from './costing/machining/setup-axis-rule';
@@ -1677,11 +1679,6 @@ export class BomItemCostingService {
       stockAround,
       stockOps,
     );
-    // Ops the sequencer could not price from real inputs (missing CAD
-    // measurement or lookup row) — reported, never estimated.
-    const unpricedOpWarnings = rawFeatureOps
-      .filter((o) => o.missing)
-      .map((o) => `${o.name} not priced — missing real input: ${o.missing}.`);
     // Fix 5: inject drawing intelligence overrides into the operation list
     const allFeatureOps = injectDrawingIntelligence(
       rawFeatureOps,
@@ -1710,7 +1707,7 @@ export class BomItemCostingService {
       holes: liveToolHoles(fg?.machining_features?.features), milled: liveToolMilledFeatures(chemSplit.filteredFeatures),
     };
     return {
-      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool,
+      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool,
       heatTreatment, machinabilityRating, stockAround,
     };
   }
@@ -2495,7 +2492,7 @@ export class BomItemCostingService {
         family === 'milled' ? stock?.millOps : undefined,
       );
       materialWarnings.push(...featurePlan.warnings);
-      const { deepHoleSplit, keywaySplit, wireEdmSplit, unpricedOpWarnings, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
+      const { deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
 
       // Stage 4 pipeline log — confirms what the cost engine receives
       this.logger.debug(
@@ -2639,7 +2636,7 @@ export class BomItemCostingService {
         const msResult = {
           ...buildMultiSpindleCostSummary({
             multiSpindle, materialGrade: grade, materialCostPerKg: barMaterial.materialCostPerKg, materialSource: barMaterial.materialSource, batchSize,
-            warnings: [...materialWarnings, ...unpricedOpWarnings, ...(formNote ? [formNote] : [])], ratesSource: RATES_SOURCE_LABEL,
+            warnings: [...materialWarnings, ...(formNote ? [formNote] : [])], ratesSource: RATES_SOURCE_LABEL,
           }),
           ...currencyMeta,
           drawingCadConsistency,
@@ -2748,7 +2745,7 @@ export class BomItemCostingService {
       }
       // What the quoted lathe's live tool cannot make, or that its live tooling is not on file: said here as on its route in the comparison.
       cncResult.warnings.push(...recommended.liveToolWarnings);
-      cncResult.warnings.push(...materialWarnings, ...unpricedOpWarnings);
+      cncResult.warnings.push(...materialWarnings);
       if (family === 'milled' && !requiredClass) cncResult.warnings.push(axisRequirement.reason);
       cncResult.drawingCadConsistency = drawingCadConsistency;
       this.attachMachineSelections(cncResult.processLines, mhrRates);
@@ -2765,7 +2762,10 @@ export class BomItemCostingService {
       // milling breakdown is never attached to a lathe line.
       const recommendedIsMilling = getEnginesForFamily('milling').some((e) => e.machineClass === recommended.cls);
       if (featureOps && featureOps.length > 0 && recommendedIsMilling) {
-        const breakdown = this.buildMachiningFeatureBreakdown(featureOps, recommended.cls, realOperationCategories, cncResult.warnings);
+        // The operations as the recommended mill times them (its spindle limit), the times its line was costed at.
+        const recommendedRate = candidateClasses.find((c) => c.cls === recommended.cls)?.rate;
+        const timedOps = timeOperations(featureOps, machiningCalculators, recommendedRate ? spindleLimitSeed(recommendedRate, location) : {});
+        const breakdown = this.buildMachiningFeatureBreakdown(timedOps, recommended.cls, realOperationCategories, cncResult.warnings);
         if (breakdown.length > 0) {
           const millLine = cncResult.processLines.find((l) => l.machineClass === recommended.cls);
           if (millLine) millLine.featureBreakdown = breakdown;

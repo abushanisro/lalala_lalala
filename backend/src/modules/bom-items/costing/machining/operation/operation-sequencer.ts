@@ -66,7 +66,7 @@
 
 import { computeDrillCycle, computeTapCycle, computeRotaryCycleSec, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass } from '../process/cost-machining-engine';
 import type { DrillingTable } from '../lookup/drilling-table';
-import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
+import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { nearestByDiameterThenHardness, MACHINING_MATERIAL } from '../lookup/machining-material-hardness';
@@ -90,9 +90,10 @@ function drillOp(
   materialGrade: string | null | undefined,
   drillingTable: DrillingTable | null,
   calculators: MachiningCalculators | null,
-): { timeSec: number; missing?: string } {
+): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
   const cycle = computeDrillCycle(diamMm, materialGrade, depthMm > 0 ? depthMm : undefined, drillingTable, calculators, count);
-  return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; ') } : { timeSec: cycle.sec };
+  const plan = cycle.plan ? { plan: [cycle.plan] } : {};
+  return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
 }
 
 // Real tapping time for `count` threads (thread size, pitch, CAD depth +
@@ -105,10 +106,11 @@ function tapOp(
   depthMm: number | undefined,
   tappingTable: any[] | null,
   calculators: MachiningCalculators | null,
-): { timeSec: number; missing?: string } {
+): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
   if (!spec) return { timeSec: 0, missing: 'a thread size' };
   const cycle = computeTapCycle({ size: spec, count, pitchMm, depthMm: depthMm && depthMm > 0 ? depthMm : undefined }, matClass, tappingTable, calculators);
-  return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; ') } : { timeSec: cycle.sec };
+  const plan = cycle.plan ? { plan: [cycle.plan] } : {};
+  return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
 }
 
 // Real, material- and diameter-aware counterbore cycle time — replaces the
@@ -230,10 +232,10 @@ function calcOp(
   calculators: MachiningCalculators | null,
   operation: string,
   seeds: Record<string, CalcSeed>,
-): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator'> {
+): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> {
   const run = runMachiningCalculator(calculators, operation, seeds);
   return {
-    timeSec: run.sec ?? 0, trace: run.trace,
+    timeSec: run.sec ?? 0, trace: run.trace, plan: [{ operation, seeds }],
     ...(run.calculatorId ? { calculator: { id: run.calculatorId, version: run.calculatorVersion, lookups: run.lookups } } : {}),
     ...(run.missing.length > 0 ? { missing: run.missing.join('; ') } : {}),
   };
@@ -270,7 +272,16 @@ export interface OperationLine {
   trace?: CalculationTraceStep[];
   /** The stored calculator that timed the operation, and the reference-table row each of its lookup inputs came from. */
   calculator?: { id: string; version: number | null; lookups: CalcRun['lookups'] };
+  /**
+   * The calculator runs the operation is timed by, with their inputs (a stepped hole: one per step). The sequencer plans an operation
+   * before any machine is chosen; each route times it again on its own machine (timeOperations), since a calculator may cap its spindle
+   * at the machine's limit. Absent: a time of no calculator (a table rate, a fixed allowance), the same on every machine.
+   */
+  plan?: PlannedRun[];
+  /** A factor the drawing put on the operation's time (a fine surface finish), kept so a re-timed plan keeps it. */
+  timeFactor?: number;
 }
+
 
 // Canonical manufacturing order for sorting. Names are the real
 // operation_category strings from memory/machining/operations_full__operations.csv
@@ -561,6 +572,7 @@ export function buildOperationSequence(
         let spots = 0;
         let drillSec = 0;
         const stepMissing: string[] = [];
+        const stepPlans: PlannedRun[] = [];
         for (const occ of occurrences) {
           const steps: Array<{ diameter_mm: number; depth_mm: number }> = Array.isArray(occ.steps) ? occ.steps : [];
           if (steps.length === 0) continue;
@@ -569,11 +581,15 @@ export function buildOperationSequence(
             const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, drillingTable, calculators);
             drillSec += op.timeSec;
             if (op.missing) stepMissing.push(op.missing);
+            stepPlans.push(...(op.plan ?? []).map((p) => ({ ...p, label: `Step Ø${step.diameter_mm}` })));
           }
         }
         if (spots > 0 || drillSec > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', spots), source: "feature", cadFeatureType: ft });
-          ops.push({ name: "Drilling", timeSec: drillSec, source: "feature", cadFeatureType: ft, ...(stepMissing.length ? { missing: stepMissing.join('; ') } : {}) });
+          ops.push({
+            name: "Drilling", timeSec: drillSec, source: "feature", cadFeatureType: ft,
+            ...(stepPlans.length ? { plan: stepPlans } : {}), ...(stepMissing.length ? { missing: stepMissing.join('; ') } : {}),
+          });
         }
         break;
       }
@@ -706,7 +722,7 @@ export function injectDrawingIntelligence(
       o.name.includes("Finish") || o.name.includes("Rough") || o.name === KEYWAY_MILLING,
     );
     if (finishIdx >= 0) {
-      result[finishIdx] = { ...result[finishIdx], timeSec: result[finishIdx].timeSec * 1.3 };
+      result[finishIdx] = { ...result[finishIdx], timeSec: result[finishIdx].timeSec * 1.3, timeFactor: (result[finishIdx].timeFactor ?? 1) * 1.3 };
     } else {
       result.push({ name: "Finish Pass", timeSec: 120, source: "feature" });
     }
