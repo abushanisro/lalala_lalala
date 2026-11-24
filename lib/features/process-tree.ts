@@ -9,6 +9,7 @@ import {
   familyToProcessGroupLabel,
 } from '@/lib/features/process-group';
 import { firstStepHoldsUnclaimedFeatures, isMachiningTreeFamily, isStockStep, showsCatalogOperations, showsStepTextRows, wholePartLabel } from '@/lib/features/process-tree-family';
+import { moldedOperationRows } from '@/lib/features/molded-operation-rows';
 import { sheetMetalOperationNodes, type OperationTreeNode } from '@/lib/features/sheet-metal-operation-nodes';
 import type { FeatureGraph, FeatureGraphSummary, FeatureNodeV2 } from '@/lib/types/manufacturing';
 
@@ -316,7 +317,9 @@ export function buildProcessTree(
     if (!showsCatalogOperations(family) || !line?.catalogOperations?.length) return [];
     const withMachine = (n: OperationTreeNode): ProcessTreeNode =>
       ({ ...n, factory, machine, ...(n.children ? { children: n.children.map(withMachine) } : {}) });
-    return sheetMetalOperationNodes(idPrefix, line.catalogOperations).map(withMachine);
+    // A molded part lists each kind of feature once, its plain faces and edges as one row (molded-operation-rows.ts).
+    const operations = family === 'plastic_molded' ? moldedOperationRows(line.catalogOperations) : line.catalogOperations;
+    return sheetMetalOperationNodes(idPrefix, operations).map(withMachine);
   };
 
   // The part's first step, which holds the features no step claims: the first after the stock's own (a Stock Machining part's band saw
@@ -335,6 +338,8 @@ export function buildProcessTree(
     const machine = storedMachineByProcess.get(rec.process) ?? matchedCostLine?.machineName ?? '—';
     const breakdown = matchedCostLine?.featureBreakdown ?? [];
     const featureNodes: ProcessTreeNode[] = [];
+    // The step's own figures, shown when the step is selected (a molded part's volume, mass and walls on its molding step).
+    let stepAttrs: { name: string; value: string }[] | undefined;
 
     // Sheet metal: the catalog operations this step performs on the part's own
     // CAD features ("Punching // SimpleHole Ø4.0 ×14"), resolved by the backend.
@@ -432,21 +437,18 @@ export function buildProcessTree(
       const avgDraftDeg = summary.avgDraftAngleDeg ?? null;
       const partingComplexity = summary.partingComplexity ?? null;
 
-      featureNodes.push({
-        id: 'feat_im_part', kind: 'feature', label: 'Moulded Part',
-        factory, machine,
-        attrs: [
-          { name: 'Volume',    value: volMm3 > 0 ? `${fmtInt(volMm3)} mm³` : '—' },
-          { name: 'Est. mass', value: massG > 0 ? `${massG} g (net part)` : '—' },
-          ...(wall != null ? [{ name: 'Wall nom.', value: `${fmt(wall, 1)} mm` }] : []),
-          ...(wallMin != null && wallMax != null
-            ? [{ name: 'Wall range', value: `${fmt(wallMin, 1)} – ${fmt(wallMax, 1)} mm` }]
-            : []),
-          ...(partingComplexity != null ? [{ name: 'Parting complexity', value: `${Math.round(partingComplexity * 100)}%` }] : []),
-          ...(bossCount > 0 ? [{ name: 'Bosses / holes', value: String(bossCount) }] : []),
-          ...(ribCount > 0  ? [{ name: 'Ribs (detected)', value: String(ribCount) }] : []),
-        ],
-      });
+      // The part's molded figures belong to the molding step itself, not a row of their own under it.
+      stepAttrs = [
+        { name: 'Volume',    value: volMm3 > 0 ? `${fmtInt(volMm3)} mm³` : '—' },
+        { name: 'Est. mass', value: massG > 0 ? `${massG} g (net part)` : '—' },
+        ...(wall != null ? [{ name: 'Wall nom.', value: `${fmt(wall, 1)} mm` }] : []),
+        ...(wallMin != null && wallMax != null
+          ? [{ name: 'Wall range', value: `${fmt(wallMin, 1)} – ${fmt(wallMax, 1)} mm` }]
+          : []),
+        ...(partingComplexity != null ? [{ name: 'Parting complexity', value: `${Math.round(partingComplexity * 100)}%` }] : []),
+        ...(bossCount > 0 ? [{ name: 'Bosses / holes', value: String(bossCount) }] : []),
+        ...(ribCount > 0  ? [{ name: 'Ribs (detected)', value: String(ribCount) }] : []),
+      ];
 
       // ── DFM feature nodes — clickable → 3D face highlighting ─────────────
       if (undercutCount > 0) {
@@ -535,7 +537,7 @@ export function buildProcessTree(
     // A step that machines individual instances shows how many: "3 Axis Mill [5]".
     const instanceCount = breakdown.filter((b) => (b.occurrenceRefs ?? []).length > 0).length;
     const label = instanceCount > 0 ? `${rec.process} [${instanceCount}]` : rec.process;
-    return { id: `op_${opIdx}`, kind: 'operation', label, factory, machine, children: featureNodes };
+    return { id: `op_${opIdx}`, kind: 'operation', label, factory, machine, ...(stepAttrs ? { attrs: stepAttrs } : {}), children: featureNodes };
   });
   // The process group of each step: its cost line's own processGroup (the
   // machining after a casting is "Machining"), else the part's group.
@@ -731,5 +733,7 @@ export function buildProcessTree(
     }
     place(g.children!, op);
   });
-  return { id: 'root', kind: 'part', label: item.name, factory, children: groups };
+  // A molded part made in one process group: its steps sit directly under the part; the panel header already names the group ("Primary").
+  const flat = family === 'plastic_molded' && groups.length === 1 && groups[0]?.label === groupLabel;
+  return { id: 'root', kind: 'part', label: item.name, factory, children: flat ? groups[0]?.children ?? [] : groups };
 }

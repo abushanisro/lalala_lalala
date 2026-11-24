@@ -160,3 +160,38 @@ describe('buildProcessTree: an unpriced molding step keeps its recognised featur
     expect(JSON.stringify(findNode(tree, 'op_1'))).toContain('Mold Hole');
   });
 });
+
+describe('buildProcessTree: a molded part shows its costed steps and their features, nothing else', () => {
+  const molded = { classification: { family: 'plastic_molded' } } as unknown as FeatureGraph;
+  const moldedItem = { ...item, name: 'Cover', volume: 18_800 } as unknown as BOMItem;
+  const moldedSummary = { wallThicknessNominalMm: 1.5, undraftedFaceCount: 12 } as unknown as FeatureGraphSummary;
+  const hole = (ids: string[], reason: string) => ({ operations: ['Mold Hole'], featureType: 'SimpleHole', variant: 'through', diameterMm: 3.2, count: ids.length, featureIds: ids, status: 'resolved', children: [], reason });
+  const cost = { processLines: [
+    { process: 'Injection Molding', cycleTimeMin: 0.3, machineName: 'Kawaguchi KM140', processGroup: 'Plastic Molding',
+      catalogOperations: [hole(['h1'], 'By a lifter.'), hole(['h2', 'h3'], 'By the mold halves.'),
+        { operations: ['Mold'], featureType: 'PlanarFace', variant: '', diameterMm: null, count: 50, featureIds: ['pf'], status: 'resolved', children: [] }] },
+    { process: 'Gate Trimming', cycleTimeMin: 0.01, machineName: 'Gate trimming (operator)', processGroup: 'Plastic Molding' },
+    { process: 'Weight Check', cycleTimeMin: 0.001, machineName: 'Bench scale (reference)', processGroup: 'Plastic Molding', featureBreakdown: [{ name: 'Weight Check: 0.01 s', timeSec: 0.01, featureType: 'x', count: 1 }] },
+  ] } as unknown as CostSummaryDto;
+  const tree = buildProcessTree(moldedItem, molded, moldedSummary, 'USA', undefined, cost, 1.04);
+
+  it('the steps sit directly under the part (the panel header names the one process group)', () => {
+    expect(tree.children?.map((n) => `${n.kind} ${n.label}`)).toEqual(['operation Injection Molding', 'operation Gate Trimming', 'operation Weight Check']);
+  });
+
+  it('a step with nothing to list is a row of its own: no "No feature data", no cost-line text', () => {
+    expect(findNode(tree, 'op_1')?.children).toEqual([]);
+    expect(findNode(tree, 'op_2')?.children).toEqual([]);
+  });
+
+  it('the molding step lists each kind of feature once, then the undrafted faces; the part\'s molded figures are the step\'s own', () => {
+    const molding = findNode(tree, 'op_0')!;
+    expect(molding.children?.map((c) => c.label)).toEqual(['SimpleHole Ø3.2 ×3', 'Surfaces and edges ×50', 'Undrafted Faces (12)']);
+    expect(molding.attrs).toEqual(expect.arrayContaining([{ name: 'Volume', value: '18,800 mm³' }, { name: 'Wall nom.', value: '1.5 mm' }]));
+  });
+
+  it('a part in two process groups keeps its groups', () => {
+    const two = { processLines: [...cost.processLines, { process: 'Pad Printing', cycleTimeMin: 0.1, machineName: 'Pad printer', processGroup: 'Decoration' }] } as unknown as CostSummaryDto;
+    expect(buildProcessTree(moldedItem, molded, moldedSummary, 'USA', undefined, two, 1.04).children?.map((n) => n.kind)).toEqual(['group', 'group']);
+  });
+});
