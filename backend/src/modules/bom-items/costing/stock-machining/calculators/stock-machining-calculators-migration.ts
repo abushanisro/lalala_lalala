@@ -5,8 +5,8 @@ export const STOCK_MACHINING_CALCULATORS_MIGRATION = 1116;
 
 /** The SQL of migrations/1116_stock_machining_calculators.sql, built from the spec. */
 export function buildStockMachiningCalculatorsMigrationSql(): string {
-  // The calculators 1116 created: a calculator a later migration adds is marked with that migration in the spec, and is not written here.
-  return buildDomainCalculatorsMigrationSql(loadStockMachiningCalculatorSpec(), {
+  // The calculators 1116 created, as it created them: an entry a later migration replaced is still generated here, and a later one is not.
+  return buildDomainCalculatorsMigrationSql(loadStockMachiningCalculatorSpec({ includeSuperseded: true }), {
     number: STOCK_MACHINING_CALCULATORS_MIGRATION,
     title: 'Stock Machining calculators -- the stock a machined part is cut from, its yield and the band saw as real database calculators.',
     generator: 'scripts/generate-stock-machining-calculators-migration.ts',
@@ -43,4 +43,22 @@ export function buildStockMachiningPerimeterCutMigrationSql(): string {
       'own: its cut is priced by the Sheet Metal cutting calculators and engines.',
     ].join('\n'),
   }, (c) => c.migration === STOCK_MACHINING_PERIMETER_CUT_MIGRATION);
+}
+
+export const STOCK_MACHINING_SCRAP_RECOVERY_MIGRATION = 1144;
+
+/** The SQL of migrations/1144_stock_machining_scrap_recovery.sql: the scrap credit, version 2, of which only the recovered scrap is sold. */
+export function buildStockMachiningScrapRecoveryMigrationSql(): string {
+  return buildDomainCalculatorsMigrationSql(loadStockMachiningCalculatorSpec(), {
+    number: STOCK_MACHINING_SCRAP_RECOVERY_MIGRATION,
+    title: 'Stock Machining - Scrap Credit, version 2 -- only the recovered share of the scrap is sold.',
+    generator: 'scripts/generate-stock-machining-calculators-migration.ts',
+    specPath: 'src/modules/bom-items/costing/stock-machining/calculators/stock-machining-calculators.json',
+    rootCause: [
+      'Version 1 credited the whole scrap weight: the stock bought per part less the part, at its price and the material\'s Scrap Cost Percent.',
+      'The machining calculator workbook (memory/Machining - Calculator Database (1).xlsx, its four Material calc sheets) credits only the',
+      'scrap recovered, 95 % of it, for India. Version 2 multiplies by the location\'s scrapRecoveryPercent (migration 1143); a location with',
+      'none staged keeps the whole scrap weight, as before (the project owner\'s decision of 2026-11-24: India material rules and scrap recovery).',
+    ].join('\n'),
+  }, (c) => c.migration === STOCK_MACHINING_SCRAP_RECOVERY_MIGRATION);
 }
