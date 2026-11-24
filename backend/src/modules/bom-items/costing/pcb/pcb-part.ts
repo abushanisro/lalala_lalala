@@ -55,6 +55,10 @@ export interface PcbMeasured {
   placements?: readonly PcbPlacement[] | null;
   thtParts?: readonly PcbThtPart[] | null;
   sidesPopulated?: readonly BoardSide[] | null;
+  /** The bodies a 3D model shows standing on each side of the board (a model does not say what they are). */
+  modelComponents?: { top: number; bottom: number } | null;
+  /** What a measurement's source says beside a value it states differently (a model's holes: their plating is not stated). */
+  notes?: { holes?: string; perimeter?: string } | null;
 }
 
 /** The Cost Guide's board values (scenario overrides), each optional. */
@@ -112,6 +116,8 @@ export interface PcbPart {
   placements: readonly PcbPlacement[];
   thtParts: readonly PcbThtPart[];
   sidesPopulated: readonly BoardSide[];
+  /** The bodies a 3D model shows on each side; null when measured from board files or not stated. */
+  modelComponents: { top: number; bottom: number } | null;
 }
 
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -132,7 +138,7 @@ export function resolvePcbPart(measured: PcbMeasured | null, o: PcbOverrides, d:
     ? fact(measured.outline.areaMm2, from, `${src}: the area the outline encloses`)
     : fact(length * width, 'derived', 'the outline\'s bounding box (no enclosed area measured)');
   const perimeter = positive(measured.outlinePerimeterMm)
-    ? fact(measured.outlinePerimeterMm, from, `${src}: the outline path`)
+    ? fact(measured.outlinePerimeterMm, from, `${src}: ${measured.notes?.perimeter ?? 'the outline path'}`)
     : fact(2 * (length + width), 'derived', 'the outline\'s bounding-box perimeter');
 
   // A stated value wins over a measured one only where the files cannot state it (thickness, copper, finish); the Cost Guide's layer count
@@ -159,7 +165,7 @@ export function resolvePcbPart(measured: PcbMeasured | null, o: PcbOverrides, d:
     ? fact(o.finish, 'cost_guide', 'Cost Guide: surface finish')
     : fact<PcbFinish>('hasl', 'reference_default', 'Hot Air Solder Leveling: the finish the reference board takes when none is stated');
   const holes = (measured.holes ?? []).filter((h) => positive(h.diameterMm) && wholePositive(h.count));
-  const holesFact = fact<readonly PcbHoleGroup[]>(holes, measured.holes ? from : 'derived', measured.holes ? `${src}: drilled holes by diameter and plating` : 'no drill data: no holes');
+  const holesFact = fact<readonly PcbHoleGroup[]>(holes, measured.holes ? from : 'derived', measured.holes ? `${src}: ${measured.notes?.holes ?? 'drilled holes by diameter and plating'}` : 'no drill data: no holes');
   const maskSides = o.soldermaskSides != null && [0, 1, 2].includes(o.soldermaskSides)
     ? fact(o.soldermaskSides, 'cost_guide', 'Cost Guide: solder mask sides')
     : sides(measured.soldermask) != null && from === 'board_files' ? fact(sides(measured.soldermask)!, from, `${src}: solder mask layers present`)
@@ -186,6 +192,7 @@ export function resolvePcbPart(measured: PcbMeasured | null, o: PcbOverrides, d:
       nets: wholePositive(measured.nets) ? fact(measured.nets, from, `${src}: nets with pins traced through the copper`) : null,
       placementsSource: measured.placements?.length || measured.thtParts?.length ? `${src}: the Pick Place file` : null,
       placements: measured.placements ?? [], thtParts: measured.thtParts ?? [], sidesPopulated: measured.sidesPopulated ?? [],
+      modelComponents: measured.modelComponents ?? null,
     },
     missing: [],
   };

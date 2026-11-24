@@ -54,10 +54,11 @@ export const PART_ASSEMBLY_FAMILY = 'part_assembly';
 export const PCB_FAMILY = 'pcb';
 
 /**
- * The families costed without a 3D analysis of their own: an assembly and a weldment from the BOM and the Cost Guide, a printed circuit board
- * from its board files (measured by the CAD engine's board routes, not its STEP extractor). No analysis is run as one.
+ * The families costed without a 3D analysis of their own: an assembly and a weldment, from the BOM and the Cost Guide. No analysis is run as
+ * one. A printed circuit board has one: its board files are measured by the CAD engine's board routes and, when it has none, its 3D model by the
+ * pcb extractor (cad-engine pcb/feature_extractor.py).
  */
-export const NO_CAD_EXTRACTOR_FAMILIES: ReadonlySet<string> = new Set([ASSEMBLY_FAMILY, PART_ASSEMBLY_FAMILY, PCB_FAMILY]);
+export const NO_CAD_EXTRACTOR_FAMILIES: ReadonlySet<string> = new Set([ASSEMBLY_FAMILY, PART_ASSEMBLY_FAMILY]);
 
 /** Insert molding (memory/Assembly molding): costed as a plastic molded part on the insert presses. */
 export const INSERT_MOLDING_PROCESS_GROUP = 'Assembly Molding';

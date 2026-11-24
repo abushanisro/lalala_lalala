@@ -41,8 +41,8 @@ describe('process groups with a cost model', () => {
     // An assembly and a weldment are costed from their children and the Cost Guide: there is no CAD extractor to force for them.
     expect(processGroupToFamilyHint('Assembly')).toBeUndefined();
     expect(processGroupToFamilyHint('Part Assembly')).toBeUndefined();
-    // A PCB is measured from its board files by the CAD engine's board routes, not by a 3D extractor.
-    expect(processGroupToFamilyHint('PCB')).toBeUndefined();
+    // A PCB's 3D model is measured as a board (cad-engine pcb/feature_extractor.py) when it has no board files.
+    expect(processGroupToFamilyHint('PCB')).toBe('pcb');
     // Insert molding is analysed as the molded plastic part it is.
     expect(processGroupToFamilyHint('Assembly Molding')).toBe('plastic_molded');
   });

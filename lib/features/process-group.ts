@@ -38,13 +38,19 @@ export const FAMILY_HINT_TO_PROCESS_GROUP: Record<string, string> = {
   assembly: 'Assembly',
   // A weldment's welding, costed from its BOM children and the Cost Guide's weld table (backend costing/part-assembly): no CAD extractor either.
   part_assembly: 'Part Assembly',
-  // A printed circuit board, measured from its board files (Gerber, drill, Pick Place) by the CAD engine's board routes and costed by backend
-  // costing/pcb: no 3D extractor.
+  // A printed circuit board, measured from its board files (Gerber, drill, Pick Place) by the CAD engine's board routes, else from its 3D model by
+  // the pcb extractor, and costed by backend costing/pcb.
   pcb: 'PCB',
 };
 
-/** Families with no 3D extractor: an assembly and a weldment are costed from their BOM children and the Cost Guide, a PCB from its board files. */
-const NO_CAD_EXTRACTOR: ReadonlySet<string> = new Set(['assembly', 'part_assembly', 'pcb'])
+/** Families with no 3D extractor (no family_hint is sent for them): an assembly and a weldment, costed from their BOM children and the Cost Guide. */
+const NO_CAD_EXTRACTOR: ReadonlySet<string> = new Set(['assembly', 'part_assembly'])
+
+/**
+ * Families whose routes are their own whatever a 3D analysis read: an assembly and a weldment (no extractor), and a PCB, priced from its board
+ * files when it has them even if its model was analysed as another family.
+ */
+const ROUTED_AS_COSTED: ReadonlySet<string> = new Set([...NO_CAD_EXTRACTOR, 'pcb'])
 
 export function familyToProcessGroupLabel(family: string | null | undefined): string | null {
   return (family && FAMILY_HINT_TO_PROCESS_GROUP[family]) || null;
@@ -67,7 +73,7 @@ const ROUTES_AS_FAMILY: Readonly<Record<string, string>> = {
  */
 export function routingFamilyOf(cadFamily: string | null | undefined, costedFamily: string | null | undefined, processGroup?: unknown): string | null {
   if (typeof processGroup === 'string' && processGroup in ROUTES_AS_FAMILY) return ROUTES_AS_FAMILY[processGroup] ?? null;
-  return costedFamily && NO_CAD_EXTRACTOR.has(costedFamily) ? costedFamily : cadFamily ?? null;
+  return costedFamily && ROUTED_AS_COSTED.has(costedFamily) ? costedFamily : cadFamily ?? null;
 }
 
 /** The families made by machining (cad-engine shared/part_family.py MACHINING_FAMILIES). */
