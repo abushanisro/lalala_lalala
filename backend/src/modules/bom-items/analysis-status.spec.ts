@@ -161,6 +161,24 @@ describe('deriveAnalysisStatus', () => {
   });
 });
 
+describe('deriveAnalysisStatus: a part with board files', () => {
+  const measured = (extractionVersion: string) => ({ summary: { pcbGeometry: { extractionVersion } } });
+  const board = 'u/p/bom-items/item/board/1_set.zip';
+
+  it('is analysed only when its board set is measured at the current version, with or without a 3D model', () => {
+    expect(deriveAnalysisStatus({ fileBoardPath: board }, 'none', 4).cad).toBe('none');
+    expect(deriveAnalysisStatus({ fileBoardPath: board, featureGraph: measured('pcb_v1') }, 'none', 4)).toMatchObject({ cad: 'ready', ready: true });
+    expect(deriveAnalysisStatus({ fileBoardPath: board, featureGraph: measured('pcb_v0') }, 'none', 4)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    const modelOnly = { file3dPath: 'x.stl', fileBoardPath: board, featureGraph: { classification: { family: 'sheet_metal' }, feature_graph_version: 4, summary: {} } };
+    expect(deriveAnalysisStatus(modelOnly, 'none', 4).cad).toBe('stale');
+    expect(deriveAnalysisStatus({ ...modelOnly, featureGraph: { ...modelOnly.featureGraph, summary: { pcbGeometry: { extractionVersion: 'pcb_v1' } } } }, 'none', 4).cad).toBe('ready');
+  });
+
+  it('needs nothing of a part with neither a model nor board files', () => {
+    expect(deriveAnalysisStatus({}, 'none', 4)).toMatchObject({ cad: 'not_required', ready: true });
+  });
+});
+
 describe('castingStatusOf', () => {
   it('no rows is not requested, never ready', () => {
     expect(castingStatusOf([])).toBe('none');

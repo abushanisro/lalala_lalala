@@ -1,5 +1,6 @@
 import { castingProcessOfFamily } from './costing/casting/casting-cost-summary';
 import { HYDROFORM_EXTRACTION_VERSION } from './costing/hydroforming/hydroforming-part';
+import { PCB_GEOMETRY_VERSION } from './costing/pcb/board-graph/pcb-geometry';
 import { ROLL_FORM_EXTRACTION_VERSION } from './costing/roll-forming/roll-forming-part';
 import { familiesAnalysedForHint } from './costing/shared/core/part-family-process-group';
 import { MACHINING_STOCK_EXTRACTION_VERSION } from './costing/stock/stock-envelope';
@@ -87,6 +88,8 @@ export function currentFeatureGraphVersion(): number {
 
 export interface AnalysisStatusInput {
   file3dPath?: string | null;
+  /** The part's board set (Gerber, drill, Pick Place): measured into feature_graph.summary.pcbGeometry. */
+  fileBoardPath?: string | null;
   file2dPath?: string | null;
   featureGraph?: {
     classification?: { family?: string | null } | null;
@@ -137,6 +140,15 @@ export function deriveAnalysisStatus(
     // The chosen process is priced from a measurement this analysis predates (a part set to Sheet Metal - Hydroforming, analysed as sheet
     // metal before the hydroform measurement existed): Refresh analysis measures it. Without this, Apply took the part as analysed.
     if (cad === 'ready' && predatesProcessMeasurement(item.featureGraph?.summary, item.chosenProcessGroup, analysedFamily)) cad = 'stale';
+  }
+
+  // A board set is measured by the CAD engine's board routes into the summary (pcbGeometry). With no 3D model that measurement is the
+  // analysis; with one, the analysis is not current until the board is measured too.
+  if (item.fileBoardPath) {
+    const measured = item.featureGraph?.summary?.pcbGeometry as { extractionVersion?: unknown } | null | undefined;
+    const board: AnalysisKindStatus = !measured ? 'none' : measured.extractionVersion === PCB_GEOMETRY_VERSION ? 'ready' : 'stale';
+    if (!hasModel) cad = board;
+    else if (cad === 'ready' && board !== 'ready') cad = 'stale';
   }
 
   const needsCasting = castingWorker && hasModel && !!family && castingProcessOfFamily(family) === 'sand_casting';

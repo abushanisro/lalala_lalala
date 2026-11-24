@@ -176,6 +176,11 @@
             "example": "file-path-3d.stp",
             "type": "string"
           },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
+            "type": "string"
+          },
           "fileDxfPath": {
             "example": "file-path-drawing.dxf.gz",
             "type": "string"
@@ -1241,6 +1246,11 @@
           },
           "file3dPath": {
             "example": "file-path-3d.stp",
+            "type": "string"
+          },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
             "type": "string"
           },
           "fileDxfPath": {
@@ -8871,6 +8881,11 @@
             "example": "file-path-3d.stp",
             "type": "string"
           },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
+            "type": "string"
+          },
           "fileDxfPath": {
             "example": "file-path-drawing.dxf.gz",
             "type": "string"
@@ -14496,7 +14511,7 @@
             "bearer": []
           }
         ],
-        "summary": "Upload 2D/3D/DXF files for BOM item",
+        "summary": "Upload 2D/3D/DXF files or a board set (Gerber, drill, Pick Place) for BOM item",
         "tags": [
           "BOM Items"
         ]

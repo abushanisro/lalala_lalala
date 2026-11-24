@@ -34,6 +34,7 @@ import { memoryStorage } from 'multer';
 import * as path from 'path';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes, ApiQuery } from '@nestjs/swagger';
 import { BOMItemsService } from './bom-items.service';
+import { MAX_BOARD_FILES, prepareBoardUpload } from './costing/pcb/board-graph/board-files';
 import { BomItemCostingService } from './bom-item-costing.service';
 import { NestingCostService } from './services/nesting-cost.service';
 import { GdtAnalysisService } from './services/gdt-analysis.service';
@@ -768,7 +769,7 @@ export class BOMItemsController {
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } }) // heavy: parses or analyses a file
   @Post(':id/files')
-  @ApiOperation({ summary: 'Upload 2D/3D/DXF files for BOM item' })
+  @ApiOperation({ summary: 'Upload 2D/3D/DXF files or a board set (Gerber, drill, Pick Place) for BOM item' })
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 200, description: 'Files uploaded successfully', type: BOMItemResponseDto })
   @UseInterceptors(
@@ -776,6 +777,8 @@ export class BOMItemsController {
       [
         { name: 'file2d', maxCount: 1 },
         { name: 'file3d', maxCount: 1 },
+        // The board set: one .zip, or its loose Gerber layers, drill file and report, Pick Place and BOM table.
+        { name: 'fileBoard', maxCount: MAX_BOARD_FILES },
         { name: 'fileDxf', maxCount: 1 },
       ],
       {
@@ -786,12 +789,12 @@ export class BOMItemsController {
   )
   async uploadFiles(
     @Param('id') id: string,
-    @UploadedFiles() files: { file2d?: any[]; file3d?: any[]; fileDxf?: any[] },
+    @UploadedFiles() files: { file2d?: any[]; file3d?: any[]; fileDxf?: any[]; fileBoard?: any[] },
     @CurrentUser() user: User,
     @AccessToken() token: string,
   ): Promise<BOMItemResponseDto> {
     // Validate files are provided before processing
-    if (!files?.file2d?.[0] && !files?.file3d?.[0] && !files?.fileDxf?.[0]) {
+    if (!files?.file2d?.[0] && !files?.file3d?.[0] && !files?.fileDxf?.[0] && !files?.fileBoard?.[0]) {
       throw new BadRequestException('No files provided');
     }
 
@@ -925,6 +928,20 @@ export class BOMItemsController {
         id,
       );
       updateData.fileDxfPath = uploadResult.storagePath;
+    }
+
+    // The board set, kept as one zip (packed here when its files came loose). It is measured when the part is analysed.
+    if (files.fileBoard?.length) {
+      const board = await prepareBoardUpload(files.fileBoard.map((f: { originalname: string; buffer: Buffer }) => ({ name: f.originalname, bytes: f.buffer })), bomItem.partNumber || bomItem.name || 'board');
+      if (!board.ok) throw new BadRequestException(board.message);
+      const uploadResult = await this.fileStorageService.uploadFile(
+        { fieldname: 'fileBoard', originalname: board.name, encoding: '7bit', mimetype: 'application/zip', size: board.bytes.length, buffer: board.bytes },
+        'board',
+        user.id,
+        projectId,
+        id,
+      );
+      updateData.fileBoardPath = uploadResult.storagePath;
     }
 
     // Update BOM item with file paths
