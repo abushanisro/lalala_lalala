@@ -102,15 +102,6 @@ export function ProjectModules({ projectId, bomCount, firstBomId: _firstBomId }:
       },
     },
     {
-      title: 'Electronics',
-      description: 'PCB assemblies and wire harnesses: board file extraction, BOM lines, part prices and assembly cost',
-      borderColor: 'border-l-4 border-l-cyan-500',
-      status: 'available' as const,
-      onClick: () => {
-        router.push(`/projects/${projectId}/electronics`);
-      },
-    },
-    {
       title: 'Process Planning & Costing',
       description: 'Define manufacturing processes, material selection, and cost estimation for OEM and suppliers',
       borderColor: 'border-l-4 border-l-primary/40',

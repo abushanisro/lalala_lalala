@@ -39,6 +39,8 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | GET | `/api/v1/auth/me` | authenticated | AuthController.me |
 | GET | `/api/v1/auth/session` | authenticated | SessionController.status |
 | POST | `/api/v1/auth/session/activity` | authenticated | SessionController.activity |
+| POST | `/api/v1/auth/session/end` | authenticated | SessionController.end |
+| POST | `/api/v1/auth/sign-ins` | public | AuthController.startSession |
 
 ## balloon-diagrams
 
@@ -62,6 +64,14 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | GET | `/api/v1/benchmark-sessions/:id` | viewer | BenchmarkSessionsController.findOne |
 | PUT | `/api/v1/benchmark-sessions/:id` | member | BenchmarkSessionsController.update |
 
+## bom-item-stars
+
+| Method | Path | Access | Handler |
+|---|---|---|---|
+| GET | `/api/v1/bom-item-stars` | viewer | BomItemStarsController.list |
+| DELETE | `/api/v1/bom-item-stars/:bomItemId` | viewer | BomItemStarsController.unstar |
+| PUT | `/api/v1/bom-item-stars/:bomItemId` | viewer | BomItemStarsController.star |
+
 ## bom-items
 
 | Method | Path | Access | Handler |
@@ -74,16 +84,26 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | DELETE | `/api/v1/bom-items/:id` | member | BOMItemsController.remove |
 | GET | `/api/v1/bom-items/:id` | viewer | BOMItemsController.findOne |
 | PUT | `/api/v1/bom-items/:id` | member | BOMItemsController.update |
+| POST | `/api/v1/bom-items/:id/analysis-runs` | member | BOMItemsController.runAnalysis |
+| GET | `/api/v1/bom-items/:id/analysis-status` | viewer | BOMItemsController.getAnalysisStatus |
 | POST | `/api/v1/bom-items/:id/cad-analyses` | member | BOMItemsController.analyzeBOMItemCAD |
 | GET | `/api/v1/bom-items/:id/cad-analysis` | viewer | BOMItemsController.getBOMItemCADAnalysis |
 | GET | `/api/v1/bom-items/:id/cad-analysis/history` | viewer | BOMItemsController.getBOMItemAnalysisHistory |
+| DELETE | `/api/v1/bom-items/:id/calculator-field-overrides` | member | CalculatorFieldOverridesController.clear |
+| GET | `/api/v1/bom-items/:id/calculator-field-overrides` | viewer | CalculatorFieldOverridesController.list |
+| PUT | `/api/v1/bom-items/:id/calculator-field-overrides` | member | CalculatorFieldOverridesController.set |
 | POST | `/api/v1/bom-items/:id/calculator-inputs` | member | BOMItemsController.resolveCalculatorInputs |
 | GET | `/api/v1/bom-items/:id/candidate-routes` | viewer | BOMItemsController.getCandidateRoutes |
 | POST | `/api/v1/bom-items/:id/cost-override` | member | BOMItemsController.setCostOverride |
 | GET | `/api/v1/bom-items/:id/cost-summary` | viewer | BOMItemsController.getCostSummary |
+| GET | `/api/v1/bom-items/:id/cost-table` | viewer | BOMItemsController.getCostTable |
 | POST | `/api/v1/bom-items/:id/custom-route-applications` | member | BOMItemsController.applyCustomRoute |
 | GET | `/api/v1/bom-items/:id/dependencies` | viewer | BOMItemsController.checkDeleteDependencies |
+| GET | `/api/v1/bom-items/:id/design-guidance` | viewer | BOMItemsController.getDesignGuidance |
 | GET | `/api/v1/bom-items/:id/dfm-scores` | viewer | BOMItemsController.getDFMScores |
+| DELETE | `/api/v1/bom-items/:id/draw-direction` | member | BomItemDrawDirectionController.clear |
+| GET | `/api/v1/bom-items/:id/draw-direction` | viewer | BomItemDrawDirectionController.get |
+| PUT | `/api/v1/bom-items/:id/draw-direction` | member | BomItemDrawDirectionController.set |
 | POST | `/api/v1/bom-items/:id/drawing-analyses` | member | BOMItemsController.analyzeDrawing |
 | GET | `/api/v1/bom-items/:id/dxf-content` | viewer | BOMItemsController.getDxfContent |
 | GET | `/api/v1/bom-items/:id/dxf-content-legacy` | viewer | BOMItemsController.getDxfContentLegacy |
@@ -93,19 +113,35 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | GET | `/api/v1/bom-items/:id/file-url/dxf` | viewer | BOMItemsController.getDxfFileUrl |
 | POST | `/api/v1/bom-items/:id/files` | member | BOMItemsController.uploadFiles |
 | DELETE | `/api/v1/bom-items/:id/force` | admin | BOMItemsController.forceRemove |
+| GET | `/api/v1/bom-items/:id/forging-dfm` | viewer | BOMItemsController.getForgingDfm |
 | GET | `/api/v1/bom-items/:id/gdt-analysis` | viewer | BOMItemsController.getGdtAnalysis |
 | POST | `/api/v1/bom-items/:id/machine-override` | member | BOMItemsController.setMachineOverride |
+| POST | `/api/v1/bom-items/:id/machining-allowances` | member | BOMItemsController.decideMachiningAllowance |
 | POST | `/api/v1/bom-items/:id/machining-calculator-inputs` | member | BOMItemsController.resolveMachiningCalculatorInputs |
+| GET | `/api/v1/bom-items/:id/machining-dfm` | viewer | BOMItemsController.getMachiningDfm |
 | GET | `/api/v1/bom-items/:id/machining-need` | viewer | BOMItemsController.getMachiningNeed |
 | GET | `/api/v1/bom-items/:id/manufacturing-implications` | viewer | BOMItemsController.getManufacturingImplications |
 | GET | `/api/v1/bom-items/:id/material-intelligence` | viewer | BOMItemsController.getMaterialIntelligence |
 | GET | `/api/v1/bom-items/:id/material-strengths` | viewer | BOMItemsController.getMaterialStrengths |
+| GET | `/api/v1/bom-items/:id/material-usage` | viewer | BOMItemsController.getMaterialUsage |
 | GET | `/api/v1/bom-items/:id/nre` | viewer | BOMItemsController.getNre |
+| GET | `/api/v1/bom-items/:id/part-summary` | viewer | BOMItemsController.getPartSummary |
+| GET | `/api/v1/bom-items/:id/plastic-dfm` | viewer | BOMItemsController.getPlasticDfm |
 | GET | `/api/v1/bom-items/:id/pmi-records` | viewer | BOMItemsController.getPmiRecords |
 | POST | `/api/v1/bom-items/:id/pmi-records/review` | member | BOMItemsController.reviewPmiRecord |
+| DELETE | `/api/v1/bom-items/:id/pull-direction` | member | BomItemPullDirectionController.clear |
+| GET | `/api/v1/bom-items/:id/pull-direction` | viewer | BomItemPullDirectionController.get |
+| PUT | `/api/v1/bom-items/:id/pull-direction` | member | BomItemPullDirectionController.set |
 | POST | `/api/v1/bom-items/:id/reanalyze` | member | BOMItemsController.reanalyze |
 | POST | `/api/v1/bom-items/:id/route-applications` | member | BOMItemsController.applyRoute |
 | GET | `/api/v1/bom-items/:id/route-comparison` | viewer | BOMItemsController.getRouteComparison |
+| GET | `/api/v1/bom-items/:id/sand-dfm` | viewer | BOMItemsController.getSandDfm |
+| GET | `/api/v1/bom-items/:id/sand-snapshots` | viewer | SandSnapshotsController.list |
+| POST | `/api/v1/bom-items/:id/sand-snapshots` | member | SandSnapshotsController.create |
+| GET | `/api/v1/bom-items/:id/sand-variable-overrides` | viewer | SandVariableOverridesController.list |
+| DELETE | `/api/v1/bom-items/:id/sand-variable-overrides/:variable` | member | SandVariableOverridesController.clear |
+| PUT | `/api/v1/bom-items/:id/sand-variable-overrides/:variable` | member | SandVariableOverridesController.set |
+| POST | `/api/v1/bom-items/:id/scenario-applications` | member | BOMItemsController.applyScenario |
 | PATCH | `/api/v1/bom-items/:id/scenario-overrides` | member | BOMItemsController.patchScenarioOverrides |
 | GET | `/api/v1/bom-items/:id/secondary-processes` | viewer | BOMItemsController.getSecondaryProcesses |
 | POST | `/api/v1/bom-items/:id/step-conversions` | member | BOMItemsController.convertStepFile |
@@ -162,6 +198,15 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | PUT | `/api/v1/calculators/:id/formulas/:formulaId` | admin | CalculatorsController.updateFormula |
 | POST | `/api/v1/calculators/sheet-metal/lookups` | member | CalculatorsController.sheetMetalLookup |
 
+## casting-analyses
+
+| Method | Path | Access | Handler |
+|---|---|---|---|
+| GET | `/api/v1/casting-analyses` | viewer | SandCastingController.list |
+| POST | `/api/v1/casting-analyses` | member | SandCastingController.request |
+| GET | `/api/v1/casting-analyses/:id` | viewer | SandCastingController.get |
+| GET | `/api/v1/casting-analyses/:id/meshes` | viewer | SandCastingController.mesh |
+
 ## child-part-costs
 
 | Method | Path | Access | Handler |
@@ -196,58 +241,6 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | Method | Path | Access | Handler |
 |---|---|---|---|
 | GET | `/api/v1/currencies` | viewer | FxController.listCurrencies |
-
-## electronic-coverage-reports
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| GET | `/api/v1/electronic-coverage-reports` | viewer | ElectronicsController.coverage |
-
-## electronic-designs
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| GET | `/api/v1/electronic-designs` | viewer | ElectronicsController.listDesigns |
-| POST | `/api/v1/electronic-designs` | member | ElectronicsController.createDesign |
-| DELETE | `/api/v1/electronic-designs/:designId` | member | ElectronicsController.deleteDesign |
-| GET | `/api/v1/electronic-designs/:designId` | viewer | ElectronicsController.getDesign |
-| DELETE | `/api/v1/electronic-designs/:designId/revisions/:revisionId` | member | ElectronicsController.deleteRevision |
-
-## electronic-file-formats
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| GET | `/api/v1/electronic-file-formats` | viewer | ElectronicsController.formats |
-
-## electronic-jobs
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| GET | `/api/v1/electronic-jobs/:jobId` | viewer | ElectronicsController.job |
-
-## electronic-quotes
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| POST | `/api/v1/electronic-quotes` | member | ElectronicsController.quote |
-
-## electronic-results
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| GET | `/api/v1/electronic-results/:resultId` | viewer | ElectronicsController.result |
-
-## electronic-uploads
-
-| Method | Path | Access | Handler |
-|---|---|---|---|
-| POST | `/api/v1/electronic-uploads` | member | ElectronicsController.upload |
-| GET | `/api/v1/electronic-uploads/:uploadId/features` | viewer | ElectronicsController.features |
-| GET | `/api/v1/electronic-uploads/:uploadId/latest-result` | viewer | ElectronicsController.latestResult |
-| GET | `/api/v1/electronic-uploads/:uploadId/preview` | viewer | ElectronicsController.preview |
-| POST | `/api/v1/electronic-uploads/:uploadId/reparse` | member | ElectronicsController.reparseUpload |
-| GET | `/api/v1/electronic-uploads/:uploadId/scenario-options` | viewer | ElectronicsController.scenarioOptions |
-| GET | `/api/v1/electronic-uploads/:uploadId/thumbnail` | viewer | ElectronicsController.thumbnail |
 
 ## exchange-rates
 
@@ -409,6 +402,8 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | PUT | `/api/v1/processes/sm-lookup-table-rows/:table/:id` | admin | ProcessesController.updateSmLookupRow |
 | GET | `/api/v1/processes/sm-lookup-tables` | viewer | ProcessesController.getSmLookupTables |
 | GET | `/api/v1/processes/sm-lookup-tables/by-name/:table` | viewer | ProcessesController.getSmLookupTableByName |
+| GET | `/api/v1/processes/source-tables/machine/:id` | viewer | ProcessesController.getMachineSourceTable |
+| GET | `/api/v1/processes/source-tables/material/:id` | viewer | ProcessesController.getMaterialSourceTable |
 | GET | `/api/v1/processes/stroke-rate-factor-table` | viewer | ProcessesController.getStrokeRateFactorTable |
 | GET | `/api/v1/processes/turret-machines-table` | viewer | ProcessesController.getTurretMachinesTable |
 | GET | `/api/v1/processes/variables` | viewer | ProcessesController.getDomainVariables |
@@ -638,6 +633,12 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 |---|---|---|---|
 | GET | `/api/v1/routing-templates` | viewer | ManufacturingKnowledgeController.getTemplates |
 
+## sand-snapshots
+
+| Method | Path | Access | Handler |
+|---|---|---|---|
+| POST | `/api/v1/sand-snapshots/:snapshotId/review` | member | SandSnapshotReviewController.review |
+
 ## supplier-evaluation-groups
 
 | Method | Path | Access | Handler |
@@ -695,6 +696,13 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 | GET | `/api/v1/supplier-nominations/evaluations/:evaluationId/scores` | viewer | SupplierNominationsController.getEvaluationScores |
 | PUT | `/api/v1/supplier-nominations/evaluations/:evaluationId/scores` | member | SupplierNominationsController.updateEvaluationScores |
 | GET | `/api/v1/supplier-nominations/project/:projectId` | viewer | SupplierNominationsController.findByProject |
+
+## tooling-catalogs
+
+| Method | Path | Access | Handler |
+|---|---|---|---|
+| GET | `/api/v1/tooling-catalogs` | viewer | ToolingCatalogController.list |
+| GET | `/api/v1/tooling-catalogs/:domain` | viewer | ToolingCatalogController.findOne |
 
 ## tooling-costs
 
@@ -766,4 +774,4 @@ Every route of the public API, grouped by resource. Generated from the reviewed 
 
 ---
 
-454 routes in 59 resources.
+477 routes in 56 resources.

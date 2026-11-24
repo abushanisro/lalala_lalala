@@ -4,7 +4,7 @@
 #   APP_HOST=<public ip> ENGINE_HOST=<public ip> ENGINE_PRIVATE_IP=<10.x> [IMAGE_PROJECT=emithran-amd64] [ENV_FILE=~/emithran-prod-run/env/prd.env] \
 #   infra/oracle/micro-deploy.sh engines | app | status
 #
-#   engines : the CAD and electronics engines + two loopback forwarders on ENGINE_HOST (docker-compose.micro-engines.yml)
+#   engines : the CAD engine + its loopback forwarder on ENGINE_HOST (docker-compose.micro-engines.yml)
 #   app     : Postgres, PostgREST, backend, frontend on APP_HOST (docker-compose.micro-app.yml) and the SSH tunnel to the engines.
 #             The tunnel connector (cloudflared) is NOT started here: starting it is the moment the public site moves (see `cutover` in the runbook).
 #   status  : what runs where, memory, tunnel and engine reachability.

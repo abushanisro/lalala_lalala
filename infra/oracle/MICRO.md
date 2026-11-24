@@ -6,12 +6,12 @@ Two `VM.Standard.E2.1.Micro` servers (1 GB RAM, 1/8 core with bursts, 50 GB disk
 | Server | Runs | Memory ceilings |
 |---|---|---|
 | app (micro-1) | Postgres, PostgREST, backend, frontend, cloudflared | 300 + 96 + 420 + 200 + 64 MB, plus 4 GB swap |
-| engines (micro-2) | CAD engine, electronics engine, two loopback forwarders | 700 + 200 + 2 x 16 MB |
+| engines (micro-2) | CAD engine (it reads board files too), one loopback forwarder | 900 + 16 MB |
 
-The engines stay on the private `internal` network (no route out, none in). A forwarder container on `internal` + `edge` publishes each engine on the
-engine server's **loopback only**; an SSH tunnel from the app server (a key that may forward exactly two loopback ports, nothing else) carries it. No
+The engines stay on the private `internal` network (no route out, none in). A forwarder container on `internal` + `edge` publishes the engine on the
+engine server's **loopback only**; an SSH tunnel from the app server (a key that may forward exactly that loopback port, nothing else) carries it. No
 new port is open on either server or in the cloud firewall (SSH only). Oracle's Ubuntu image rejects every host-bound connection but SSH; the one
-rule `micro-deploy.sh` adds lets only Docker's private networks (172.16.0.0/12) reach the two tunnel ports.
+rule `micro-deploy.sh` adds lets only Docker's private networks (172.16.0.0/12) reach the tunnel port.
 
 ## Build, ship, start (nothing public changes)
 ```

@@ -1355,7 +1355,6 @@ export default function BOMDetailPage() {
         {...(defaultItemType !== undefined && { defaultItemType })}
         onSuccess={refetchBOMItems}
         getAutoParent={getAutoParentForType}
-        electronicsHref={`/projects/${projectId}/electronics`}
       />
 
       <BOMItemDetailPanel

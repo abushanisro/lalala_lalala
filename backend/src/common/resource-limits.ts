@@ -46,7 +46,7 @@ export interface HeavyWorkLimits {
 
 export interface ResourceLimits {
   http: HttpServerLimits;
-  /** What a CAD or electronics design pack (.zip) may expand to in total. */
+  /** What a CAD pack or a circuit board file set (.zip) may expand to in total. */
   archiveMaxExpandedBytes: number;
   xlsx: XlsxLimits;
   heavyWork: HeavyWorkLimits;

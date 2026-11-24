@@ -2,7 +2,6 @@
 // with no token as ADMIN_FALLBACK_EMAIL. This documents that the bypass still works when asked
 // for, so turning the default off did not remove the local-development path.
 process.env.ALLOW_DEV_AUTH_BYPASS = 'true';
-process.env.ELECTRONICS_QUEUE_DRIVER = 'memory';
 
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';

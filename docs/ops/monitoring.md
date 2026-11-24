@@ -92,7 +92,7 @@ Names are the OpenTelemetry names with dots as underscores and the unit as suffi
 | `emithran_privileged_client_calls_total` | counter | `emithran_privileged_site` (the reason's category before `:`, e.g. `reference-data`, `audit`) | `DatabaseService.getPrivilegedClient`, one per privileged (RLS-bypassing) client handed out; other code can count through `recordPrivilegedClientCall` in `telemetry/metrics.ts` |
 | `emithran_costing_duration_seconds` | histogram | `emithran_operation` (cost_summary, route_comparison), `emithran_outcome` (ok, error) | `@Traced` on `getCostSummary` / `getRouteComparison`; the `_count` is the run count |
 | `emithran_cad_upload_duration_seconds` | histogram | `emithran_outcome` (ok, error, retry) | CAD upload runner, one point per processing attempt (new) |
-| `emithran_job_queue_depth` | gauge | `emithran_queue` (`cad_upload`, electronics queues) | read when metrics are exported; 2 s bound per queue (CAD upload reader new) |
+| `emithran_job_queue_depth` | gauge | `emithran_queue` (`cad_upload`) | read when metrics are exported; 2 s bound per queue (CAD upload reader new) |
 | `emithran_engine_stage_duration_seconds` | histogram | `emithran_stage`, `emithran_outcome` | cad-engine stages that exist (step_load, geometry_analysis, component_features, assembly_analysis, extract_board, render_board) |
 | `http_client_request_duration_seconds` | histogram | `server_address`, status, method | outbound calls (database API, engines, FX) |
 | `probe_success`, `probe_duration_seconds` | gauge | `job` (probe-live, probe-ready, probe-database, probe-engines), `engine` | blackbox |

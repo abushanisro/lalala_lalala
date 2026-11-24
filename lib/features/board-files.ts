@@ -14,3 +14,17 @@ export function isBoardSetFile(name: string): boolean {
   const ext = extensionOf(name);
   return BOARD_FILE_EXTENSIONS.includes(ext) || BOARD_TABLE_EXTENSIONS.includes(ext) || ext === 'zip';
 }
+
+export interface RejectedFile { name: string; tooLarge: boolean }
+
+/** What to tell a person when the BOM item form refuses files they dropped: too large, or a type it does not take (with the types it takes). */
+export function describeRejection(rejected: readonly RejectedFile[], maxMb: number): { title: string; description: string } {
+  const names = rejected.map((r) => r.name).join(', ');
+  const tooLarge = rejected.some((r) => r.tooLarge);
+  return {
+    title: tooLarge ? 'File too large' : 'File type not supported',
+    description: `${names}: ${tooLarge
+      ? `the limit is ${maxMb} MB per file.`
+      : 'this form takes STEP (.step, .stp) for 3D parts, DXF or DWG for drawings, and a circuit board\'s Gerber, drill and Pick Place files (or one .zip of them).'}`,
+  };
+}

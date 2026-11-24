@@ -268,7 +268,7 @@ if (exec 3<>/dev/tcp/127.0.0.1/4529) 2>/dev/null; then echo "FAIL port 4529 is a
 # The real backend, built from source, in development mode against this stack, with NO Supabase setting at all (a clean copy of dist/, so the repo's .env cannot leak in).
 npx nest build >/dev/null 2>&1
 APP="$TMP/app/backend"; mkdir -p "$APP"; cp -r dist "$APP/dist"; cp package.json "$APP/"; ln -s "$PWD/node_modules" "$APP/node_modules"
-( cd "$APP" && exec env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development APP_ENV=local BACKEND_PORT=4529 CAD_UPLOAD_RUNNER=off ELECTRONICS_QUEUE_DRIVER=memory \
+( cd "$APP" && exec env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development APP_ENV=local BACKEND_PORT=4529 CAD_UPLOAD_RUNNER=off \
     POSTGREST_URL="http://127.0.0.1:$LOCAL_API_PORT" DB_JWT_SECRET="$(grep '^DB_JWT_SECRET=' "$TMP/.env" | cut -d= -f2-)" \
     S3_BUCKET=emithran S3_REGION=us-east-1 S3_ENDPOINT="http://127.0.0.1:$LOCAL_S3_PORT" S3_FORCE_PATH_STYLE=true S3_ACCESS_KEY_ID=test S3_SECRET_ACCESS_KEY=testtesttest \
     AUTH0_DOMAIN=t.eu.auth0.com AUTH0_AUDIENCE=https://api.example.com AUTH0_CLAIM_NAMESPACE=https://example.com/ AUTH0_TRUSTED_CONNECTIONS=company-sso \

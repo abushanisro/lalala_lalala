@@ -16,7 +16,7 @@ const path = require('path');
 const { parseCsv } = require('./lib/electronics-memory-format');
 
 const memoryDir = path.resolve(__dirname, '../../memory/Electronics');
-const outDir = path.resolve(__dirname, '../src/modules/electronics-costing/domain/lookups');
+const outDir = path.resolve(__dirname, '../src/modules/bom-items/costing/pcb/board-graph/lookups');
 
 const TABLES = [
   {

@@ -104,7 +104,7 @@ Zero Trust → Networks → Tunnels → create a tunnel per environment (`emithr
 - **Organization:** MFA required for everyone with dashboard access; least-privilege roles.
 - **Database:** SSL enforcement on; network restrictions limited to the host's egress IP (and the migration runner's); backups on
   (PITR for prd); RLS on for every table (`npm run check:rls`).
-- **Storage:** every bucket private (`bom-files`, `electronics-uploads`, `avatars`, `delivery-attachments`); policies come with the
+- **Storage:** every bucket private (`bom-files`, `avatars`, `delivery-attachments`; `electronics-uploads` was emptied and dropped with the Electronics module, 2026-11-24); policies come with the
   baseline.
 - **Connection strings:** the app holds none (the job queue and the event bus need no database connection). Only
   `MIGRATE_DATABASE_URL` (migration runner, nightly backup) is one: the session-mode pooler (port 5432), not the transaction

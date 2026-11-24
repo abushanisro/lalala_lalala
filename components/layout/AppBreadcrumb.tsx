@@ -28,7 +28,6 @@ const SEGMENT_LABELS: Partial<Record<string, string>> = {
   calculators: 'Calculators',
   builder: 'Builder',
   settings: 'Settings',
-  electronics: 'Electronics',
   'process-planning': 'Process Planning',
   'production-planning': 'Production Planning',
   'quality-control': 'Quality Control',
@@ -50,7 +49,6 @@ const ID_LABELS: Partial<Record<string, string>> = {
   projects: 'Project',
   bom: 'BOM',
   items: 'Item',
-  electronics: 'Design',
   'quality-control': 'Inspection',
   'production-planning': 'Lot',
   vendors: 'Vendor',
@@ -68,13 +66,11 @@ const ROUTABLE: RegExp[] = [
   /^\/(vendors|calculators|production-planning|mhr-database)\/[^/]+$/,
   /^\/calculators\/builder\/[^/]+$/,
   /^\/projects\/[^/]+$/,
-  /^\/projects\/[^/]+\/(electronics|process-planning|production-planning|quality-control|reports|rfq|supplier-evaluation|supplier-nomination)$/,
+  /^\/projects\/[^/]+\/(process-planning|production-planning|quality-control|reports|rfq|supplier-evaluation|supplier-nomination)$/,
   /^\/projects\/[^/]+\/bom\/[^/]+$/,
-  /^\/projects\/[^/]+\/electronics\/[^/]+$/,
   /^\/projects\/[^/]+\/quality-control\/[^/]+$/,
   /^\/projects\/[^/]+\/rfq\/(communications|quotes|templates)$/,
   /^\/projects\/[^/]+\/bom\/[^/]+\/items\/[^/]+\/manufacturing-intelligence$/,
-  /^\/projects\/[^/]+\/electronics\/[^/]+\/manufacturing-intelligence$/,
 ];
 
 const isRoutable = (path: string) => ROUTABLE.some((re) => re.test(path));

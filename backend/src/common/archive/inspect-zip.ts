@@ -1,4 +1,4 @@
-// The one gate for every zip-shaped upload (CAD packs, electronics design packs, .xlsx workbooks), in two layers. Pure: bytes in,
+// The one gate for every zip-shaped upload (CAD packs, circuit board file sets, .xlsx workbooks), in two layers. Pure: bytes in,
 // verdict out; nothing touches the filesystem.
 //
 // Layer 1, inspectZip: the archive is measured from its central directory before anything is inflated. Refused: too many entries,

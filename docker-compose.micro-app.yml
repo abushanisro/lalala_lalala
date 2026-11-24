@@ -1,7 +1,7 @@
 # Overlay for the web tier on a small Always Free x86 server (VM.Standard.E2.1.Micro: 1 GB RAM, 1/8 core with bursts).
 #   docker compose -p emithran-prd -f docker-compose.prod.yml -f docker-compose.data.yml -f docker-compose.micro-app.yml --env-file env/prd.env up -d --no-build \
 #     postgres postgrest backend frontend cloudflared
-# Runs: Postgres, PostgREST, the backend, the frontend and the tunnel connector. The CAD and electronics engines run on the OTHER small server
+# Runs: Postgres, PostgREST, the backend, the frontend and the tunnel connector. The CAD engine (it reads board files too) runs on the OTHER small server
 # (docker-compose.micro-engines.yml) and are reached through an SSH tunnel that listens on the Docker bridge (infra/oracle/micro-deploy.sh installs it),
 # so no new port is opened anywhere: the cloud firewall keeps allowing only SSH.
 #
