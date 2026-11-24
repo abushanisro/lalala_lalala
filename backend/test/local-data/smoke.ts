@@ -169,6 +169,15 @@ async function main(): Promise<void> {
     const assembly = rows.filter((r) => PCB_ASSEMBLY.includes(r.operation));
     must(assembly.length === 12 && assembly.every((r) => r.calculator_name === `PCB - ${r.operation}` && r.machine_class && r.is_active), `rows ${JSON.stringify(assembly.filter((r) => !r.is_active || !r.calculator_name))}`);
   });
+  await check('migration 1145 seeded the XRF work centres: India at the workbook\'s 91.6 / 96.14 INR an hour, USA at its built 15.2794 / 43.21 USD', async () => {
+    const rows = await (await api('/mhr_records?machine_class=eq.xrf_analyzer&select=location,machine_name,mhr_usd_per_hour,usd_lhr_total&order=location', minter.forService())).json() as
+      { location: string; machine_name: string; mhr_usd_per_hour: number | string; usd_lhr_total: number | string }[];
+    const at = (loc: string) => rows.find((r) => r.location === loc);
+    must(rows.length === 2, `rows ${JSON.stringify(rows)}`);
+    // India in rupees at the stub's USD -> INR budget rate (93.93).
+    must(at('India')?.machine_name === 'XRF-0000-0001P' && Number(at('India')?.mhr_usd_per_hour) === 0.9752 && Number(at('India')?.usd_lhr_total) === 1.0235, `India ${JSON.stringify(at('India'))}`);
+    must(Number(at('USA')?.mhr_usd_per_hour) === 15.2794 && Number(at('USA')?.usd_lhr_total) === 43.21, `USA ${JSON.stringify(at('USA'))}`);
+  });
   await check("migration 1121 lets a signed-in user read the consumable prices (a waterjet's garnet), and not write them", async () => {
     const bob = minter.forUser('22222222-2222-4222-8222-222222222222');
     const rows = await (await api('/consumable_prices?consumable_type=eq.garnet_abrasive&select=location,price_per_unit', bob)).json() as { location: string; price_per_unit: number | string }[];

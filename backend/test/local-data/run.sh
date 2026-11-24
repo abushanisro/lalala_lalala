@@ -233,6 +233,15 @@ ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COL
 ALTER TABLE public.process_taxonomy ADD COLUMN default_machine_name varchar(200), ADD COLUMN notes text;
 -- the Stock Machining catalog rows migration 790 seeds (no machine class): migration 1114 classes both and fails if one stays without
 INSERT INTO public.process_taxonomy (process_group, process_name, roadmap_status) VALUES ('Stock Machining', 'Band Saw', 'not_modeled'), ('Stock Machining', 'Material Stock', 'non_mfg');
+-- the machine table's currency, catalog and capacity columns and its rate sources as the real database has them (migrations 322, 330, 542 and
+-- after): migration 1145 seeds the XRF work centres with them; IF NOT EXISTS keeps the ones above
+ALTER TABLE public.mhr_records ADD COLUMN IF NOT EXISTS currency text DEFAULT 'USD', ADD COLUMN IF NOT EXISTS process_family varchar(30),
+  ADD COLUMN IF NOT EXISTS data_version varchar(20) DEFAULT 'FY2025-26', ADD COLUMN IF NOT EXISTS is_global boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS availability_status varchar(24) DEFAULT 'available', ADD COLUMN IF NOT EXISTS mhr_source text DEFAULT 'legacy_import',
+  ADD COLUMN IF NOT EXISTS shifts_per_day numeric DEFAULT 3, ADD COLUMN IF NOT EXISTS hours_per_shift numeric DEFAULT 8,
+  ADD COLUMN IF NOT EXISTS working_days_per_year numeric DEFAULT 260, ADD COLUMN IF NOT EXISTS capacity_utilization_rate numeric DEFAULT 95,
+  ADD COLUMN IF NOT EXISTS direct_overhead_source varchar(24), ADD COLUMN IF NOT EXISTS indirect_overhead_source varchar(24),
+  ADD COLUMN IF NOT EXISTS labor_rate_source varchar(24);
 -- the material cost record table as the real database has it (migration 040): migration 1041 adds the stock label to it
 CREATE TABLE public.raw_material_cost_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid NOT NULL, user_id uuid NOT NULL, is_active boolean DEFAULT true);
 -- the machining reference table as the real database has it (migration 638): migration 1026 completes its tblTapping row from its tblReaming row
