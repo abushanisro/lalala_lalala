@@ -756,6 +756,18 @@ export class AutoFillService {
             }])),
           } : null,
         } : {}),
+        // A printed circuit board given as a 3D model (cad-engine pcb/feature_extractor.py): the board found among the model's bodies, its
+        // thickness, outline, holes, cutouts and the bodies on each side. The PCB cost reads it when the item has no board files (pcbGeometry).
+        ...(family.family === 'pcb' ? {
+          pcbModelGeometry: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            board: cadMI.features.board ?? null,
+            holes: cadMI.features.holes ?? [],
+            cutouts: cadMI.features.cutouts ?? [],
+            components: cadMI.features.components ?? null,
+            unresolved: cadMI.features.unresolved ?? [],
+          } : null,
+        } : {}),
         // A blow molded or rotomolded shell (cad-engine roto_blow/feature_extractor.py): its envelope, wall, the air it closes in, spouts, parting
         // line and perimeter, holes and voids. The Roto & Blow Molding cost prices both routes and the operations its features take from it.
         ...(family.family === 'roto_blow' ? {

@@ -73,6 +73,10 @@ cad-engine/
     voids.py                     — the voids cleaning clears, on a voxel grid: pockets, ring pockets, enclosed cavities, non-round holes, each with its volume and depth
   roto_blow/
     feature_extractor.py         — a blow molded or rotomolded shell: wall, the inside (additive/voids.py), spout, parting line, perimeter, envelope, holes and voids (family_hint="roto_blow")
+  pcb/
+    service.py, parsers/, extraction/, contract/
+                                 — a printed circuit board's board files (Gerber, Excellon, drill report, Pick Place): the board feature graph and its preview (/extract/board, /render/board)
+    feature_extractor.py         — a board given as a 3D model: the board found among the model's bodies, its thickness, outline, holes, cutouts and the bodies on each side (family_hint="pcb")
   bar_tube/
     feature_extractor.py         — bar and tube measurements: section swept along a centreline (stock form, bends, developed length, holes, ends, end forms) or cut plate (family_hint="bar_tube")
     centreline.py, section.py    — the centreline (bends joined by straights, section frame) and the cross-section classifier

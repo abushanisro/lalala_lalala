@@ -169,7 +169,7 @@ import { buildRotoBlowCostSummary } from './costing/roto-blow/roto-blow-cost-sum
 import { ROTO_BLOW_ROUTES, type RotoBlowRouteKey } from './costing/roto-blow/roto-blow-route';
 import { rotoBlowRouteFor, rotoBlowRouteId } from './costing/roto-blow/roto-blow-route-comparison';
 import { PcbCostService, type PcbCostResult } from './costing/pcb/pcb-cost.service';
-import type { PcbGeometrySummary } from './costing/pcb/board-graph/pcb-geometry';
+import type { PcbGeometrySummary, PcbModelGeometry } from './costing/pcb/board-graph/pcb-geometry';
 import { buildPcbCostSummary } from './costing/pcb/pcb-cost-summary';
 import { PCB_ROUTES, type PcbRouteKey } from './costing/pcb/pcb-route';
 import { pcbRouteFor, pcbRouteId } from './costing/pcb/pcb-route-comparison';
@@ -5471,6 +5471,7 @@ export class BomItemCostingService {
       ? await this.pcbCostService.price({
         client: this.databaseService.getClient(accessToken), accessToken, location,
         geometry: (summary['pcbGeometry'] ?? null) as PcbGeometrySummary | null,
+        modelGeometry: (summary['pcbModelGeometry'] ?? null) as PcbModelGeometry | null, modelName: item.file3dPath ? item.file3dPath.split('/').pop()!.replace(/^\d+_/, '') : null,
         ...(forceRoute ? { forceRoute } : {}),
         overrides: item.scenarioOverrides, batchSize, annualVolume: annualVolume ?? null,
         amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null, usdToLocal, bomComponents,

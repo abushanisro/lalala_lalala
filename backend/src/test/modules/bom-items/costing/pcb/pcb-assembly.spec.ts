@@ -184,7 +184,7 @@ describe('what the Cost Guide says about the assembly', () => {
     expect(b.assembly!.basis).toMatch(/37 component\(s\) as BOM children/);
     const r = quoted(b);
     expect(r.complete).toBe(false);
-    expect(JSON.stringify(line(r, 'Pick and Place')!.physicsGap)).toMatch(/no Pick Place file says where they go/);
+    expect(JSON.stringify(line(r, 'Pick and Place')!.physicsGap)).toMatch(/no Pick Place file says what and where they are/);
     expect(assemblyIncluded(resolvePcbPart(DCDC, {}, DEFAULTS).part!, 'include', 0).basis).toBe('Assembly: set to Include in the Cost Guide');
   });
 

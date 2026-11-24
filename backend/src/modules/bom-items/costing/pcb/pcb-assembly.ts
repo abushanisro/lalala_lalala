@@ -124,6 +124,10 @@ export function assemblyIncluded(part: PcbPart, mode: PcbAssemblyMode, bomCompon
   if (mode === 'include') return { included: true, basis: 'Assembly: set to Include in the Cost Guide' };
   if (placed + tht > 0) return { included: true, basis: `Assembly included automatically: the Pick Place file places ${placed} surface-mount and ${tht} through-hole part(s)` };
   if (bomComponents > 0) return { included: true, basis: `Assembly included automatically: the board has ${bomComponents} component(s) as BOM children` };
+  const bodies = part.modelComponents ? part.modelComponents.top + part.modelComponents.bottom : 0;
+  if (bodies > 0) {
+    return { included: true, basis: `Assembly included automatically: the 3D model shows ${bodies} part(s) on the board (${part.modelComponents!.top} on the top, ${part.modelComponents!.bottom} on the bottom)` };
+  }
   return { included: false, basis: 'Bare board: the board files place no parts and the board has no BOM children (set Assembly to Include in the Cost Guide to assemble it)' };
 }
 
@@ -158,8 +162,8 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   const processes: PcbAssembly['processes'] = [];
   const userBasis = choice.mode === 'include' ? 'user' as const : 'auto' as const;
   if (placements + thtParts === 0) {
-    lines.push(kit.gapLine('Pick and Place', PCBA_CLASS.place, bomComponents > 0
-      ? `the board has ${bomComponents} BOM component(s) but no Pick Place file says where they go: upload the board files with the Pick Place (centroid) file, then Refresh analysis`
+    lines.push(kit.gapLine('Pick and Place', PCBA_CLASS.place, bomComponents > 0 || (part.modelComponents && part.modelComponents.top + part.modelComponents.bottom > 0)
+      ? `the board has parts (${bomComponents > 0 ? `${bomComponents} BOM component(s)` : 'bodies on the 3D model'}) but no Pick Place file says what and where they are: upload the board files with the Pick Place (centroid) file, then Refresh analysis`
       : 'no parts to place: the board files have no Pick Place file. Upload it with the board files, then Refresh analysis'));
     return { ...empty, processes: [{ group: 'Assembly', steps: ['Pick Place file needed'], basis: userBasis }], lines };
   }

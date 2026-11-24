@@ -44,10 +44,14 @@ BAR_TUBE = "bar_tube"
 # Blow molding and rotational molding (a hollow shell): measured by roto_blow/feature_extractor.py (its wall, inside, spout, parting line,
 # envelope). Reached only through the explicit family_hint: a molded shell is, by its geometry alone, a plastic molded part.
 ROTO_BLOW = "roto_blow"
+# A printed circuit board measured from its 3D model when its board files are not given (pcb/feature_extractor.py: the board found among the
+# model's bodies, its thickness, outline, holes and cutouts). Reached only through the explicit family_hint: a board is, by its geometry alone, a
+# sheet metal part. Its board files are measured by the board routes (pcb/service.py), not here.
+PCB = "pcb"
 
 ALL_FAMILIES: FrozenSet[str] = frozenset({
     SHEET_METAL, MILLED, TURNED, MILL_TURN, PLASTIC_MOLDED, DIE_CAST, SAND_CAST, INVESTMENT_CAST, FORGED, POWDER_METAL, COMPOSITE, ADDITIVE, BAR_TUBE,
-    ROTO_BLOW,
+    ROTO_BLOW, PCB,
 })
 
 # 2-Model Machining (a finished part machined from a cast blank, memory/"2 Mold Molding"): a hint, not a family. The part is analysed as

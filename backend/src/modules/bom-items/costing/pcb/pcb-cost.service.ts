@@ -7,7 +7,7 @@ import { lineToLocal } from '../casting/sand/sand-cost';
 import { SandMachineService } from '../casting/sand/sand-machine.service';
 import type { SandReference } from '../casting/sand/sand-reference';
 import { readStagedReference } from '../casting/sand/sand-reference.service';
-import type { PcbGeometrySummary } from './board-graph/pcb-geometry';
+import type { PcbGeometrySummary, PcbModelGeometry } from './board-graph/pcb-geometry';
 import { loadPcbCalculatorSpec } from './calculators/pcb-calculator-spec';
 import { PCB_CALCULATORS_MIGRATION } from './calculators/pcb-calculators-migration';
 import {
@@ -73,6 +73,28 @@ export function pcbMeasuredFrom(g: PcbGeometrySummary | null | undefined): PcbMe
   };
 }
 
+/**
+ * The board as the routes take it, from its 3D model (feature_graph.summary.pcbModelGeometry: cad-engine pcb/feature_extractor.py), when it has
+ * no board files: its outline, thickness and holes, and the bodies standing on it. The internal cutouts are routed with the outline.
+ */
+export function pcbMeasuredFromModel(g: PcbModelGeometry | null | undefined, sourceName: string): PcbMeasured | null {
+  const b = g?.board;
+  if (!b || !(b.length_mm > 0) || !(b.width_mm > 0)) return null;
+  const cutouts = (g.cutouts ?? []).reduce((s, c) => s + (num(c.perimeter_mm) ?? 0), 0);
+  return {
+    source: 'cad_model', sourceName,
+    outline: { lengthMm: b.length_mm, widthMm: b.width_mm, areaMm2: num(b.area_mm2) },
+    outlinePerimeterMm: num(b.perimeter_mm) != null ? b.perimeter_mm + cutouts : null,
+    thicknessMm: num(b.thickness_mm),
+    holes: (g.holes ?? []).map((h) => ({ diameterMm: Number(h.diameter_mm), plated: true, count: Number(h.count) })),
+    modelComponents: g.components ?? null,
+    notes: {
+      holes: 'holes through the board by diameter (a model does not say which are plated: each is taken as plated)',
+      perimeter: cutouts > 0 ? `the outline and its ${g.cutouts.length} internal cutout(s), routed with it` : 'the outline path',
+    },
+  };
+}
+
 /** The Cost Guide's board values. */
 export function pcbOverridesFrom(o: Obj): PcbOverrides {
   const finish = String(o[PCB_KEYS.finish] ?? '').toLowerCase();
@@ -90,6 +112,10 @@ export interface PcbCostRequest {
   accessToken: string;
   location: string;
   geometry: PcbGeometrySummary | null | undefined;
+  /** The board measured from its 3D model (summary.pcbModelGeometry), read when it has no board files. */
+  modelGeometry?: PcbModelGeometry | null;
+  /** The 3D model's file name, for the model's facts. */
+  modelName?: string | null;
   forceRoute?: string;
   overrides: Obj | null | undefined;
   batchSize: number;
@@ -183,7 +209,12 @@ export class PcbCostService {
       this.laminates(req.client),
     ]);
     if (!reference) return none(null, ...refMissing);
-    const { part, missing: partMissing } = resolvePcbPart(pcbMeasuredFrom(req.geometry), pcbOverridesFrom(req.overrides ?? {}), {
+    // The board files when the board has them (they state its copper, nets and parts), else its 3D model (its shape only).
+    const measured = pcbMeasuredFrom(req.geometry) ?? pcbMeasuredFromModel(req.modelGeometry, req.modelName ?? '3D model');
+    if (!measured && req.modelGeometry && !req.modelGeometry.board) {
+      return none(null, `the 3D model shows no board (${req.modelGeometry.unresolved.join('; ') || 'no board found'}): upload the board files (Gerber set), or a model of the board`);
+    }
+    const { part, missing: partMissing } = resolvePcbPart(measured, pcbOverridesFrom(req.overrides ?? {}), {
       thicknessMm: reference.number('defaultBoardThickness'), copperOz: reference.number('defaultCopperLayerWeight'),
       soldermaskSides: reference.number('defaultNumSolderMaskSides'), viaPlugging: reference.flag('defaultEnableViaPlugging'),
     });
