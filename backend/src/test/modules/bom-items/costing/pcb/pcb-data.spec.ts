@@ -53,3 +53,41 @@ describe('the PCB fabrication machines at India rates (migration 1129)', () => {
     expect(machinesSql()).toContain("WHERE m.process_group = 'PCB' AND m.process_route = v.process AND m.operation = v.process AND m.machine_class IS NULL;");
   });
 });
+
+describe('the sourced PCB fabrication reference (migration 1130)', () => {
+  const referenceSql = () => readFileSync(join(MIGRATIONS, '1130_pcb_sourced_reference.sql'), 'utf8');
+
+  it('is what the generator writes from memory/', () => {
+    const committed = referenceSql();
+    execFileSync('node', [join(BACKEND, 'scripts/generate-pcb-reference-migration.js')], { stdio: 'ignore' });
+    expect(referenceSql()).toBe(committed);
+  });
+
+  it('stages each file whole as a 2026-PCB lookup table, every row with its source', () => {
+    for (const [name, file] of [['consumables', 'PCBA/consumables.csv'], ['process_times', 'PCBA/process_times.csv'], ['yield', 'PCBA/yield.csv']] as const) {
+      const t = readCsv(join(MEMORY, file));
+      expect(referenceSql()).toContain(`($str$lookup_table$str$, 'USA', $str$2026-PCB$str$, $str$${name}$str$, $str$${t.rows.length}$str$,`);
+      for (const r of t.rows) {
+        expect(String(r.source_url)).toMatch(/^https?:\/\//);
+        expect(String(r.source_date)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      }
+    }
+  });
+
+  it('holds the values the engine reads, by key, each with a lower and an upper end', () => {
+    const keyed = (file: string, key: string) => readCsv(join(MEMORY, file)).rows.filter((r) => r.item_key === key);
+    for (const key of ['prepreg_usd_per_kg', 'solder_mask_usd_per_kg', 'dry_film_usd_per_m2', 'tin_usd_per_kg', 'nickel_usd_per_kg', 'gold_usd_per_g', 'drill_bit_usd',
+      'drill_hit_life_hits', 'drill_repoints', 'router_bit_usd', 'router_bit_life_mm', 'entry_board_usd_per_sheet', 'backup_board_usd_per_sheet', 'drill_board_sheet_in',
+      'bed_of_nails_fixture_usd', 'flying_probe_program_usd', 'stamp_die_usd', 'tin_density_g_cm3', 'nickel_density_g_cm3', 'gold_density_g_cm3']) {
+      const rows = keyed('PCBA/consumables.csv', key);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(Number(r.value_max)).toBeGreaterThanOrEqual(Number(r.value_min));
+    }
+    for (const key of ['working_panel_in', 'tin_thickness_um', 'tin_rate_um_per_min', 'nickel_thickness_um', 'gold_thickness_um', 'gold_dwell_min', 'hasl_dwell_s', 'dryer_heated_length_ft', 'solder_mask_solids_pct']) {
+      expect(keyed('PCBA/process_times.csv', key).length).toBeGreaterThan(0);
+    }
+    // The working panel the fabs run: 18 x 24 in.
+    expect(keyed('PCBA/process_times.csv', 'working_panel_in')[0]).toMatchObject({ value_min: 18, value_max: 24 });
+    expect(keyed('PCBA/yield.csv', 'fab_yield_pct').map((r) => Number(r.layer_count_min))).toEqual(expect.arrayContaining([4, 8, 12, 16, 20]));
+  });
+});

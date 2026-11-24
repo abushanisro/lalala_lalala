@@ -176,7 +176,7 @@ WITH v(process, machine_class) AS (VALUES
 ${Object.entries(CLASS).map(([p, c]) => `  (${q(p)}, ${q(c)})`).join(',\n')}
 )
 UPDATE public.process_taxonomy t
-SET machine_class = v.machine_class, updated_at = now()
+SET machine_class = v.machine_class
 FROM v
 WHERE t.process_group = 'PCB' AND t.process_name = v.process AND t.machine_class IS NULL;
 

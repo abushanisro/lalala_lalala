@@ -135,6 +135,16 @@ async function main(): Promise<void> {
     const bob = await (await api('/projects?select=name', minter.forUser('22222222-2222-4222-8222-222222222222'))).json() as { name: string }[];
     must(alice.length === 1 && bob.length === 0, `alice ${alice.length}, bob ${bob.length}`);
   });
+  await check('migration 1129 twinned the 98 PCB fabrication machines in India at the 3 - Metal / 4 - Metal India labour, and 1130 staged the sourced PCB reference', async () => {
+    const india = await (await api('/mhr_records?process_group=eq.PCB&location=eq.India&select=machine_class,machine_name,usd_labor_rate_per_hr', minter.forService())).json() as
+      { machine_class: string; machine_name: string; usd_labor_rate_per_hr: number | string | null }[];
+    must(india.length === 98, `India PCB rows ${india.length}`);
+    must(india.every((r) => [0, 1.73, 2.3].includes(Number(r.usd_labor_rate_per_hr))), `India labour ${JSON.stringify([...new Set(india.map((r) => r.usd_labor_rate_per_hr))])}`);
+    must(india.some((r) => r.machine_class === 'cure_plugged_vias' && r.machine_name === 'Tampprinter PCB Drying Oven'), 'the dryer is twinned under its USA name');
+    const staged = await (await api('/machining_reference_data?source_version=eq.2026-PCB&category=eq.lookup_table&select=key,value&order=key', minter.forService())).json() as { key: string; value: string | null }[];
+    const tables = Object.fromEntries(staged.map((r) => [r.key, Number(r.value)]));
+    must(tables.consumables > 0 && tables.process_times > 0 && tables.yield > 0, `staged ${JSON.stringify(tables)}`);
+  });
   await check("migration 1121 lets a signed-in user read the consumable prices (a waterjet's garnet), and not write them", async () => {
     const bob = minter.forUser('22222222-2222-4222-8222-222222222222');
     const rows = await (await api('/consumable_prices?consumable_type=eq.garnet_abrasive&select=location,price_per_unit', bob)).json() as { location: string; price_per_unit: number | string }[];

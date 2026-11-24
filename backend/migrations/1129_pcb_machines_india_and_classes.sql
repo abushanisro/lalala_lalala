@@ -246,7 +246,7 @@ WITH v(process, machine_class) AS (VALUES
   ($str$Wet Film Solder Mask$str$, $str$wet_film_solder_mask$str$)
 )
 UPDATE public.process_taxonomy t
-SET machine_class = v.machine_class, updated_at = now()
+SET machine_class = v.machine_class
 FROM v
 WHERE t.process_group = 'PCB' AND t.process_name = v.process AND t.machine_class IS NULL;
 
