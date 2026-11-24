@@ -36,15 +36,15 @@ export class SheetMetalCatalogOperationsService {
   async attach(input: {
     lines: ProcessLineCost[];
     features: readonly SheetMetalFeature[];
-    /** Tapped holes the drawing calls out (size + count); CAD does not detect threads. */
+    /** The tapped holes (size + count): the drawing's callouts merged with the CAD's own tapped holes (bom-item-costing resolveThreads). */
     threads: ReadonlyArray<{ size: string; count: number }>;
     thicknessMm: number;
     family: string;
     accessToken: string;
   }): Promise<string[]> {
     const { lines, thicknessMm, family, accessToken } = input;
-    // A tapped hole is a drawing fact (CAD sees only its pilot hole): one
-    // SimpleHole/tapped entry per called-out thread size. The pilot stays a
+    // One SimpleHole/tapped entry per thread size: the drawing's callouts and
+    // the holes the CAD engine found at a tap-drill size. The pilot stays a
     // hole of its own — it is still punched or cut before it is tapped.
     const features: SheetMetalFeature[] = [
       ...input.features,
