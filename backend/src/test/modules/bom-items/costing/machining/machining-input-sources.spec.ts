@@ -3,10 +3,12 @@ import {
   computeDrillCycle,
   computeMillingCostSummary,
   computeTurningCostSummary,
+  machineSpindleSeed,
+  spindleLimitSeed,
   type MachineClassId,
   type MachiningCostInput,
 } from '../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
-import { specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
+import { machineSourcedFields, specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import {
   grindingLookupSeeds,
   keywayBroachingLookupSeeds,
@@ -154,5 +156,37 @@ describe('machining lookup seeds: variables, multi-value rows and computed value
     const passes = seeds['Passes']!.ref!;
     if (teeth.table === 'tblPullTypeKeywayBroach') expect(passes).toMatchObject({ kind: 'lookup', column: 'Passes' });
     else expect(passes).toMatchObject({ kind: 'calculation', name: 'Shim keyway broach passes' });
+  });
+});
+
+describe('Max Spindle Speed is read from the machine the calculator runs on (mhr_records.specs, migration 1136)', () => {
+  const haas = { id: 'mhr-haas', name: 'Haas ST-20Y', machineClass: '3_axis_lathe', maxSpindleRpm: 4000, liveToolingMaxRpm: 4000 * 1.5 };
+
+  it('the spindle\'s top speed, with the machine record and column to open', () => {
+    expect(machineSpindleSeed(haas, 'USA')).toEqual({
+      'Max Spindle Speed': {
+        value: 4000, source: 'Machine: Haas ST-20Y specs.spindle_speed_rpm (mhr_records)',
+        ref: { kind: 'machine', machineId: 'mhr-haas', machineName: 'Haas ST-20Y', machineClass: '3_axis_lathe', location: 'USA', column: 'specs.spindle_speed_rpm' },
+      },
+    });
+  });
+
+  it('a lathe\'s live tool for milling on the lathe; nothing when the machine has no top speed on file', () => {
+    expect(machineSpindleSeed(haas, 'USA', true)['Max Spindle Speed']).toMatchObject({ value: 6000, ref: { column: 'specs.live_tooling_speed_rpm' } });
+    expect(machineSpindleSeed({ ...haas, maxSpindleRpm: null }, 'USA')).toEqual({});
+  });
+
+  it('the engine\'s rate is the same machine record', () => {
+    const r = rate(900, { mhrRecordId: 'mhr-vmc' });
+    expect(spindleLimitSeed(r, 'India')).toEqual(machineSpindleSeed(
+      { id: 'mhr-vmc', name: 'Test VMC', machineClass: '3_axis_mill', maxSpindleRpm: 8000, liveToolingMaxRpm: null }, 'India'));
+  });
+
+  it('the calculators that read it name it as a machine input, for the dialog to read from the machine chosen there', () => {
+    expect(machineSourcedFields('Machining - Rigid Tapping')).toEqual(['Max Spindle Speed']);
+    expect(machineSourcedFields('Machining - Drilling')).toEqual(['Max Spindle Speed']);
+    // A calculator that reads nothing from its machine.
+    expect(machineSourcedFields('Machining - Deburring')).toEqual([]);
+    expect(machineSourcedFields('no such calculator')).toEqual([]);
   });
 });

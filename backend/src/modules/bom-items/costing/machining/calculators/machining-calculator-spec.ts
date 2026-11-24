@@ -127,3 +127,12 @@ export function specAsCalculators(s: MachiningCalculatorSpec = loadMachiningCalc
     return operations.map((op) => [op, def]);
   }));
 }
+
+/**
+ * The inputs of a machining calculator read from the machine it runs on (its top spindle speed), by the calculator's name: the fields
+ * the spec sources from the machine. The calculator_fields rows do not say so (a spec field becomes a plain number row, specFieldToRow),
+ * so the Edit Process Cost dialog is told which fields to read for the machine chosen there.
+ */
+export function machineSourcedFields(calculatorName: string, s: MachiningCalculatorSpec = loadMachiningCalculatorSpec()): string[] {
+  return s.calculators.find((c) => c.name === calculatorName)?.fields.filter((f) => f.source === 'machine').map((f) => f.name) ?? [];
+}
