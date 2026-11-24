@@ -8,11 +8,13 @@
 //     Passes        = ceil(Keyway Depth / (0.2 * Keyway Width))
 //     Path per Pass = max(Keyway Length - Keyway Width, 0) + Keyway Depth / Passes                              [mm]
 //     Cycle Time    = Keyways * Passes * Path per Pass / Feed Rate * 60                                         [s]
-//   Rough Milling = (Removed Volume * 0.8 / Removal Rate + Removed Volume * 0.2 / (Removal Rate * 0.4)) * 60    [s]
-//   Slot Milling  = Slots * 20                                                                                  [s]
+//   Slot Milling  (the workbook's Slot Milling sheet) = Slots * ceil((Slot Length + 10 + D) / (fz * Teeth * n) * Depth Passes * 60)    [s]
+//   Rough Milling (the workbook's End Milling sheet)  = Cuts * ceil((Cut Length + 10 + D / 2) / (fz * Teeth * n) * Width x Depth Passes * 60)  [s]
 //
-// with the fixture's aluminium (a removal rate of 60 000 mm^3/min; an end mill run at 183 m/min with 3 teeth and a feed per tooth of 0.008
-// of its diameter, the tblMillingFinishing row), on a lathe at 900 per hour (0.25 per second).
+// with the fixture's aluminium (the workbook's 450 m/min and 0.15 mm/tooth; the tblMillingFinishing end mill, 10 mm and 3 teeth; a
+// keyway's run at 183 m/min with a feed per tooth of 0.008 of its diameter), on a lathe at 900 per hour (0.25 per second) whose live
+// tool turns at most 10 000 rpm. An end mill's wear is the workbook's Rs 1337.5 over 1000 parts, Rs 1.3375 a run, at the test's Rs 84 to
+// the dollar.
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import {
@@ -29,7 +31,8 @@ import { realPartoffTable } from '../real-reference-tables';
 import type { TurnedRing } from '../../../../../../modules/bom-items/costing/machining/process/turned-diameters';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { ProcessLineCost } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
-import { workbookFixture } from '../workbook-fixture';
+import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
+import type { MachiningWorkbookInput } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 
 const CALCS = specAsCalculators();
 const LATHE = '3_axis_bar_feed_lathe_with_sub_spindle';
@@ -45,8 +48,12 @@ const KEYWAY = {
     length_mm: 9.971, width_mm: 4.0, extents_mm: [10.005, 4.0, 2.951],
   }],
 };
-// A radial slot: extents and removed volume, no length or width.
-const SLOT = { id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial', occurrences: [{ extents_mm: [8, 4, 3], material_removed_mm3: 480 }] };
+// A radial slot, 8 x 4 x 3 mm: its floor's box and measured depth. Cut by a 4 mm end mill (its width): 450 m/min holds the live tool's
+// 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; depth of cut 2 mm, 2 passes of 8 + 10 + 4 = 22 mm: 44 / 4500 = 0.00978 min = 0.59 s -> 1 s
+// (plunging, 4 plunges of 13 mm, is no quicker). At 0.25 per second = 0.25, and the end mill's wear.
+const SLOT = { id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial', occurrences: [{ extents_mm: [8, 4, 0], depth_mm: 3, material_removed_mm3: 96 }] };
+const SLOT_SEC = 1;
+const END_MILL = 1.3375 / TEST_INR_PER_USD;
 
 const FINISHING = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
 // The keyway, 9.971 x 4 x 2.951 mm: 183 000 / (pi x 4) = 14 563 rpm, held to 10 000; feed 10 000 x 3 x 0.008 x 4 = 960 mm/min;
@@ -55,9 +62,9 @@ const FINISHING = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feed
 const KEYWAY_SEC = 1.6772;
 const KEYWAY_COST = (4 * 6.70875 / 960) * 60 * 0.25;
 
-/** The lathe's milling of these features: the real sequencer's operations on them (the fixture's rate and cutter row unless one is not on file). */
-const millingOf = (features: unknown[], removalRate: number | null = 60000, finishing: typeof FINISHING | null = FINISHING) =>
-  latheMillingOps(buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: removalRate, finishing }));
+/** The lathe's milling of these features: the real sequencer's operations on them (the fixture's cutter row and workbook unless one is not on file). */
+const millingOf = (features: unknown[], finishing: typeof FINISHING | null = FINISHING, workbook: MachiningWorkbookInput = workbookFixture()) =>
+  latheMillingOps(buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: 60000, finishing, workbook }));
 
 // The stepped shaft of turning-each-diameter.spec.ts: Ø14 in the middle, a Ø12 step at each end, from a Ø16 bar.
 const RINGS: TurnedRing[] = [
@@ -80,7 +87,7 @@ function shaft(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'turned', finishedWeightKg: 0.011,
     // The Haas DS-30's 4000 rpm spindle (migration 1136).
-    mhrRate: rate(900, { machineClass: LATHE, setupTimeHr: 0.5, maxSpindleRpm: 4000 }),
+    mhrRate: rate(900, { machineClass: LATHE, setupTimeHr: 0.5, maxSpindleRpm: 4000, liveToolingMaxRpm: 10000 }),
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -182,41 +189,36 @@ describe('the lathe\'s setup when the milling is its only work', () => {
     expect(warnings.some((w) => w.includes('setup not charged'))).toBe(false);
   });
 
-  it('a slot: its two lines charge no setup, the facing does', () => {
+  it('a slot: its line charges no setup, the facing does', () => {
     const { processLines } = cost(plain({ latheMilling: millingOf([SLOT]) }));
-    expect(latheLines(processLines)).toEqual(['End Machining', 'Rough Milling', 'Slot Milling']);
+    expect(latheLines(processLines)).toEqual(['End Machining', 'Slot Milling']);
     expect(setupCarriers(processLines)).toEqual(['End Machining']);
   });
 });
 
-describe('a slot on a turned part: roughed, then finished, each a line of the lathe', () => {
+describe('a slot on a turned part: cut by Slot Milling, a line of the lathe', () => {
   const result = cost(shaft({ latheMilling: millingOf([SLOT]) }));
-  const rough = lineOf(result.processLines, 'Rough Milling')!;
   const slot = lineOf(result.processLines, 'Slot Milling')!;
 
-  it('Rough Milling of the slot\'s volume, then Slot Milling of the slot', () => {
-    expect(latheLines(result.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Rough Milling', 'Slot Milling', 'Parting']);
-    // Rough: 480 * 0.8 / 60000 = 0.0064 min; 480 * 0.2 / 24000 = 0.004 min; sum 0.0104 min = 0.624 s; at 0.25 per second = 0.156,
-    // not rounded to cents.
-    expect(sec(rough)).toBeCloseTo(0.624, 2);
-    expect(rough.totalCost).toBeCloseTo(0.156, 10);
-    // Slot Milling: 1 slot * 20 s = 20 s; at 0.25 per second = 5.00 (closeTo: not rounded to cents).
-    expect(sec(slot)).toBeCloseTo(20, 2);
-    expect(slot.totalCost).toBeCloseTo(5, 10);
+  it('one Slot Milling line, the workbook\'s Slot Milling sheet on the slot\'s length, width and depth: no separate roughing of its volume', () => {
+    expect(latheLines(result.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Slot Milling', 'Parting']);
+    expect(sec(slot)).toBeCloseTo(SLOT_SEC, 2);
+    expect(slot.runCost).toBeCloseTo(0.25 + END_MILL, 10);
+    // The end mill's wear: Rs 1.3375 a part, at Rs 84 to the dollar.
+    expect(slot.otherCostPerPart).toBeCloseTo(END_MILL, 10);
+    expect(slot.totalCost).toBeCloseTo(0.25 + END_MILL, 10);
     expect(slot.calculatorId).toBe('Machining - Slot Milling');
   });
 
-  it('both lines name the slot, and neither charges a setup', () => {
-    expect(rough.featureBreakdown).toEqual([{ name: 'Rough Milling // Slot', timeSec: expect.closeTo(0.624, 4), featureType: 'Slot', count: 1, featureIds: ['Slot-radial_c1'] }]);
-    expect(slot.featureBreakdown).toEqual([{ name: 'Slot Milling // Slot', timeSec: 20, featureType: 'Slot', count: 1, featureIds: ['Slot-radial_c1'] }]);
+  it('the line names the slot, and charges no setup', () => {
+    expect(slot.featureBreakdown).toEqual([{ name: 'Slot Milling // Slot', timeSec: SLOT_SEC, featureType: 'Slot', count: 1, featureIds: ['Slot-radial_c1'] }]);
     expect(setupCarriers(result.processLines)).toEqual(['End Machining']);
-    expect(lineDataGap(rough)).toBeNull();
     expect(lineDataGap(slot)).toBeNull();
   });
 
-  it('a keyway beside the slot is its own line: the slot\'s two lines are what they are without it', () => {
+  it('a keyway beside the slot is its own line: the slot\'s line is what it is without it', () => {
     const both = cost(shaft({ latheMilling: millingOf([KEYWAY, SLOT]) }));
-    expect(latheLines(both.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Rough Milling', 'Obround Slot Milling', 'Slot Milling', 'Parting']);
+    expect(latheLines(both.processLines)).toEqual(['End Machining', 'Rough Turning', 'Finish Turning', 'Obround Slot Milling', 'Slot Milling', 'Parting']);
     expect(both.processLines.filter((l) => l.process !== 'Obround Slot Milling')).toEqual(result.processLines);
     const keyway = lineOf(both.processLines, 'Obround Slot Milling')!;
     expect(sec(keyway)).toBeCloseTo(KEYWAY_SEC, 2);
@@ -226,13 +228,14 @@ describe('a slot on a turned part: roughed, then finished, each a line of the la
 });
 
 describe('flats on a turned part: roughed on the lathe, as a line of the lathe', () => {
-  // Two wrench flats, as the CAD engine stores them: each the circular segment it cuts off its round over its length, 290.12 mm^3.
-  // Rough: 580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000 = 0.0125719 min = 0.7543 s; at 0.25 per second = 0.1886, not rounded to cents.
+  // Two wrench flats, as the CAD engine stores them: 20 mm long, 10.583 mm across and 2 mm deep. The 10 mm end mill: one width pass, one
+  // depth pass; (20 + 10 + 5) / 4500 = 0.00778 min = 0.47 s -> 1 s a flat, 2 s for the two; at 0.25 per second = 0.50, and the end mill's
+  // wear (one run for the two).
   const FLATS = {
     id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default',
     occurrences: [4, 8].map((face) => ({ face_ids: [face], material_removed_mm3: 290.12, depth_mm: 2, length_mm: 20, width_mm: 10.583, diameter_mm: 16 })),
   };
-  const FLATS_SEC = (580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000) * 60;
+  const FLATS_SEC = 2;
   const without = cost(shaft());
   const result = cost(shaft({ latheMilling: millingOf([FLATS]) }));
   const rough = lineOf(result.processLines, 'Rough Milling')!;
@@ -242,51 +245,46 @@ describe('flats on a turned part: roughed on the lathe, as a line of the lathe',
     expect(rough).toMatchObject({ machineClass: LATHE, machineName: 'M', hourlyRate: 900, setupCost: 0 });
   });
 
-  it('is timed by the Rough Milling calculator on the volume the flats cut off, and adds exactly its own cost to the route', () => {
+  it('is timed by the Rough Milling calculator (the workbook\'s End Milling sheet) on the flats\' size, and adds exactly its own cost to the route', () => {
     expect(sec(rough)).toBeCloseTo(FLATS_SEC, 2);
     expect(rough.calculatorId).toBe('Machining - Rough Milling');
-    expect(calculatorInputSteps(rough.calculationTrace!).find((s) => s.fieldName === 'Removed Volume')).toMatchObject({ value: 580.24 });
-    expect(rough.runCost).toBeCloseTo(FLATS_SEC * 0.25, 10);
+    expect(calculatorInputSteps(rough.calculationTrace!).find((s) => s.fieldName === 'Cut Length')).toMatchObject({ value: 20 });
+    expect(rough.runCost).toBeCloseTo(FLATS_SEC * 0.25 + END_MILL, 10);
     expect(lineDataGap(rough)).toBeNull();
-    expect(result.totalProcessCost).toBeCloseTo(without.totalProcessCost + FLATS_SEC * 0.25, 10);
+    expect(result.totalProcessCost).toBeCloseTo(without.totalProcessCost + FLATS_SEC * 0.25 + END_MILL, 10);
     expect(result.processLines.filter((l) => l.process !== 'Rough Milling')).toEqual(without.processLines);
   });
 
   it('names the flats as its row, so the Process tree lists them under the line and lights their faces', () => {
     expect(rough.featureBreakdown).toEqual([
-      { name: 'Rough Milling // Flat ×2', timeSec: expect.closeTo(FLATS_SEC, 4), featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] },
+      { name: 'Rough Milling // Flat ×2', timeSec: FLATS_SEC, featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] },
     ]);
   });
 
-  it('a flat with no removed volume on file is the line\'s named gap, never a free flat', () => {
-    const unmeasured = { ...FLATS, occurrences: [{ ...FLATS.occurrences[0], material_removed_mm3: 0 }] };
+  it('a flat with no CAD size is the line\'s named gap, never a free flat', () => {
+    const unmeasured = { ...FLATS, occurrences: [{ ...FLATS.occurrences[0], length_mm: 0 }] };
     const line = lineOf(cost(shaft({ latheMilling: millingOf([unmeasured]) })).processLines, 'Rough Milling')!;
     expect(line.totalCost).toBe(0);
-    expect(lineDataGap(line)?.reason).toContain('the CAD volume the flat removes');
+    expect(lineDataGap(line)?.reason).toContain('the CAD length, width and depth of the flat');
   });
 });
 
 describe('an operation the sequencer could not time is a named gap on its line, never a silent zero', () => {
-  // No milling removal rate on file for the material: the slot's Rough Milling cannot be timed. The keyway and Slot Milling need none.
-  const result = cost(shaft({ latheMilling: millingOf([KEYWAY, SLOT], null) }));
-  const rough = lineOf(result.processLines, 'Rough Milling')!;
+  // The workbook's milling conditions were not read: the slot's Slot Milling has no cutting speed or feed. The keyway needs none.
+  const result = cost(shaft({ latheMilling: millingOf([KEYWAY, SLOT], FINISHING, workbookFixture({ tables: {} })) }));
+  const slot = lineOf(result.processLines, 'Slot Milling')!;
 
-  it('the Rough Milling line has no time and says what it lacks', () => {
-    expect(rough.cycleTimeMin).toBe(0);
-    expect(rough.totalCost).toBe(0);
-    expect(rough.physicsGap).toMatchObject({
-      gapType: 'unsupported_operation', process: 'Rough Milling', machineClass: LATHE,
-      reason: 'Not priced — missing real input: Rough Milling: Material Removal Rate.',
-    });
-    expect(rough.confidence).toBe('unsupported');
-    expect(rough.featureBreakdown).toBeUndefined();
+  it('the Slot Milling line has no time and says what it lacks', () => {
+    expect(slot.cycleTimeMin).toBe(0);
+    expect(slot.totalCost).toBe(0);
+    expect(slot.physicsGap).toMatchObject({ gapType: 'unsupported_operation', process: 'Slot Milling', machineClass: LATHE });
+    expect((slot.physicsGap as { reason: string }).reason).toContain('tblMillingConditions');
+    expect(slot.confidence).toBe('unsupported');
+    expect(slot.featureBreakdown).toBeUndefined();
   });
 
   it('the route is not fully costed, and the operations that can be timed still are', () => {
-    expect(lineDataGap(rough)?.reason).toContain('Material Removal Rate');
-    const slot = lineOf(result.processLines, 'Slot Milling')!;
-    expect(sec(slot)).toBeCloseTo(20, 2);
-    expect(lineDataGap(slot)).toBeNull();
+    expect(lineDataGap(slot)?.reason).toContain('tblMillingConditions');
     const keyway = lineOf(result.processLines, 'Obround Slot Milling')!;
     expect(sec(keyway)).toBeCloseTo(KEYWAY_SEC, 2);
     expect(lineDataGap(keyway)).toBeNull();
@@ -294,7 +292,7 @@ describe('an operation the sequencer could not time is a named gap on its line, 
   });
 
   it('a keyway with no cutter data for the material is the gap, on its own line', () => {
-    const keyway = lineOf(cost(shaft({ latheMilling: millingOf([KEYWAY], 60000, null) })).processLines, 'Obround Slot Milling')!;
+    const keyway = lineOf(cost(shaft({ latheMilling: millingOf([KEYWAY], null) })).processLines, 'Obround Slot Milling')!;
     expect(keyway.cycleTimeMin).toBe(0);
     expect(keyway.totalCost).toBe(0);
     expect(keyway.physicsGap).toMatchObject({

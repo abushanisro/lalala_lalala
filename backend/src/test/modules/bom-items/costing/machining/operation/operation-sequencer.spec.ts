@@ -39,6 +39,8 @@ const buildOperationSequence = (features: Parameters<typeof buildWith>[0], optio
     removalRateMm3PerMin: REMOVAL_RATE[options.matClass] ?? null,
     // The finishing cutter of the material class, as tblMillingFinishing stages it (migration 1039).
     finishing: FINISHING[options.matClass] ?? null,
+    // The machining workbook's cutting data (migration 1137): the workbook-form operations read their speeds and feeds from it.
+    workbook: workbookFixture(),
     ...options,
   };
   return timeOperations(buildWith(features, full), full.calculators, TEST_MACHINE);
@@ -61,15 +63,20 @@ function tappedHoleFeature(count = 1, diamMm = 4, spec = 'M4'): object {
 }
 
 function pocketFeature(count = 1, removedMm3Each = 5000): object {
+  // A 10 mm deep pocket whose floor (25 mm long) holds the volume: its CAD floor box, as the analysis states it (extents_mm).
   return {
     feature_type: 'PocketV2', variant: 'default',
     diameter_mm: 0,
     occurrences: Array.from({ length: count }, () => ({
       depth_mm: 10,
+      extents_mm: [25, removedMm3Each / 10 / 25, 0],
       material_removed_mm3: removedMm3Each,
     })),
   };
 }
+
+// The stock model's facing of a 100 x 60 mm block with 2.5 mm on its top and its bottom (stock/stock-facing.ts).
+const FACING = { faces: 2, lengthMm: 100, widthMm: 60, depthMm: 2.5, volumeMm3: 100 * 60 * 5, basis: 'a 100 x 60 x 25 mm test block' };
 
 function throughHoleFeature(count = 1, diamMm = 6): object {
   return {
@@ -138,11 +145,16 @@ describe('buildOperationSequence', () => {
     expect(buildOperationSequence([], { matClass: 'aluminum' })).toEqual([]);
   });
 
-  it('always starts with Facing and ends with Deburr', () => {
+  it('starts with Facing when the stock has stock on its faces, and ends with Deburr', () => {
     const features = [tappedHoleFeature(2)];
-    const ops = buildOperationSequence(features, { matClass: 'aluminum' });
+    const ops = buildOperationSequence(features, { matClass: 'aluminum', facing: FACING });
     expect(ops[0].name).toBe('Facing');
     expect(ops[ops.length - 1].name).toBe('Deburr');
+  });
+
+  it('faces nothing when the stock model states no faces to face (no stock chosen, a lathe\'s plan): no fixed 45 s', () => {
+    const ops = buildOperationSequence([tappedHoleFeature(2)], { matClass: 'aluminum' });
+    expect(ops.some((o) => o.name === 'Facing')).toBe(false);
   });
 
   it('generates Center Drilling + Drilling + Chamfering + Tapping for tapped holes', () => {
@@ -288,27 +300,26 @@ describe('buildOperationSequence', () => {
   });
 
   it('fixed ops (Facing, Deburr) carry no cadFeatureType — nothing to highlight for them', () => {
-    const ops = buildOperationSequence([tappedHoleFeature(1)], { matClass: 'aluminum' });
+    const ops = buildOperationSequence([tappedHoleFeature(1)], { matClass: 'aluminum', facing: FACING });
     expect(ops.find((o) => o.name === 'Facing')!.cadFeatureType).toBeUndefined();
     expect(ops.find((o) => o.name === 'Deburr')!.cadFeatureType).toBeUndefined();
   });
 
-  it('machinability factor 2.0 (Al 6061 vs mild steel) halves cycle time for pockets', () => {
+  it('a pocket roughs faster in aluminium than in mild steel: the workbook\'s milling conditions for each material', () => {
+    // A 40 x 25 x 10 pocket: 3 width passes (ceil((25 - 5) / 8)), 5 depth passes (ceil(10 / 2)). Mild steel: 90 m/min, 0.115 mm/tooth,
+    // 4 teeth on the 10 mm cutter: n = 2864.79 rpm; (40 + 10 + 5) / (0.115 x 4 x 2864.79) x 15 = 0.62605 min -> 38 s. Aluminium:
+    // 450 m/min holds the test machine's 10 000 rpm, 0.15 mm/tooth, 3 teeth: 55 / 4500 x 15 = 0.18333 min -> 11 s. The machinability
+    // factor no longer scales it: the workbook's speeds are the material's own.
     const features = [pocketFeature(1, 10_000)];
-    const milSteel = buildOperationSequence(features, { matClass: 'mild_steel', machinabilityFactor: 1.0 });
-    const aluminum = buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 2.0 });
-
-    const roughTimeMild = milSteel.find((o) => o.name === 'Rough Milling')!.timeSec;
-    const roughTimeAlum = aluminum.find((o) => o.name === 'Rough Milling')!.timeSec;
-
-    // Al MRR = 60000 * 2 = 120000; mild_steel MRR = 12000 * 1 = 12000 → 10× faster
-    // so aluminum pocket rough time ≈ roughTimeMild / 10
-    expect(roughTimeAlum).toBeCloseTo(roughTimeMild / 10, 0);
+    const mild = buildOperationSequence(features, { matClass: 'mild_steel' }).find((o) => o.name === 'Rough Milling')!;
+    const alu = buildOperationSequence(features, { matClass: 'aluminum' }).find((o) => o.name === 'Rough Milling')!;
+    expect(mild.timeSec).toBe(38);
+    expect(alu.timeSec).toBe(11);
   });
 
   it('ops are sorted in canonical manufacturing order', () => {
     const features = [pocketFeature(1), tappedHoleFeature(2), throughHoleFeature(1)];
-    const ops = buildOperationSequence(features, { matClass: 'aluminum' });
+    const ops = buildOperationSequence(features, { matClass: 'aluminum', facing: FACING });
     const names = ops.map((o) => o.name);
 
     // Facing must precede pockets; Drilling before Tapping; Deburr at end
@@ -318,6 +329,7 @@ describe('buildOperationSequence', () => {
     const tapIdx = names.indexOf('Tapping');
     const deburrIdx = names.indexOf('Deburr');
 
+    expect(faceIdx).toBe(0);
     expect(faceIdx).toBeLessThan(roughIdx);
     expect(drillIdx).toBeLessThan(tapIdx);
     expect(tapIdx).toBeLessThan(deburrIdx);
@@ -606,10 +618,27 @@ describe('OperationLine.featureIds', () => {
 describe('every milling operation is timed by its stored calculator', () => {
   const pocket = [{ feature_type: 'PocketV2', variant: 'default', diameter_mm: 0, occurrences: [{ material_removed_mm3: 6000 }, { material_removed_mm3: 6000 }] }];
 
-  it('rough milling: the removed volume at the removal rate, 80 % roughed and 20 % at 0.4 of the rate', () => {
+  // Two 40 x 25 x 10 mm pockets, walled all round, as the analysis states them (their floor box and measured depth).
+  const sized = [{
+    feature_type: 'PocketV2', variant: 'default', diameter_mm: 0,
+    occurrences: [0, 1].map(() => ({ material_removed_mm3: 10000, depth_mm: 10, extents_mm: [40, 25, 0], width_confined: true, walled_fraction: 1 })),
+  }];
+
+  it('rough milling: the workbook\'s End Milling sheet over the pocket\'s length, width and depth, one run for the two', () => {
+    // Mild steel: 90 m/min and 0.115 mm/tooth (the middle of the workbook's 60 - 120 and 0.08 - 0.15), the 10 mm 4-tooth end mill:
+    // n = 90000 / (pi x 10) = 2864.79 rpm; width passes ceil((25 - 5) / 8) = 3, depth passes ceil(10 / 2) = 5;
+    // (40 + 10 + 5) / (0.115 x 4 x 2864.79) x 3 x 5 = 0.62605 min = 37.56 s -> 38 s a pocket, 76 s for the two.
+    const rough = buildOperationSequence(sized, { matClass: 'mild_steel' }).filter((o) => o.name === 'Rough Milling');
+    expect(rough).toHaveLength(1);
+    expect(rough[0]!).toMatchObject({ timeSec: 76, count: 2 });
+    const step = (name: string) => rough[0]!.trace!.find((st) => st.fieldName === name)?.value;
+    expect([step('Width Passes'), step('Depth Passes'), step('Time per Cut')]).toEqual([3, 5, 38]);
+    expect(rough[0]!.calculator?.lookups['Speed Min']?.table).toBe('tblMillingConditions');
+  });
+
+  it('a pocket with no CAD size is a named gap for its roughing too, never its volume at a rate', () => {
     const rough = buildOperationSequence(pocket, { matClass: 'mild_steel' }).find((o) => o.name === 'Rough Milling')!;
-    expect(rough.timeSec).toBeCloseTo((12000 * 0.8 / 12000 + 12000 * 0.2 / (12000 * 0.4)) * 60, 6);
-    expect(rough.trace!.map((st) => st.fieldName)).toEqual(expect.arrayContaining(['Removed Volume', 'Material Removal Rate', 'Roughing Share', 'Cycle Time']));
+    expect(rough).toMatchObject({ timeSec: 0, missing: 'the CAD length, width and depth of every pocket' });
   });
 
   it('a pocket with no CAD size has no finishing time: the gap is named, never a flat time per pocket', () => {
@@ -619,15 +648,19 @@ describe('every milling operation is timed by its stored calculator', () => {
     expect(finish[0]!.missing).toContain('length and width');
   });
 
-  it('facing and centre drilling read their times from the calculator, not from this file', () => {
+  it('facing: the workbook\'s Face Milling sheet over the stock model\'s faces, not a fixed time', () => {
+    // Mild steel, the sheet's 60 mm 6-tooth face mill: n = 90000 / (pi x 60) = 477.46 rpm; width passes max(1, ceil((60 - 30) / 58)) = 1,
+    // depth passes ceil(2.5 / 2) = 2; (100 + 10 + 30) / (0.115 x 6 x 477.46) x 1 x 2 = 0.84990 min = 50.99 s -> 51 s a face, 102 s for the two.
     const hole = [{ feature_type: 'SimpleHole', variant: 'through', diameter_mm: 6, occurrences: [{ depth_mm: 10 }, { depth_mm: 10 }] }];
-    const ops = buildOperationSequence(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, materialGrade: 'AISI 1018', workbook: workbookFixture() });
-    expect(ops.find((o) => o.name === 'Facing')!.timeSec).toBe(45);
+    const ops = buildOperationSequence(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, materialGrade: 'AISI 1018', facing: FACING });
+    const facing = ops.find((o) => o.name === 'Facing')!;
+    expect(facing).toMatchObject({ timeSec: 102, count: 2 });
+    expect(facing.trace!.find((st) => st.fieldName === 'Face Length')!.source).toBe('Stock: a 100 x 60 x 25 mm test block');
     expect(ops.find((o) => o.name === 'Center Drilling')!.timeSec).toBe(10);
   });
 
   it('with no calculators an operation is a named gap, never a number', () => {
-    const ops = buildWith(pocket, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: {}, removalRateMm3PerMin: 12000 });
+    const ops = buildWith(sized, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: {}, removalRateMm3PerMin: 12000, finishing: FINISHING.mild_steel, workbook: workbookFixture() });
     const rough = ops.find((o) => o.name === 'Rough Milling')!;
     expect(rough.timeSec).toBe(0);
     expect(rough.missing).toContain('none mapped');
@@ -635,18 +668,20 @@ describe('every milling operation is timed by its stored calculator', () => {
 });
 
 describe('the removal rate is data (tblMillingRemovalRate), not a table in the code', () => {
-  const pocket = [{ feature_type: 'PocketV2', variant: 'default', diameter_mm: 0, occurrences: [{ material_removed_mm3: 12000 }] }];
+  // The Bulk Milling of the stock around the part is the one volume operation left: 12 000 mm^3 of it.
+  const hole = [{ feature_type: 'SimpleHole', variant: 'through', diameter_mm: 6, occurrences: [{ depth_mm: 10 }] }];
+  const stockAround = { pieceMm3: 60000, partMm3: 48000, featureRemovedMm3: 0, facedMm3: 0, excessMm3: 12000, inconsistent: false };
 
   it('a volume operation with no rate on file is a named gap', () => {
-    const rough = buildWith(pocket, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: null }).find((o) => o.name === 'Rough Milling')!;
-    expect(rough.timeSec).toBe(0);
-    expect(rough.missing).toContain('Material Removal Rate');
+    const bulk = buildWith(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: null, stockAround }).find((o) => o.name === 'Bulk Milling')!;
+    expect(bulk.timeSec).toBe(0);
+    expect(bulk.missing).toContain('Material Removal Rate');
   });
 
   it('the rate it is given is the one it uses, and the trace names the table', () => {
-    const rough = buildWith(pocket, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: 24000 }).find((o) => o.name === 'Rough Milling')!;
-    expect(rough.timeSec).toBeCloseTo((12000 * 0.8 / 24000 + 12000 * 0.2 / (24000 * 0.4)) * 60, 6);
-    expect(rough.trace!.find((st) => st.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
+    const bulk = buildWith(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: 24000, stockAround }).find((o) => o.name === 'Bulk Milling')!;
+    expect(bulk.timeSec).toBeCloseTo((12000 * 0.8 / 24000 + 12000 * 0.2 / (24000 * 0.4)) * 60, 6);
+    expect(bulk.trace!.find((st) => st.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
   });
 
   it('countersinking reads its time per hole from its calculator (6 s)', () => {
@@ -724,24 +759,26 @@ describe('a flat milled on a turned diameter: Rough Milling // Flat', () => {
     expect(op.missing).toBeUndefined();
   });
 
-  it('is timed by the stored Rough Milling calculator on the volume the flats cut off, at the material\'s removal rate', () => {
-    // 580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000 = 0.0125719 min = 0.75431 s.
+  it('is roughed as the workbook\'s End Milling sheet times it, over each flat\'s CAD length, width and depth', () => {
+    // Aluminium: 450 m/min on the 10 mm 3-tooth end mill holds the test machine's 10 000 rpm, 0.15 mm/tooth; one width pass
+    // (ceil((10.583 - 5) / 8)), one depth pass (ceil(2 / 2)); (20 + 10 + 5) / (0.15 x 3 x 10000) = 0.00778 min = 0.47 s -> 1 s a flat.
     const [op] = flatOps([FLATS]);
-    expect(op.timeSec).toBeCloseTo((580.24 * 0.8 / 60000 + 580.24 * 0.2 / (60000 * 0.4)) * 60, 6);
+    expect(op.timeSec).toBe(2);
     expect(op.calculator?.id).toBe('Machining - Rough Milling');
-    expect(op.trace!.find((s) => s.fieldName === 'Removed Volume')).toMatchObject({ value: 580.24 });
-    expect(op.trace!.find((s) => s.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
+    const step = (name: string) => op.trace!.find((s) => s.fieldName === name);
+    expect([step('Cut Length')?.value, step('Cut Width')?.value, step('Cut Depth')?.value]).toEqual([20, 10.583, 2]);
+    expect(step('Cut Depth')!.source).toBe('CAD: depth below the diameter');
   });
 
-  it('a flat with no removed volume on file is a named gap, never free', () => {
-    const [op] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), material_removed_mm3: 0 }] }]);
-    expect(op).toMatchObject({ name: 'Rough Milling', timeSec: 0, missing: 'the CAD volume the flat removes', count: 1 });
-    const [two] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), material_removed_mm3: 0 }, { ...flat([8]), material_removed_mm3: 0 }] }]);
-    expect(two.missing).toBe('the CAD volume 2 flats remove');
+  it('a flat with no CAD length, width or depth is a named gap, never free', () => {
+    const [op] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), length_mm: 0 }] }]);
+    expect(op).toMatchObject({ name: 'Rough Milling', timeSec: 0, missing: 'the CAD length, width and depth of the flat', count: 1 });
+    const [two] = flatOps([{ ...FLATS, occurrences: [{ ...flat([4]), depth_mm: undefined }, { ...flat([8]), depth_mm: undefined }] }]);
+    expect(two.missing).toBe('the CAD length, width and depth of 2 flats');
   });
 
-  it('with no removal rate on file it is the calculator\'s named gap', () => {
-    const ops = buildWith([FLATS], { matClass: 'aluminum', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: null }).filter((o) => o.cadFeatureType === 'Flat');
-    expect(ops).toEqual([expect.objectContaining({ name: 'Rough Milling', timeSec: 0, missing: expect.stringContaining('Material Removal Rate') })]);
+  it('with no end mill on file for the material (tblMillingFinishing) it is a named gap', () => {
+    const ops = buildWith([FLATS], { matClass: 'aluminum', machinabilityFactor: 1.0, calculators: specAsCalculators(), finishing: null, workbook: workbookFixture() }).filter((o) => o.cadFeatureType === 'Flat');
+    expect(ops).toEqual([expect.objectContaining({ name: 'Rough Milling', timeSec: 0, missing: expect.stringContaining('end mill') })]);
   });
 });

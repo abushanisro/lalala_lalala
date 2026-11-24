@@ -14,6 +14,8 @@ import {
 import { stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
 import { perimeterCutOperation, slottingRuleOf } from '../../../../../modules/bom-items/costing/stock-machining/perimeter-cut';
 
+import { workbookFixture } from '../machining/workbook-fixture';
+
 import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { FeatureOp } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
 
@@ -33,19 +35,19 @@ const PART_MM3 = 15208.37;
 // The prism inside the cut: 5058.6 x 12.7 = 64 244.22 mm³. Less the part and the pocket: 64 244.22 - 15 208.37 - 24 432.94 = 24 602.91 mm³.
 const PIECE_MM3 = 5058.6 * 12.7;
 const sequence = (features: unknown[], stockOps: OperationLine[]) => buildOperationSequence(
-  features, { matClass: 'aluminum', machinabilityFactor: 1, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockAround: stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(features) }), stockOps },
+  features, { matClass: 'aluminum', machinabilityFactor: 1, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, workbook: workbookFixture(), stockAround: stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(features) }), stockOps },
 );
 
 const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass: 'x', machineName: 'M', commodityCode: null, ...extra } as MHRRateInput);
-const MILL = rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, labourRate: 36, operators: 1 });
+const MILL = rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, labourRate: 36, operators: 1, maxSpindleRpm: 8000 });
 function milled(featureOps: OperationLine[]) {
   const input: MachiningCostInput = {
     volume: PART_MM3, surfaceArea: 15000, maxLength: 159.5, maxWidth: 42, maxHeight: 8, holeCount: 0, holeGroups: [], pocketCount: 1,
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700, materialSource: 'db', threads: [], tightestToleranceMm: null,
     gdtFeatureCount: 0, batchSize: 100, family: 'milled', finishedWeightKg: 0.041, mhrRate: MILL, tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }), inspectionRate: rate(450, { machineClass: 'machining_inspection' }), surfaceTreatment: null,
-    machiningCalculators: CALCS, millingRemovalRateMm3PerMin: 60000, featureOps,
+    machiningCalculators: CALCS, millingRemovalRateMm3PerMin: 60000, featureOps, workbook: workbookFixture(),
     blankResult: { form: 'plate', sizeLabel: '1/2" plate, 159.5 x 42 mm outline', billetVolMm3: PIECE_MM3, utilizationPct: 11.5, purchasedVolMm3: 132735.2184 },
   };
   return computeMillingCostSummary(input, '3_axis_mill' as MachineClassId);
@@ -55,7 +57,7 @@ const millLineOf = (cost: ReturnType<typeof milled>) => cost.processLines.find((
 describe('the sequence of a part cut out of the plate by the mill', () => {
   it('has the perimeter cut, and bulk mills what is left inside it', () => {
     const ops = sequence([POCKET, FACE], [CUT]);
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Bulk Milling', 'Fine Finish Milling', 'Fine Finish Milling', 'Perimeter Milling', 'Rough Milling', 'Deburr']);
+    expect(ops.map((o) => o.name)).toEqual(['Bulk Milling', 'Fine Finish Milling', 'Fine Finish Milling', 'Perimeter Milling', 'Rough Milling', 'Deburr']);
     // 24 602.91 mm³ at 60 000 mm³/min: x 1.3 / 1000 = 31.983783 s.
     const bulk = ops.find((o) => o.name === 'Bulk Milling')!;
     expect(bulk.trace!.find((s) => s.fieldName === 'Removed Volume')!.value).toBeCloseTo(24602.91, 2);

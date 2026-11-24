@@ -31,6 +31,8 @@ import {
 import { isReferenceOperation } from '../../../../../../modules/bom-items/costing/shared/reference-features.generated';
 
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const cutter = (teeth: number, cuttingSpeedMPerMin: number, feedPerToothPerDiameter: number): MillingFinishingRow => ({ toolDiameterMm: 10, teeth, cuttingSpeedMPerMin, feedPerToothPerDiameter });
@@ -173,11 +175,17 @@ const FINISHING: Partial<Record<MaterialClass, MillingFinishingRow>> = { aluminu
 const sequence = (features: unknown[], matClass: MaterialClass = 'aluminum', finishing: MillingFinishingRow | null | undefined = FINISHING[matClass], machinabilityFactor = 1.0) =>
   buildOperationSequence(features, { matClass, machinabilityFactor, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: finishing ?? null });
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
+// The slot and the pocket are timed on the workbook (migration 1137), each route on its own machine: here a 10 000 rpm test mill.
+const TEST_MACHINE = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
+const onMachine = (features: unknown[], matClass: MaterialClass) =>
+  timeOperations(buildOperationSequence(features, {
+    matClass, machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: FINISHING[matClass] ?? null, workbook: workbookFixture(),
+  }), CALCS, TEST_MACHINE);
 
 describe('the sequencer mills a keyway as Obround Slot Milling', () => {
   it('a Keyway is one Obround Slot Milling operation on its feature, timed by its calculator from the CAD length, width and depth', () => {
     const ops = sequence([KEYWAY]);
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Obround Slot Milling', 'Deburr']);
+    expect(ops.map((o) => o.name)).toEqual(['Obround Slot Milling', 'Deburr']);
     const [op] = named(ops, 'Obround Slot Milling');
     expect(op).toMatchObject({ source: 'feature', cadFeatureType: 'Keyway', count: 1, featureIds: ['Keyway-default_c1'] });
     expect(op!.missing).toBeUndefined();
@@ -251,41 +259,51 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
     expect(op!.missing).toBe('Obround Slot Milling: Teeth, Cutting Speed, Feed per Tooth per Diameter');
   });
 
-  it('comes after the roughing and before the slot finishing, and deburring is still last', () => {
+  it('comes after the roughing and before the slot milling, and deburring is still last', () => {
     expect(sequence([KEYWAY, SLOT, POCKET, FACE]).map((o) => o.name)).toEqual([
-      'Facing', 'Fine Finish Milling', 'Fine Finish Milling', 'Rough Milling', 'Rough Milling', 'Obround Slot Milling', 'Slot Milling', 'Deburr',
+      'Fine Finish Milling', 'Fine Finish Milling', 'Rough Milling', 'Obround Slot Milling', 'Slot Milling', 'Deburr',
     ]);
   });
 });
 
-describe('a Slot and a pocket are milled as before', () => {
-  // Mild steel, 12 000 mm^3/min. Rough Milling = (V x 0.8 / 12 000 + V x 0.2 / (12 000 x 0.4)) x 60.
-  const rough = (mm3: number) => (mm3 * 0.8 / 12000 + mm3 * 0.2 / (12000 * 0.4)) * 60;
-
-  it('a Slot is still its volume roughed at the removal rate, then Slot Milling per slot', () => {
-    const ops = sequence([SLOT], 'mild_steel');
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Rough Milling', 'Slot Milling', 'Deburr']);
-    expect(named(ops, 'Rough Milling')[0]).toMatchObject({ cadFeatureType: 'Slot', featureIds: ['Slot-straight_c1'] });
-    // 720 mm^3: 720 x 0.8 / 12 000 = 0.048 min; 720 x 0.2 / 4800 = 0.03 min; 0.078 min = 4.68 s. One slot x 20 s.
-    expect(named(ops, 'Rough Milling')[0]!.timeSec).toBeCloseTo(4.68, 9);
-    expect(named(ops, 'Rough Milling')[0]!.timeSec).toBeCloseTo(rough(720), 9);
-    expect(named(ops, 'Slot Milling')[0]!.timeSec).toBe(20);
+describe('a Slot and a pocket are milled on the workbook\'s sheets, not by a keyway\'s passes', () => {
+  it('a Slot is one Slot Milling operation (the workbook\'s Slot Milling sheet), with no separate roughing of its volume', () => {
+    // 30 x 6 x 4 in mild steel: a 6 mm cutter (the slot's width), 4 teeth, 90 m/min and 0.115 mm/tooth: n = 4774.65 rpm; depth of cut
+    // 0.5 x 6 = 3 mm, ceil(4 / 3) = 2 depth passes, 1 width pass; (30 + 10 + 6) / (0.115 x 4 x 4774.65) x 2 = 0.04189 min = 2.51 s -> 3 s.
+    // Plunging it would take ceil(30 / 3) = 10 plunges of 14 mm: 0.0637 min, slower, so it is slotted.
+    const ops = onMachine([SLOT], 'mild_steel');
+    expect(ops.map((o) => o.name)).toEqual(['Slot Milling', 'Deburr']);
+    const [slot] = named(ops, 'Slot Milling');
+    expect(slot).toMatchObject({ cadFeatureType: 'Slot', featureIds: ['Slot-straight_c1'], timeSec: 3, count: 1 });
+    expect(slot!.calculator?.id).toBe('Machining - Slot Milling');
+    expect(slot!.trace!.find((st) => st.fieldName === 'Cutter Diameter')!.source).toBe('CAD: slot width 6 mm, narrower than the material\'s end mill');
     expect(named(ops, 'Obround Slot Milling')).toEqual([]);
   });
 
-  it('a pocket is still its volume roughed at the removal rate, then its floor and walls finished', () => {
-    const ops = sequence([POCKET], 'mild_steel');
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Fine Finish Milling', 'Rough Milling', 'Deburr']);
-    // 28 800 mm^3: 1.92 min + 1.2 min = 3.12 min = 187.2 s.
-    expect(named(ops, 'Rough Milling')[0]!.timeSec).toBeCloseTo(187.2, 9);
+  it('a deep slot is plunged: the workbook\'s Plunge Milling sheet, corrected, when it is the quicker', () => {
+    // 30 x 6 x 30 deep: slotting takes ceil(30 / 3) = 10 passes of 46 mm (460 mm); plunging 10 plunges of 40 mm (400 mm), so it is plunged:
+    // 400 / (0.115 x 4 x 4774.65) = 0.18213 min = 10.93 s -> 11 s.
+    const deep = { ...SLOT, occurrences: [{ ...SLOT.occurrences[0], extents_mm: [30, 6, 0], depth_mm: 30, material_removed_mm3: 5400 }] };
+    const [slot] = named(onMachine([deep], 'mild_steel'), 'Slot Milling');
+    expect(slot!.calculator?.id).toBe('Machining - Plunge Milling');
+    expect(slot!.timeSec).toBe(11);
+    expect(slot!.trace!.find((st) => st.fieldName === 'Plunges')!.value).toBe(10);
+  });
+
+  it('a pocket is roughed by the workbook\'s End Milling sheet, then its floor and walls finished', () => {
+    const ops = onMachine([POCKET], 'mild_steel');
+    expect(ops.map((o) => o.name)).toEqual(['Fine Finish Milling', 'Rough Milling', 'Deburr']);
+    // 60 x 40 x 12 with the 10 mm end mill: width passes ceil((40 - 5) / 8) = 5, depth passes ceil(12 / 2) = 6; n = 2864.79 rpm;
+    // (60 + 10 + 5) / (0.115 x 4 x 2864.79) x 30 = 1.70739 min = 102.44 s -> 103 s.
+    expect(named(ops, 'Rough Milling')[0]!.timeSec).toBe(103);
     // Finishing: floor 60 x 40 / (10 x 0.5) + walls 2 x (60 + 40) x 12 / 10 + lead 2 x 10 = 480 + 240 + 20 = 740 mm at 774.13 mm/min.
     expect(named(ops, 'Fine Finish Milling')[0]!.timeSec).toBeCloseTo(740 / ((76000 / (Math.PI * 10)) * 4 * 0.008 * 10) * 60, 9);
     expect(named(ops, 'Obround Slot Milling')).toEqual([]);
   });
 
   it('a keyway on the part changes neither: their operations are what they are without it', () => {
-    const without = sequence([SLOT, POCKET, FACE], 'mild_steel');
-    const withKeyway = sequence([SLOT, POCKET, FACE, KEYWAY], 'mild_steel');
+    const without = onMachine([SLOT, POCKET, FACE], 'mild_steel');
+    const withKeyway = onMachine([SLOT, POCKET, FACE, KEYWAY], 'mild_steel');
     expect(withKeyway.filter((o) => o.name !== 'Obround Slot Milling')).toEqual(without);
   });
 });
@@ -293,7 +311,7 @@ describe('a Slot and a pocket are milled as before', () => {
 describe('a fine surface finish on the drawing (Ra under 1.6) and a keyway', () => {
   it('slows the keyway\'s passes when they are the part\'s only milling of a finished surface, as it slowed the keyway\'s roughing: no flat finish pass is added', () => {
     const ops = injectDrawingIntelligence(sequence([KEYWAY]), { surfaceFinishRa: { value: 0.8 } });
-    expect(ops.map((o) => o.name)).toEqual(['Facing', 'Obround Slot Milling', 'Deburr']);
+    expect(ops.map((o) => o.name)).toEqual(['Obround Slot Milling', 'Deburr']);
     expect(named(ops, 'Obround Slot Milling')[0]!.timeSec).toBeCloseTo(1.6771875 * 1.3, 9);
   });
 

@@ -1593,10 +1593,11 @@ export class BomItemCostingService {
     /** The faces the part's stock supplies finished (a Stock Machining part: stock/stock-part.ts asSuppliedFaces): the mill does not finish them. */
     asSuppliedFaceIds: readonly number[] = [],
     /**
-     * On a milled route, the volume of the piece the mill starts from (the route's stock, mm³). Absent on a lathe's plan (a lathe turns
-     * its stock off the diameters, costed per diameter) and for a part with no stock chosen: no stock is then milled away in bulk.
+     * On a milled route, the piece the mill starts from (the route's stock): its volume, and what Facing takes off its faces. Absent on a
+     * lathe's plan (a lathe turns its stock off the diameters, costed per diameter) and for a part with no stock chosen: no stock is then
+     * faced or milled away in bulk.
      */
-    milledPieceMm3?: number,
+    milledPiece?: Pick<BlankResult, 'billetVolMm3' | 'facing'>,
     /** On a milled route, the operations on the stock itself that the mill performs (StockMachiningPlan: the perimeter cut of a plate part), each already timed. */
     stockOps: readonly OperationLine[] = [],
   ) {
@@ -1612,8 +1613,11 @@ export class BomItemCostingService {
     }
     // The stock around the part, for the mill to remove in bulk: the piece less the part and less what every feature of the graph removes
     // (the features split out below too: their own machines remove them).
-    const stockAround = milledPieceMm3 != null && milledPieceMm3 > 0
-      ? stockExcess({ pieceMm3: milledPieceMm3, partMm3: Number(item.volume) || 0, featureRemovedMm3: featureRemovedVolumeMm3(fgv2Features) })
+    const stockAround = milledPiece && milledPiece.billetVolMm3 > 0
+      ? stockExcess({
+        pieceMm3: milledPiece.billetVolMm3, partMm3: Number(item.volume) || 0, featureRemovedMm3: featureRemovedVolumeMm3(fgv2Features),
+        facedMm3: milledPiece.facing?.volumeMm3 ?? 0,
+      })
       : null;
     if (stockAround?.inconsistent) {
       const mm3 = (v: number) => Math.round(v).toLocaleString('en-US');
@@ -1666,7 +1670,7 @@ export class BomItemCostingService {
     }
 
     const rawFeatureOps = buildOperationSequence(
-      chemSplit.filteredFeatures, { matClass, machinabilityFactor, materialGrade: grade, chamferLinearSpeedMmPerSec: chamferParams.dataFound ? chamferParams.linearSpeedMmPerSec : null, roundingLinearSpeedMmPerSec: roundingParams.dataFound ? roundingParams.linearSpeedMmPerSec : null, workbook, calculators: machiningCalculators, removalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(matClass), finishing: await this.machiningLookup.getMillingFinishing(matClass), stockAround, stockOps },
+      chemSplit.filteredFeatures, { matClass, machinabilityFactor, materialGrade: grade, chamferLinearSpeedMmPerSec: chamferParams.dataFound ? chamferParams.linearSpeedMmPerSec : null, roundingLinearSpeedMmPerSec: roundingParams.dataFound ? roundingParams.linearSpeedMmPerSec : null, workbook, calculators: machiningCalculators, removalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(matClass), finishing: await this.machiningLookup.getMillingFinishing(matClass), stockAround, stockOps, facing: stockAround ? milledPiece?.facing ?? null : null },
     );
     // Fix 5: inject drawing intelligence overrides into the operation list
     const allFeatureOps = injectDrawingIntelligence(
@@ -2473,7 +2477,7 @@ export class BomItemCostingService {
       // plate part under Perimeter Milling with Drop-off, cuts round its outline first). A turned part's routes here are lathes, which turn
       // the stock off.
       const featurePlan = await this.machiningFeaturePlan(
-        item, fg, grade, accessToken, stock?.asSuppliedFaceIds, family === 'milled' ? stock?.input('saw').blankResult?.billetVolMm3 : undefined,
+        item, fg, grade, accessToken, stock?.asSuppliedFaceIds, family === 'milled' ? stock?.input('saw').blankResult : undefined,
         family === 'milled' ? stock?.millOps : undefined,
       );
       materialWarnings.push(...featurePlan.warnings);
@@ -2711,6 +2715,7 @@ export class BomItemCostingService {
       const quotedRate = candidateClasses.find((c) => c.cls === recommended.cls)?.rate;
       const roughingOnMill = family === 'milled' && featurePlan.stockAround && quotedRate ? {
         partMm3: featurePlan.stockAround.partMm3, featureRemovedMm3: featurePlan.stockAround.featureRemovedMm3,
+        facedFraction: featurePlan.stockAround.pieceMm3 > 0 ? featurePlan.stockAround.facedMm3 / featurePlan.stockAround.pieceMm3 : 0,
         operationCost: (seconds: number) => millingOperationsCost(machiningCalculators, quotedRate, recommended.cls, [{ name: PERIMETER_MILLING, timeSec: seconds, source: 'stock' }]),
       } : undefined;
       const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize, roughingOnMill) : undefined;
@@ -8938,7 +8943,7 @@ export class BomItemCostingService {
     const stock = await this.stockMachiningRoutes(item, fg, 'milled', { location, accessToken, batchSize, ...stockMaterial });
     // Every route here mills that piece: the plan mills away the stock around the part, after the stock's own operation on the mill (the
     // cut round a plate part's outline of Perimeter Milling with Drop-off).
-    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds, stock.input('saw').blankResult?.billetVolMm3, stock.millOps);
+    const featurePlan = await this.machiningFeaturePlan(item, fg, grade, accessToken, stock.asSuppliedFaceIds, stock.input('saw').blankResult, stock.millOps);
     comparisonWarnings.push(...featurePlan.warnings);
 
     const baseInput: Omit<MachiningCostInput, 'mhrRate' | 'tappingRate'> = {

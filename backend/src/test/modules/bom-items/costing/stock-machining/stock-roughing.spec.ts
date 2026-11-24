@@ -378,7 +378,7 @@ describe('a technique that cannot be used is listed with why, and All Bulk Milli
 
 describe('the Cost Summary\'s roughing section', () => {
   // The part's features are stated to remove 24 766.46 mm³; with the part's 15 208.37 mm³ that is 39 974.83 mm³ of every piece.
-  const mill = { partMm3: 15208.37, featureRemovedMm3: 24766.46, operationCost: (seconds: number) => Math.round(seconds * 0.02 * 100) / 100 };
+  const mill = { partMm3: 15208.37, featureRemovedMm3: 24766.46, facedFraction: 0, operationCost: (seconds: number) => Math.round(seconds * 0.02 * 100) / 100 };
 
   it('is absent for bar stock and for a route no mill makes', () => {
     expect(stockMachiningBreakdown(plan({ stockForm: 'rectangular_bar' }), 'saw', 100, mill)!.roughing).toBeUndefined();
@@ -398,6 +398,17 @@ describe('the Cost Summary\'s roughing section', () => {
     // 163.7 x 46.2 x 12.7 = 96 049.338 - 39 974.83 = 56 074.51;  64 244.22 - 39 974.83 = 24 269.39;  75 029.76 - 39 974.83 = 35 054.93 mm³.
     expect(section.options.map((o) => [o.technique, o.partsPerPlate, o.bulkVolumeMm3])).toEqual([
       ['all_bulk_milling', 45, 56074.51], ['perimeter_milling_dropoff', 40, 24269.39], ['plate_cutting_dropoff', 35, 35054.93],
+    ]);
+  });
+
+  it('takes off each technique\'s piece the share the mill faces: every piece is the plate\'s 12.7 mm, faced down to the part\'s 8 mm', () => {
+    // Facing takes (12.7 - 8) / 12.7 of each piece off its top and bottom (stock-facing.ts); the bulk is the rest less the part and features.
+    const facedFraction = (12.7 - 8) / 12.7;
+    const section = stockMachiningBreakdown(plan(), 'saw', 100, { ...mill, facedFraction })!.roughing!;
+    const bulk = (pieceMm3: number) => pieceMm3 * (1 - facedFraction) - 39974.83;
+    // 60 503.52 - 39 974.83 = 20 528.69;  40 468.80 - 39 974.83 = 493.97;  47 262.84 - 39 974.83 = 7288.01 mm³.
+    expect(section.options.map((o) => o.bulkVolumeMm3)).toEqual([
+      expect.closeTo(bulk(163.7 * 46.2 * 12.7), 1), expect.closeTo(bulk(64244.22), 1), expect.closeTo(bulk(75029.76), 1),
     ]);
   });
 

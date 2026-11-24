@@ -27,6 +27,7 @@ const LATER: Record<number, string> = {
   1128: '1128_machining_turning_follows_the_workbook.sql',
   1138: '1138_machining_turning_family_workbook.sql',
   1139: '1139_machining_hole_making_workbook.sql',
+  1140: '1140_machining_milling_named_ops_workbook.sql',
 };
 for (const [n, file] of Object.entries(LATER)) {
   writeFileSync(join(__dirname, '../migrations', file), buildMachiningCalculatorMigrationSql(Number(n)));

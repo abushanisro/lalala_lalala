@@ -23,6 +23,7 @@ import { asSuppliedFaces } from '../stock/stock-part';
 import type { PricedStock, StockMachiningChoice } from './stock-machining-cost.service';
 import type { CostSummaryDto, ProcessLineCost, StockMachiningBreakdown } from '../../dto/cost-breakdown.dto';
 import type { BlankResult } from '../sheet-metal/machine/blank-stock-candidates';
+import { stockFacing } from '../stock/stock-facing';
 import type { StockOption } from '../stock/stock-selection';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -88,12 +89,14 @@ export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutO
   const selection = choice.selection[cutOff];
   const o = quotedStock(choice, cutOff, priced);
   if (!o) return null;
+  const facing = stockFacing(o, choice.part);
   return {
     form: o.form, sizeLabel: o.sizeLabel, billetVolMm3: o.blank.volumeMm3, utilizationPct: o.utilizationPct,
     ...(o.circumscribedMm != null ? { barDiameterMm: o.circumscribedMm } : {}),
     purchasedVolMm3: o.purchasedVolumeMm3, sizeSource: STOCK_SIZE_SOURCE,
     endAllowanceMm: o.endAllowanceMm,
     ...(o.form === 'round_tube' && o.bMm != null ? { tubeIdMm: o.bMm } : {}),
+    ...(facing ? { facing } : {}),
     ...(selection.fallback && choice.settings.form ? { requestedFormUnavailable: { requested: choice.settings.form, reason: selection.fallback } } : {}),
   };
 }
@@ -198,6 +201,11 @@ export interface RoughingOnMill {
   /** The part's volume and what its features remove (mm³): the bulk a technique leaves is its piece less both (stock-excess.ts). */
   partMm3: number;
   featureRemovedMm3: number;
+  /**
+   * The share of a piece the mill faces off (stock/stock-facing.ts: the plate's thickness less the part's height, over the thickness).
+   * Every technique's piece is the plate's thickness, so each faces the same share of its own volume. 0 when nothing is faced.
+   */
+  facedFraction: number;
   /** What a milling operation of this many seconds costs on the quoted mill, in the location's currency; null when it cannot be priced. */
   operationCost: (seconds: number) => number | null;
 }
@@ -248,7 +256,7 @@ export function stockMachiningBreakdown(plan: StockMachiningPlan, cutOff: StockC
             ? { ...x.separation, timeSec: r3(x.separation.timeSec), cost: mill?.operationCost(x.separation.timeSec) ?? null }
             : x.separation ? { ...x.separation, timeSec: x.separation.timeSec != null ? r3(x.separation.timeSec) : null } : null,
           bulkVolumeMm3: x.pieceVolumeMm3 != null && mill
-            ? r2(stockExcess({ pieceMm3: x.pieceVolumeMm3, partMm3: mill.partMm3, featureRemovedMm3: mill.featureRemovedMm3 }).excessMm3)
+            ? r2(stockExcess({ pieceMm3: x.pieceVolumeMm3, partMm3: mill.partMm3, featureRemovedMm3: mill.featureRemovedMm3, facedMm3: x.pieceVolumeMm3 * mill.facedFraction }).excessMm3)
             : null,
           processes: x.processes,
         })),

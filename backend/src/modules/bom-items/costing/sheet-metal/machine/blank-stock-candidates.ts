@@ -4,6 +4,8 @@
 // A machined part's stock is chosen by the stock model (costing/stock), which stock-machining-cost-summary.ts stockBlankResult hands the
 // engines as a BlankResult. The picker that once scored stock_profiles candidates here is gone (user decision 2026-11-22: one stock model).
 
+import type { StockFacing } from '../../stock/stock-facing';
+
 export interface BoundingBox {
   length: number; // mm — longest dimension (feed direction)
   width: number; // mm
@@ -37,6 +39,8 @@ export interface BlankResult {
   /** The stock model's choice: the stock left on each end of the piece (the lathe faces it off), and a tube's bore (a part-off cuts the wall only). */
   endAllowanceMm?: number;
   tubeIdMm?: number;
+  /** The stock model's choice: what a mill faces off the piece before the part's features (stock/stock-facing.ts). Absent: nothing to face. */
+  facing?: StockFacing;
 }
 
 export function billetFallback(

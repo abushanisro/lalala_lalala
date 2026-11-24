@@ -879,15 +879,20 @@ describe('Fix 4 — machinabilityRating: scales MRR in both engines', () => {
     expect(steelMilling / alMilling).toBeCloseTo(10, 0);
   });
 
-  it('featureOps path: total time with Al machinability < same ops with mild steel', () => {
+  it('featureOps path: a pocket roughs faster in aluminium than in mild steel, by the workbook\'s milling conditions for each', () => {
+    // A 50 x 25 x 12 pocket roughed with the material's 10 mm end mill on a 10 000 rpm mill: aluminium 450 m/min (held to 10 000 rpm),
+    // 0.15 mm/tooth, 3 teeth; mild steel 90 m/min (2864.79 rpm), 0.115 mm/tooth, 4 teeth.
     const fgv2 = [
       { feature_type: 'PocketV2', variant: 'default', diameter_mm: 0,
-        occurrences: [{ depth_mm: 12, material_removed_mm3: 15_000 }] },
+        occurrences: [{ depth_mm: 12, extents_mm: [50, 25, 0], material_removed_mm3: 15_000 }] },
     ];
-    const alOps = buildOperationSequence(fgv2, { matClass: 'aluminum', machinabilityFactor: 2.0, calculators: CALCS, removalRateMm3PerMin: 60000 });
-    const steelOps = buildOperationSequence(fgv2, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: 12000 });
+    const endMill = (teeth: number) => ({ toolDiameterMm: 10, teeth, cuttingSpeedMPerMin: 100, feedPerToothPerDiameter: 0.008 });
+    const mill = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test mill' } };
+    const alOps = timeOperations(buildOperationSequence(fgv2, { matClass: 'aluminum', machinabilityFactor: 2.0, calculators: CALCS, workbook: workbookFixture(), finishing: endMill(3) }), CALCS, mill);
+    const steelOps = timeOperations(buildOperationSequence(fgv2, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: CALCS, workbook: workbookFixture(), finishing: endMill(4) }), CALCS, mill);
     const alTime = alOps.find((o) => o.name === 'Rough Milling')!.timeSec;
     const steelTime = steelOps.find((o) => o.name === 'Rough Milling')!.timeSec;
+    expect(alTime).toBeGreaterThan(0);
     expect(alTime).toBeLessThan(steelTime);
   });
 });

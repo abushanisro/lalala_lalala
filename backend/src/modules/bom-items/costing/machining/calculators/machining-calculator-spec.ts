@@ -90,8 +90,10 @@ export function loadMachiningCalculatorSpec(opts: { includeSuperseded?: boolean 
       ? c.machineClasses
       : String(c.machineClasses).split('+').flatMap((g: string) => groups[g] ?? []);
     // An entry copies the version of the calculator it names that was current when it shipped (shipped no later, and not yet
-    // superseded then), so the migration that shipped it never changes when that calculator is revised again.
-    const copied = (c.sameFieldsAs ? versionShippedWith(entries, c.sameFieldsAs, shippedIn(c)) : undefined) ?? byName.get(c.sameFieldsAs);
+    // superseded then), so the migration that shipped it never changes when that calculator is revised again. That version is looked
+    // for among every entry, superseded ones too: the live copier of a since-revised calculator (Bulk Milling of Rough Milling 1031)
+    // keeps the fields it shipped with, as the database does, not the revision's.
+    const copied = (c.sameFieldsAs ? versionShippedWith(raw.calculators as any[], c.sameFieldsAs, shippedIn(c)) : undefined) ?? byName.get(c.sameFieldsAs);
     const fields: SpecField[] = c.fields ?? copied?.fields;
     if (!fields) throw new Error(`machining calculator "${c.name}" has no fields`);
     for (const cls of classes) {

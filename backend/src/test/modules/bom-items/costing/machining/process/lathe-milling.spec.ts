@@ -8,17 +8,24 @@
 //     Passes        = ceil(Keyway Depth / (0.2 * Keyway Width))
 //     Path per Pass = max(Keyway Length - Keyway Width, 0) + Keyway Depth / Passes                              [mm]
 //     Cycle Time    = Keyways * Passes * Path per Pass / Feed Rate * 60                                         [s]
-//   Rough Milling = (Removed Volume * 0.8 / Removal Rate + Removed Volume * 0.2 / (Removal Rate * 0.4)) * 60    [s]
-//   Slot Milling  = Slots * 20                                                                                  [s]
+//   Slot Milling  (the workbook's Slot Milling sheet: a slot cut by an end mill of its width)
+//     Spindle Speed = min(Max Spindle Speed, Cutting Speed * 1000 / (pi * Cutter Diameter))                     [rpm]
+//     Cycle Time    = Slots * ceil((Slot Length + 10 + D) / (Feed per Tooth * Teeth * n) * Depth Passes * Width Passes * 60)   [s]
+//   Rough Milling (the workbook's End Milling sheet: a flat roughed by the end mill)
+//     Cycle Time    = Cuts * ceil((Cut Length + 10 + D / 2) / (Feed per Tooth * Teeth * n) * Width Passes * Depth Passes * 60)  [s]
 //
-// with the fixture's aluminium: a removal rate of 60 000 mm^3/min, and an end mill run at 183 m/min with 3 teeth and a feed per tooth of
-// 0.008 of its diameter (the tblMillingFinishing row).
+// with the fixture's aluminium: the workbook's 300 - 600 m/min and 0.1 - 0.2 mm/tooth (their middles, 450 and 0.15), and the end mill of
+// the tblMillingFinishing row (10 mm, 3 teeth; a keyway's run at 183 m/min with a feed per tooth of 0.008 of its diameter), on a live tool
+// that turns at most 10 000 rpm.
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { liveToolMilledFeatures } from '../../../../../../modules/bom-items/costing/machining/capability/live-tooling';
 import { broachWidthRangeMm, splitKeywayOccurrences } from '../../../../../../modules/bom-items/costing/machining/operation/keyway-routing';
 import { buildOperationSequence } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { latheMillingLines, latheMillingOps } from '../../../../../../modules/bom-items/costing/machining/process/lathe-milling';
 import { realKeywayBroachReference } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
+import type { MachiningWorkbookInput } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 
 const CALCS = specAsCalculators();
 const REMOVAL_RATE = 60000;
@@ -40,11 +47,19 @@ const KEYWAY = {
 };
 // A wider keyway elsewhere on a shaft: another group of the same type.
 const KEYWAY_2 = { id: 'Keyway-default_c2', feature_type: 'Keyway', variant: 'default', occurrences: [{ material_removed_mm3: 300, depth_mm: 3, length_mm: 20, width_mm: 5 }] };
-// Two radial slots: extents and removed volume, no length or width.
+// Two radial slots, 6 x 3 x 2 mm: their floor's box and measured depth. Each is cut by a 3 mm end mill (the slot's width): 450 m/min holds
+// the live tool's 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; depth of cut 1.5 mm, ceil(2 / 1.5) = 2 passes of 6 + 10 + 3 = 19 mm:
+// 38 / 4500 = 0.00844 min = 0.51 s -> 1 s a slot (plunging, 4 plunges of 12 mm, is no quicker), 2 s for the two.
 const SLOTS = {
   id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial',
-  occurrences: [{ extents_mm: [6, 3, 2], material_removed_mm3: 150 }, { extents_mm: [6, 3, 2], material_removed_mm3: 150 }],
+  occurrences: [{ extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }, { extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }],
 };
+const SLOTS_SEC = 2;
+// Two wrench flats on a Ø16, each 20 mm long, 10.583 mm across and 2 mm deep: the 10 mm end mill, one width pass (ceil((10.583 - 5) / 8)),
+// one depth pass; (20 + 10 + 5) / 4500 = 0.00778 min = 0.47 s -> 1 s a flat, 2 s for the two.
+const FLAT = { material_removed_mm3: 290.12, length_mm: 20, width_mm: 10.583, depth_mm: 2, diameter_mm: 16 };
+const FLATS = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [FLAT, { ...FLAT }] };
+const FLATS_SEC = 2;
 // What the lathe turns and drills itself.
 const TURNED_AND_DRILLED = [
   { id: 'Ring-outer_diameter_c1', feature_type: 'Ring', variant: 'outer_diameter', occurrences: [{ material_removed_mm3: 900 }] },
@@ -53,16 +68,17 @@ const TURNED_AND_DRILLED = [
 ];
 
 type Finishing = typeof FINISHING | null;
-const sequence = (features: unknown[], removalRate: number | null = REMOVAL_RATE, finishing: Finishing = FINISHING) =>
-  buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: removalRate, finishing });
-const milling = (features: unknown[], removalRate: number | null = REMOVAL_RATE, finishing: Finishing = FINISHING) =>
-  latheMillingLines(latheMillingOps(sequence(features, removalRate, finishing)));
+const sequence = (features: unknown[], finishing: Finishing = FINISHING, workbook: MachiningWorkbookInput = workbookFixture()) =>
+  buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE, finishing, workbook });
+// The lathe times what it mills on its live tool's own spindle limit, as the turning engine does (spindleLimitSeed, live tool).
+const LIVE_TOOL = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test lathe live_tooling_speed_rpm' } };
+const milling = (features: unknown[], finishing: Finishing = FINISHING, workbook: MachiningWorkbookInput = workbookFixture()) =>
+  latheMillingLines(timeOperations(latheMillingOps(sequence(features, finishing, workbook)), CALCS, LIVE_TOOL) as ReturnType<typeof latheMillingOps>);
 
 describe('latheMillingOps: the sequenced operations a lathe mills', () => {
   it('keeps the operations on the keyways and slots, in the sequencer\'s order, and none of what the lathe turns or drills', () => {
     const ops = latheMillingOps(sequence([...TURNED_AND_DRILLED, KEYWAY, SLOTS]));
     expect(ops.map((o) => [o.name, o.cadFeatureType, o.featureIds])).toEqual([
-      ['Rough Milling', 'Slot', ['Slot-radial_c1']],
       ['Obround Slot Milling', 'Keyway', ['Keyway-default_c1']],
       ['Slot Milling', 'Slot', ['Slot-radial_c1']],
     ]);
@@ -126,23 +142,20 @@ describe('latheMillingLines: one lathe line per operation', () => {
     expect(line.run.trace.some((s) => s.fieldName === 'Removed Volume' || s.fieldName === 'Material Removal Rate')).toBe(false);
   });
 
-  it('two slots: their volume roughed on the Rough Milling line, each slot finished on the Slot Milling line', () => {
-    // Rough: 300 * 0.8 / 60000 = 0.004 min; 300 * 0.2 / 24000 = 0.0025 min; sum 0.0065 min = 0.39 s.  Slot Milling: 2 * 20 = 40 s.
+  it('two slots: one Slot Milling line, the workbook\'s Slot Milling sheet on each slot\'s length, width and depth, no separate roughing', () => {
     const lines = milling([SLOTS]);
-    expect(lines.map((l) => [l.operation, l.run.calculatorId])).toEqual([['Rough Milling', 'Machining - Rough Milling'], ['Slot Milling', 'Machining - Slot Milling']]);
-    expect(lines[0].run.sec).toBeCloseTo(0.39, 6);
-    expect(lines[1].run.sec).toBe(40);
-    expect(lines[0].rows).toEqual([{ name: 'Rough Milling // Slot ×2', timeSec: expect.closeTo(0.39, 6), featureType: 'Slot', count: 2, featureIds: ['Slot-radial_c1'] }]);
-    expect(lines[1].rows).toEqual([{ name: 'Slot Milling // Slot ×2', timeSec: 40, featureType: 'Slot', count: 2, featureIds: ['Slot-radial_c1'] }]);
+    expect(lines.map((l) => [l.operation, l.run.calculatorId])).toEqual([['Slot Milling', 'Machining - Slot Milling']]);
+    expect(lines[0].run.sec).toBe(SLOTS_SEC);
+    expect(lines[0].run.trace.find((s) => s.fieldName === 'Depth Passes')).toMatchObject({ kind: 'calculated', value: 2 });
+    expect(lines[0].rows).toEqual([{ name: 'Slot Milling // Slot ×2', timeSec: SLOTS_SEC, featureType: 'Slot', count: 2, featureIds: ['Slot-radial_c1'] }]);
   });
 
-  it('a keyway and slots: the keyway has its own line, and the slots\' two lines are what they are without it', () => {
+  it('a keyway and slots: the keyway has its own line, and the slots\' line is what it is without it', () => {
     const lines = milling([KEYWAY, SLOTS]);
-    expect(lines.map((l) => l.operation)).toEqual(['Rough Milling', 'Obround Slot Milling', 'Slot Milling']);
-    const [rough, keyway, slot] = lines;
-    expect([rough, slot]).toEqual(milling([SLOTS]));
+    expect(lines.map((l) => l.operation)).toEqual(['Obround Slot Milling', 'Slot Milling']);
+    const [keyway, slot] = lines;
+    expect(slot).toEqual(milling([SLOTS])[0]);
     expect(keyway).toEqual(milling([KEYWAY])[0]);
-    expect(rough.rows.map((r) => [r.name, r.featureIds])).toEqual([['Rough Milling // Slot ×2', ['Slot-radial_c1']]]);
   });
 
   it('two keyways of different sizes: each is numbered, so their calculations and rows stay apart, then the total', () => {
@@ -169,25 +182,23 @@ describe('latheMillingLines: one lathe line per operation', () => {
   });
 
   it('an operation the sequencer could not time is a line with no time that names what it lacks, and no row', () => {
-    // No milling removal rate on file for the material: Rough Milling cannot be timed. The keyway and Slot Milling need none.
-    const [rough, keyway, slot] = milling([KEYWAY, SLOTS], null);
-    expect(rough.operation).toBe('Rough Milling');
-    expect(rough.run.sec).toBeNull();
-    expect(rough.run.missing).toEqual(['Rough Milling: Material Removal Rate']);
-    expect(rough.rows).toEqual([]);
+    // The workbook's tables were not read: Slot Milling has no cutting speed or feed. The keyway is timed on its own cutter row.
+    const [keyway, slot] = milling([KEYWAY, SLOTS], FINISHING, workbookFixture({ tables: {} }));
+    expect(slot.operation).toBe('Slot Milling');
+    expect(slot.run.sec).toBeNull();
+    expect(slot.run.missing.join('; ')).toContain('tblMillingConditions');
+    expect(slot.rows).toEqual([]);
     expect(keyway.run.sec).toBeCloseTo(KEYWAY_SEC, 4);
-    expect(slot.run.sec).toBe(40);
-    expect(slot.run.missing).toEqual([]);
   });
 
-  it('a keyway with no cutter data for the material is a line with no time that names it; the slots\' lines are untouched', () => {
-    const [rough, keyway, slot] = milling([KEYWAY, SLOTS], REMOVAL_RATE, null);
+  it('with no cutter data for the material the keyway and the slots are each a line with no time that names it', () => {
+    const [keyway, slot] = milling([KEYWAY, SLOTS], null);
     expect(keyway.operation).toBe('Obround Slot Milling');
     expect(keyway.run.sec).toBeNull();
     expect(keyway.run.missing).toEqual(['Obround Slot Milling: Teeth, Cutting Speed, Feed per Tooth per Diameter']);
     expect(keyway.rows).toEqual([]);
-    expect(rough.run.sec).toBeCloseTo(0.39, 6);
-    expect(slot.run.sec).toBe(40);
+    expect(slot.run.sec).toBeNull();
+    expect(slot.run.missing).toEqual(["the material's end mill (tblMillingFinishing has no row for aluminum)"]);
   });
 
   it('a keyway the CAD gives no depth is a line with no time that names the measurement; one that has its size is still timed', () => {
@@ -202,34 +213,29 @@ describe('latheMillingLines: one lathe line per operation', () => {
     expect(both.rows.map((r) => r.name)).toEqual(['Obround Slot Milling // Keyway 1']);
   });
 
-  it('an operation with nothing to cut is no line: no volume to rough is not missing data', () => {
-    const noVolume = { ...SLOTS, occurrences: SLOTS.occurrences.map((o) => ({ ...o, material_removed_mm3: 0 })) };
-    expect(milling([noVolume]).map((l) => [l.operation, l.run.sec])).toEqual([['Slot Milling', 40]]);
+  it('a slot the CAD gives no depth or volume for is a line with no time that names it, never a free slot', () => {
+    const unmeasured = { ...SLOTS, occurrences: SLOTS.occurrences.map((o) => ({ extents_mm: o.extents_mm, material_removed_mm3: 0 })) };
+    expect(milling([unmeasured]).map((l) => [l.operation, l.run.sec, l.run.missing])).toEqual([['Slot Milling', null, ['the CAD length, width and depth of every slot']]]);
   });
 
-  it('flats: their volume roughed on the Rough Milling line, one row for the group, beside the slots\' roughing', () => {
-    // Two wrench flats, 290.12 mm^3 each (the circular segment each cuts off its Ø16 over 20 mm): 580.24 * 0.8 / 60000 + 580.24 * 0.2 /
-    // 24000 = 0.0125719 min = 0.75431 s.
-    const FLATS = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [{ material_removed_mm3: 290.12, depth_mm: 2 }, { material_removed_mm3: 290.12, depth_mm: 2 }] };
-    const flatSec = (580.24 * 0.8 / 60000 + 580.24 * 0.2 / 24000) * 60;
+  it('flats: roughed on the Rough Milling line by the workbook\'s End Milling sheet, one row for the group; the slots keep their own line', () => {
     const [line, ...rest] = milling([...TURNED_AND_DRILLED, FLATS]);
     expect(rest).toEqual([]);
     expect(line.operation).toBe('Rough Milling');
-    expect(line.run.sec).toBeCloseTo(flatSec, 6);
+    expect(line.run.sec).toBe(FLATS_SEC);
     expect(line.run.calculatorId).toBe('Machining - Rough Milling');
-    expect(line.rows).toEqual([{ name: 'Rough Milling // Flat ×2', timeSec: expect.closeTo(flatSec, 6), featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] }]);
-    // With slots the two features share the line, each its own row; the Slot Milling line is the slots' alone.
+    expect(line.rows).toEqual([{ name: 'Rough Milling // Flat ×2', timeSec: FLATS_SEC, featureType: 'Flat', count: 2, featureIds: ['Flat-default_c2'] }]);
+    // With slots each feature keeps its own line.
     const [rough, slot] = milling([SLOTS, FLATS]);
-    expect(rough.run.sec).toBeCloseTo(0.39 + flatSec, 6);
-    expect(rough.rows.map((r) => [r.name, r.featureType])).toEqual([['Rough Milling // Slot ×2', 'Slot'], ['Rough Milling // Flat ×2', 'Flat']]);
-    expect(slot).toEqual(milling([SLOTS])[1]);
+    expect(rough).toEqual(milling([FLATS])[0]);
+    expect(slot).toEqual(milling([SLOTS])[0]);
   });
 
-  it('a flat with no removed volume on file is a line with no time that names it', () => {
+  it('a flat with no CAD size is a line with no time that names it', () => {
     const [line] = milling([{ id: 'Flat-default_c1', feature_type: 'Flat', variant: 'default', occurrences: [{ material_removed_mm3: 0 }] }]);
     expect(line.operation).toBe('Rough Milling');
     expect(line.run.sec).toBeNull();
-    expect(line.run.missing).toEqual(['the CAD volume the flat removes']);
+    expect(line.run.missing).toEqual(['the CAD length, width and depth of the flat']);
     expect(line.rows).toEqual([]);
   });
 
