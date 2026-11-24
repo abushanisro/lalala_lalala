@@ -104,6 +104,9 @@ export function computeOperationVisual(
   if (l.includes('inspection')) {
     return merge('op-inspection', v2Features, '#e2e8f0');
   }
+  // Drilling (the mill's Drilling line, a lathe's): the holes it drills, plain and stepped.
+  if (l.includes('drilling'))
+    return merge('op-drilling', v2Features.filter((f) => f.feature_type === 'SimpleHole' || f.feature_type === 'MultiStepHole'), '#8b5cf6');
   if (l.includes('turning') || l.includes('milling') || l.includes('machining'))
     return merge('op-all', v2Features, '#64748b');
   // ── Injection molding operations ──

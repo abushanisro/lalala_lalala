@@ -59,7 +59,7 @@ import {
   computeMillingCostSummary, computeTurningCostSummary, millingOperationsCost,
   checkMachiningCapability, checkLatheCapability, computeRouteComplexityScore,
   meetsRequiredMilledClass, hasMachineRate, machiningRouteStanding,
-  detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
+  detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, MILLING_DRILLING_OPERATIONS, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
 import type { MachiningCostInput, MachineClassId, MachiningRouteStanding, MachiningWorkbookInput, SpindleMachine } from './costing/machining/process/cost-machining-engine';
 import { machineSpindleSeed, spindleColumn, spindleLimitSeed } from './costing/machining/process/cost-machining-engine';
@@ -2759,11 +2759,15 @@ export class BomItemCostingService {
         // The operations as the recommended mill times them (its spindle limit), the times its line was costed at.
         const recommendedRate = candidateClasses.find((c) => c.cls === recommended.cls)?.rate;
         const timedOps = timeOperations(featureOps, machiningCalculators, recommendedRate ? spindleLimitSeed(recommendedRate, location) : {});
-        const breakdown = this.buildMachiningFeatureBreakdown(timedOps, recommended.cls, realOperationCategories, cncResult.warnings);
-        if (breakdown.length > 0) {
-          const millLine = cncResult.processLines.find((l) => l.machineClass === recommended.cls);
-          if (millLine) millLine.featureBreakdown = breakdown;
-        }
+        // Each operation under the line that times it: the drilling on the mill's Drilling line, the rest on its milling line
+        // (cost-machining-engine.ts MILLING_DRILLING_OPERATIONS). The milling line is the mill's own (no host); Drilling runs on it.
+        const isDrilling = (o: { name: string }) => MILLING_DRILLING_OPERATIONS.has(o.name);
+        const millBreakdown = this.buildMachiningFeatureBreakdown(timedOps.filter((o) => !isDrilling(o)), recommended.cls, realOperationCategories, cncResult.warnings);
+        const drillBreakdown = this.buildMachiningFeatureBreakdown(timedOps.filter(isDrilling), recommended.cls, realOperationCategories, cncResult.warnings);
+        const millLine = cncResult.processLines.find((l) => l.machineClass === recommended.cls && !l.hostMachineClass);
+        const drillLine = cncResult.processLines.find((l) => l.hostMachineClass === recommended.cls && l.process === 'Drilling');
+        if (millLine && millBreakdown.length > 0) millLine.featureBreakdown = millBreakdown;
+        if (drillLine && drillBreakdown.length > 0) drillLine.featureBreakdown = drillBreakdown;
       }
       // Inherited tapping runs on the recommended route's machine — surface
       // THAT machine on the Tapping line's selector, not the class default.
