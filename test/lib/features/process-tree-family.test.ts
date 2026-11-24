@@ -14,6 +14,7 @@ describe('process-tree-family', () => {
 
   it('a sand-casting step lists only features (its time is on the cost tab, not a row in the tree)', () => {
     expect(showsStepTextRows('sand_cast')).toBe(false);
+    expect(showsStepTextRows('plastic_molded')).toBe(false);
     expect(showsStepTextRows('sheet_metal')).toBe(true);
     expect(showsStepTextRows('machined')).toBe(true);
   });

@@ -201,11 +201,6 @@ export function computeFeatureNodeVisual(
     const hl = buildFullModelHL(`hl-${node.id}`, faceMap);
     return hl ? { highlight: hl, color: '#22d3ee' } : null;
   }
-  // ── Injection molding feature nodes ──
-  if (node.id === 'feat_im_part') {
-    const hl = buildFullModelHL('hl-im-part', faceMap);
-    return hl ? { highlight: hl, color: '#f97316' } : null; // orange — molded geometry
-  }
   // Individual hole-diameter-group rows ("Ø1.6 × 24") nested under Flat
   // Pattern — previously fell through every branch above to `return null`,
   // so clicking one never highlighted anything at all. Match by diameter
@@ -249,7 +244,6 @@ export function computeFeatureNodeVisual(
 
 export function getVizLabel(node: ProcessTreeNode): string | null {
   const l = node.label.toLowerCase();
-  if (node.id === 'feat_im_part') return 'Moulded part — full cavity geometry';
   if (node.id.startsWith('secondary_') || node.id.startsWith('secfeat_')) {
     return `${node.label} — ${node.wholePart ? 'whole part surface' : 'measured features'}`;
   }
