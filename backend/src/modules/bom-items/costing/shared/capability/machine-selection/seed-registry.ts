@@ -335,6 +335,7 @@ export const MACHINE_CLASS_DEFAULTS: Record<MachineClass, Partial<MachineCapabil
   // other Machining secondary-op class above.
   machining_inspection: {},
   special_inspection: {},
+  xrf_analyzer: {},
   pem_press:      {},
   // Conservative floor for an unknown hole_forming machine with no capability
   // on file — real researched units (Whitney Jensen/FTC105-10T/Fresan FP10P,

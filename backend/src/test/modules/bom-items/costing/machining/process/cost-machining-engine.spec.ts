@@ -30,7 +30,7 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
 import { realCapabilityRules, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams, realInspectionReference } from '../real-reference-tables';
-import { workbookFixture } from '../workbook-fixture';
+import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
 import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
 const TAPPING = workbookFixture();
@@ -217,18 +217,45 @@ describe('computeMillingCostSummary — billet and chip loss', () => {
   });
 });
 
+describe('RM Composition Analysis: the raw material lot\'s composition checked on the XRF work centre (the workbook\'s sheet)', () => {
+  const XRF = rate(15.2794, { machineClass: 'xrf_analyzer' as any, machineName: 'Handheld XRF Alloy Analyzer' });
+  const xrfOf = (r: ReturnType<typeof computeMillingCostSummary>) => r.processLines.find((l) => l.process === 'RM Composition Analysis');
+
+  it('is 60 s a lot shared over the batch, on the XRF analyzer\'s rate, with no setup', () => {
+    // 60 s over the batch of 60 = 1 s a part; at 15.2794 an hour, 0.004244.
+    const line = xrfOf(computeMillingCostSummary(milledInput({ xrfRate: XRF }), mc('3_axis_mill')))!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(1, 2); // a line keeps its cycle to four decimals of a minute
+    expect(line.runCost).toBeCloseTo(15.2794 / 3600, 6);
+    expect(line).toMatchObject({ setupCost: 0, machineClass: 'xrf_analyzer', machineName: 'Handheld XRF Alloy Analyzer' });
+    expect(line.calculationTrace!.find((s) => s.fieldName === 'Time per Lot')!.value).toBe(60);
+  });
+
+  it('a quote given no XRF work centre (a sheet metal part\'s) has no such line', () => {
+    expect(xrfOf(computeMillingCostSummary(milledInput(), mc('3_axis_mill')))).toBeUndefined();
+  });
+});
+
 describe('inspection line — memory/Machining reference (one analysis per inspected part + final inspection)', () => {
   // Real reference: tblInspection diametrical 400 s per analysis, sample ratio 0.25, final inspection 5 min.
   const CYCLE_S = INSPECTION.timePerAnalysisS * INSPECTION.sampleRatio + INSPECTION.finalInspectionMin * 60;
   const inspOf = (r: ReturnType<typeof computeMillingCostSummary>) => r.processLines.find((l) => l.process === 'Inspection')!;
   const step = (r: ReturnType<typeof computeMillingCostSummary>, field: string) => inspOf(r).calculationTrace!.find((s) => s.fieldName === field)!;
 
-  it('is one analysis on the share of parts inspected plus every part\'s final inspection, all from the reference', () => {
+  it('is one analysis on the share of parts inspected plus every part\'s final inspection, all from the reference, and the gauge\'s wear', () => {
     expect(INSPECTION).toEqual({ inspectionType: 'diametrical', timePerAnalysisS: 400, sampleRatio: 0.25, finalInspectionMin: 5 });
-    const insp = inspOf(computeMillingCostSummary(milledInput(), mc('3_axis_mill')));
+    const r = computeMillingCostSummary(milledInput({ workbook: workbookFixture() }), mc('3_axis_mill'));
+    const insp = inspOf(r);
     expect(insp.cycleTimeMin).toBeCloseTo(CYCLE_S / 60, 3);
-    expect(insp.runCost).toBeCloseTo((CYCLE_S / 3600) * 450, 2);
+    // The workbook's inspection gauge, Rs 3500 over 10 000 parts = Rs 0.35 a part, at the test's Rs 84 to the dollar.
+    expect(insp.otherCostPerPart).toBeCloseTo(0.35 / TEST_INR_PER_USD, 9);
+    expect(insp.runCost).toBeCloseTo((CYCLE_S / 3600) * 450 + 0.35 / TEST_INR_PER_USD, 6);
+    expect([step(r, 'Tool Price').value, step(r, 'Tool Life').value]).toEqual([3500, 10000]);
     expect(insp.hourlyRate).toBe(450);
+  });
+
+  it('without the workbook the gauge\'s price is not read: the line is a named gap, never priced without it', () => {
+    const r = computeMillingCostSummary(milledInput({ workbook: workbookFixture({ tables: {} }) }), mc('3_axis_mill'));
+    expect(inspOf(r).cycleTimeMin).toBe(0);
   });
 
   it('does not grow with the hole count: one analysis is one inspected part (holes only listed)', () => {

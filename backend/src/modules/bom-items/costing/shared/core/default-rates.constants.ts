@@ -1076,6 +1076,9 @@ export const MACHINE_REGISTRY = {
   // wiring it into an actual CNC cost line is deferred until a real
   // time-per-feature source is found, same discipline as every other
   // documented "resolvable but not yet costed" gap in this file.
+  // The XRF analyzer that checks each raw material lot's composition (the machining calculator workbook's RM Composition Analysis sheet,
+  // work centre XRF-0000-0001P; mhr_records rows by migration 1145). The exact class value as its keyword, as machining_inspection's.
+  xrf_analyzer: { commodityCodes: [], processGroupKeywords: ['Machining'], machineClassKeywords: ['xrf_analyzer'] },
   special_inspection: { commodityCodes: [],                                                                                          processGroupKeywords: ['Machining'],                                                                                                        machineClassKeywords: ['special_inspection', 'Special Inspection'] },
   // Real, granular primary CNC milling/turning classes — replaces the 6
   // generic cnc_3ax_vmc/cnc_4ax_vmc/cnc_5ax_mc/cnc_lathe/cnc_lathe_live/

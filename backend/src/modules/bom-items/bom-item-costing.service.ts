@@ -2534,7 +2534,7 @@ export class BomItemCostingService {
         // generic (Sheet-Metal-sourced) deburring class when it's actually
         // on file for this location — see preferRealRate()'s own doc comment.
         deburrRate: preferRealRate(mhrRates.manualDeburr, mhrRates.deburring),
-        inspectionRate: preferRealRate(mhrRates.machiningInspection, mhrRates.inspection),
+        inspectionRate: preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
         surfaceTreatment: null,
         surfaceTreatmentDbRate,
         // memory/Machining inspection (inspection-reference.ts): the reference values and the holes it inspects.
@@ -8087,7 +8087,7 @@ export class BomItemCostingService {
       materialGrade: null, materialCostPerKg, materialDensityKgM3, materialSource,
       threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
       batchSize, family: 'milled', finishedWeightKg,
-      deburrRate: preferRealRate(mhrRates.manualDeburr, mhrRates.deburring), inspectionRate: preferRealRate(mhrRates.machiningInspection, mhrRates.inspection),
+      deburrRate: preferRealRate(mhrRates.manualDeburr, mhrRates.deburring), inspectionRate: preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment: null, surfaceTreatmentDbRate: null,
       inspectionReference, inspectedFeatures: [],
       location, blankResult,
@@ -8993,7 +8993,7 @@ export class BomItemCostingService {
       finishedWeightKg,
       // Same preference as getCostSummary — must match line for line.
       deburrRate:           preferRealRate(mhrRates.manualDeburr, mhrRates.deburring),
-      inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection),
+      inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment:     null,
       surfaceTreatmentDbRate: surfaceTreatmentDbRate ?? null,
       inspectionReference:  (await this.machiningLookup.getInspectionReference()).reference,
@@ -9530,7 +9530,7 @@ export class BomItemCostingService {
       finishedWeightKg,
       // Same preference as getCostSummary — must match line for line.
       deburrRate:           preferRealRate(mhrRates.manualDeburr, mhrRates.deburring),
-      inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection),
+      inspectionRate:       preferRealRate(mhrRates.machiningInspection, mhrRates.inspection), xrfRate: mhrRates.xrf,
       surfaceTreatment:     null,
       surfaceTreatmentDbRate: surfaceTreatmentDbRate ?? null,
       inspectionReference:  (await this.machiningLookup.getInspectionReference()).reference,
