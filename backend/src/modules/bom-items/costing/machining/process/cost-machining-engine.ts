@@ -425,12 +425,16 @@ export interface MillingMoves {
 // The cutter size an operation's calculator run states, by the field each calculator names it.
 const CUTTER_FIELDS = ['Cutter Diameter', 'Tool Diameter', 'Hole Diameter', 'Step Diameter', 'Thread Diameter', 'Keyway Width', 'Initial Diameter', 'Final Diameter'];
 
-/** The cutters an operation uses: one per calculator run, by the operation and the cutter size the run states (a Ø6 and a Ø8 drill are two). */
+/**
+ * The cutters an operation uses: one per calculator run, by the operation and the cutter size the run states (a Ø6 and a Ø8 drill are two).
+ * A run that states no cutter size uses one tool whatever the feature's size: one spot drill centres every hole, one chamfer mill breaks
+ * every edge. An operation with no calculator run is told apart by its feature's diameter, the only size it carries.
+ */
 function cuttersOf(o: NonNullable<MachiningCostInput['featureOps']>[number]): string[] {
-  const runs = o.plan?.length ? o.plan : [{ seeds: {} as Record<string, CalcSeed> }];
-  return runs.map((p) => {
+  if (!o.plan?.length) return [`${o.name}|${o.diameterMm ?? ''}`];
+  return o.plan.map((p) => {
     const field = CUTTER_FIELDS.find((f) => p.seeds[f] != null);
-    return `${o.name}|${field ? p.seeds[field]!.value : (o.diameterMm ?? '')}`;
+    return `${o.name}|${field ? p.seeds[field]!.value : ''}`;
   });
 }
 
