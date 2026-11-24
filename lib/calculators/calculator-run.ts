@@ -43,6 +43,39 @@ export function calculationOfLine(line: {
   };
 }
 
+/**
+ * The calculator's own formulas a run was computed with, by field: each calculated step whose formula is the calculator's (it reads its fields
+ * in braces, "{Thread Depth}"; a step the engine adds around it, "Sum of every thread-size group Cycle Time", is not), a group's prefix
+ * ("M3 · Cycle Time") dropped.
+ */
+function calculatorFormulas(run: CalculatorRun): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const step of run.trace) {
+    const formula = step.formula;
+    if (step.kind !== 'calculated' || typeof formula !== 'string' || !formula.includes('{')) continue;
+    // The calculator's own field name: groupField on a run per group (a line saved before it existed carries the "M2 · " prefix only).
+    out.set(step.groupField ?? step.fieldName.split(' · ').pop() ?? step.fieldName, formula);
+  }
+  return out;
+}
+
+/**
+ * Whether the calculator a saved line was costed with has changed since: the saved run and the live engine line's run are the same calculator
+ * and their formulas differ (one changed, added or dropped). A calculator rewritten in place keeps its id and its version (migration 1139
+ * rewrote Machining - Rigid Tapping as version 1 again), so the formulas themselves are compared. False when either has no run, when they are
+ * different calculators (another process chosen) or when nothing can be compared.
+ */
+export function calculatorChangedSince(saved: LineCalculation | null | undefined, live: LineCalculation | null | undefined): boolean {
+  if (!saved?.calculatorRun || !live?.calculatorRun || !saved.calculatorId || saved.calculatorId !== live.calculatorId) return false;
+  const was = calculatorFormulas(saved.calculatorRun);
+  const now = calculatorFormulas(live.calculatorRun);
+  if (was.size === 0 || now.size === 0) return false;
+  for (const field of new Set([...was.keys(), ...now.keys()])) {
+    if (was.get(field) !== now.get(field)) return true;
+  }
+  return false;
+}
+
 /** A saved line's calculation, when it kept one. */
 export function calculationOfRecord(record: Partial<LineCalculation> | null | undefined): LineCalculation | null {
   if (!record?.calculatorRun?.trace.length) return null;
