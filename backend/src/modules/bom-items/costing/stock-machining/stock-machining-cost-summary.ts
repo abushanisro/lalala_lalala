@@ -149,8 +149,9 @@ export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: Stoc
   const priced = plan.priced?.[cutOff] ?? null;
   const quote = priced?.quote ?? null;
   const processLines = [...frontLines(plan, cutOff), ...cost.processLines];
-  const materialCost = priced?.materialCost != null ? r2(priced.materialCost) : cost.materialCost;
-  const totalProcessCost = r2(processLines.reduce((s, l) => s + l.totalCost, 0));
+  // Money unrounded, as the machining engines leave it: the total is the sum of the lines, and money is rounded only where it is shown.
+  const materialCost = priced?.materialCost ?? cost.materialCost;
+  const totalProcessCost = processLines.reduce((s, l) => s + l.totalCost, 0);
   const runs = quote ? {
     ...(quote.material.sizeRun ? { 'Stock Machining stock size': runView(STOCK_MACHINING_CALC.size, 'Required Size', quote.material.sizeRun) } : {}),
     ...(quote.material.run ? { 'Stock Machining stock': runView(isPlate(priced!.selection.chosen!) ? STOCK_MACHINING_CALC.plate : STOCK_MACHINING_CALC.bar, 'Material Cost', quote.material.run) } : {}),
@@ -173,7 +174,7 @@ export function withStockMachining<T extends CostSummaryDto>(cost: T, plan: Stoc
   return {
     ...cost,
     processLines, materialCost, totalProcessCost,
-    totalCost: r2(materialCost + totalProcessCost),
+    totalCost: materialCost + totalProcessCost,
     grossWeightKg: quote?.material.purchasedKg != null ? r3(quote.material.purchasedKg) : cost.grossWeightKg,
     cycleTimes: { ...cost.cycleTimes, totalMin: r2(processLines.reduce((s, l) => s + l.cycleTimeMin, 0)) },
     warnings: warnings.filter((w, i) => w && warnings.indexOf(w) === i),

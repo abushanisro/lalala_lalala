@@ -2503,11 +2503,11 @@ describe('a blank cut from stock: the piece is machined, the stock bought is the
   it('prices the material on the stock bought per part when the blank states it; with none the piece is what is bought', () => {
     const piece = turned();
     const bought = turned({ blankResult: { ...bar, purchasedVolMm3: boughtVol } });
-    // 70,686 mm³ x 2700 kg/m³ = 0.191 kg; 86,180 mm³ = 0.233 kg; at 350 a kg.
+    // 70,686 mm³ x 2700 kg/m³ = 0.191 kg; 86,180 mm³ = 0.233 kg; at 350 a kg (not rounded to cents: closeTo for the float product).
     expect(piece.grossWeightKg).toBe(0.191);
-    expect(piece.materialCost).toBe(66.85);
+    expect(piece.materialCost).toBeCloseTo(66.85, 10);
     expect(bought.grossWeightKg).toBe(0.233);
-    expect(bought.materialCost).toBe(81.55);
+    expect(bought.materialCost).toBeCloseTo(81.55, 10);
     // What is machined away, and every operation's time, are the piece's either way.
     expect(bought.materialRemoval).toEqual(piece.materialRemoval);
     expect(bought.processLines.map((l) => [l.process, l.cycleTimeMin])).toEqual(piece.processLines.map((l) => [l.process, l.cycleTimeMin]));
@@ -2518,9 +2518,9 @@ describe('a blank cut from stock: the piece is machined, the stock bought is the
     const blank = { form: 'plate', sizeLabel: '1-1/4" plate', billetVolMm3: 200_000, utilizationPct: 40 };
     const piece = computeMillingCostSummary(milledInput({ blankResult: blank }), mc('3_axis_mill'));
     const bought = computeMillingCostSummary(milledInput({ blankResult: { ...blank, purchasedVolMm3: 250_000 } }), mc('3_axis_mill'));
-    // 200,000 mm³ = 0.54 kg; 250,000 mm³ = 0.675 kg; at 350 a kg.
-    expect([piece.grossWeightKg, piece.materialCost]).toEqual([0.54, 189]);
-    expect([bought.grossWeightKg, bought.materialCost]).toEqual([0.675, 236.25]);
+    // 200,000 mm³ = 0.54 kg; 250,000 mm³ = 0.675 kg; at 350 a kg (not rounded to cents: closeTo for the float product).
+    expect([piece.grossWeightKg, piece.materialCost]).toEqual([0.54, expect.closeTo(189, 10)]);
+    expect([bought.grossWeightKg, bought.materialCost]).toEqual([0.675, expect.closeTo(236.25, 10)]);
     expect(bought.materialRemoval!.billetWeightKg).toBe(0.54);
     expect(bought.totalProcessCost).toBe(piece.totalProcessCost);
   });

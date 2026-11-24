@@ -27,7 +27,6 @@ const REF = realStockMachiningReference();
 const STOCK = stockReference(REF).reference!;
 const CALCS = specAsCalculators();
 const ZERO = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
-const r2 = (n: number) => Math.round(n * 100) / 100;
 const rate = (r: number, machineClass: string): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass, machineName: 'M', commodityCode: null, setupTimeHr: 0.5 } as MHRRateInput);
 
@@ -116,22 +115,22 @@ describe('a Machining part on a lathe: the stock model\'s stock, no Band Saw, an
     expect(processes(q)).not.toContain('Band Saw');
     expect(processes(q)).not.toContain('Parting');
     expect(processes(q)).toEqual(expect.arrayContaining(['Rough Turning', 'Finish Turning']));
-    // The 5/8 in bar over its 172 sawn pieces at the round bar price (5.875 USD/kg), never the family's own price: 0.11128 -> 0.11.
-    expect(q.materialCost).toBe(r2((BAR_KG / 172) * 5.875));
+    // The 5/8 in bar over its 172 sawn pieces at the round bar price (5.875 USD/kg), never the family's own price: 0.11128, not rounded to cents.
+    expect(q.materialCost).toBeCloseTo((BAR_KG / 172) * 5.875, 10);
     expect(q.grossWeightKg).toBeCloseTo(BAR_KG / 172, 3);
     // The note, once; nothing of the stock or the turning is a gap.
     expect(q.warnings.filter((w) => w === SAW_NOT_COSTED)).toHaveLength(1);
     expect(q.warnings).not.toContain(PARTED_OFF);
     expect(stockGaps(q)).toEqual([]);
-    expect(q.totalCost).toBe(r2(q.materialCost + q.totalProcessCost));
+    expect(q.totalCost).toBe(q.materialCost + q.totalProcessCost);
   });
 
   it.each([...BAR_FED_LATHE_CLASSES])('%s parts the piece off the bar: its Parting line, the parting width in the yield, and no word of a saw', (cls) => {
     const q = latheRoute(machining, cls);
     expect(processes(q)).not.toContain('Band Saw');
     expect(processes(q)).toContain('Parting');
-    // The parting tool is wider than the saw's kerf: 164 pieces a bar. 3.2578 kg / 164 x 5.875 = 0.1167 -> 0.12.
-    expect(q.materialCost).toBe(r2((BAR_KG / 164) * 5.875));
+    // The parting tool is wider than the saw's kerf: 164 pieces a bar. 3.2578 kg / 164 x 5.875 = 0.1167, not rounded to cents.
+    expect(q.materialCost).toBeCloseTo((BAR_KG / 164) * 5.875, 10);
     expect(q.warnings).toContain(PARTED_OFF);
     expect(q.warnings).not.toContain(SAW_NOT_COSTED);
     expect(stockGaps(q)).toEqual([]);
@@ -158,7 +157,7 @@ describe('the same part as Stock Machining: the same quote, with the Band Saw li
     expect(sm.processLines.filter((l) => l.process !== 'Band Saw')).toEqual(m.processLines);
     expect(m.materialCost).toBe(sm.materialCost);
     expect(m.grossWeightKg).toBe(sm.grossWeightKg);
-    expect(r2(sm.totalProcessCost - m.totalProcessCost)).toBe(r2(saw.reduce((s, l) => s + l.totalCost, 0)));
+    expect(sm.totalProcessCost - m.totalProcessCost).toBeCloseTo(saw.reduce((s, l) => s + l.totalCost, 0), 10);
     // The two quotes say the same, but for the saw: its own note on one, that it is not costed on the other.
     expect(m.warnings.filter((w) => w !== SAW_NOT_COSTED)).toEqual(sm.warnings.filter((w) => w !== BAND_SAW_CUT_SOURCE));
   });
@@ -181,7 +180,7 @@ describe('a Machining part on a mill', () => {
     expect(sm.processLines.slice(1)).toEqual(m.processLines);
     // 42 x 8 with 2.1 mm a side takes a 2 x 1/2 in bar (50.8 x 12.7 mm), 36 pieces a bar, at the rectangular bar price.
     const barKg = (50.8 * 12.7 * 6096 * 2700) / 1e9;
-    expect(m.materialCost).toBe(r2((barKg / 36) * AL.pricePerKgUsd.rectangular_bar!));
+    expect(m.materialCost).toBeCloseTo((barKg / 36) * AL.pricePerKgUsd.rectangular_bar!, 10);
     expect(m.materialCost).toBe(sm.materialCost);
     expect(m.warnings).toContain(SAW_NOT_COSTED);
     expect(stockMachiningBreakdown(plan(STIFFENER, false), 'saw', 100)!.stock).toMatchObject({ form: 'rectangular_bar', partsPerStock: 36 });
@@ -211,7 +210,7 @@ describe('a stock that cannot be chosen is a named gap: nothing is estimated in 
       expect(gaps.map((g) => g.process)).toEqual(expect.arrayContaining(['Material Stock', 'Rough Turning']));
       expect(gaps.find((g) => g.process === 'Rough Turning')!.reason).toContain('no stock is chosen');
       // Every line still has a cost of 0 or more and the total adds up: the quote is returned, and Apply writes the gaps as No Cost Features.
-      expect(q.totalCost).toBe(r2(q.totalProcessCost));
+      expect(q.totalCost).toBe(q.materialCost + q.totalProcessCost);
     }
   });
 

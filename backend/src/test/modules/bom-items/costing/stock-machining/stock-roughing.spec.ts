@@ -253,7 +253,8 @@ describe('Perimeter Milling with Drop-off, quoted', () => {
     expect(cost.warnings).toContain(DROPOFF_RULES_DISCLOSED);
     expect(cost.warnings).not.toContain(STOCK_RULES_DISCLOSED);
     expect(cost.warnings).not.toContain(SAW_NOT_COSTED);
-    expect(cost.materialCost).toBe(Math.round((PLATE_KG / 40) * PRICE * 100) / 100);
+    // The plate over its 40 parts, not rounded to cents.
+    expect(cost.materialCost).toBeCloseTo((PLATE_KG / 40) * PRICE, 10);
   });
 
   it('gives the mill its perimeter cut, and the piece inside it as the blank', () => {

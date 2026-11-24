@@ -1,8 +1,6 @@
 import type { SurfaceTreatmentDbRate } from '../core/default-rates.constants';
 import type { ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 
-function r2(n: number): number { return Math.round(n * 100) / 100; }
-
 // Surface treatment process line for the drawing's treatment callout. The
 // callout has already been matched to a reference process from
 // memory/SurfaceTreatment and costed by the surface-treatment engine
@@ -64,7 +62,8 @@ export function computeSurfaceTreatmentLine(
     };
   }
 
-  const perPart = r2(totalCost);
+  // Per part, unrounded like every line of the quote it is on: money is rounded only where it is shown.
+  const perPart = totalCost;
   return {
     ...base,
     runCost: perPart,
