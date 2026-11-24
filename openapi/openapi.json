@@ -853,6 +853,10 @@
             "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
             "type": "string"
           },
+          "process": {
+            "description": "The process of the line being edited (\"Drilling\"), when several lines run the same calculator (a mill's Drilling line and its mill line): its inputs are that line's",
+            "type": "string"
+          },
           "runKey": {
             "description": "Which run of the calculator, when the part has several (\"Slide 2\"); the first otherwise",
             "type": "string"
@@ -5730,6 +5734,10 @@
           },
           "machineId": {
             "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
+            "type": "string"
+          },
+          "process": {
+            "description": "The process of the line being edited (\"Drilling\"), when several lines run the same calculator (a mill's Drilling line and its mill line): its inputs are that line's",
             "type": "string"
           }
         },

@@ -83,7 +83,9 @@ export function evaluateCalculatorFormulas(
   fields.forEach((field) => {
     if (field.field_type === 'calculated') return;
 
-    const val = inputValues[field.id] !== undefined ? inputValues[field.id] : inputValues[field.field_name];
+    const given = inputValues[field.id] !== undefined ? inputValues[field.id] : inputValues[field.field_name];
+    // A cleared box ('', or null) gives no value: read as 0 it made every speed it capped 0 and every time divided by it infinite.
+    const val = given === '' || given === null || (typeof given === 'string' && given.trim() === '') ? undefined : given;
 
     if (val !== undefined && field.field_name) {
       const numericValue = field.field_type === 'number' || !isNaN(Number(val)) ? Number(val) : val;
@@ -133,6 +135,24 @@ export function evaluateCalculatorFormulas(
     if (f.field_name) fieldNameMap.set(f.field_name, normalizeFieldName(f.field_name));
   });
   const sortedFieldNames = Array.from(fieldNameMap.keys()).sort((a, b) => b.length - a.length);
+  const fieldOfIdentifier = new Map(Array.from(fieldNameMap.entries()).map(([name, id]) => [id, name] as const));
+  // The calculated fields that could not be calculated: a field that reads one says so, rather than "Undefined symbol".
+  const failed = new Set<string>();
+  /** What a formula lacks, in the calculator's field names. */
+  const explain = (message: string): string => {
+    const symbol = /Undefined symbol (\w+)/.exec(message)?.[1];
+    if (!symbol) return message;
+    const name = fieldOfIdentifier.get(symbol) ?? symbol;
+    return failed.has(symbol) ? `needs ${name}, which could not be calculated` : `${name} has no value: enter it`;
+  };
+  /** A result that is not a finite number names the inputs at 0 it divided by (a cleared speed, a zero feed). */
+  const finite = (fieldName: string, expression: string, result: unknown): unknown => {
+    if (typeof result !== 'number' || Number.isFinite(result)) return result;
+    const zeros = Array.from(new Set(Array.from(expression.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g), (m) => m[0])))
+      .filter((id) => fieldOfIdentifier.has(id) && scope[id] === 0)
+      .map((id) => fieldOfIdentifier.get(id)!);
+    throw new Error(`${fieldName} is ${String(result)}${zeros.length > 0 ? `: ${zeros.join(', ')} ${zeros.length > 1 ? 'are' : 'is'} 0` : ''}`);
+  };
 
   for (const field of calculatedFields) {
     try {
@@ -166,7 +186,7 @@ export function evaluateCalculatorFormulas(
       logger.log(`Original formula: "${field.default_value}"`);
       logger.log(`Normalized formula: "${expression}"`);
 
-      const result = evaluate(expression, scope);
+      const result = finite(field.field_name || field.id, expression, evaluate(expression, scope));
 
       if (field.field_name) {
         const normalizedName = normalizeFieldName(field.field_name);
@@ -176,9 +196,11 @@ export function evaluateCalculatorFormulas(
       results[field.id] = result;
       if (field.field_name) results[field.field_name] = result;
     } catch (e: any) {
-      logger.error(`✗ Error calculating field "${field.field_name}": ${e.message}`);
-      results[field.id] = { error: e.message, value: null };
-      if (field.field_name) results[field.field_name] = { error: e.message, value: null };
+      const message = explain(String(e?.message ?? e));
+      logger.error(`✗ Error calculating field "${field.field_name}": ${message}`);
+      if (field.field_name) failed.add(normalizeFieldName(field.field_name));
+      results[field.id] = { error: message, value: null };
+      if (field.field_name) results[field.field_name] = { error: message, value: null };
     }
   }
 
@@ -192,16 +214,17 @@ export function evaluateCalculatorFormulas(
       let expression = formula.formula_expression.trim();
       if (expression.startsWith('=')) expression = expression.substring(1).trim();
 
-      const result = evaluate(expression, scope);
+      const result = finite(formula.formula_name || formula.id, expression, evaluate(expression, scope));
 
       if (formula.formula_name) scope[formula.formula_name] = result;
 
       results[formula.id] = result;
       if (formula.formula_name) results[formula.formula_name] = result;
     } catch (e: any) {
-      logger.error(`Error calculating formula ${formula.formula_name || 'unknown'}: ${e.message}`);
-      results[formula.id] = { error: e.message, value: null };
-      if (formula.formula_name) results[formula.formula_name] = { error: e.message, value: null };
+      const message = explain(String(e?.message ?? e));
+      logger.error(`Error calculating formula ${formula.formula_name || 'unknown'}: ${message}`);
+      results[formula.id] = { error: message, value: null };
+      if (formula.formula_name) results[formula.formula_name] = { error: message, value: null };
     }
   }
 

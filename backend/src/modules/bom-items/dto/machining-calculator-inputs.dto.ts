@@ -27,6 +27,11 @@ export class MachiningCalculatorInputsRequestDto {
   @Min(1)
   batchSize?: number;
 
+  @ApiPropertyOptional({ description: 'The process of the line being edited ("Drilling"), when several lines run the same calculator (a mill\'s Drilling line and its mill line): its inputs are that line\'s' })
+  @IsOptional()
+  @IsString()
+  process?: string;
+
   @ApiPropertyOptional({ description: 'The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it' })
   @IsOptional()
   @IsUUID()

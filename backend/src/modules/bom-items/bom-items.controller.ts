@@ -436,7 +436,7 @@ export class BOMItemsController {
       .map(([k, v]) => [k, Number(v)] as const)
       .filter(([, v]) => Number.isFinite(v)));
     return this.costing.resolveMachiningCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize,
-      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined);
+      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined, body.process);
   }
 
   // Any reference calculator (Machining, Die Casting): its inputs for this

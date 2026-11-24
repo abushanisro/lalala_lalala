@@ -39,7 +39,7 @@ import { calculationOfRecord, NO_CALCULATION, runOfCalculator, type LineCalculat
 import type { EngineCalculatorSeed } from '@/lib/calculators/engine-calculator-seeds';
 import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
 import { columnValue, isMatchedLookupRow } from '@/lib/calculators/lookup-row-match';
-import { allReadFrom, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
+import { allReadFrom, CLEARED_PROVENANCE, isCleared, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
 import { describeStrokeLookup, strokeComplexity as strokeComplexityOf } from '@/lib/calculators/stroke-lookup';
 import { formatFieldValue } from '@/lib/costing/cycle-fields';
 import { formatCycleMin, formatStoredCycleSec, storableCycleSec } from '@/lib/costing/format-cycle';
@@ -1450,6 +1450,7 @@ export function ProcessCostDialog({
       // The spindle the engine's run capped this calculator at: a lathe's live tool (milling on the lathe) or its spindle.
       const seed = engineSeedRef.current?.calculatorId === calculatorId ? engineSeedRef.current : engineSeedsRef.current[calculatorId] ?? null;
       const liveTool = runsOnLiveTool(seed?.refs);
+      const lineProcess = (editData as { operation?: unknown } | null | undefined)?.operation;
       const d = await apiClient.post<{
         inputs: Record<string, number>;
         provenance: Record<string, string>;
@@ -1465,6 +1466,8 @@ export function ProcessCostDialog({
         ...(defaultLocation ? { location: defaultLocation } : {}),
         // The machine chosen here: the inputs the calculator reads from its machine (top spindle speed) are read from its record.
         ...(selectedMHR?.id ? { machineId: selectedMHR.id, liveTool } : {}),
+        // The line being edited, when another line runs the same calculator (a mill's Drilling line and the mill line).
+        ...(typeof lineProcess === 'string' && lineProcess !== '' ? { process: lineProcess } : {}),
       });
       if (!d || selectedCalculatorIdRef.current !== calculatorId) return;
       machiningMachineFieldsRef.current = new Set(d.machineFields ?? []);
@@ -1477,9 +1480,12 @@ export function ProcessCostDialog({
       ]);
       const pick = <T,>(rec: Record<string, T>) =>
         onlyLookups ? Object.fromEntries(Object.entries(rec).filter(([f]) => lookupFields.has(f))) : rec;
-      machiningFilledRef.current = { ...machiningFilledRef.current, ...pick(d.inputs) };
-      setCalculatorInputs((prev: Record<string, any>) => ({ ...prev, ...pick(d.inputs) }));
-      setCalculatorInputProvenance((prev) => ({ ...prev, ...pick(d.provenance) }));
+      // A machine input the chosen machine has no value for (and the engineer did not type) is not left showing another machine's value.
+      const dropped = (d.machineFields ?? []).filter((f) => !(f in d.inputs) && !(f in keys));
+      const without = <T,>(rec: Record<string, T>) => Object.fromEntries(Object.entries(rec).filter(([f]) => !dropped.includes(f)));
+      machiningFilledRef.current = { ...without(machiningFilledRef.current), ...pick(d.inputs) };
+      setCalculatorInputs((prev: Record<string, any>) => ({ ...without(prev), ...pick(d.inputs) }));
+      setCalculatorInputProvenance((prev) => ({ ...without(prev), ...pick(d.provenance) }));
       setCalculatorMatchedRowKeys((prev) => ({
         ...prev,
         ...Object.fromEntries(Object.entries(pick(d.lookupMatches)).map(([f, m]) => [f, m.row])),
@@ -1488,6 +1494,7 @@ export function ProcessCostDialog({
       setCalculatorInputRefs((prev) => ({
         ...prev,
         ...Object.fromEntries(Object.keys(pick(d.inputs)).map((f) => [f, d.refs?.[f] ?? null])),
+        ...Object.fromEntries(dropped.map((f) => [f, null])),
       }));
       setMachiningMissing(d.missing ?? []);
     } catch (err: any) {
@@ -1502,6 +1509,7 @@ export function ProcessCostDialog({
     const current = calculatorInputsRef.current;
     return Object.fromEntries(
       [...machiningEditedRef.current]
+        .filter((f) => current[f] !== '' && current[f] != null)
         .map((f) => [f, Number(current[f])] as const)
         .filter(([, v]) => Number.isFinite(v)),
     );
@@ -1512,6 +1520,13 @@ export function ProcessCostDialog({
     const field = (selectedCalculator?.fields ?? []).find((f: CalculatorField) => f.fieldName === fieldName);
     if (!field || field.dataSource === MACHINING_LOOKUP_DATA_SOURCE) return;
     // Leaving a field without changing it enters nothing: it keeps the value and the source it was filled with.
+    if (isCleared(calculatorInputsRef.current[fieldName])) {
+      machiningEditedRef.current.delete(fieldName);
+      setCalculatorInputProvenance((prev) => ({ ...prev, [fieldName]: CLEARED_PROVENANCE }));
+      setCalculatorInputRefs((prev) => ({ ...prev, [fieldName]: null }));
+      if (machiningMachineFieldsRef.current.has(fieldName)) void resolveMachiningInputs(selectedCalculatorId, editedMachiningKeys(), true);
+      return;
+    }
     if (!isEntry(machiningEditedRef.current.has(fieldName), machiningFilledRef.current[fieldName], calculatorInputsRef.current[fieldName])) return;
     machiningEditedRef.current.add(fieldName);
     setCalculatorInputProvenance((prev) => ({ ...prev, [fieldName]: 'Entered in the calculator' }));

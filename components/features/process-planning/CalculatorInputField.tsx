@@ -59,7 +59,12 @@ export const CalculatorInputField = React.memo(function CalculatorInputField({
       type="number"
       step="0.01"
       value={inputValue}
-      onChange={(e) => { onChange(field.fieldName, parseFloat(e.target.value) || 0); }}
+      // A cleared box is empty ('' : no value, named as missing when calculated), never 0: a 0 speed made every time it divided infinite.
+      onChange={(e) => {
+        const typed = e.target.value;
+        const n = parseFloat(typed);
+        onChange(field.fieldName, typed.trim() === '' ? '' : Number.isFinite(n) ? n : typed);
+      }}
       onBlur={() => { onBlur(field.fieldName); }}
       placeholder={`Enter ${label}`}
       className={`flex-1 ${isRealSourcedValue ? REAL_VALUE_CLASS : ''}`}
