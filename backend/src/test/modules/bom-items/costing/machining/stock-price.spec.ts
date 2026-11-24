@@ -134,10 +134,10 @@ describe('a material India prices no stock of: the closest material India prices
     expect(borrowed?.pricePerKg).toBe(5.7);
   });
 
-  it('a form India prices no copper in (round tube): the nearest density, named as such', () => {
-    // No copper is priced as round tube in India; the nearest density among the round tubes on file is the steel's (7870 against 8930).
-    const tube = closestStockPrice(ROWS, own('Generic Copper, UNS C11000', 'Copper', 8930), 'round_tube', 'India', PROPERTIES);
-    expect(tube?.borrowed).toEqual({ from: 'Generic Steel, Hot Worked, AISI 1006', by: 'the nearest density' });
+  it('a form India prices no copper in (round tube): nothing is borrowed, because a steel near in density is not a copper', () => {
+    // The nearest density among the round tubes on file is a steel's (7870 against 8930). Borrowing by density alone priced a brass as an
+    // Inconel 625; only the same grade, a variant or the same material type is close enough to say what this material costs.
+    expect(closestStockPrice(ROWS, own('Generic Copper, UNS C11000', 'Copper', 8930), 'round_tube', 'India', PROPERTIES)).toBeNull();
   });
 
   it('none where India prices the material itself, at the reference\'s own location, or where nothing can be compared', () => {

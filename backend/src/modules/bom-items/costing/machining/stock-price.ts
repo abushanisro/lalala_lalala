@@ -97,13 +97,15 @@ export function stockPriceOfForm(
 /**
  * The price of a material the location's stock prices do not hold, in a location whose prices are a partial copy of the reference's
  * (India holds 71 to 90 materials per form of the USA's 105): the price of its closest material that the location prices in the same
- * form, named. Closest is the established rule (process-materials.ts closestProcessMaterial: the same material type, then the nearest
- * density); a material with no type or density to compare is too far to borrow from, and has no stock price. This is the
- * plan's rule for India stock (user decision 2026-11-22). Without it such a material fell back to its raw_materials row, whose India
- * price is held in USD and was read as rupees: Aluminum ANSI 2024 round bar in India cost 2.99 INR/kg, 0.03 USD.
+ * form, named (the plan's rule for India stock, user decision 2026-11-22).
+ *
+ * Closest is the established rule (process-materials.ts closestProcessMaterial), but only as far as the same kind of material: the same
+ * grade, a variant of it, or the same material type. A material that is merely near in density is another metal (a brass is as dense as
+ * an Inconel, a copper as a steel), so its price says nothing about this one: no stock price is borrowed then, and the material is
+ * priced from its own raw_materials price at the location.
  *
  * `properties` holds the material type and density of the materials the location prices, by their stock price name. Null when the
- * location prices the material itself, is the reference's own location, or nothing close enough is priced there.
+ * location prices the material itself, is the reference's own location, or no material of the same kind is priced there.
  */
 export function closestStockPrice(
   rows: readonly StockPriceRow[],
@@ -122,10 +124,10 @@ export function closestStockPrice(
     densityKgM3: properties.get(r.raw_material_name!.toLowerCase())?.densityKgM3 ?? null,
   }));
   const closest = closestProcessMaterial([own], materials);
-  if (!closest || closest.by === 'unplaced') return null;
+  if (!closest || closest.by === 'unplaced' || closest.by === 'nearest density') return null;
   const price = stockPriceOfForm(priced, closest.material.name, form, location);
   if (!price) return null;
   const by = closest.by === 'material type' ? `the same material type, ${closest.material.materialType}`
-    : closest.by === 'grade' ? 'the same grade' : closest.by === 'variant' ? `a variant of "${own.name ?? own.grade ?? ''}"` : 'the nearest density';
+    : closest.by === 'grade' ? 'the same grade' : `a variant of "${own.name ?? own.grade ?? ''}"`;
   return { ...price, borrowed: { from: closest.material.name, by } };
 }
