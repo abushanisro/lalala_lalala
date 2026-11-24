@@ -48,7 +48,9 @@ describe('the PCB fabrication machines at India rates (migration 1129)', () => {
     const processes = readCsv(join(MEMORY, 'PCBA/processes.csv')).rows.map((r) => String(r['Process Name']))
       .filter((p) => !['No Cost Feature', 'User-Defined Process'].includes(p));
     expect(processes).toHaveLength(32);
-    for (const p of processes) expect(machinesSql()).toMatch(new RegExp(`\\(\\$str\\$${p.replace(/[()]/g, '\\$&')}\\$str\\$, \\$str\\$[a-z_]+\\$str\\$\\)`));
+    // Every (process, class) pair the migration lists, read with one fixed pattern: no pattern is built from a process name.
+    const classOf = new Map([...machinesSql().matchAll(/\(\$str\$([^$]+)\$str\$, \$str\$([a-z_]+)\$str\$\)/g)].map((m) => [m[1]!, m[2]!]));
+    expect(processes.filter((p) => !classOf.has(p))).toEqual([]);
     expect(machinesSql()).toContain("WHERE t.process_group = 'PCB' AND t.process_name = v.process AND t.machine_class IS NULL;");
     expect(machinesSql()).toContain("WHERE m.process_group = 'PCB' AND m.process_route = v.process AND m.operation = v.process AND m.machine_class IS NULL;");
   });
