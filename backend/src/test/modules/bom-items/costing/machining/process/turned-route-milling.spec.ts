@@ -331,3 +331,27 @@ describe('a mill does not read the lathe\'s milling: a milled part is costed fro
     expect(milled({ latheMilling: millingOf([KEYWAY, SLOT]) })).toEqual(milled());
   });
 });
+
+// The sequencer plans the keyway's calculator run before any machine is chosen; the lathe times it on its own driven-tool spindle.
+describe('the keyway is timed on the lathe\'s own live-tool spindle (timeOperations)', () => {
+  const at = (liveToolingMaxRpm: number | null) => lineOf(cost(shaft({
+    mhrRate: rate(900, { machineClass: LATHE, setupTimeHr: 0.5, maxSpindleRpm: 4000, liveToolingMaxRpm }),
+    latheMilling: millingOf([KEYWAY]),
+  })).processLines, 'Obround Slot Milling')!;
+
+  it('a 5000 rpm live tool: the cutter turns at half the 10 000 rpm default, so the keyway takes twice as long', () => {
+    // 4 x 6.70875 / (5000 x 3 x 0.008 x 4 = 480 mm/min) x 60 = 3.3545 s.
+    const keyway = at(5000);
+    expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ value: 5000, source: expect.stringContaining('live_tooling_speed_rpm') });
+    expect(sec(keyway)).toBeCloseTo(2 * KEYWAY_SEC, 2);
+  });
+
+  it('a live tool faster than the cutter needs (20 000 rpm): 183 000 / (pi x 4) = 14 563 rpm, the cutting speed\'s own', () => {
+    // feed 14 563.4 x 0.096 = 1398.1 mm/min; 4 x 6.70875 / 1398.1 x 60 = 1.1517 s.
+    expect(sec(at(20000))).toBeCloseTo(1.1517, 2);
+  });
+
+  it('a lathe with no live-tool speed on file keeps the calculator\'s own 10 000 rpm, as before', () => {
+    expect(sec(at(null))).toBeCloseTo(KEYWAY_SEC, 2);
+  });
+});
