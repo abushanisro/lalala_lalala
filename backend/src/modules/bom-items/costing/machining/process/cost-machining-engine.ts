@@ -634,8 +634,10 @@ function drillHoleGroups(
   workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
   machine: Record<string, CalcSeed>,
-): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; outputs: Record<string, number>; oversize: HoleGroup[]; largestDrillMm: number | null } {
+): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; outputs: Record<string, number>; oversize: HoleGroup[]; largestDrillMm: number | null; rows: FeatureOp[] } {
   const trace: CalculationTraceStep[] = [];
+  // One row per hole size drilled, naming the holes and lighting exactly them (the line's breakdown in the process tree and the feature card).
+  const rows: FeatureOp[] = [];
   const missing: string[] = [];
   const lookups: CalcRun['lookups'] = {};
   let totalSec = 0;
@@ -646,7 +648,7 @@ function drillHoleGroups(
   let toolInr = 0;
   if (holeGroups.length === 0) {
     if (holeCount > 0) missing.push(`per-diameter CAD hole data (${holeCount} hole${holeCount === 1 ? '' : 's'} counted, no diameters/depths)`);
-    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups, outputs: {}, oversize, largestDrillMm: largest };
+    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups, outputs: {}, oversize, largestDrillMm: largest, rows };
   }
   const multi = holeGroups.length > 1;
   for (const g of holeGroups) {
@@ -663,9 +665,16 @@ function drillHoleGroups(
     }
     totalSec += cycle.sec;
     trace.push(...(multi ? prefixTrace(`Ø${g.diameter_mm} mm ·`, cycle.trace) : cycle.trace));
+    if (cycle.sec > 0) {
+      const refs = g.occurrences ?? [];
+      rows.push({
+        name: `Drilling // Hole Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec, featureType: 'drill', count: g.count,
+        ...(refs.length > 0 ? { featureIds: [...new Set(refs.map((o) => o.featureId))], occurrenceRefs: refs.map((o) => ({ ...o })) } : {}),
+      });
+    }
   }
   if (multi && trace.length > 0) trace.push(traceCalc('Drilling cycle time', totalSec, 's', 'Sum of every hole-diameter group Cycle Time'));
-  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {}, oversize, largestDrillMm: largest };
+  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {}, oversize, largestDrillMm: largest, rows };
 }
 
 /** The holes the drills do not reach, bored from the largest drill to size (Internal Boring on a lathe, Boring on a mill): one run per diameter. */
@@ -677,7 +686,9 @@ function boreHoleGroups(
   const summed = sumRuns(runs.map(({ g, cycle }) => ({ label: `Ø${g.diameter_mm} mm`, run: cycle })), `${operation} cycle time`);
   const toolInr = runs.reduce((t, { cycle }) => t + (cycle.outputs?.['Tool Cost per Part'] ?? 0), 0);
   const rows: FeatureOp[] = runs.filter(({ cycle }) => cycle.sec != null && cycle.sec > 0).map(({ g, cycle }) => ({
-    name: `${operation} // Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec!, featureType: 'boring', count: g.count,
+    name: `${operation} // Hole Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec!, featureType: 'boring', count: g.count,
+    ...((g.occurrences ?? []).length > 0
+      ? { featureIds: [...new Set(g.occurrences!.map((o) => o.featureId))], occurrenceRefs: g.occurrences!.map((o) => ({ ...o })) } : {}),
   }));
   return { run: { ...summed, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {} }, rows };
 }
@@ -1967,6 +1978,8 @@ export function computeMillingCostSummary(
   let drillingSteps: CalculationTraceStep[] = [];
   let drillingLacks: string[] = [];
   let drillingToolInr = 0;
+  // Without feature data: the Drilling calculator's rows, one per hole size (with feature data the service attaches the operations).
+  let drillingRows: FeatureOp[] = [];
   // Without feature data: what the bulk milling and the drilling lack of their real inputs.
   const unpricedWithoutFeatures: string[] = [];
   // Without feature data: the steps and the tool wear of the operations the line times (Facing, Bulk Milling, Drilling, Boring).
@@ -2057,6 +2070,7 @@ export function computeMillingCostSummary(
     ];
     drillingLacks = [...drilling.missing];
     drillingToolInr = drilling.outputs['Tool Cost per Part'] ?? 0;
+    drillingRows = drilling.rows;
   }
   // An operation the sequencer could not price leaves the line short of its time: the line is a named gap, so the
   // route is not fully costed and cannot be applied at a total that silently leaves the operation out.
@@ -2111,7 +2125,7 @@ export function computeMillingCostSummary(
     );
     if (drillingLacks.length > 0) warnings.push(`${drillLine.process} not priced — missing real input: ${drillingLacks.join('; ')}.`);
     const drillCosted = drillingRun ? withRun(drillLine, drillingRun, drillingSteps, drillingLacks) : withTrace(drillLine, drillingSteps, drillingLacks);
-    processLines.push(withToolCost(drillCosted, { outputs: { 'Tool Cost per Part': drillingToolInr } }, input.workbook, warnings));
+    processLines.push(withFeatureGroups(withToolCost(drillCosted, { outputs: { 'Tool Cost per Part': drillingToolInr } }, input.workbook, warnings), drillingRows));
   }
   if (cncMillingMin <= 0 && drillingLineMin <= 0) {
     warnings.push('Volume data unavailable — milling time estimated at 0');
@@ -2563,7 +2577,7 @@ export function computeTurningCostSummary(
   const boringMin = drilling.min;
   if (boringMin > 0 || drilling.missing.length > 0) {
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
-    processLines.push(withToolCost(latheLine('Drilling', boringMin, drilling), drilling, input.workbook, warnings));
+    processLines.push(withFeatureGroups(withToolCost(latheLine('Drilling', boringMin, drilling), drilling, input.workbook, warnings), drilling.rows));
   }
   // The holes the drills do not reach, bored on the lathe from the largest drill to size (catalog "ID Turning").
   if (drilling.oversize.length > 0 && drilling.largestDrillMm != null) {

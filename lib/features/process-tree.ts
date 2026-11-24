@@ -51,6 +51,16 @@ export interface ProcessTreeNode {
 // Mirrors backend isSheetFormableMaterial — keep the keyword lists in sync.
 export const NON_SHEET_FORMABLE_RE = /BRONZE|ALBC|AL\.?\s?BR|CU\s?AL|C9[0-5]\d|GUNMETAL|LG[124]\b|CAST\s?IRON|FG\s?\d{3}|SG\s?IRON|EN-?GJ/i;
 
+/**
+ * A row under a step names only what the step acts on: the cost engine names a breakdown row "Operation // feature" ("Obround Slot Milling //
+ * Keyway", "Rough Turning // Ring Ø10 x 3.84 mm", "Drilling // Hole Ø1.6 mm ×2"), and under the step of that operation the operation is said
+ * once, by the step. A row of another operation keeps its full name.
+ */
+export function stepRowLabel(rowName: string, stepName: string): string {
+  const prefix = `${stepName} // `;
+  return stepName && rowName.startsWith(prefix) && rowName.length > prefix.length ? rowName.slice(prefix.length) : rowName;
+}
+
 export function isSheetFormableMaterial(materialText: string): boolean {
   if (materialText.trim().length === 0) return true; // unknown → don't veto
   return !NON_SHEET_FORMABLE_RE.test(materialText);
@@ -379,7 +389,7 @@ export function buildProcessTree(
           featureNodes.push({
             id: `machining_occ_${opIdx}_${i}`,
             kind: 'feature',
-            label: b.name,
+            label: stepRowLabel(b.name, rec.process),
             factory, machine,
             ...(refs.length > 0 ? { v2Occurrences: refs } : (b.faceIds ?? []).length > 0 ? { faceOccurrences: [b.faceIds!] } : {}),
             attrs: [{ name: 'Time', value: formatEstCycleTime(b.timeSec) }],
@@ -393,7 +403,7 @@ export function buildProcessTree(
           featureNodes.push({
             id: `machining_line_${opIdx}_${i}`,
             kind: 'feature',
-            label: b.name,
+            label: stepRowLabel(b.name, rec.process),
             factory, machine,
             ...(feats.length > 0 ? { v2FeatureIds: feats.map((f) => f.id) } : {}),
             attrs: [
@@ -496,7 +506,7 @@ export function buildProcessTree(
         featureNodes.push({
           id: `line_${opIdx}_${i}`,
           kind: 'feature',
-          label: b.name,
+          label: stepRowLabel(b.name, rec.process),
           factory, machine,
           ...(ids.length > 0 ? { v2FeatureIds: ids } : {}),
           attrs: [

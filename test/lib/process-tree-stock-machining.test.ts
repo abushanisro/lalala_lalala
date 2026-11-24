@@ -61,7 +61,7 @@ describe('buildProcessTree: a Stock Machining part', () => {
   it('highlights the two end faces from the Band Saw\'s StockTrim row', () => {
     const tree = buildProcessTree(item, fg, summary, 'India', undefined, cost(SHAFT_INDIA, [bandSaw, turning]));
     const trim = node(tree, 'machining_occ_0_0');
-    expect(trim.label).toBe('Band Saw // StockTrim');
+    expect(trim.label).toBe('StockTrim');   // under the Band Saw step, the row names what it saws (stepRowLabel)
     expect(computeFeatureNodeVisual(trim, [], [])?.highlight).toMatchObject({ occurrences: [{ face_ids: [5, 22] }], centroidFromFaces: true });
   });
 

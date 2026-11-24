@@ -549,6 +549,29 @@ describe('surface treatment line — reference process from the drawing callout'
   });
 });
 
+describe('a turned part\'s Drilling line lists the holes it drills', () => {
+  // FusionComponent's holes as the costing service gives them (holeGroupsOfFeatures): its M2 bolt circle Ø1.6 x 2 and its Ø6 bore, each group
+  // with the feature_graph_v2 occurrences it is. The line's rows name each hole size and light exactly those holes (the process tree had
+  // "No feature data" under Drilling, and a hole's card listed no drilling).
+  it('one row per hole size, naming the holes, with the occurrences it drills', () => {
+    const result = computeTurningCostSummary(turnedInput({
+      workbook: workbookFixture(), holeCount: 3,
+      holeGroups: [
+        { diameter_mm: 1.6, count: 2, depth_mm: 5, occurrences: [{ featureId: 'SimpleHole-pcd_pattern_d1.6_c1', occurrenceIndex: 0 }] },
+        { diameter_mm: 6, count: 1, depth_mm: 25, occurrences: [{ featureId: 'SimpleHole-through_d6.0_c1', occurrenceIndex: 0 }] },
+      ],
+    } as any), mc('2_axis_lathe'));
+    const drilling = result.processLines.find((l) => l.process === 'Drilling')!;
+    expect(drilling.featureBreakdown?.map((b) => b.name)).toEqual(['Drilling // Hole Ø1.6 mm ×2', 'Drilling // Hole Ø6 mm ×1']);
+    expect(drilling.featureBreakdown?.[0]).toMatchObject({
+      featureType: 'drill', count: 2,
+      featureIds: ['SimpleHole-pcd_pattern_d1.6_c1'], occurrenceRefs: [{ featureId: 'SimpleHole-pcd_pattern_d1.6_c1', occurrenceIndex: 0 }],
+    });
+    // The rows' time is the line's.
+    expect(drilling.featureBreakdown!.reduce((t, b) => t + b.timeSec, 0)).toBeCloseTo(drilling.cycleTimeMin * 60, 0);
+  });
+});
+
 describe('computeTurningCostSummary — data sanity', () => {
   it('still flags sheet/plate material grades on turned parts', () => {
     const result = computeTurningCostSummary(
