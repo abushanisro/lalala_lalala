@@ -22,12 +22,14 @@ import { multiSpindleRouteKeyOf } from '@/lib/routing/multi-spindle-route-id';
 import { partAssemblyRouteKeyOf } from '@/lib/routing/part-assembly-route-id';
 import { rollFormingRouteKeyOf } from '@/lib/routing/roll-forming-route-id';
 import { rotoBlowRouteKeyOf } from '@/lib/routing/roto-blow-route-id';
+import { pcbRouteKeyOf } from '@/lib/routing/pcb-route-id';
+import { isPcbItem } from '@/lib/costing/pcb-view';
 
 
 /** The scenario keys a route choice is stored under (each backend engine reads its own). */
 export type RoutePickKey =
   | 'dieCastingProcess' | 'forgingRoute' | 'compositesRoute' | 'additiveRoute' | 'barTubeRoute' | 'rotoBlowRoute' | 'assemblyRoute'
-  | 'insertMoldingRoute' | 'multiShotRoute' | 'multiSpindleRoute' | 'partAssemblyRoute' | 'hydroformRoute' | 'rollFormCutOff';
+  | 'insertMoldingRoute' | 'multiShotRoute' | 'multiSpindleRoute' | 'partAssemblyRoute' | 'hydroformRoute' | 'rollFormCutOff' | 'pcbRoute';
 
 /** A route's choice under its family's key (one key for any route). */
 export type RoutePicks = Partial<Record<RoutePickKey, string>>;
@@ -46,6 +48,7 @@ const BY_ROUTE_ID: readonly (readonly [RoutePickKey, (routeId: string) => string
   ['partAssemblyRoute', partAssemblyRouteKeyOf],
   ['hydroformRoute', hydroformingRouteKeyOf],
   ['rollFormCutOff', rollFormingRouteKeyOf],
+  ['pcbRoute', pcbRouteKeyOf],
 ];
 
 /**
@@ -86,5 +89,6 @@ export function routePickKeyOf(item: Pick<BOMItem, 'itemType' | 'scenarioOverrid
   if (isMultiShotItem(item)) return 'multiShotRoute';
   if (isInsertMoldingItem(item)) return 'insertMoldingRoute';
   if (isAssemblyItem(item)) return 'assemblyRoute';
+  if (isPcbItem(item)) return 'pcbRoute';
   return family ? KEY_OF_FAMILY[family] ?? null : null;
 }

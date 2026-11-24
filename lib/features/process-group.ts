@@ -38,10 +38,13 @@ export const FAMILY_HINT_TO_PROCESS_GROUP: Record<string, string> = {
   assembly: 'Assembly',
   // A weldment's welding, costed from its BOM children and the Cost Guide's weld table (backend costing/part-assembly): no CAD extractor either.
   part_assembly: 'Part Assembly',
+  // A printed circuit board, measured from its board files (Gerber, drill, Pick Place) by the CAD engine's board routes and costed by backend
+  // costing/pcb: no 3D extractor.
+  pcb: 'PCB',
 };
 
-/** Families the cad-engine has no extractor for: an assembly and a weldment are costed from their BOM children and the Cost Guide. */
-const NO_CAD_EXTRACTOR: ReadonlySet<string> = new Set(['assembly', 'part_assembly'])
+/** Families with no 3D extractor: an assembly and a weldment are costed from their BOM children and the Cost Guide, a PCB from its board files. */
+const NO_CAD_EXTRACTOR: ReadonlySet<string> = new Set(['assembly', 'part_assembly', 'pcb'])
 
 export function familyToProcessGroupLabel(family: string | null | undefined): string | null {
   return (family && FAMILY_HINT_TO_PROCESS_GROUP[family]) || null;

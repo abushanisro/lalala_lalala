@@ -145,6 +145,12 @@ async function main(): Promise<void> {
     const tables = Object.fromEntries(staged.map((r) => [r.key, Number(r.value)]));
     must(tables.consumables > 0 && tables.process_times > 0 && tables.yield > 0, `staged ${JSON.stringify(tables)}`);
   });
+  await check('migration 1132 linked the PCB calculators to every PCB catalog row but Material Stock and made each active', async () => {
+    const rows = await (await api('/process_calculator_mappings?process_group=eq.PCB&select=operation,calculator_name,is_active&order=operation', minter.forService())).json() as
+      { operation: string; calculator_name: string | null; is_active: boolean }[];
+    const linked = rows.filter((r) => r.operation !== 'Material Stock');
+    must(linked.length === 31 && linked.every((r) => r.calculator_name === `PCB - ${r.operation}` && r.is_active), `rows ${JSON.stringify(rows.filter((r) => !r.is_active || !r.calculator_name))}`);
+  });
   await check("migration 1121 lets a signed-in user read the consumable prices (a waterjet's garnet), and not write them", async () => {
     const bob = minter.forUser('22222222-2222-4222-8222-222222222222');
     const rows = await (await api('/consumable_prices?consumable_type=eq.garnet_abrasive&select=location,price_per_unit', bob)).json() as { location: string; price_per_unit: number | string }[];

@@ -731,6 +731,10 @@ export interface CostSummaryDto {
   stockMachining?: StockMachiningBreakdown;
   /** Roto & Blow Molding: the shell (envelope, wall, inside, spout), its features' operations, parts per shot or arm, the route quoted and every route. */
   rotoBlow?: RotoBlowBreakdown;
+  /** PCB: the board and where each value came from, its stack-up, its panel nest, the finish and the other finishes priced beside it, the route quoted and every route. */
+  pcb?: PcbBreakdown;
+  /** PCB: the stamping die, the bed-of-nails fixture or the flying-probe program the quoted route needs, USD, kept out of the piece cost; costUsd null when not priced. */
+  pcbTooling?: Array<{ key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }>;
   /** Roto & Blow Molding: the molds and trim tooling the quoted route needs, USD, kept out of the piece cost; costUsd null when its calculator cannot price it. */
   rotoBlowTooling?: Array<{ key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }>;
   /** Sheet Metal - Hydroforming: memory's route rule, the draws, the blank and its nest, the press, the tray, the route quoted and every route. */
@@ -1036,6 +1040,34 @@ export interface RollFormingBreakdown {
   complete: boolean;
   /** Both routes: the total per part (summary currency) when complete, or why not. */
   options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+}
+
+/** A board value and where it came from: the board files, the 3D model, the Cost Guide, the reference default, or derived. */
+export interface PcbFactDto<T> { value: T; basis: 'board_files' | 'cad_model' | 'cost_guide' | 'reference_default' | 'derived'; source: string }
+
+export interface PcbBreakdown {
+  /** The quoted route (pcb-route.ts PCB_ROUTES key) and its name; null when no route could be built. */
+  route: string | null;
+  routeLabel: string | null;
+  board: {
+    lengthMm: PcbFactDto<number>; widthMm: PcbFactDto<number>; areaMm2: PcbFactDto<number>; thicknessMm: PcbFactDto<number>; layers: PcbFactDto<number>;
+    outerCopperOz: PcbFactDto<number>; innerCopperOz: PcbFactDto<number> | null; finish: PcbFactDto<string>;
+    soldermaskSides: PcbFactDto<number>; silkscreenSides: PcbFactDto<number>; testPoints: PcbFactDto<number> | null;
+    holes: Array<{ diameterMm: number; plated: boolean; count: number }>;
+    holesSource: string;
+  };
+  finishLabel: string;
+  /** The layer build-up (tblLayerMaterialType, tblDielectricThickness). */
+  stackup: { sequence: string[]; cores: number; foils: number; innerCores: number; prepregSpaces: number; coreDielectricMm: number | null; laminated: boolean } | null;
+  /** The boards one working panel carries, through the array. */
+  nest: { boardsPerPanel: number; arraysPerPanel: number; boardsPerArray: number; panelMm: number[]; utilization: number; note: string } | null;
+  /** The laminates the board takes (per square metre) and how many of each. */
+  materials: Array<{ name: string; count: number; usdPerM2: number; detail: string }>;
+  /** The finishes the board does not specify, priced beside it on the quoted route (summary currency), or why not. */
+  finishOptions: Array<{ finish: string; label: string; totalCost: number | null; reason: string | null }>;
+  complete: boolean;
+  /** Every route: the total per board (summary currency) when complete, or why it is not a route for the board. */
+  options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
 }
 
 export interface RotoBlowBreakdown {

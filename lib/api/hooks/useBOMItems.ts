@@ -1071,6 +1071,9 @@ export interface InjectionMoldToolingDto {
   calculatorName?: string;
 }
 
+/** A PCB board value and where it came from (backend PcbFactDto). */
+export interface PcbFactDto<T> { value: T; basis: 'board_files' | 'cad_model' | 'cost_guide' | 'reference_default' | 'derived'; source: string }
+
 export interface CostSummaryDto {
   /** Molded parts: what each CAD cost driver is worth (the engine run again with only that driver moved one step), per part, in this summary's currency. */
   driverImpacts?: DriverImpact[];
@@ -1350,6 +1353,23 @@ export interface CostSummaryDto {
   };
   /** Roto & Blow Molding: the molds and trim tooling (USD), kept out of the piece cost. */
   rotoBlowTooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }[];
+  /** PCB: the board and where each value came from, its stack-up and panel nest, the finishes, the route quoted and every route (backend PcbBreakdown). */
+  pcb?: {
+    route: string | null; routeLabel: string | null;
+    board: Record<'lengthMm' | 'widthMm' | 'areaMm2' | 'thicknessMm' | 'layers' | 'outerCopperOz' | 'soldermaskSides' | 'silkscreenSides', PcbFactDto<number>> & {
+      innerCopperOz: PcbFactDto<number> | null; finish: PcbFactDto<string>; testPoints: PcbFactDto<number> | null;
+      holes: { diameterMm: number; plated: boolean; count: number }[]; holesSource: string;
+    };
+    finishLabel: string;
+    stackup: { sequence: string[]; cores: number; foils: number; innerCores: number; prepregSpaces: number; coreDielectricMm: number | null; laminated: boolean } | null;
+    nest: { boardsPerPanel: number; arraysPerPanel: number; boardsPerArray: number; panelMm: number[]; utilization: number; note: string } | null;
+    materials: { name: string; count: number; usdPerM2: number; detail: string }[];
+    finishOptions: { finish: string; label: string; totalCost: number | null; reason: string | null }[];
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /** PCB: the stamping die, the bed-of-nails fixture or the flying-probe program (USD), kept out of the piece cost. */
+  pcbTooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }[];
   /**
    * Sheet Metal - Hydroforming: memory's route rule, the draws, the blank and its nest, the press, the tray, the route quoted and both routes
    * (backend HydroformingBreakdown).

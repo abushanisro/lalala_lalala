@@ -114,6 +114,14 @@ SELECT 'Sheet Metal Roll Forming', n, n, false FROM unnest(ARRAY['Coil Flattener
 -- calculators to them and fails if one is missing
 INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
 SELECT 'Stock Machining', n, n, false FROM unnest(ARRAY['Band Saw','Material Stock']) AS n;
+-- the PCB catalog rows migration 790 seeds (inactive, no machine class, no calculator): migration 1129 classes them and 1132 links the PCB
+-- calculators to every one but Material Stock and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'PCB', n, n, false FROM unnest(ARRAY['Apply Photo Resist','Automated Optical Inspection','Automated Vision Inspection','Bed of Nails','Bench Operation',
+  'Copper Plate and Tin Coat','Cure Plugged Vias','Cure Solder Mask','DES','Desmear and Plate Through Holes','Develop Solder Mask','Dissolve Unexposed Photo Resist',
+  'Drill Circuit Holes','Drill Registration Holes','Electroless Nickel Immersion Gold','Film Imaging','Flying Probe','Hot Air Solder Leveling','Laser Drill Vias',
+  'Material Stock','Organic Solderability Preservative','Oven Cure Layers','Photolithography','Plug Vias','Router','SES','Screen Printing','Silkscreen Cure','Stamp',
+  'Surface Preparation','Tack Dry Solder Mask','Wet Film Solder Mask']) AS n;
 -- the catalog columns and the process taxonomy as the real database has them (migrations 367-371, 424, 725), and the four
 -- secondary-operation calculators the baseline holds: migration 984 restores their catalog rows and fails if a calculator is missing
 ALTER TABLE public.process_calculator_mappings ADD COLUMN machine_class varchar(100), ADD COLUMN applicable_families text[],

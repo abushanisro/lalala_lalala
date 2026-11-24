@@ -8,7 +8,7 @@ import { MACHINED_FAMILY_HINT, familyToProcessGroupLabel, isCostedProcessGroup, 
 // A Process with no cost model is not costed (the backend's familiesOfProcessGroup), so the Process fields mark it instead of offering it blind:
 // a part whose Process had none was priced as whatever it was last analysed as.
 describe('process groups with a cost model', () => {
-  it.each(['Sheet Metal', 'Machining', 'Plastic Molding', 'Die Casting', 'Sand Casting', 'Casting Investment', 'Sheet Metal - Hydroforming', 'Sheet Metal Roll Forming', 'Casting', 'Forging', 'Powder Metal', 'Additive Manufacturing', 'Bar and Tube Fabrication', 'Assembly', 'Assembly Molding', 'Part Assembly', 'Rapid Prototyping', 'Roto & Blow Molding'])('%s is costed', (group) => {
+  it.each(['Sheet Metal', 'Machining', 'Plastic Molding', 'Die Casting', 'Sand Casting', 'Casting Investment', 'Sheet Metal - Hydroforming', 'Sheet Metal Roll Forming', 'Casting', 'Forging', 'Powder Metal', 'Additive Manufacturing', 'Bar and Tube Fabrication', 'Assembly', 'Assembly Molding', 'Part Assembly', 'PCB', 'Rapid Prototyping', 'Roto & Blow Molding'])('%s is costed', (group) => {
     expect(isCostedProcessGroup(group)).toBe(true);
     expect(processGroupOptionLabel(group)).toBe(group);
   });
@@ -41,6 +41,8 @@ describe('process groups with a cost model', () => {
     // An assembly and a weldment are costed from their children and the Cost Guide: there is no CAD extractor to force for them.
     expect(processGroupToFamilyHint('Assembly')).toBeUndefined();
     expect(processGroupToFamilyHint('Part Assembly')).toBeUndefined();
+    // A PCB is measured from its board files by the CAD engine's board routes, not by a 3D extractor.
+    expect(processGroupToFamilyHint('PCB')).toBeUndefined();
     // Insert molding is analysed as the molded plastic part it is.
     expect(processGroupToFamilyHint('Assembly Molding')).toBe('plastic_molded');
   });
@@ -73,6 +75,8 @@ describe('process groups with a cost model', () => {
     // A part analysed as milled whose Process is now Part Assembly; an assembly with no model at all.
     expect(routingFamilyOf('milled', 'part_assembly')).toBe('part_assembly');
     expect(routingFamilyOf(null, 'assembly')).toBe('assembly');
+    // A PCB analysed as sheet metal from its 3D model lists its board routes.
+    expect(routingFamilyOf('sheet_metal', 'pcb')).toBe('pcb');
     // Every other part keeps its CAD family, as before (and none while its cost is loading).
     expect(routingFamilyOf('die_cast', 'sand_cast')).toBe('die_cast');
     expect(routingFamilyOf('milled', undefined)).toBe('milled');

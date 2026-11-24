@@ -36,7 +36,7 @@ function fromPerPart(
  * The tools of the summary's route: the injection mold (every mold the job wears out, one investment), the die casting die, the coreboxes of the
  * cores (die casting and sand casting), and the wax pattern die of an investment casting.
  */
-export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'family' | 'dieTooling' | 'coreboxTooling' | 'patternTooling' | 'forgingDies' | 'firstArticleInspection' | 'barTubeTooling' | 'rotoBlowTooling' | 'hydroformingTooling' | 'rollFormingTooling'>): RouteToolingItem[] {
+export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'family' | 'dieTooling' | 'coreboxTooling' | 'patternTooling' | 'forgingDies' | 'firstArticleInspection' | 'barTubeTooling' | 'rotoBlowTooling' | 'hydroformingTooling' | 'rollFormingTooling' | 'pcbTooling'>): RouteToolingItem[] {
   const items: RouteToolingItem[] = [];
   const die = summary.dieTooling;
   if (die?.ok) {
@@ -54,6 +54,9 @@ export function routeToolingItems(summary: Pick<CostSummaryDto, 'tooling' | 'fam
   if (dies) items.push(...fromPerPart('forging-dies', 'die', `Forging dies (${dies.sets} set${dies.sets === 1 ? '' : 's'})`, dies.detail, dies.costUsd, dies.perPartUsd));
   for (const t of summary.barTubeTooling ?? []) items.push(...fromPerPart(`bar-tube-${t.key}`, 'die', t.description, t.detail, t.costUsd, t.perPartUsd));
   for (const t of summary.rotoBlowTooling ?? []) items.push(...fromPerPart(`roto-blow-${t.key}`, 'mold', t.description, t.detail, t.costUsd, t.perPartUsd));
+  // A printed circuit board's stamping die, bed-of-nails fixture or flying-probe program.
+  const PCB_TOOL_TYPE: Readonly<Record<string, string>> = { 'stamp-die': 'die', 'bed-of-nails-fixture': 'fixture', 'flying-probe-program': 'test_program' };
+  for (const t of summary.pcbTooling ?? []) items.push(...fromPerPart(`pcb-${t.key}`, PCB_TOOL_TYPE[t.key] ?? 'fixture', t.description, t.detail, t.costUsd, t.perPartUsd, t.amortizationParts));
   // The hydroform tools the job wears out (its costUsd is that whole investment, over the parts the engine spread it); the blanking die, not
   // costed, is not written.
   for (const t of summary.hydroformingTooling ?? []) {

@@ -22,7 +22,7 @@ import { inspectedOccurrences, type InspectionReference } from './costing/machin
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type ThreadEntry } from './costing/machining/feature-holes';
 import {
-  ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
+  ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, PCB_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
   MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, STOCK_MACHINING_PROCESS_GROUP, familiesOfProcessGroup,
 } from './costing/shared/core/part-family-process-group';
 import { electricityUsd, loadLocationElectricity } from './costing/shared/location-electricity';
@@ -168,6 +168,11 @@ import { RotoBlowCostService, type RotoBlowGeometrySummary } from './costing/rot
 import { buildRotoBlowCostSummary } from './costing/roto-blow/roto-blow-cost-summary';
 import { ROTO_BLOW_ROUTES, type RotoBlowRouteKey } from './costing/roto-blow/roto-blow-route';
 import { rotoBlowRouteFor, rotoBlowRouteId } from './costing/roto-blow/roto-blow-route-comparison';
+import { PcbCostService, type PcbCostResult } from './costing/pcb/pcb-cost.service';
+import type { PcbGeometrySummary } from './costing/pcb/board-graph/pcb-geometry';
+import { buildPcbCostSummary } from './costing/pcb/pcb-cost-summary';
+import { PCB_ROUTES, type PcbRouteKey } from './costing/pcb/pcb-route';
+import { pcbRouteFor, pcbRouteId } from './costing/pcb/pcb-route-comparison';
 import { buildBarTubeCostSummary } from './costing/bar-tube/bar-tube-cost-summary';
 import { BAR_TUBE_ROUTES, type BarTubeRouteKey } from './costing/bar-tube/bar-tube-route';
 import { barTubeRouteFor, barTubeRouteId } from './costing/bar-tube/bar-tube-route-comparison';
@@ -290,7 +295,7 @@ export function convertRouteOptions<T extends { totalCost: number | null }>(opti
 }
 
 export function hasCostModel(family: string): boolean {
-  return isMachiningFamily(family) || family === 'sheet_metal' || family === 'plastic_molded' || family === 'forged' || family === 'powder_metal' || family === 'composite' || family === 'additive' || family === 'bar_tube' || family === 'roto_blow' || family === ASSEMBLY_FAMILY || family === PART_ASSEMBLY_FAMILY || family === TWO_MODEL_FAMILY || castingProcessOfFamily(family) !== null;
+  return isMachiningFamily(family) || family === 'sheet_metal' || family === 'plastic_molded' || family === 'forged' || family === 'powder_metal' || family === 'composite' || family === 'additive' || family === 'bar_tube' || family === 'roto_blow' || family === ASSEMBLY_FAMILY || family === PART_ASSEMBLY_FAMILY || family === PCB_FAMILY || family === TWO_MODEL_FAMILY || castingProcessOfFamily(family) !== null;
 }
 
 /** The molding line's material reason, when the engine found the material itself cannot be molded (requiredCapability says so). */
@@ -469,6 +474,8 @@ export class BomItemCostingService {
     private readonly rollFormingCostService?: RollFormingCostService,
     /** A Stock Machining part's stock and band saw; optional for the same reason (without it the stock is one named, uncosted line on its machining routes). */
     private readonly stockMachiningCostService?: StockMachiningCostService,
+    /** A printed circuit board's fabrication routes; optional for the same reason (without it a PCB part is one named, uncosted line). */
+    private readonly pcbCostService?: PcbCostService,
   ) { }
 
   // Every getCostSummary/getRouteComparison money field is computed in the
@@ -598,6 +605,12 @@ export class BomItemCostingService {
       ...(dto.additive ? { additive: { ...dto.additive, options: convertRouteOptions(dto.additive.options, conv) } } : {}),
       ...(dto.barTube ? { barTube: { ...dto.barTube, options: convertRouteOptions(dto.barTube.options, conv) } } : {}),
       ...(dto.rotoBlow ? { rotoBlow: { ...dto.rotoBlow, options: convertRouteOptions(dto.rotoBlow.options, conv) } } : {}),
+      ...(dto.pcb ? {
+        pcb: {
+          ...dto.pcb, options: convertRouteOptions(dto.pcb.options, conv),
+          finishOptions: dto.pcb.finishOptions.map((f) => ({ ...f, totalCost: f.totalCost != null ? conv(f.totalCost) : null })),
+        },
+      } : {}),
       ...(dto.hydroforming ? { hydroforming: { ...dto.hydroforming, options: convertRouteOptions(dto.hydroforming.options, conv) } } : {}),
       ...(dto.rollForming ? { rollForming: { ...dto.rollForming, options: convertRouteOptions(dto.rollForming.options, conv) } } : {}),
       ...(dto.multiSpindle ? { multiSpindle: { ...dto.multiSpindle, options: convertRouteOptions(dto.multiSpindle.options, conv) } } : {}),
@@ -2188,6 +2201,12 @@ export class BomItemCostingService {
     // priced before the material gate, and its components' own costs are the BOM roll-up's.
     if (ownWorkFamily === PART_ASSEMBLY_FAMILY) {
       return this.partAssemblyCostSummary(item, costingInputs, location, accessToken, forceDieCastingProcess, localLinesOut);
+    }
+    // ── PCB ─────────────────────────────────────────────────────────────────
+    // A printed circuit board: measured from its board files and priced by costing/pcb. Its laminates come from its stack-up, not from a
+    // material grade, so it too is priced before the material gate.
+    if (ownWorkFamily === PCB_FAMILY) {
+      return this.pcbCostSummary(item, costingInputs, location, accessToken, forceDieCastingProcess, localLinesOut);
     }
 
     // Scenario gate: refuse to cost without a material grade. Silently defaulting to
@@ -5435,6 +5454,77 @@ export class BomItemCostingService {
     return { ...this.normalizeCostSummaryToCurrency(result, rates, locInfo.code, item.scenarioOverrides), resolvedInputs: costingInputs };
   }
 
+  /** A printed circuit board's quote (costing/pcb): every fabrication route priced, the quoted one in the summary. */
+  private async pcbCostSummary(
+    item: BOMItemResponseDto, costingInputs: ReturnType<typeof resolveCostingInputs>, location: string, accessToken: string,
+    forceRoute?: string, localLinesOut?: { lines?: ProcessLineCost[]; localCurrency?: string },
+  ): Promise<CostSummaryResponseDto> {
+    const { batchSize, annualVolume, productionLifeYears } = costingInputs;
+    const locInfo = LOCATION_INFO[location] ?? LOCATION_INFO['Other'];
+    const rates = await this.exchangeRateService.getSnapshot(accessToken, await this.items.organizationOfItem(item.id, accessToken));
+    const usdToLocal = locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code);
+    const costOverrides = await this.overrides.fetchCostOverrides(item.id, accessToken, location);
+    const summary = ((item.featureGraph as { summary?: Record<string, unknown> } | undefined)?.summary ?? {});
+    const pcb: PcbCostResult = this.pcbCostService
+      ? await this.pcbCostService.price({
+        client: this.databaseService.getClient(accessToken), accessToken, location,
+        geometry: (summary['pcbGeometry'] ?? null) as PcbGeometrySummary | null,
+        ...(forceRoute ? { forceRoute } : {}),
+        overrides: item.scenarioOverrides, batchSize, annualVolume: annualVolume ?? null,
+        amortizationParts: annualVolume && productionLifeYears ? annualVolume * productionLifeYears : null, usdToLocal,
+        costContext: { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 },
+      })
+      : { route: null, routes: [], gaps: [], part: null, stackup: null, nest: null, finishOptions: [], note: null, missing: ['the PCB cost service is not available'], warnings: [] };
+    const result = {
+      ...buildPcbCostSummary({ pcb, batchSize, warnings: [], ratesSource: RATES_SOURCE_LABEL }),
+      currency: locInfo.code, currencySymbol: locInfo.symbol, toUsdRate: 1,
+    } as CostSummaryDto & { costOverrides?: Record<string, unknown> };
+    this.overrides.applyCostOverrides(result, costOverrides);
+    if (costOverrides.size > 0) result.costOverrides = Object.fromEntries(costOverrides);
+    if (localLinesOut) {
+      localLinesOut.lines = JSON.parse(JSON.stringify(result.processLines)) as ProcessLineCost[];
+      localLinesOut.localCurrency = locInfo.code;
+    }
+    return { ...this.normalizeCostSummaryToCurrency(result, rates, locInfo.code, item.scenarioOverrides), resolvedInputs: costingInputs };
+  }
+
+  /** A printed circuit board's route comparison: each fabrication route the full Cost Summary priced on that route. */
+  private async pcbRouteComparison(
+    id: string, userId: string, accessToken: string,
+    requestedBatchSize: number | undefined, requestedLocation: string, requestedProductionLifeYears?: number,
+    localCurrencyOut?: { routes?: RouteResultDto[]; localCurrency?: string },
+  ): Promise<RouteComparisonResponseDto> {
+    const keys: PcbRouteKey[] = PCB_ROUTES.map((r) => r.key);
+    const locals = keys.map(() => ({} as { lines?: ProcessLineCost[]; localCurrency?: string }));
+    const [quote, ...summaries] = await Promise.all([
+      this.computeCostSummary(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, undefined, undefined, PCB_FAMILY),
+      ...keys.map((key, i) => this.computeCostSummary(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, key, locals[i], PCB_FAMILY)),
+    ]);
+    const routes = keys.map((key, i) => pcbRouteFor(key, summaries[i]!));
+    if (localCurrencyOut) {
+      localCurrencyOut.routes = routes.map((r, i) => ({ ...r, processLines: locals[i]!.lines ?? [] }));
+      localCurrencyOut.localCurrency = locals[0]!.localCurrency;
+    }
+    const recommended = quote!.pcb?.complete && quote!.pcb.route ? pcbRouteId(quote!.pcb.route) : null;
+    return {
+      bomItemId: id,
+      batchSize: quote!.batchSize,
+      recommendedRouteId: recommended,
+      materialCost: quote!.materialCost,
+      materialGrade: quote!.materialGrade,
+      grossWeightKg: 0,
+      materialCostPerKg: 0,
+      materialSource: quote!.materialSource,
+      routes: routes.map((r) => ({ ...r, badges: { ...r.badges, lowestCost: r.routeId === recommended } })),
+      comparisonWarnings: recommended ? [] : ['No PCB route is both feasible and fully costed.'],
+      currency: quote!.currency ?? 'USD',
+      currencySymbol: quote!.currencySymbol ?? '$',
+      ...(quote!.toUsdRate != null ? { toUsdRate: quote!.toUsdRate } : {}),
+      ...(quote!.usdToDisplayRate != null ? { usdToDisplayRate: quote!.usdToDisplayRate } : {}),
+      resolvedInputs: quote!.resolvedInputs,
+    };
+  }
+
   /**
    * An assembly's route comparison: each route (manual, robotic welding) the full Cost Summary priced on that route, as the additive routes
    * are. The recommended one is the route the quote chose.
@@ -6036,6 +6126,10 @@ export class BomItemCostingService {
     }
     if (family === PART_ASSEMBLY_FAMILY) {
       return this.partAssemblyRouteComparison(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, localCurrencyOut);
+    }
+    // PCB: routed or stamped x flying probe or bed of nails, each the full quote on that route (pcb-route-comparison.ts).
+    if (family === PCB_FAMILY) {
+      return this.pcbRouteComparison(id, userId, accessToken, requestedBatchSize, requestedLocation, requestedProductionLifeYears, localCurrencyOut);
     }
     // Bar and Tube Fabrication: saw and punch against tube laser, each the full quote on that route (bar-tube-route-comparison.ts).
     if (family === 'bar_tube') {

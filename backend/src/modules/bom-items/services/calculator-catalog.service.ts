@@ -13,6 +13,7 @@ import { loadAdditiveCalculatorSpec } from '../costing/additive/calculators/addi
 import { loadRapidPrototypingCalculatorSpec } from '../costing/additive/calculators/rapid-prototyping-calculator-spec';
 import { loadBarTubeCalculatorSpec } from '../costing/bar-tube/calculators/bar-tube-calculator-spec';
 import { loadRotoBlowCalculatorSpec } from '../costing/roto-blow/calculators/roto-blow-calculator-spec';
+import { loadPcbCalculatorSpec } from '../costing/pcb/calculators/pcb-calculator-spec';
 import { loadMultiSpindleCalculatorSpec } from '../costing/multi-spindle/calculators/multi-spindle-calculator-spec';
 import { loadPartAssemblyCalculatorSpec } from '../costing/part-assembly/calculators/part-assembly-calculator-spec';
 import { loadAssemblyCalculatorSpec } from '../costing/assembly/calculators/assembly-calculator-spec';
@@ -240,6 +241,10 @@ export class CalculatorCatalogService {
   /** The Roto & Blow Molding calculators (migration 1108), from the database. */
   loadRotoBlowCalculators(accessToken: string): Promise<ReferenceCalculators> {
     return this.loadSpecCalculators('roto-blow-calculators', loadRotoBlowCalculatorSpec(), accessToken);
+  }
+
+  loadPcbCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('pcb-calculators', loadPcbCalculatorSpec(), accessToken);
   }
 
   /** The Sheet Metal - Hydroforming calculators (migration 1110), from the database. */
