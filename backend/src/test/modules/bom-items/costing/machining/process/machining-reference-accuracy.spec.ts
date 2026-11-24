@@ -83,7 +83,7 @@ describe('hand-calculated cost chain', () => {
     expect(line.totalCost).toBeCloseTo(155, 2);
   });
 
-  it('turning: rough passes = round((bar - part)/2 - finish depth) / rough depth), finish = one pass (tblGeneralTurning 1.0)', () => {
+  it('turning, timed as the workbook\'s Turning sheet times a cut: passes = stock / depth of cut, each the length + 10 mm at the start diameter\'s speed (tblGeneralTurning 1.0)', () => {
     const p = {
       roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
       finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
@@ -94,13 +94,18 @@ describe('hand-calculated cost chain', () => {
       blankResult: { form: 'round_bar', sizeLabel: 'Ø40', barDiameterMm: 40, billetVolMm3: Math.PI * 20 ** 2 * 80, utilizationPct: 50 },
       turningParams: p, partoffTable: realPartoffTable(),
     }), mc('2_axis_lathe'));
-    const pass = (v: number, f: number) => (80 / (((v * 1000) / (Math.PI * 32)) * f)) * 60;
-    // radial 4 mm - finish 0.8 = 3.2 mm rough stock / 1.3 = 2.46 -> 2 passes
+    // Machining time = pi x D x (L + 10) / (1000 x v x s) x passes, D the diameter the cut starts at: one pass over the 80 mm is
+    const pass = (v: number, f: number, startDiameterMm: number) => ((80 + 10) / (((v * 1000) / (Math.PI * startDiameterMm)) * f)) * 60;
+    // Ø32 from a Ø40 bar. The finish cut starts at 32 + 2 x 0.8 = 33.6 mm, so roughing takes (40 - 33.6) / (2 x 1.3) = 2.46 passes
+    // from the bar (not rounded): 2.46 x 7.476 s = 18.40 s. The finish pass, from Ø33.6: 5.90 s.
+    const roughSec = ((40 - 33.6) / (2 * 1.3)) * pass(250.4, 0.3625, 40);
     const rough = result.processLines.find((l) => l.process === 'Rough Turning')!;
     const finish = result.processLines.find((l) => l.process === 'Finish Turning')!;
-    expect(rough.cycleTimeMin).toBeCloseTo((2 * pass(250.4, 0.3625)) / 60, 3);
-    expect(finish.cycleTimeMin).toBeCloseTo(pass(333.1, 0.29) / 60, 3);
-    expect(rough.runCost).toBeCloseTo(((2 * pass(250.4, 0.3625)) / 60 / 60) * 900, 1);
+    expect(roughSec).toBeCloseTo(18.402, 2);
+    expect(rough.cycleTimeMin).toBeCloseTo(roughSec / 60, 3);
+    expect(finish.cycleTimeMin).toBeCloseTo(pass(333.1, 0.29, 33.6) / 60, 3);
+    expect(finish.cycleTimeMin * 60).toBeCloseTo(5.901, 2);
+    expect(rough.runCost).toBeCloseTo((roughSec / 3600) * 900, 1);
   });
 });
 

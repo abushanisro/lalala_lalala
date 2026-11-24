@@ -1138,6 +1138,22 @@ function turnedCylinderSeeds(cylinder: TurnedCylinder): Record<string, CalcSeed>
 }
 
 /**
+ * The approach and overrun a turning calculator adds to each pass, seeded with where it comes from: the value is the calculator's own
+ * stored one (the Machining calculator workbook's Turning sheet times a cut over its length plus 10 mm). An allowance, not a measurement,
+ * so it is stated as an assumption. Nothing when the calculator has no such field.
+ */
+function approachSeed(calculators: MachiningCalculators | null | undefined, operation: string): Record<string, CalcSeed> {
+  const mm = Number(calculators?.[operation]?.fields.find((f) => f.field_name === 'Approach Length')?.default_value);
+  if (!(mm > 0)) return {};
+  return {
+    'Approach Length': {
+      value: mm,
+      source: `Assumption: the tool's approach and overrun on each pass (Machining calculator workbook, Turning sheet: length of cut + ${mm} mm)`,
+    },
+  };
+}
+
+/**
  * One turning line's work, from the calculator run of each cylinder the bar leaves to turn: the cylinders the operation cuts (a run with a
  * time) or cannot time (a run lacking an input), summed into the line's run, and each Ring cut as a row the Process tree lists and lights.
  * A cylinder the operation has nothing to do on (no rough pass on 0.2 mm of stock) is not part of the line.
@@ -2016,10 +2032,12 @@ export function computeTurningCostSummary(
   // calculators), run once per turned diameter: each Ring the CAD analysis
   // recognised (input.turnedGeometry.rings) is turned from the bar on its own
   // diameter and length, so a step below the part's largest diameter is
-  // roughed for its own radial stock. The bar diameter is the real stock size
-  // chosen for the part; depth of cut / speed / feed come from
-  // tblGeneralTurning. With no real turning data there is no estimate: the
-  // line reports the gap.
+  // roughed for its own radial stock. Both calculators time a cut as the
+  // Machining calculator workbook's Turning sheet does: spindle speed from the
+  // diameter the cut starts at, the turned length plus the approach per pass.
+  // The bar diameter is the real stock size chosen for the part; depth of cut
+  // / speed / feed come from tblGeneralTurning. With no real turning data
+  // there is no estimate: the line reports the gap.
   const materialRemovalMm3 = Math.max(0, barVolMm3 - volume);
   const turned = input.turnedGeometry;
   const partDiameterMm = turned?.diameterMm ?? Math.max(maxWidth, maxHeight);
@@ -2059,10 +2077,13 @@ export function computeTurningCostSummary(
         ...geometry,
         'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
         ...roughTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
+        ...approachSeed(input.machiningCalculators, 'Rough Turning'),
       }),
       finish: runMachiningCalculator(input.machiningCalculators, 'Finish Turning', {
         ...geometry,
+        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
         ...finishTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
+        ...approachSeed(input.machiningCalculators, 'Finish Turning'),
       }),
     };
   });

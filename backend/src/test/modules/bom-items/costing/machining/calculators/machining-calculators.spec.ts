@@ -101,6 +101,47 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(readFileSync(join(ROOT, 'migrations/1037_machining_part_setup_calculator.sql'), 'utf-8')).not.toContain('The engine\'s own value');
   });
 
+  it('turning is timed as the workbook\'s Turning sheet times a cut, shipped in 1128; the entries 804 and 1030 shipped are kept', () => {
+    const committed = readFileSync(join(ROOT, 'migrations/1128_machining_turning_follows_the_workbook.sql'), 'utf-8');
+    expect(committed).toBe(buildMachiningCalculatorMigrationSql(1128, spec));
+    for (const name of ['Rough Turning', 'Finish Turning', 'Stock Prep Lathe']) expect(committed).toContain(`-- Machining - ${name}`);
+    // 804 still ships the formulas it was applied with; the engine sees only the current entries.
+    expect(buildMachiningCalculatorsMigrationSql()).toContain('round({Rough Stock} / {Rough Depth of Cut})');
+    expect(calcs['Rough Turning']?.fields.map((f) => f.field_name)).toEqual([
+      'Turned Diameter', 'Turned Length', 'Bar Diameter', 'Finish Depth of Cut', 'Rough Depth of Cut', 'Rough Cutting Speed', 'Rough Feed',
+      'Approach Length', 'Finish Start Diameter', 'Rough Passes', 'Spindle Speed', 'Feed Rate', 'Time per Pass', CYCLE_TIME_FIELD,
+    ]);
+    // The lathe's stock preparation is the same cut: it copies the current Rough Turning.
+    expect(calcs['Stock Prep Lathe']?.fields).toEqual(calcs['Rough Turning']?.fields);
+  });
+
+  it('Rough Turning reproduces the three worked rows of the workbook\'s Turning sheet', () => {
+    // Machining - Calculator Database, Turning sheet: n = 1000 v / (pi D1), np = (D1 - D2) / (2 t), Tc = pi D1 (L + 10) / (1000 v s) x np.
+    // A row is one cut from D1 to D2, so no finish allowance is left (Finish Depth of Cut 0). The sheet writes pi as 3.14 and 3.1428: its
+    // own figures (382.17 rpm, 2.75 min; 727.93 rpm, 16.24 min; 318.47 rpm, 17.29 min) are met to that precision.
+    const row = (d1: number, d2: number, length: number, v: number, s: number, t: number) => {
+      const seeds: Record<string, CalcSeed> = Object.fromEntries(Object.entries({
+        'Bar Diameter': d1, 'Turned Diameter': d2, 'Turned Length': length, 'Rough Cutting Speed': v, 'Rough Feed': s, 'Rough Depth of Cut': t, 'Finish Depth of Cut': 0,
+      }).map(([name, value]) => [name, { value, source: 'Turning sheet' }]));
+      const run = runMachiningCalculator(calcs, 'Rough Turning', seeds);
+      const value = (field: string) => Number(run.trace.find((step) => step.fieldName === field)?.value);
+      return { rpm: value('Spindle Speed'), passes: value('Rough Passes'), min: (run.sec ?? NaN) / 60, missing: run.missing };
+    };
+    const first = row(100, 96, 200, 120, 0.2, 2);
+    expect(first.missing).toEqual([]);
+    expect(first.passes).toBe(1);
+    expect(first.rpm).toBeCloseTo(382.17, 0);
+    expect(first.min).toBeCloseTo(2.75, 2);
+    const second = row(70, 25, 200, 160, 0.2, 2);
+    expect(second.passes).toBe(11.25);
+    expect(second.rpm).toBeCloseTo(727.93, 0);
+    expect(second.min).toBeCloseTo(16.24, 1);
+    const third = row(80, 40, 100, 80, 0.2, 2);
+    expect(third.passes).toBe(10);
+    expect(third.rpm).toBeCloseTo(318.47, 0);
+    expect(third.min).toBeCloseTo(17.29, 1);
+  });
+
   it('the milling calculator prices the line of every mill station, and of the live-tool turning machines', () => {
     expect(['3 Axis Mill', '4 Axis Mill', '5 Axis Mill', 'MillTurn', '3 Axis Lathe'].map((station) => calcs[station]?.name)).toEqual(Array(5).fill('Machining - Milling'));
   });

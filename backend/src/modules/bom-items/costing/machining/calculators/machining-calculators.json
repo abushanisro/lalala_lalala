@@ -117,6 +117,7 @@
       "name": "Machining - Rough Turning",
       "operation": "Rough Turning",
       "machineClasses": "lathes",
+      "supersededBy": 1128,
       "description": "Rough turning passes over the turned length: CAD turned diameter/length, stock bar diameter, depth of cut / speed / feed from tblGeneralTurning.",
       "fields": [
         {
@@ -200,9 +201,99 @@
       ]
     },
     {
+      "name": "Machining - Rough Turning",
+      "operation": "Rough Turning",
+      "machineClasses": "lathes",
+      "migration": 1128,
+      "description": "Rough turning from the bar down to the diameter the finish cut starts at, timed as the Machining calculator workbook's Turning sheet times a cut: spindle speed from the diameter the cut starts at (the bar), passes = (bar diameter - finish start diameter) / (2 x depth of cut), each pass the turned length plus the approach at the feed rate. CAD turned diameter/length, stock bar diameter, depth of cut / speed / feed from tblGeneralTurning; the 10 mm approach is the workbook's.",
+      "fields": [
+        {
+          "name": "Turned Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Turned Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Finish Depth of Cut",
+          "unit": "mm",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "cut_depth_mm"
+        },
+        {
+          "name": "Rough Depth of Cut",
+          "unit": "mm",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "cut_depth_mm"
+        },
+        {
+          "name": "Rough Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "cutting_speed_m_min"
+        },
+        {
+          "name": "Rough Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "feed_rate_mm_rev"
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "The reference data has no approach distance for turning. The Machining calculator workbook (Machining - Calculator Database, Turning sheet) adds 10 mm to the length of cut for the tool's approach and overrun: machining time = pi x D x (L + 10) / (1000 x v x s) x passes."
+        },
+        {
+          "name": "Finish Start Diameter",
+          "unit": "mm",
+          "formula": "min({Turned Diameter} + 2 * {Finish Depth of Cut}, {Bar Diameter})"
+        },
+        {
+          "name": "Rough Passes",
+          "unit": null,
+          "formula": "({Bar Diameter} - {Finish Start Diameter}) / (2 * {Rough Depth of Cut})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "{Rough Cutting Speed} * 1000 / (pi * {Bar Diameter})"
+        },
+        {
+          "name": "Feed Rate",
+          "unit": "mm/min",
+          "formula": "{Spindle Speed} * {Rough Feed}"
+        },
+        {
+          "name": "Time per Pass",
+          "unit": "s",
+          "formula": "({Turned Length} + {Approach Length}) / {Feed Rate} * 60"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Rough Passes} * {Time per Pass}"
+        }
+      ]
+    },
+    {
       "name": "Machining - Finish Turning",
       "operation": "Finish Turning",
       "machineClasses": "lathes",
+      "supersededBy": 1128,
       "description": "One finish turning pass over the turned length: CAD turned diameter/length, finish speed and feed from tblGeneralTurning.",
       "fields": [
         {
@@ -243,6 +334,78 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Turned Length} / {Feed Rate} * 60"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Finish Turning",
+      "operation": "Finish Turning",
+      "machineClasses": "lathes",
+      "migration": 1128,
+      "description": "One finish turning pass over the turned length, timed as the Machining calculator workbook's Turning sheet times a cut: spindle speed from the diameter the cut starts at (the turned diameter plus the finish depth of cut on each side, never more than the bar), the turned length plus the approach at the feed rate. CAD turned diameter/length, stock bar diameter, depth of cut / speed / feed from tblGeneralTurning; the 10 mm approach is the workbook's.",
+      "fields": [
+        {
+          "name": "Turned Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Turned Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Finish Depth of Cut",
+          "unit": "mm",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "cut_depth_mm"
+        },
+        {
+          "name": "Finish Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "cutting_speed_m_min"
+        },
+        {
+          "name": "Finish Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblGeneralTurning",
+          "column": "feed_rate_mm_rev"
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "The reference data has no approach distance for turning. The Machining calculator workbook (Machining - Calculator Database, Turning sheet) adds 10 mm to the length of cut for the tool's approach and overrun: machining time = pi x D x (L + 10) / (1000 x v x s) x passes."
+        },
+        {
+          "name": "Finish Start Diameter",
+          "unit": "mm",
+          "formula": "min({Turned Diameter} + 2 * {Finish Depth of Cut}, {Bar Diameter})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "{Finish Cutting Speed} * 1000 / (pi * {Finish Start Diameter})"
+        },
+        {
+          "name": "Feed Rate",
+          "unit": "mm/min",
+          "formula": "{Spindle Speed} * {Finish Feed}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "({Turned Length} + {Approach Length}) / {Feed Rate} * 60"
         }
       ]
     },
@@ -2120,7 +2283,18 @@
       "machineClasses": [
         "stock_prep_lathe"
       ],
+      "supersededBy": 1128,
       "migration": 1030,
+      "sameFieldsAs": "Machining - Rough Turning",
+      "description": "Preparing the stock on a lathe before the part is machined: rough turning of the bar to the stock diameter, cutting data from tblGeneralTurning for the material."
+    },
+    {
+      "name": "Machining - Stock Prep Lathe",
+      "operation": "{station}",
+      "machineClasses": [
+        "stock_prep_lathe"
+      ],
+      "migration": 1128,
       "sameFieldsAs": "Machining - Rough Turning",
       "description": "Preparing the stock on a lathe before the part is machined: rough turning of the bar to the stock diameter, cutting data from tblGeneralTurning for the material."
     },

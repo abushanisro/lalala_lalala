@@ -138,21 +138,44 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     expect(line('Finish Turning').calculatorId).toBe('Machining - Finish Turning');
   });
 
-  it('the Ø20 bar leaves no rough pass: no Rough Turning line, and that is not a data gap', () => {
-    // Radial stock (20 - 17.6) / 2 = 1.2 mm: the 0.8 mm finish pass and 0.4 mm, which rounds to no rough pass (0.4 / 1.3).
-    expect(line('Rough Turning')).toBeUndefined();
+  it('the Ø20 bar leaves 0.4 mm above the finish cut: it is roughed for that, as the part of a pass it is', () => {
+    // Radial stock (20 - 17.6) / 2 = 1.2 mm: the 0.8 mm finish cut, and 0.4 mm for roughing, 0.4 / 1.3 = 0.31 of a pass (the
+    // workbook's Turning sheet does not round passes). From the bar: 250.4 * 1000 / (pi * 20) = 3985.24 rpm, 1444.65 mm/min;
+    // (3 + 10) / 1444.65 * 60 = 0.5399 s a pass -> 0.1661 s.
+    const rough = line('Rough Turning');
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Finish Start Diameter')).toMatchObject({ value: 19.2, unit: 'mm' });
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 0.3077 });
+    // The line keeps its cycle in minutes to four decimals: 0.0028 min.
+    expect(rough.cycleTimeMin * 60).toBeCloseTo(0.1661, 2);
     expect(findRouteDataGaps(result.processLines).filter((g) => g.process.includes('Turning'))).toEqual([]);
   });
 
+  it('a bar that leaves no more than the finish cut is not roughed: no Rough Turning line, and that is not a data gap', () => {
+    // Ø19 bar: radial stock 0.7 mm, less than the 0.8 mm finish depth of cut: the finish cut starts at the bar and takes it all.
+    const snug = computeTurningCostSummary(
+      input({ blankResult: { form: 'round_bar', sizeLabel: 'Ø19 round bar', billetVolMm3: Math.PI * 9.5 ** 2 * 8, utilizationPct: 55, barDiameterMm: 19 } }),
+      mc('2_axis_bar_feed_lathe_with_sub_spindle'),
+    );
+    expect(snug.processLines.find((l) => l.process === 'Rough Turning')).toBeUndefined();
+    const finish = snug.processLines.find((l) => l.process === 'Finish Turning')!;
+    expect(finish.calculationTrace!.find((s) => s.fieldName === 'Finish Start Diameter')).toMatchObject({ value: 19 });
+    // 333.1 * 1000 / (pi * 19) = 5580.47 rpm; 1618.34 mm/min; (3 + 10) / 1618.34 * 60 = 0.4820 s.
+    expect(finish.cycleTimeMin * 60).toBeCloseTo(0.482, 2);
+    expect(snug.processLines.filter((l) => l.setupTimeSource === 'machine').map((l) => l.process)).toEqual(['Finish Turning']);
+    expect(findRouteDataGaps(snug.processLines).filter((g) => g.process.includes('Turning'))).toEqual([]);
+  });
+
   it('a larger bar is rough turned from its own diameter, by the database calculator', () => {
-    // Ø25 bar: radial stock 3.7 mm; rough stock 2.9 mm; round(2.9 / 1.3) = 2 passes.
+    // Ø25 bar: the finish cut starts at 17.6 + 1.6 = 19.2 mm; roughing takes (25 - 19.2) / (2 x 1.3) = 2.23 passes from the bar.
     const larger = computeTurningCostSummary(
       input({ blankResult: { form: 'round_bar', sizeLabel: 'Ø25 round bar', billetVolMm3: Math.PI * 12.5 ** 2 * 8, utilizationPct: 30, barDiameterMm: 25 } }),
       mc('2_axis_bar_feed_lathe_with_sub_spindle'),
     );
     const rough = larger.processLines.find((l) => l.process === 'Rough Turning')!;
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Bar Diameter')).toMatchObject({ value: 25, source: expect.stringContaining('Ø25 round bar') });
-    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 2 });
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 2.2308 });
+    // The spindle speed is the bar's: 250.4 * 1000 / (pi * 25) = 3188.19 rpm.
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 3188.19, unit: 'rpm' });
     expect(rough.calculatorId).toBe('Machining - Rough Turning');
   });
 
@@ -170,10 +193,10 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     expect(parting.cycleTimeMin).toBeGreaterThan(0);
   });
 
-  it('the setup folded into the first turning line (Finish Turning here) names the machine record it came from', () => {
-    const trace = line('Finish Turning').calculationTrace!;
+  it('the setup folded into the first turning line (Rough Turning here) names the machine record it came from', () => {
+    const trace = line('Rough Turning').calculationTrace!;
     expect(trace.find((s) => s.fieldName === 'Setup time')).toMatchObject({ value: 15, source: expect.stringContaining('setup_time_hr') });
-    expect(result.processLines.filter((l) => l.setupTimeSource === 'machine').map((l) => l.process)).toEqual(['Finish Turning']);
+    expect(result.processLines.filter((l) => l.setupTimeSource === 'machine').map((l) => l.process)).toEqual(['Rough Turning']);
   });
 
   it('a part analysed before edge measurement shows the deburring gap, not an estimate', () => {
