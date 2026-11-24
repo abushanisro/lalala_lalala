@@ -14,7 +14,6 @@ import { liveToolingVerdict, type LiveToolWork } from '../capability/live-toolin
 import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
 import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
-import type { DrillingTable } from '../lookup/drilling-table';
 import type { MachiningCapabilityRules } from '../capability-rules';
 import { INSPECTION_TABLE, INSPECTION_TIME_COLUMN, type InspectionReference } from '../inspection-reference';
 import { lookupSeed, variableSeed } from '../calculators/machining-source-refs';
@@ -26,8 +25,8 @@ import { runMachiningCalculator, runPlanned, type CalcRun, type CalcSeed, type M
 import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
 import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator-spec';
 import {
-  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, drillingLookupSeeds, isWorkbookField, specLookupSeeds, tappingLookupSeeds,
-  grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds, reamingLookupSeeds,
+  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, isWorkbookField, specLookupSeeds,
+  grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds,
   rechuckLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
 } from '../calculators/machining-lookup-seeds';
 
@@ -200,20 +199,6 @@ export interface MachiningCostInput {
   deburrLinearSpeedMmPerSec?: number | null;
   // The tblDeburring row that speed came from.
   deburrMatch?: { table: string; row: Record<string, string | number> } | null;
-  // Real tblReaming rows (MachiningLookupService.getReamTable()), fetched
-  // once by the async caller — reaming is a genuinely new operation (had
-  // ZERO implementation before), triggered when tightestToleranceMm is at
-  // or below TIGHT_TOLERANCE_REAM_THRESHOLD_MM (same real, already-
-  // established threshold default-rates.constants.ts uses for Sheet
-  // Metal's own reaming trigger), applied to the smallest real hole group
-  // on the part (tight-tolerance requirements concentrate on precision
-  // dowel/locating holes, typically the smallest on a part — a disclosed
-  // part-level approximation, same tier as estimateBurlDiameterMm
-  // elsewhere in this codebase, not a per-hole tolerance linkage this data
-  // model doesn't have). Matched per real diameter+hardness inside this
-  // file (a pure function — no DB calls — receiving already-fetched rows),
-  // same pattern operation-sequencer.ts's Counterbore wiring uses.
-  reamTable?: any[] | null;
   // Gear/spline teeth the cad-engine recognised (machining_features AxiGroove):
   // tooth count, tip/root diameter and face width, all measured from the B-Rep.
   toothForms?: Array<{ tooth_count: number; tip_diameter_mm: number; root_diameter_mm?: number; face_width_mm: number }>;
@@ -245,11 +230,6 @@ export interface MachiningCostInput {
   machiningCalculators?: MachiningCalculators | null;
   // Real tblInstallingTurningWorkholders rows (MachiningLookupService.getWorkholderTable()).
   workholderTable?: Array<{ Name?: string; 'Install And Remove Time (min)'?: number }> | null;
-  // Real tblDrilling (MachiningLookupService.getDrillingTable()) — speed/feed
-  // for every drilled hole, matched per real diameter inside this pure file.
-  drillingTable?: DrillingTable | null;
-  // tblTapping rows (migration 809) — the Tapping calculator's cutting speed.
-  tappingTable?: any[] | null;
   // Deep-hole routing (Gun Drilling / Deep Bore Machine) -- new; see
   // deep-hole-routing.ts for the real L/D>5 threshold and the real,
   // disjoint diameter split (gun_drill: 3-50mm, deep_bore_machine: 50-
@@ -423,7 +403,8 @@ const MILLING_TIME_INPUT: Record<string, string> = {
   'Fine Finish Milling': 'Finish Milling Time',
   'Contouring': 'Contouring Time', 'Perimeter Milling': 'Contouring Time',
   'Slot Milling': 'Slot and Groove Milling Time', 'Groove Milling': 'Slot and Groove Milling Time', 'Obround Slot Milling': 'Slot and Groove Milling Time',
-  'Center Drilling': 'Hole Making Time', 'Drilling': 'Hole Making Time', 'Counterboring': 'Hole Making Time', 'Countersinking': 'Hole Making Time',
+  'Center Drilling': 'Hole Making Time', 'Drilling': 'Hole Making Time', 'Step Drilling': 'Hole Making Time', 'Boring': 'Hole Making Time',
+  'Countersinking': 'Hole Making Time',
   'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time',
 };
 
@@ -500,6 +481,8 @@ interface DrillCycle {
   calculatorId: string | null;
   calculatorVersion: number | null;
   lookups: CalcRun['lookups'];
+  /** The calculator's outputs (its Tool Cost per Part, INR, among them); absent when it did not run. */
+  outputs?: Record<string, number>;
 }
 
 /**
@@ -512,23 +495,58 @@ export function computeDrillCycle(
   diameterMm: number,
   materialGrade: string | null | undefined,
   depthMm: number | null | undefined,
-  drillingTable: DrillingTable | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
   holes = 1,
   occurrences?: readonly FeatureOccurrenceRef[],
+  /** The machine the holes are drilled on (its spindle limit); none when they are planned before the machine is chosen. */
+  machine: Record<string, CalcSeed> = {},
 ): DrillCycle {
-  const matClass = detectMaterialClass(materialGrade ?? null);
-  const lookup = drillingLookupSeeds({ matClass, drillingTable }, { 'Hole Diameter': diameterMm });
-  const plan: PlannedRun = {
-    operation: 'Drilling', seeds: { ...holeSeeds(diameterMm, depthMm, holes, occurrences), ...lookup.seeds },
-    ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}),
+  return holeCycle('Drilling', workbook, calculators, detectMaterialClass(materialGrade ?? null), holeSeeds(diameterMm, depthMm, holes, occurrences), machine);
+}
+
+/** A hole-making calculator run (Drilling, Reaming, Step Drilling, Boring) on the workbook's data for the material, planned and run. */
+export function holeCycle(
+  operation: string, workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined,
+  matClass: MaterialClass, seeds: Record<string, CalcSeed>, machine: Record<string, CalcSeed>,
+): DrillCycle {
+  const lookup = workbookSeeds(workbook, operation, null, matClass, seeds);
+  const plan: PlannedRun = { operation, seeds: { ...seeds, ...lookup.seeds }, ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}) };
+  return cycleOf(runPlanned(calculators, plan, machine), plan);
+}
+
+/** The largest hole the workbook's drills reach for the material (its drilling table's top band); null when it has none for it. */
+export function largestDrillMm(workbook: MachiningWorkbookInput | null | undefined, matClass: MaterialClass): number | null {
+  const groups = (workbook?.tables.tblCuttingMaterialGroup ?? []) as Array<{ MaterialClass?: string; DrillReamMaterial?: string }>;
+  const group = groups.find((r) => r.MaterialClass === matClass)?.DrillReamMaterial;
+  const rows = (workbook?.tables.tblDrillReamData ?? []) as Array<{ WorkMaterial?: string; Operation?: string; DiameterMaxMm?: number | string }>;
+  const bands = rows.filter((r) => r.WorkMaterial === group && r.Operation === 'Drilling').map((r) => Number(r.DiameterMaxMm)).filter(Number.isFinite);
+  return bands.length > 0 ? Math.max(...bands) : null;
+}
+
+/**
+ * Boring a hole the drills do not reach, from the largest drilled diameter to the hole's (Internal Boring on a lathe, Boring on a
+ * mill: the workbook's Internal Boring sheet).
+ */
+export function computeBoreCycle(
+  operation: 'ID Turning' | 'Boring', initialMm: number, finalMm: number, lengthMm: number | null | undefined, bores: number,
+  matClass: MaterialClass, workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined,
+  occurrences?: readonly FeatureOccurrenceRef[], machine: Record<string, CalcSeed> = {},
+): DrillCycle {
+  const ref = featuresRef(`Ø${finalMm} holes`, occurrences);
+  const withRef = (seed: CalcSeed): CalcSeed => (ref ? { ...seed, ref } : seed);
+  const seeds: Record<string, CalcSeed> = {
+    'Initial Diameter': { value: initialMm, source: `The largest drill of the workbook's drilling table for the material (Ø${initialMm} mm)` },
+    'Final Diameter': withRef({ value: finalMm, source: 'CAD: hole diameter' }),
+    'Bores': withRef({ value: bores, source: 'CAD: holes of this diameter' }),
+    ...(lengthMm != null && lengthMm > 0 ? { 'Bore Length': withRef({ value: lengthMm, source: 'CAD: hole depth' }) } : {}),
   };
-  return cycleOf(runPlanned(calculators, plan), plan);
+  return holeCycle(operation, workbook, calculators, matClass, seeds, machine);
 }
 
 /** A planned run's result as a hole cycle: its time, steps, missing inputs and calculator, with the plan to time it again. */
-function cycleOf(run: CalcRun, plan: PlannedRun): DrillCycle {
-  return { sec: run.sec, trace: run.trace, missing: run.missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups, plan };
+function cycleOf(run: CalcRun & { outputs?: Record<string, number> }, plan: PlannedRun): DrillCycle {
+  return { sec: run.sec, trace: run.trace, missing: run.missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups, plan, ...(run.outputs ? { outputs: run.outputs } : {}) };
 }
 
 /**
@@ -539,22 +557,29 @@ function drillHoleGroups(
   holeGroups: Array<{ diameter_mm: number; count: number; depth_mm?: number; occurrences?: FeatureOccurrenceRef[] }>,
   holeCount: number,
   materialGrade: string | null | undefined,
-  drillingTable: DrillingTable | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
-): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups'] } {
+  machine: Record<string, CalcSeed>,
+): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; outputs: Record<string, number>; oversize: HoleGroup[]; largestDrillMm: number | null } {
   const trace: CalculationTraceStep[] = [];
   const missing: string[] = [];
   const lookups: CalcRun['lookups'] = {};
   let totalSec = 0;
   let calculatorId: string | null = null;
   let calculatorVersion: number | null = null;
+  const largest = largestDrillMm(workbook, detectMaterialClass(materialGrade ?? null));
+  const oversize = largest == null ? [] : holeGroups.filter((g) => g.diameter_mm > largest);
+  let toolInr = 0;
   if (holeGroups.length === 0) {
     if (holeCount > 0) missing.push(`per-diameter CAD hole data (${holeCount} hole${holeCount === 1 ? '' : 's'} counted, no diameters/depths)`);
-    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups };
+    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups, outputs: {}, oversize, largestDrillMm: largest };
   }
   const multi = holeGroups.length > 1;
   for (const g of holeGroups) {
-    const cycle = computeDrillCycle(g.diameter_mm, materialGrade, g.depth_mm, drillingTable, calculators, g.count, g.occurrences);
+    // A hole the drills do not reach is drilled at the largest of them (and bored to size on its own line).
+    const drillMm = oversize.includes(g) ? largest! : g.diameter_mm;
+    const cycle = computeDrillCycle(drillMm, materialGrade, g.depth_mm, workbook, calculators, g.count, g.occurrences, machine);
+    toolInr += cycle.outputs?.['Tool Cost per Part'] ?? 0;
     calculatorId = cycle.calculatorId ?? calculatorId;
     calculatorVersion = cycle.calculatorVersion ?? calculatorVersion;
     Object.assign(lookups, cycle.lookups);
@@ -566,7 +591,21 @@ function drillHoleGroups(
     trace.push(...(multi ? prefixTrace(`Ø${g.diameter_mm} mm ·`, cycle.trace) : cycle.trace));
   }
   if (multi && trace.length > 0) trace.push(traceCalc('Drilling cycle time', totalSec, 's', 'Sum of every hole-diameter group Cycle Time'));
-  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups };
+  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {}, oversize, largestDrillMm: largest };
+}
+
+/** The holes the drills do not reach, bored from the largest drill to size (Internal Boring on a lathe, Boring on a mill): one run per diameter. */
+function boreHoleGroups(
+  operation: 'ID Turning' | 'Boring', groups: readonly HoleGroup[], largestDrillMm: number, matClass: MaterialClass,
+  workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined, machine: Record<string, CalcSeed>,
+): { run: CalcRun & { outputs: Record<string, number> }; rows: FeatureOp[] } {
+  const runs = groups.map((g) => ({ g, cycle: computeBoreCycle(operation, largestDrillMm, g.diameter_mm, g.depth_mm, g.count, matClass, workbook, calculators, g.occurrences, machine) }));
+  const summed = sumRuns(runs.map(({ g, cycle }) => ({ label: `Ø${g.diameter_mm} mm`, run: cycle })), `${operation} cycle time`);
+  const toolInr = runs.reduce((t, { cycle }) => t + (cycle.outputs?.['Tool Cost per Part'] ?? 0), 0);
+  const rows: FeatureOp[] = runs.filter(({ cycle }) => cycle.sec != null && cycle.sec > 0).map(({ g, cycle }) => ({
+    name: `${operation} // Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec!, featureType: 'boring', count: g.count,
+  }));
+  return { run: { ...summed, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {} }, rows };
 }
 
 // Same disclosed depth-to-diameter assumption as drilling (DRILL_DEPTH_TO_DIAMETER_RATIO)
@@ -640,16 +679,16 @@ function computeReamingLine(
   calculators: MachiningCalculators | null | undefined,
   holeGroups: HoleGroup[],
   matClass: MaterialClass,
-  reamTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   rate: MHRRateInput,
   batchSize: number,
   warnings: string[],
   identity: Identity,
   hostSetup?: TakeMachineSetup,
+  location?: string | null,
 ): ProcessLineCost {
   const g = smallestGroup(holeGroups);
-  const seeds = { ...holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), ...reamingLookupSeeds({ matClass, reamTable }, { 'Hole Diameter': g.diameter_mm }).seeds };
-  const run = runMachiningCalculator(calculators, 'Reaming', seeds);
+  const run = holeCycle('Reaming', workbook, calculators, matClass, holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), spindleLimitSeed(rate, location));
   const gap = run.missing;
   if (gap.length > 0) warnings.push(`Reaming not priced — missing real input: ${gap.join('; ')}.`);
   const min = (run.sec ?? 0) / 60;
@@ -789,7 +828,7 @@ function computeRotaryBroachingLine(
       out.push({ label: `${label} pilot hole`, run: { sec: null, trace: [], calculatorId: null, calculatorVersion: null, lookups: {},
         missing: [`a pilot-hole ratio for a ${p.sides}-sided polygon (variables give hex and square only)`] } });
     } else {
-      const pilot = computeDrillCycle(p.acrossFlatsMm * diaRatio, input.materialGrade, p.depthMm * ref.pilotLengthRatio, input.drillingTable, input.machiningCalculators, p.count);
+      const pilot = computeDrillCycle(p.acrossFlatsMm * diaRatio, input.materialGrade, p.depthMm * ref.pilotLengthRatio, input.workbook, input.machiningCalculators, p.count, undefined, spindleLimitSeed(input.mhrRate, input.location));
       out.push({ label: `${label} pilot Ø${(p.acrossFlatsMm * diaRatio).toFixed(2)} x ${(p.depthMm * ref.pilotLengthRatio).toFixed(2)} mm`,
         run: { sec: pilot.sec, trace: pilot.trace, missing: pilot.missing, calculatorId: pilot.calculatorId, calculatorVersion: pilot.calculatorVersion, lookups: pilot.lookups } });
     }
@@ -1177,11 +1216,11 @@ export interface MachiningWorkbookInput {
  * picked by the material's group and by its other inputs: the depth of cut picks the band its speed and feed are read from. Its default
  * inputs count as given (Rough Depth of Cut 2 mm), the seeds override them.
  */
-function workbookSeeds(
-  workbook: MachiningWorkbookInput | null | undefined, operation: string, machineClass: string, matClass: MaterialClass,
+export function workbookSeeds(
+  workbook: MachiningWorkbookInput | null | undefined, operation: string, machineClass: string | null, matClass: MaterialClass,
   seeds: Record<string, CalcSeed | undefined>,
 ): LookupSeeds {
-  const calc = loadMachiningCalculatorSpec().calculators.find((c) => c.operation === operation && c.machineClasses.includes(machineClass));
+  const calc = loadMachiningCalculatorSpec().calculators.find((c) => c.operation === operation && (machineClass == null || c.machineClasses.includes(machineClass)));
   const fields = (calc?.fields ?? []).filter(isWorkbookField);
   if (fields.length === 0) return { seeds: {}, missing: [] };
   const keys: Record<string, number> = {};
@@ -1409,8 +1448,9 @@ function missingOperatorLabourWarnings(lines: readonly ProcessLineCost[]): strin
 export function computeTapCycle(
   thread: { size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] },
   matClass: MaterialClass,
-  tappingTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
+  machine: Record<string, CalcSeed> = {},
 ): DrillCycle {
   const none = (missing: string[]): DrillCycle => ({ sec: null, trace: [], missing, calculatorId: null, calculatorVersion: null, lookups: {} });
   const m = /^M\s*(\d+(?:\.\d+)?)/i.exec(String(thread.size ?? '').trim());
@@ -1429,17 +1469,17 @@ export function computeTapCycle(
       : { value: pitchMm, source: `ISO 261 coarse pitch of M${diameterMm}` };
   }
   if (thread.depthMm != null && thread.depthMm > 0) seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
-  const lookup = pitchMm != null ? tappingLookupSeeds({ matClass, tappingTable }, { 'Thread Pitch': pitchMm }) : { seeds: {}, missing: [`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`] };
-  const plan: PlannedRun = { operation: 'Tapping', seeds: { ...seeds, ...lookup.seeds }, ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}) };
-  return cycleOf(runPlanned(calculators, plan), plan);
+  if (pitchMm == null) return none([`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`]);
+  return holeCycle('Tapping', workbook, calculators, matClass, seeds, machine);
 }
 
 /** Tapping time for every thread on the part: one calculator run per thread-size group. */
 function tapThreadGroups(
   threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: FeatureOccurrenceRef[] }>,
   matClass: MaterialClass,
-  tappingTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
+  machine: Record<string, CalcSeed>,
 ): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; groups: FeatureOp[] } {
   const trace: CalculationTraceStep[] = [];
   const missing: string[] = [];
@@ -1450,7 +1490,7 @@ function tapThreadGroups(
   let calculatorVersion: number | null = null;
   const multi = threads.length > 1;
   for (const t of threads) {
-    const cycle = computeTapCycle(t, matClass, tappingTable, calculators);
+    const cycle = computeTapCycle(t, matClass, workbook, calculators, machine);
     calculatorId = cycle.calculatorId ?? calculatorId;
     calculatorVersion = cycle.calculatorVersion ?? calculatorVersion;
     Object.assign(lookups, cycle.lookups);
@@ -1811,7 +1851,7 @@ export function computeMillingCostSummary(
     if (bulkMissing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulkMissing.join('; ')}.`);
     const roughingMin = materialRemovalMm3 > 0 ? (bulk.sec ?? 0) / 60 : 0;
 
-    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.drillingTable, input.machiningCalculators);
+    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
     const drillingMin = drilling.min;
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
 
@@ -1851,7 +1891,10 @@ export function computeMillingCostSummary(
     const operationSteps = (input.featureOps ?? [])
       .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
       .flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
-    processLines.push(millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, [], millLacks));
+    // The tool wear of the operations the mill line times (the workbook's drills, step drills and boring bars), on the mill line.
+    const millToolInr = (input.featureOps ?? []).filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name)).reduce((t, o) => t + (o.toolCostInr ?? 0), 0);
+    const millLineCosted = millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, [], millLacks);
+    processLines.push(withToolCost(millLineCosted, { outputs: { 'Tool Cost per Part': millToolInr } }, input.workbook, warnings));
   }
   if (cncMillingMin <= 0) {
     warnings.push('Volume data unavailable — milling time estimated at 0');
@@ -1863,7 +1906,9 @@ export function computeMillingCostSummary(
 
   // ── Tapping ───────────────────────────────────────────────────────────────
   const threadCount = threads.reduce((s, t) => s + t.count, 0);
-  const tapping = tapThreadGroups(threads, matClass, input.tappingTable, input.machiningCalculators);
+  // Tapped on the route's machine, or a tapping machine of its own: its spindle limit (the host's when the tapping rate has none).
+  const tapping = tapThreadGroups(threads, matClass, input.workbook, input.machiningCalculators,
+    spindleLimitSeed(tappingRate.maxSpindleRpm != null ? tappingRate : mhrRate, input.location));
   const tappingMin = tapping.min;
   if (tapping.missing.length > 0) warnings.push(`Tapping not priced for: ${tapping.missing.join('; ')}.`);
   if (tappingMin > 0 || tapping.missing.length > 0) {
@@ -1937,7 +1982,7 @@ export function computeMillingCostSummary(
     holeGroups.length > 0
   ) {
     processLines.push(computeReamingLine(
-      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass, millSetup.take,
+      input.machiningCalculators, holeGroups, matClass, input.workbook, mhrRate, batchSize, warnings, input.processIdentityByMachineClass, millSetup.take, input.location,
     ));
   }
   // Nothing on the mill has a cycle time (nothing to mill, load, tap, broach or ream): no line carries its setup, so it is
@@ -2295,11 +2340,17 @@ export function computeTurningCostSummary(
   // string; this function only implements drill physics, not a distinct
   // boring model (real boring-tolerance work is handled by the separate
   // Jig Boring/Reaming tiers elsewhere in this function).
-  const drilling = drillHoleGroups(holeGroups, drilledHoleCount, materialGrade, input.drillingTable, input.machiningCalculators);
+  const drilling = drillHoleGroups(holeGroups, drilledHoleCount, materialGrade, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
   const boringMin = drilling.min;
   if (boringMin > 0 || drilling.missing.length > 0) {
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
-    processLines.push(latheLine('Drilling', boringMin, drilling));
+    processLines.push(withToolCost(latheLine('Drilling', boringMin, drilling), drilling, input.workbook, warnings));
+  }
+  // The holes the drills do not reach, bored on the lathe from the largest drill to size (catalog "ID Turning").
+  if (drilling.oversize.length > 0 && drilling.largestDrillMm != null) {
+    const bores = boreHoleGroups('ID Turning', drilling.oversize, drilling.largestDrillMm, matClass, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
+    if (bores.run.missing.length > 0) warnings.push(`ID Turning not priced — missing real input: ${bores.run.missing.join('; ')}.`);
+    processLines.push(withFeatureGroups(withToolCost(latheLine('ID Turning', (bores.run.sec ?? 0) / 60, bores.run), bores.run, input.workbook, warnings), bores.rows));
   }
 
   // ── Live-tool milling ─────────────────────────────────────────────────────
@@ -2322,7 +2373,9 @@ export function computeTurningCostSummary(
 
   // ── Tapping ───────────────────────────────────────────────────────────────
   const threadCount = threads.reduce((s, t) => s + t.count, 0);
-  const tapping = tapThreadGroups(threads, matClass, input.tappingTable, input.machiningCalculators);
+  // Tapped on the route's machine, or a tapping machine of its own: its spindle limit (the host's when the tapping rate has none).
+  const tapping = tapThreadGroups(threads, matClass, input.workbook, input.machiningCalculators,
+    spindleLimitSeed(tappingRate.maxSpindleRpm != null ? tappingRate : mhrRate, input.location));
   const tappingMin = tapping.min;
   if (tapping.missing.length > 0) warnings.push(`Tapping not priced for: ${tapping.missing.join('; ')}.`);
   if (tappingMin > 0 || tapping.missing.length > 0) {
@@ -2518,7 +2571,7 @@ export function computeTurningCostSummary(
     holeGroups.length > 0
   ) {
     processLines.push(computeReamingLine(
-      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
+      input.machiningCalculators, holeGroups, matClass, input.workbook, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
     ));
   }
 

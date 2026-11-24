@@ -13,7 +13,7 @@ import { SandMachineService } from '../casting/sand/sand-machine.service';
 import { readStagedReference } from '../casting/sand/sand-reference.service';
 import { MachiningLookupService } from '../machining/lookup/machining-lookup.service';
 import {
-  computeDrillCycle, computeTapCycle, computeTurningCostSummary, detectMaterialClass, type MachineClassId, type MachiningCostInput,
+  computeDrillCycle, computeTapCycle, computeTurningCostSummary, spindleLimitSeed, detectMaterialClass, type MachineClassId, type MachiningCostInput,
 } from '../machining/process/cost-machining-engine';
 import { cylindersToTurn } from '../machining/process/turned-diameters';
 
@@ -199,14 +199,16 @@ export class MultiSpindleCostService {
         utilizationPct: null, barDiameterMm: bar.circumscribedMm,
       },
     }, MULTI_SPINDLE_MACHINE_CLASS as MachineClassId);
+    // The multi-spindle's operations are timed once, on its rate's machine (as the turning engine above times them): its spindle limit.
+    const spindle = spindleLimitSeed(req.turningRate, req.turning.location);
     const holes = timeHoleGroups({
       groups: req.turning.holeGroups, liveHoles: req.liveHoles,
-      drill: (d, depth, n, occurrences) => computeDrillCycle(d, req.turning.materialGrade, depth, req.turning.drillingTable, req.turning.machiningCalculators, n, occurrences),
+      drill: (d, depth, n, occurrences) => computeDrillCycle(d, req.turning.materialGrade, depth, req.turning.workbook, req.turning.machiningCalculators, n, occurrences, spindle),
     });
     const matClass = detectMaterialClass(req.turning.materialGrade);
     const threads = timeThreadGroups({
       threads: req.turning.threads,
-      tap: (t, count) => computeTapCycle({ ...t, count }, matClass, req.turning.tappingTable, req.turning.machiningCalculators),
+      tap: (t, count) => computeTapCycle({ ...t, count }, matClass, req.turning.workbook, req.turning.machiningCalculators, spindle),
     });
 
     const keyOf = (v: unknown): MultiSpindleRouteKey | null => MULTI_SPINDLE_ROUTES.find((r) => r.key === v)?.key ?? null;

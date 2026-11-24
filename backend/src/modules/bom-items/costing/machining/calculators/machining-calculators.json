@@ -111,6 +111,158 @@
           "unit": "s",
           "formula": "{Time per Hole} * {Holes}"
         }
+      ],
+      "supersededBy": 1139
+    },
+    {
+      "name": "Machining - Drilling",
+      "operation": "Drilling",
+      "machineClasses": "lathes+mills",
+      "migration": 1139,
+      "description": "Drilling a hole as the Machining calculator workbook's Drilling sheet times it: n = 1000 v / (pi D), capped at the machine's spindle limit; time = (hole depth + 10 mm) / (feed x n), rounded up to whole seconds a hole. Cutting speed (a range, picked at the Range Position) and the feed of the hole diameter's band from the workbook's drilling and reaming table for the material; drill price and life from the sheet.",
+      "fields": [
+        {
+          "name": "Hole Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Hole Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Holes",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "FeedMmPerRev",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Drilling sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Hole Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Hole Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Hole",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "HSS extended twist drill"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "HSS extended twist drill"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Holes} * {Time per Hole}"
+        }
       ]
     },
     {
@@ -933,6 +1085,138 @@
           "unit": "s",
           "formula": "{Time per Hole} * {Holes}"
         }
+      ],
+      "supersededBy": 1139
+    },
+    {
+      "name": "Machining - Reaming",
+      "operation": "Reaming",
+      "machineClasses": "lathes+mills",
+      "migration": 1139,
+      "description": "Reaming a drilled hole as the Machining calculator workbook's Reaming sheet times it: n = 1000 v / (pi D), capped at the machine's spindle limit; time = (hole depth + 4 mm + the point length (D / 2) x 0.577) / (feed x n), rounded up to whole seconds a hole. Cutting speed and the feed of the hole diameter's band from the workbook's drilling and reaming table for the material. The workbook prices no reamer.",
+      "fields": [
+        {
+          "name": "Hole Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Hole Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Holes",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Reaming"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Reaming"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "FeedMmPerRev",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Reaming"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Reaming sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Hole Diameter}))"
+        },
+        {
+          "name": "Point Length",
+          "unit": "mm",
+          "formula": "{Hole Diameter} / 2 * 0.577"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Hole Depth} + {Approach Length} + {Point Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Hole",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Holes} * {Time per Hole}"
+        }
       ]
     },
     {
@@ -987,6 +1271,109 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Time per Thread} * {Threads}"
+        }
+      ],
+      "supersededBy": 1139
+    },
+    {
+      "name": "Machining - Rigid Tapping",
+      "operation": "Tapping",
+      "machineClasses": "lathes+mills",
+      "migration": 1139,
+      "description": "Rigid tapping, as the Machining calculator workbook's Tapping sheet times it, corrected: n = 1000 v / (pi D) at the thread's nominal diameter, capped at the machine's spindle limit; the feed is the thread pitch (a tap advances one pitch a turn; the sheet's 0.25 mm/rev and its 122 m/min table are a drilling cut); the tap goes in and back out over the thread depth + 4 mm; rounded up to whole seconds a thread. Cutting speed is the sheet's own HSS tapping speed for the material (Tapping!A33:D58), a range picked at the Range Position. The workbook prices no tap.",
+      "fields": [
+        {
+          "name": "Thread Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Thread Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Threads",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Thread Pitch",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblHssHoleSpeeds",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "HssGroup"
+          },
+          "where": {
+            "Operation": "Tapping"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblHssHoleSpeeds",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "HssGroup"
+          },
+          "where": {
+            "Operation": "Tapping"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Tapping sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Thread Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "2 * ({Thread Depth} + {Approach Length}) / ({Thread Pitch} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Thread",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Threads} * {Time per Thread}"
         }
       ]
     },
@@ -2687,6 +3074,17 @@
       ],
       "migration": 1030,
       "sameFieldsAs": "Machining - Drilling",
+      "description": "Drilling on a drill press: CAD hole diameter and depth, cutting speed and feed from tblDrilling for the material and drill construction.",
+      "supersededBy": 1139
+    },
+    {
+      "name": "Machining - Drill Press",
+      "operation": "{station}",
+      "machineClasses": [
+        "drill_press"
+      ],
+      "migration": 1139,
+      "sameFieldsAs": "Machining - Drilling",
       "description": "Drilling on a drill press: CAD hole diameter and depth, cutting speed and feed from tblDrilling for the material and drill construction."
     },
     {
@@ -4278,6 +4676,343 @@
           "formula": "ceil({Machining Time} * 60)"
         }
       ]
+    },
+    {
+      "name": "Machining - Step Drilling",
+      "operation": "Step Drilling",
+      "machineClasses": "lathes+mills",
+      "migration": 1139,
+      "description": "A counterbore or a hole's larger step, drilled as the Machining calculator workbook's Step Drilling sheet times it: n = 1000 v / (pi D) at the step's diameter, capped at the machine's spindle limit; time = (step depth + 10 mm) / (feed x n), rounded up to whole seconds. Cutting speed and feed of the step diameter's band from the workbook's drilling and reaming table; drill price and life from the sheet. (It replaces a counterboring time from tblCounterboring, and 8 s a hole when that had no row.)",
+      "fields": [
+        {
+          "name": "Step Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Step Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Holes",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Step Diameter"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Step Diameter"
+          }
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "FeedMmPerRev",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Step Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Step Drilling sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Step Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Step Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Hole",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "HSS twist drill (short)"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "HSS twist drill (short)"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Holes} * {Time per Hole}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Internal Boring",
+      "operation": "ID Turning",
+      "machineClasses": "lathes",
+      "migration": 1139,
+      "description": "Boring a hole larger than the workbook's drills reach, as the Machining calculator workbook's Internal Boring sheet times it: from the drilled diameter to the hole's, passes = (final - initial diameter) / (2 x depth of cut) rounded up; n = 1000 v / (pi D) at the drilled diameter, capped at the machine's spindle limit; time = (bore length + 4 mm) / (feed x n) x passes, rounded up to whole seconds a bore. Cutting speed from the workbook's Turning cutting conditions (carbide, the band holding the depth of cut), feed from its boring feed by hole diameter; boring bar price and life from the sheet.",
+      "fields": [
+        {
+          "name": "Initial Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Final Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bore Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bores",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Depth of Cut",
+          "unit": "mm",
+          "source": "default",
+          "default": 0.5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Internal Boring sheet: depth of cut 0.5 mm."
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          }
+        },
+        {
+          "name": "Feed Min",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblBoringFeed",
+          "column": "FeedMinMmPerRev",
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Final Diameter"
+          }
+        },
+        {
+          "name": "Feed Max",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblBoringFeed",
+          "column": "FeedMaxMmPerRev",
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Final Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Internal Boring sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "formula": "{Feed Min} + {Range Position} * ({Feed Max} - {Feed Min})"
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "formula": "max(1, ceil(({Final Diameter} - {Initial Diameter}) / (2 * {Depth of Cut})))"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Initial Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Bore Length} + {Approach Length}) / ({Feed} * {Spindle Speed}) * {Passes}"
+        },
+        {
+          "name": "Time per Bore",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Solid carbide boring bar"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Solid carbide boring bar"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Bores} * {Time per Bore}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Boring",
+      "operation": "Boring",
+      "machineClasses": "mills",
+      "migration": 1139,
+      "sameFieldsAs": "Machining - Internal Boring",
+      "description": "Boring a hole larger than the workbook's drills reach, on a mill: timed as Internal Boring is (the workbook's Internal Boring sheet), the boring bar turning in the spindle."
     }
   ],
   "retire": [

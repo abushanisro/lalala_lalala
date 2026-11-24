@@ -64,12 +64,10 @@
  * section (unrelated to this routing engine) — not part of this backlog.
  */
 
-import { computeDrillCycle, computeTapCycle, computeRotaryCycleSec, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass } from '../process/cost-machining-engine';
-import type { DrillingTable } from '../lookup/drilling-table';
+import { computeBoreCycle, computeDrillCycle, computeTapCycle, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass, holeCycle, largestDrillMm, type MachiningWorkbookInput } from '../process/cost-machining-engine';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
 import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
-import { nearestByDiameterThenHardness, MACHINING_MATERIAL } from '../lookup/machining-material-hardness';
 import { isTurnedDiameter, type StockExcess } from './stock-excess';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
@@ -88,10 +86,10 @@ function drillOp(
   depthMm: number,
   count: number,
   materialGrade: string | null | undefined,
-  drillingTable: DrillingTable | null,
+  workbook: MachiningWorkbookInput | null,
   calculators: MachiningCalculators | null,
 ): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
-  const cycle = computeDrillCycle(diamMm, materialGrade, depthMm > 0 ? depthMm : undefined, drillingTable, calculators, count);
+  const cycle = computeDrillCycle(diamMm, materialGrade, depthMm > 0 ? depthMm : undefined, workbook, calculators, count);
   const plan = cycle.plan ? { plan: [cycle.plan] } : {};
   return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
 }
@@ -104,42 +102,13 @@ function tapOp(
   matClass: MaterialClass,
   pitchMm: number | undefined,
   depthMm: number | undefined,
-  tappingTable: any[] | null,
+  workbook: MachiningWorkbookInput | null,
   calculators: MachiningCalculators | null,
 ): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
   if (!spec) return { timeSec: 0, missing: 'a thread size' };
-  const cycle = computeTapCycle({ size: spec, count, pitchMm, depthMm: depthMm && depthMm > 0 ? depthMm : undefined }, matClass, tappingTable, calculators);
+  const cycle = computeTapCycle({ size: spec, count, pitchMm, depthMm: depthMm && depthMm > 0 ? depthMm : undefined }, matClass, workbook, calculators);
   const plan = cycle.plan ? { plan: [cycle.plan] } : {};
   return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
-}
-
-// Real, material- and diameter-aware counterbore cycle time — replaces the
-// previous flat "count * 8 sec" constant (no citation, no diameter or
-// material sensitivity at all). counterboreTable is the real tblCounterboring
-// data (364 rows, real cutting_speed_m_min/feed_mm_rev/depth_max_mm per
-// diameter+hardness), fetched once by the async caller (bom-items.service.ts,
-// via MachiningLookupService.getCounterboreTable — this file makes no DB
-// calls itself, per its own design rule) and matched here per real
-// occurrence diameter. Falls back to the previous flat constant, disclosed
-// as a fallback rather than silently identical-looking output, only when
-// the table genuinely isn't available (e.g. the DB fetch failed) or has no
-// row for this diameter/material at all.
-function counterboreTimeSec(
-  diamMm: number,
-  depthMm: number,
-  count: number,
-  matClass: MaterialClass,
-  counterboreTable: any[] | null | undefined,
-): number {
-  if (counterboreTable && counterboreTable.length > 0) {
-    const targetHb = MACHINING_MATERIAL[matClass];
-    const row = nearestByDiameterThenHardness(counterboreTable, diamMm, targetHb);
-    if (row && typeof row.cutting_speed_m_min === 'number' && typeof row.feed_mm_rev === 'number') {
-      const depth = depthMm > 0 ? depthMm : diamMm * DRILL_DEPTH_TO_DIAMETER_RATIO;
-      return computeRotaryCycleSec(diamMm, row.cutting_speed_m_min, row.feed_mm_rev, depth) * count;
-    }
-  }
-  return count * 8; // disclosed fallback — real table unavailable for this request
 }
 
 // Every milling operation below is timed by its stored calculator (machining-calculators.json, "Machining - Facing",
@@ -280,6 +249,8 @@ export interface OperationLine {
   plan?: PlannedRun[];
   /** A factor the drawing put on the operation's time (a fine surface finish), kept so a re-timed plan keeps it. */
   timeFactor?: number;
+  /** The tool wear its timed runs charge per part (Tool Cost per Part, rupees: the workbook's tool price over its life). */
+  toolCostInr?: number;
 }
 
 
@@ -305,8 +276,9 @@ const OP_ORDER: string[] = [
   "Slot Milling",
   "Center Drilling",
   "Drilling",
+  "Boring",
   "Ream",
-  "Counterboring",
+  "Step Drilling",
   "Countersinking",
   "Chamfering",
   "Filleting",
@@ -330,10 +302,8 @@ function opOrderIndex(name: string): number {
  *   material-family-aware tap/drill physics below — optional; a missing
  *   grade falls back to the mild-steel-family default the same way
  *   resolveDrillingSpeedFeed/resolveTapPhysicsInputs already do.
- * @param counterboreTable  real tblCounterboring rows (MachiningLookupService
- *   .getCounterboreTable(), fetched once by the async caller) for real
- *   per-occurrence diameter+hardness-matched counterbore physics; null/
- *   absent falls back to the previous flat constant, disclosed as such.
+ * @param workbook  the machining workbook's cutting data: drilling, step drilling (a counterbore), boring (a hole the drills do not reach)
+ *   and tapping are timed on it; a material or size it has no row for is a named gap.
  * @param chamferLinearSpeedMmPerSec  real hardness-matched tblChamfering
  *   linear speed (MachiningLookupService.getChamferParams), resolved once
  *   for the whole part (no diameter axis in that table); null/absent falls
@@ -352,25 +322,28 @@ function opOrderIndex(name: string): number {
  *   each already timed by its own calculator. None for any other stock.
  * @returns flat OperationLine[] sorted in manufacturing order, or [] if no features
  */
-export function buildOperationSequence(
-  fgv2Features: unknown[] | null | undefined,
-  matClass: MaterialClass,
-  machinabilityFactor = 1.0,
-  materialGrade: string | null = null,
-  counterboreTable: any[] | null = null,
-  chamferLinearSpeedMmPerSec: number | null = null,
-  roundingLinearSpeedMmPerSec: number | null = null,
-  drillingTable: DrillingTable | null = null,
-  calculators: MachiningCalculators | null = null,
-  tappingTable: any[] | null = null,
-  // The material's milling removal rate (tblMillingRemovalRate). Null = not on file: every operation that divides a
-  // volume by it is a named gap.
-  removalRateMm3PerMin: number | null = null,
-  // The material's finishing cutter (tblMillingFinishing). Null = not on file: every finishing pass is a named gap.
-  finishing: MillingFinishingRow | null = null,
-  stockAround: StockExcess | null = null,
-  stockOps: readonly OperationLine[] = [],
-): OperationLine[] {
+export interface SequenceOptions {
+  matClass: MaterialClass;
+  machinabilityFactor?: number;
+  materialGrade?: string | null;
+  chamferLinearSpeedMmPerSec?: number | null;
+  roundingLinearSpeedMmPerSec?: number | null;
+  /** The machining workbook's cutting data (migration 1137): what drilling, tapping, step drilling and boring are timed on. */
+  workbook?: MachiningWorkbookInput | null;
+  calculators?: MachiningCalculators | null;
+  /** The material's milling removal rate (tblMillingRemovalRate). Null = not on file: every operation that divides a volume by it is a named gap. */
+  removalRateMm3PerMin?: number | null;
+  /** The material's finishing cutter (tblMillingFinishing). Null = not on file: every finishing pass is a named gap. */
+  finishing?: MillingFinishingRow | null;
+  stockAround?: StockExcess | null;
+  stockOps?: readonly OperationLine[];
+}
+
+export function buildOperationSequence(fgv2Features: unknown[] | null | undefined, options: SequenceOptions): OperationLine[] {
+  const {
+    matClass, machinabilityFactor = 1.0, materialGrade = null, chamferLinearSpeedMmPerSec = null, roundingLinearSpeedMmPerSec = null,
+    workbook = null, calculators = null, removalRateMm3PerMin = null, finishing = null, stockAround = null, stockOps = [],
+  } = options;
   if (!Array.isArray(fgv2Features) || fgv2Features.length === 0) return [];
 
   const ops: OperationLine[] = [];
@@ -426,6 +399,24 @@ export function buildOperationSequence(
     ...cutterRun(),
   });
   const countOp = (operation: string, field: string, n: number) => calcOp(calculators, operation, { [field]: { value: n, source: 'CAD: feature count' } });
+  // A counterbore, drilled with a step drill to its diameter and depth (no CAD depth: the drilling depth rule's, stated).
+  const stepOp = (diamMm: number, depthMm: number, n: number) => {
+    const depth = depthMm > 0
+      ? { value: depthMm, source: 'CAD: counterbore depth' }
+      : { value: diamMm * DRILL_DEPTH_TO_DIAMETER_RATIO, source: `Assumption: no CAD depth, ${DRILL_DEPTH_TO_DIAMETER_RATIO} x the counterbore diameter` };
+    const seeds: Record<string, CalcSeed> = {
+      'Step Diameter': { value: diamMm, source: 'CAD: counterbore diameter' }, 'Step Depth': depth, 'Holes': { value: n, source: 'CAD: counterbores' },
+    };
+    const cycle = holeCycle('Step Drilling', workbook, calculators, matClass, seeds, {});
+    const plan = cycle.plan ? { plan: [cycle.plan] } : {};
+    return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, trace: cycle.trace, ...plan };
+  };
+  // A hole larger than the workbook's drills reach: drilled at the largest of them, then bored to its diameter on the mill.
+  const largestDrill = largestDrillMm(workbook, matClass);
+  const boreOp = (diamMm: number, depthMm: number, n: number) => {
+    const cycle = computeBoreCycle('Boring', largestDrill!, diamMm, depthMm, n, matClass, workbook, calculators);
+    return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), plan: cycle.plan ? [cycle.plan] : undefined } : { timeSec: cycle.sec, plan: cycle.plan ? [cycle.plan] : undefined };
+  };
   // An edge with a CAD diameter is timed by its length (pi x D per edge) at the table's edge speed; one without, per edge.
   const edgeOp = (operation: string, table: string, speedMmPerSec: number | null, diameterMm: number, n: number) => {
     const sized = diameterMm > 0;
@@ -550,7 +541,13 @@ export function buildOperationSequence(
       case "SimpleHole:cross":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, count, materialGrade, drillingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          if (largestDrill != null && diamMm > largestDrill) {
+            // Larger than the workbook's drills reach: drilled at the largest of them, then bored to size.
+            ops.push({ name: "Drilling", ...drillOp(largestDrill, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+            ops.push({ name: "Boring", ...boreOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          } else {
+            ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          }
         }
         break;
 
@@ -560,7 +557,7 @@ export function buildOperationSequence(
         const holes = occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0);
         if (diamMm > 0 && holes > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', holes), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, drillingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
       }
@@ -578,7 +575,7 @@ export function buildOperationSequence(
           if (steps.length === 0) continue;
           spots += 1;
           for (const step of steps) {
-            const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, drillingTable, calculators);
+            const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators);
             drillSec += op.timeSec;
             if (op.missing) stepMissing.push(op.missing);
             stepPlans.push(...(op.plan ?? []).map((p) => ({ ...p, label: `Step Ø${step.diameter_mm}` })));
@@ -597,24 +594,25 @@ export function buildOperationSequence(
       case "SimpleHole:threaded":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, drillingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
+          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
           ops.push({ name: "Chamfering", ...edgeOp('Chamfering', 'tblChamfering', chamferLinearSpeedMmPerSec, diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, tappingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
       case "MultiStepHole:counterbore":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, drillingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // through bore
-          ops.push({ name: "Counterboring", timeSec: counterboreTimeSec(diamMm, depthMm, count, matClass, counterboreTable), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // through bore
+          // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it.
+          ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
       case "Edge:countersink":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, drillingTable, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Countersinking", ...countOp('Countersinking', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
@@ -706,7 +704,7 @@ export function injectDrawingIntelligence(
   ops: OperationLine[],
   di: Record<string, any> | null | undefined,
   materialGrade: string | null = null,
-  tappingTable: any[] | null = null,
+  workbook: MachiningWorkbookInput | null = null,
   calculators: MachiningCalculators | null = null,
 ): OperationLine[] {
   if (!di) return ops;
@@ -735,7 +733,7 @@ export function injectDrawingIntelligence(
     const count = t.count ?? 1;
     const alreadyHas = result.some((o) => o.name === "Tapping");
     if (!alreadyHas && spec) {
-      result.push({ name: "Tapping", ...tapOp(spec, count, detectMaterialClass(materialGrade), t.pitchMm, t.depthMm, tappingTable, calculators), source: "feature" });
+      result.push({ name: "Tapping", ...tapOp(spec, count, detectMaterialClass(materialGrade), t.pitchMm, t.depthMm, workbook, calculators), source: "feature" });
     }
   }
 

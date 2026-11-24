@@ -18,7 +18,7 @@
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence, type MillingFinishingRow, type OperationLine } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { featureRemovedVolumeMm3, isTurnedDiameter, stockExcess, type StockExcess } from '../../../../../../modules/bom-items/costing/machining/operation/stock-excess';
-import { realDrillingTable } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const ALUMINIUM: MillingFinishingRow = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
@@ -43,7 +43,7 @@ const PIECE_MM3 = 6648.16;
 const PART_MM3 = 2646.02;
 
 const sequence = (stockAround: StockExcess | null) =>
-  buildOperationSequence(SHAFT, 'aluminum', 1.0, 'Aluminum, ANSI 6061', null, null, null, realDrillingTable(), CALCS, null, 60000, ALUMINIUM, stockAround);
+  buildOperationSequence(SHAFT, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockAround });
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
 const statedMm3 = (features: readonly { occurrences: readonly { material_removed_mm3: number }[] }[]) =>
   features.reduce((sum, f) => sum + f.occurrences.reduce((s, o) => s + o.material_removed_mm3, 0), 0);

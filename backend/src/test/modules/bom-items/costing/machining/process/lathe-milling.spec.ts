@@ -54,7 +54,7 @@ const TURNED_AND_DRILLED = [
 
 type Finishing = typeof FINISHING | null;
 const sequence = (features: unknown[], removalRate: number | null = REMOVAL_RATE, finishing: Finishing = FINISHING) =>
-  buildOperationSequence(features, 'aluminum', 1.0, 'Aluminum, ANSI 6061', null, null, null, null, CALCS, null, removalRate, finishing);
+  buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: removalRate, finishing });
 const milling = (features: unknown[], removalRate: number | null = REMOVAL_RATE, finishing: Finishing = FINISHING) =>
   latheMillingLines(latheMillingOps(sequence(features, removalRate, finishing)));
 

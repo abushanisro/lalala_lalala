@@ -33,8 +33,7 @@ const PART_MM3 = 15208.37;
 // The prism inside the cut: 5058.6 x 12.7 = 64 244.22 mm³. Less the part and the pocket: 64 244.22 - 15 208.37 - 24 432.94 = 24 602.91 mm³.
 const PIECE_MM3 = 5058.6 * 12.7;
 const sequence = (features: unknown[], stockOps: OperationLine[]) => buildOperationSequence(
-  features, 'aluminum', 1, 'Aluminum, ANSI 6061', null, null, null, null, CALCS, null, 60000, ALUMINIUM,
-  stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(features) }), stockOps,
+  features, { matClass: 'aluminum', machinabilityFactor: 1, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockAround: stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(features) }), stockOps },
 );
 
 const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>

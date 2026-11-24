@@ -24,7 +24,7 @@ import {
 import { latheMillingOps } from '../../../../../../modules/bom-items/costing/machining/process/lathe-milling';
 import { calculatorInputSteps } from '../../../../../../modules/bom-items/costing/machining/process/machining-trace';
 import { lineDataGap } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
-import { realDrillingTable, realPartoffTable } from '../real-reference-tables';
+import { realPartoffTable } from '../real-reference-tables';
 
 import type { TurnedRing } from '../../../../../../modules/bom-items/costing/machining/process/turned-diameters';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
@@ -57,7 +57,7 @@ const KEYWAY_COST = (4 * 6.70875 / 960) * 60 * 0.25;
 
 /** The lathe's milling of these features: the real sequencer's operations on them (the fixture's rate and cutter row unless one is not on file). */
 const millingOf = (features: unknown[], removalRate: number | null = 60000, finishing: typeof FINISHING | null = FINISHING) =>
-  latheMillingOps(buildOperationSequence(features, 'aluminum', 1.0, 'Aluminum, ANSI 6061', null, null, null, null, CALCS, null, removalRate, finishing));
+  latheMillingOps(buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', calculators: CALCS, removalRateMm3PerMin: removalRate, finishing }));
 
 // The stepped shaft of turning-each-diameter.spec.ts: Ø14 in the middle, a Ø12 step at each end, from a Ø16 bar.
 const RINGS: TurnedRing[] = [
@@ -94,7 +94,6 @@ function shaft(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     },
     blankResult: bar(16),
     workbook: workbookFixture(),
-    drillingTable: realDrillingTable(),
     partoffTable: realPartoffTable(),
     ...overrides,
   };

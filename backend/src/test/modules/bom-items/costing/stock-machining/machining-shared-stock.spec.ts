@@ -3,7 +3,7 @@
 // stock chosen by memory/Stock Maching's rules, handed to the real machining engine as the piece it starts from (stockEngineInput), and
 // laid on the engine's quote (withStockMachining). On the data's own tables, saws and materials.
 import { bandSaws, realStockMachiningReference, stockMaterial } from '../stock/stock-test-data';
-import { realDrillingTable, realPartoffTable } from '../machining/real-reference-tables';
+import { realPartoffTable } from '../machining/real-reference-tables';
 import { resolveSandReference } from '../../../../../modules/bom-items/costing/casting/sand/sand-reference';
 import { specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import {
@@ -72,7 +72,7 @@ const base = (family: 'turned' | 'milled', box: { length: number; width: number;
   materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
   batchSize: 100, family, finishedWeightKg: (volume * 2700) / 1e9,
   tappingRate: rate(900, 'tapping'), deburrRate: rate(300, 'manual_deburr'), inspectionRate: rate(450, 'machining_inspection'),
-  surfaceTreatment: null, machiningCalculators: CALCS, drillingTable: realDrillingTable(), partoffTable: realPartoffTable(),
+  surfaceTreatment: null, machiningCalculators: CALCS, workbook: workbookFixture(), partoffTable: realPartoffTable(),
 });
 
 /** A lathe route's quote of the shaft, as the costing service prices it: the engine on the stock of the route's cut-off, then the stock on its quote. */

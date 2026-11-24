@@ -28,13 +28,16 @@ import { MACHINE_REGISTRY } from '../core/default-rates.constants';
 import { eMithranTerms, resolveSetupMinutes, type EMithranTermsArgs } from '../core/engine-kernel';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../../machining/calculators/machining-calculator';
 import { machiningLookupSeeds, type MachiningLookupContext } from '../../machining/calculators/machining-lookup-seeds';
+import { spindleLimitSeed, workbookSeeds } from '../../machining/process/cost-machining-engine';
 import { sumRuns } from '../../machining/process/machining-trace';
 import { runOnLine } from '../calculators/reference-calculator';
 
 import type { FeatureInstance } from './feature-tolerances';
 import type { MachiningNeedResult } from './machining-need';
 
-const HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Jig Boring', 'Gun Drilling', 'Deep Bore Machine']);
+const HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Step Drilling', 'Jig Boring', 'Gun Drilling', 'Deep Bore Machine']);
+/** The hole calculators timed on the machining workbook (migration 1139). */
+const WORKBOOK_HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Step Drilling']);
 
 /** HR Rates machine per calculator; the caller supplies the classes the machining engine uses. */
 type MachineForCalculator = (calculator: string) => MHRRateInput | undefined;
@@ -79,9 +82,11 @@ function seedsFor(calculator: string, inst: FeatureInstance, ctx: MachiningLooku
   const seeds: Record<string, CalcSeed> = {};
   if (HOLE_CALCULATORS.has(calculator)) {
     if (inst.sizeMm == null) return { seeds, missing: ['the hole has no measured diameter'] };
-    seeds['Hole Diameter'] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
+    // A step of a stepped hole is the Step Drilling calculator's step; any other hole calculator's, the hole.
+    const [dia, depth] = calculator === 'Step Drilling' ? ['Step Diameter', 'Step Depth'] : ['Hole Diameter', 'Hole Depth'];
+    seeds[dia] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
     seeds['Holes'] = { value: 1, source: `CAD: ${inst.label}` };
-    if (inst.depthMm != null) seeds['Hole Depth'] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
+    if (inst.depthMm != null) seeds[depth] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
   } else if (calculator === 'Surface Grinding') {
     const [len, wid] = inst.extentsMm ?? [];
     if (!(len! > 0) || !(wid! > 0)) return { seeds, missing: ['the face has no measured length and width'] };
@@ -96,7 +101,10 @@ function seedsFor(calculator: string, inst: FeatureInstance, ctx: MachiningLooku
   } else {
     return { seeds, missing: [`the ${calculator} calculator's inputs are not measured for a ${inst.featureType}`] };
   }
-  const lookup = machiningLookupSeeds(calculator, ctx, { 'Hole Diameter': inst.sizeMm ?? NaN });
+  // Drilling and Reaming read the machining workbook's data; the other calculators their own tables.
+  const lookup = WORKBOOK_HOLE_CALCULATORS.has(calculator)
+    ? workbookSeeds(ctx.workbook, calculator, null, ctx.matClass, seeds)
+    : machiningLookupSeeds(calculator, ctx, { 'Hole Diameter': inst.sizeMm ?? NaN });
   if (lookup) { Object.assign(seeds, lookup.seeds); missing.push(...lookup.missing); }
   return { seeds, missing };
 }
@@ -167,7 +175,8 @@ export function priceSecondaryMachining(input: {
         : [inst];
       const runs = parts.map((part) => {
         const { seeds, missing: m } = seedsFor(calculator, part, input.lookupContext);
-        return { run: runMachiningCalculator(input.calculators, calculator, seeds), missing: m };
+        // On the machine that machines it: a calculator caps its spindle at the machine's own limit.
+        return { run: runMachiningCalculator(input.calculators, calculator, { ...seeds, ...spindleLimitSeed(machine, null) }), missing: m };
       });
       const missing = runs.flatMap((r) => (r.run.sec == null ? [...r.missing, ...r.run.missing] : []));
       const run: CalcRun = {

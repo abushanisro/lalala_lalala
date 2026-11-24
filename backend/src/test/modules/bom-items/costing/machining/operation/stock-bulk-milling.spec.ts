@@ -23,7 +23,7 @@ import {
   type MachineClassId,
   type MachiningCostInput,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
-import { realDrillingTable, realPartoffTable } from '../real-reference-tables';
+import { realPartoffTable } from '../real-reference-tables';
 
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { FeatureOp } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
@@ -53,7 +53,7 @@ const AROUND = stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemo
 const BULK_SEC = 34.5592;
 
 const sequence = (features: unknown[] | null, stockAround: StockExcess | null, removalRate: number | null = 60000, machinabilityFactor = 1.0) =>
-  buildOperationSequence(features, 'aluminum', machinabilityFactor, 'Aluminum, ANSI 6061', null, null, null, realDrillingTable(), CALCS, null, removalRate, ALUMINIUM, stockAround);
+  buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: removalRate, finishing: ALUMINIUM, stockAround });
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
 
 describe('the sequencer mills away the stock around the part', () => {
@@ -150,7 +150,7 @@ function milled(featureOps: OperationLine[] | undefined, blankResult: MachiningC
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700,
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'milled', finishedWeightKg: 0.183,
-    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5 }),
+    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, maxSpindleRpm: 8000 }),
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -251,7 +251,7 @@ describe('what the Bulk Milling of the stock around the part does not change', (
       materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700,
       materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
       batchSize: 100, family: 'turned', finishedWeightKg: 0.011,
-      mhrRate: rate(900, { machineClass: '3_axis_lathe', setupTimeHr: 0.5 }),
+      mhrRate: rate(900, { machineClass: '3_axis_lathe', setupTimeHr: 0.5, maxSpindleRpm: 4000 }),
       tappingRate: rate(900, { machineClass: 'tapping' }),
       deburrRate: rate(300, { machineClass: 'manual_deburr' }),
       inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -263,7 +263,6 @@ describe('what the Bulk Milling of the stock around the part does not change', (
       },
       blankResult: { form: 'round_bar', sizeLabel: 'Ø16 round bar', billetVolMm3: Math.PI * 8 ** 2 * 33, utilizationPct: 60, barDiameterMm: 16 },
       workbook: workbookFixture(),
-      drillingTable: realDrillingTable(),
       partoffTable: realPartoffTable(),
       ...(featureOps ? { featureOps } : {}),
     });

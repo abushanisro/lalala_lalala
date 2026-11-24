@@ -10,9 +10,9 @@ import { priceSecondaryMachining } from '../../../../../modules/bom-items/costin
 import {
   readMachiningMemoryCsv,
   realCapabilityRules,
-  realDrillingTable,
   realSurfaceGrindingParams,
 } from '../machining/real-reference-tables';
+import { workbookFixture } from '../machining/workbook-fixture';
 
 // Real data: memory/ capability, ISO 286, operation links, the machining
 // calculators (machining-calculators.json), tblDrilling / tblReaming /
@@ -34,7 +34,7 @@ const reamTable = readMachiningMemoryCsv('lookup/tblReaming.csv').map((r) => ({
 }));
 const lookupContext = {
   matClass: 'aluminum' as const,
-  drillingTable: realDrillingTable(),
+  workbook: workbookFixture(),
   reamTable,
   surfaceGrindingParams: realSurfaceGrindingParams('30.11'),
   capabilityRules: realCapabilityRules(),
@@ -43,9 +43,10 @@ const lookupContext = {
 const machine = (machineClass: string, machineName: string, rate: number): MHRRateInput => ({
   rate, source: 'mhr_database', machineClass, machineName, commodityCode: null, labourRate: 30, operators: 1, setupTimeHr: 1,
 });
-const mill = machine('3_axis_mill', 'Mill A', 60);
+// The mill's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136): its drilling and reaming are capped at it.
+const mill = { ...machine('3_axis_mill', 'Mill A', 60), maxSpindleRpm: 8000 };
 const grinder = machine('reciprocating_surface_grinder', 'Grinder B', 45);
-const machineFor = (calc: string) => (calc === 'Surface Grinding' ? grinder : ['Drilling', 'Reaming'].includes(calc) ? mill : undefined);
+const machineFor = (calc: string) => (calc === 'Surface Grinding' ? grinder : ['Drilling', 'Reaming', 'Step Drilling'].includes(calc) ? mill : undefined);
 
 const graph = {
   features: [
@@ -79,7 +80,8 @@ describe('priceSecondaryMachining (real calculators and tables)', () => {
     // A cast (cored) hole: finishing only.
     expect(hole.chosen.map((c) => c.operation)).toEqual(['Reaming']);
     expect(hole.chosen[0]!.sec).toBeGreaterThan(0);
-    expect(hole.unpriced.find((u) => u.operation === 'Boring')?.reason).toMatch(/no calculator/);
+    // Boring has a calculator since migration 1139; this test gives it no machine, so it is named unpriced for that.
+    expect(hole.unpriced.find((u) => u.operation === 'Boring')?.reason).toMatch(/no HR Rates machine for Boring/);
     for (const p of hole.priced) expect(p.runCost).toBeGreaterThanOrEqual(hole.chosen[0]!.runCost);
   });
 
@@ -176,10 +178,10 @@ describe('a stepped hole is drilled step by step', () => {
   });
   const res = priceSecondaryMachining({ need: needStepped, instances: stepped, calculators, lookupContext, machineFor, batchSize: 100, costContext });
 
-  it('Step Drilling is timed as one Drilling run per step, summed', () => {
+  it('Step Drilling is timed as one Step Drilling run per step (the workbook\'s Drilling form at the step\'s own diameter), summed', () => {
     const chosen = res.features[0]!.chosen;
     expect(chosen.map((c) => c.operation)).toEqual(['Step Drilling']);
-    expect(chosen[0]!.calculator).toBe('Drilling');
+    expect(chosen[0]!.calculator).toBe('Step Drilling');
     const one = (d: number, depth: number) => priceSecondaryMachining({
       need: evaluateMachiningNeed({
         primaryProcess: 'High Pressure Die Casting',

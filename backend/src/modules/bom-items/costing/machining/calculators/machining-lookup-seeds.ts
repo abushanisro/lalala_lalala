@@ -1,5 +1,4 @@
-import type { MaterialClass } from '../process/cost-machining-engine';
-import { resolveDrillingParams, type DrillingTable } from '../lookup/drilling-table';
+import type { MachiningWorkbookInput, MaterialClass } from '../process/cost-machining-engine';
 import { resolvePartoffParams } from '../lookup/partoff-table';
 import { rowInBand, WORKBOOK_TABLES } from '../lookup/workbook-cutting-data';
 import {
@@ -26,10 +25,8 @@ import { calculationRef, lookupSeed, MACHINING_REFERENCE_DOMAIN, resultStep, row
  */
 export interface MachiningLookupContext {
   matClass: MaterialClass;
-  drillingTable?: DrillingTable | null;
-  reamTable?: any[] | null;
-  /** tblTapping rows (migration 809). */
-  tappingTable?: any[] | null;
+  /** The machining workbook's cutting data (migration 1137): what Drilling, Reaming and Tapping read. */
+  workbook?: MachiningWorkbookInput | null;
   /** tblBoringV2 "Finish Boring" rows. */
   finishBoringTable?: any[] | null;
   gunDrillTable?: any[] | null;
@@ -84,88 +81,6 @@ function holeDiameterKey(keys: Record<string, number>, operation: string, out: L
   if (positive(d)) return d;
   out.missing.push(`${operation}: Hole Diameter (the table row is chosen by it)`);
   return null;
-}
-
-export function drillingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const d = holeDiameterKey(keys, 'Drilling', out);
-  if (d == null) return out;
-  const real = resolveDrillingParams(ctx.drillingTable, d, ctx.matClass);
-  if (!real) {
-    out.missing.push(ctx.drillingTable ? `tblDrilling row for ${ctx.matClass} at Ø${d} mm` : 'tblDrilling (machining_reference_data) could not be read');
-    return out;
-  }
-  // The speed is one per construction for the code (every diameter of the band carries it); the feed is the row at its breakpoint, or the
-  // interpolation between the band's two breakpoint rows, shown as that calculation.
-  const match = { table: 'tblDrilling', row: { material_cut_code: real.materialCutCode, construction: real.construction } };
-  out.seeds['Cutting Speed'] = lookupSeed(real.cuttingSpeedMPerMin,
-    `tblDrilling: material code ${real.materialCutCode} (${real.hardnessHb} HB, nearest to ${ctx.matClass}), ${real.construction} drill`,
-    match, 'cutting_speed_m_min');
-  const at = (b: { diameterMm: number }) => ({ table: 'tblDrilling', row: { material_cut_code: real.materialCutCode, diameter_mm: b.diameterMm } });
-  const [lo, hi] = real.feedBreakpoints;
-  const feedSource = `tblDrilling: ${real.feedDerivation}`;
-  if (lo && hi) {
-    const point = (b: typeof lo) => lookupSeed(b.feedMmPerRev, `tblDrilling: material code ${real.materialCutCode}, Ø${b.diameterMm} mm`, at(b), 'feed_mm_rev');
-    const steps = [
-      seedStep(`Feed at Ø${lo.diameterMm} mm`, 'mm/rev', point(lo)),
-      seedStep(`Feed at Ø${hi.diameterMm} mm`, 'mm/rev', point(hi)),
-      seedStep('Hole Diameter', 'mm', { value: d, source: 'Hole Diameter input' }),
-      resultStep('Feed', 'mm/rev', real.feedMmPerRev,
-        `{Feed at Ø${lo.diameterMm} mm} + ({Hole Diameter} - ${lo.diameterMm}) / (${hi.diameterMm} - ${lo.diameterMm}) * ({Feed at Ø${hi.diameterMm} mm} - {Feed at Ø${lo.diameterMm} mm})`),
-    ];
-    out.seeds['Feed'] = { value: real.feedMmPerRev, source: feedSource, lookup: true, match, ref: calculationRef('tblDrilling feed, interpolated by diameter', steps) };
-  } else if (lo) {
-    out.seeds['Feed'] = lookupSeed(real.feedMmPerRev, feedSource, at(lo), 'feed_mm_rev');
-  }
-  return out;
-}
-
-export function reamingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const d = holeDiameterKey(keys, 'Reaming', out);
-  if (d == null) return out;
-  const row = ctx.reamTable?.length ? nearestByDiameterThenHardness(ctx.reamTable, d, MACHINING_MATERIAL[ctx.matClass]) : null;
-  if (!row) { out.missing.push(`tblReaming row for ${ctx.matClass} at Ø${d} mm`); return out; }
-  out.seeds = speedFeed(row.CuttingSpeedMPerMin, row.FeedMm, `tblReaming: Ø${row.DiameterMm} mm, ${row.Hardness} HB`,
-    { table: 'tblReaming', row: rowKeys(row, ['DiameterMm', 'Hardness', 'MaterialCutCodeName', 'ToolSeries']) },
-    { speed: 'CuttingSpeedMPerMin', feed: 'FeedMm' });
-  return out;
-}
-
-/**
- * Tapping cutting speed from tblTapping: the material's row at the tabulated
- * pitch nearest the thread's (a tie goes to the smaller pitch). The table
- * gives one speed for its fine band (0.5 and 1.0 mm) and one for its coarse
- * band (3.0 and 6.35 mm), so a pitch finer than 0.5 mm (M1 to M2.5) takes the
- * fine-band speed. A pitch coarser than the table's largest is missing.
- */
-export function resolveTappingRow(rows: any[] | null | undefined, pitchMm: number, matClass: MaterialClass): any | null {
-  if (!rows?.length) return null;
-  const material = nearestByHardness(rows, MACHINING_MATERIAL[matClass]);
-  if (!material) return null;
-  const atCode = rows.filter((r) => r.MaterialCutCodeName === material.MaterialCutCodeName && positive(r.MetricPitchMm) && positive(r.CuttingSpeedMPerMin));
-  if (atCode.length === 0 || pitchMm > Math.max(...atCode.map((r) => r.MetricPitchMm))) return null;
-  return atCode.reduce((best, r) => {
-    const d = Math.abs(r.MetricPitchMm - pitchMm) - Math.abs(best.MetricPitchMm - pitchMm);
-    return d < 0 || (d === 0 && r.MetricPitchMm < best.MetricPitchMm) ? r : best;
-  }, atCode[0]);
-}
-
-export function tappingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const pitch = keys['Thread Pitch'];
-  if (!positive(pitch)) { out.missing.push('Tapping: Thread Pitch (the table row is chosen by it)'); return out; }
-  const row = resolveTappingRow(ctx.tappingTable, pitch, ctx.matClass);
-  if (!row) {
-    out.missing.push(ctx.tappingTable?.length
-      ? `tblTapping row for ${ctx.matClass} at pitch ${pitch} mm (the table has no row for this material, or the pitch is coarser than its largest)`
-      : 'tblTapping (machining_reference_data) could not be read');
-    return out;
-  }
-  out.seeds['Cutting Speed'] = lookupSeed(row.CuttingSpeedMPerMin,
-    `tblTapping: material code ${row.MaterialCutCodeName} (${row.Hardness} HB, nearest to ${ctx.matClass}), pitch ${row.MetricPitchMm} mm`,
-    { table: 'tblTapping', row: { MaterialCutCodeName: row.MaterialCutCodeName, MetricPitchMm: row.MetricPitchMm } }, 'CuttingSpeedMPerMin');
-  return out;
 }
 
 export function jigBoringLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
@@ -676,7 +591,8 @@ function workbookSeed(f: SpecField, rows: any[], data: SpecLookupData, keys: Rec
   const value = Number(own[0]?.[f.column!]);
   if (own.length === 0 || !Number.isFinite(value)) return `${f.name}: ${f.table} has no row for ${how || data.matClass}`;
   const where = Object.entries(f.where ?? {}).map(([c, v]) => `, ${c} ${v}`).join('');
-  return { value, lookup: true, source: `${f.table}: ${how}${where}`, match: { table: f.table!, row: key } };
+  // With the table row it came from as its reference (machiningLookupRef): the steps view opens that row of the workbook's table.
+  return lookupSeed(value, `${f.table}: ${how}${where}`, { table: f.table!, row: key }, f.column!);
 }
 
 export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupData, keys: Record<string, number>): LookupSeeds {
@@ -750,9 +666,6 @@ export function machiningLookupSeeds(
   keys: Record<string, number>,
 ): LookupSeeds | null {
   switch (operation) {
-    case 'Drilling': case 'Drill Press': return drillingLookupSeeds(ctx, keys);
-    case 'Reaming': return reamingLookupSeeds(ctx, keys);
-    case 'Tapping': return tappingLookupSeeds(ctx, keys);
     case 'Jig Boring': return jigBoringLookupSeeds(ctx, keys);
     case 'Gun Drilling': return gunDrillingLookupSeeds(ctx, keys);
     case 'Deep Bore Machine': return deepBoreLookupSeeds(ctx, keys);

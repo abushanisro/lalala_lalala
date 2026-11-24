@@ -204,6 +204,54 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(part(40).sec).toBe(10);
   });
 
+  it('hole making follows the workbook (1139); Drill Press copies the 1139 Drilling, and what 804 and 1030 shipped is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1139_machining_hole_making_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1139, spec));
+    expect(calcs['Drill Press']?.fields).toEqual(calcs['Drilling']?.fields);
+    expect(calcs['ID Turning']?.name).toBe('Machining - Internal Boring');
+    expect(calcs['Boring']?.fields).toEqual(calcs['ID Turning']?.fields);
+  });
+
+  it('Drilling reproduces the workbook\'s Drilling sheet: 48 s a hole, 192 s for its 4 uses, the drill\'s Rs 1.0413 a part', () => {
+    // Ø6.5 x 95 mm, 18 m/min, 0.15 mm/rev: n = 881.47 rpm; (95 + 10) / (0.15 x 881.47) = 0.7941 min = 47.65 s -> 48 s (the sheet: 48, 192).
+    const run = sheet('Drilling', { 'Hole Diameter': 6.5, 'Hole Depth': 95, 'Holes': 4, 'Speed Min': 18, 'Speed Max': 18, 'Feed': 0.15, 'Tool Price': 624.8, 'Tool Life': 600 });
+    expect(run.value('Time per Hole')).toBe(48);
+    expect(run.sec).toBe(192);
+    expect(run.value('Tool Cost per Part')).toBeCloseTo(1.0413, 4);
+  });
+
+  it('Step Drilling reproduces the workbook\'s Step Drilling sheet: 16 s a step, 64 s for its 4 uses', () => {
+    // Ø3 x 6 mm, 6 m/min, 0.1 mm/rev: n = 636.62 rpm; (6 + 10) / (0.1 x 636.62) = 0.2513 min = 15.08 s -> 16 s (the sheet: 16, 64).
+    const run = sheet('Step Drilling', { 'Step Diameter': 3, 'Step Depth': 6, 'Holes': 4, 'Speed Min': 6, 'Speed Max': 6, 'Feed': 0.1, 'Tool Price': 113.27, 'Tool Life': 1000 });
+    expect(run.sec).toBe(64);
+  });
+
+  it('Reaming reproduces the workbook\'s Reaming sheet: the depth + 4 mm + the point length (D / 2) x 0.577', () => {
+    // Ø25 x 60 mm, 45 m/min, 0.25 mm/rev: point 7.2125 mm; n = 572.96 rpm; (60 + 4 + 7.2125) / (0.25 x 572.96) = 0.4972 min (the sheet:
+    // 0.4973) = 29.83 s -> 30 s.
+    const run = sheet('Reaming', { 'Hole Diameter': 25, 'Hole Depth': 60, 'Holes': 1, 'Speed Min': 45, 'Speed Max': 45, 'Feed': 0.25 });
+    expect(run.value('Point Length')).toBeCloseTo(7.2125, 4);
+    expect(run.sec).toBe(30);
+  });
+
+  it('Internal Boring reproduces the workbook\'s Internal Boring sheet: 2 passes, 200 s, the boring bar\'s Rs 0.79284 a part', () => {
+    // Ø30 to Ø32, 102 mm, 30 m/min, 0.2 mm/rev, 0.5 mm a pass: ceil(2 / 1) = 2 passes; n = 318.31 rpm at Ø30;
+    // (102 + 4) / (0.2 x 318.31) x 2 = 3.330 min = 199.81 s -> 200 s (the sheet: 200).
+    const run = sheet('ID Turning', {
+      'Initial Diameter': 30, 'Final Diameter': 32, 'Bore Length': 102, 'Bores': 1, 'Speed Min': 30, 'Speed Max': 30, 'Feed Min': 0.2, 'Feed Max': 0.2,
+      'Tool Price': 1585.68, 'Tool Life': 2000,
+    });
+    expect(run.value('Passes')).toBe(2);
+    expect(run.sec).toBe(200);
+    expect(run.value('Tool Cost per Part')).toBeCloseTo(0.7928, 4);
+  });
+
+  it('Tapping, corrected: the feed is the pitch and the tap goes in and back out (the sheet feeds 0.25 mm/rev, one way)', () => {
+    // M25 x 1.5, 60 mm deep, 44 m/min: n = 560.22 rpm; 2 x (60 + 4) / (1.5 x 560.22) = 0.1523 min = 9.14 s -> 10 s.
+    // (The sheet: (60 + 4) / (0.25 x 560.22) = 0.457 min, a drilling cut.)
+    const run = sheet('Tapping', { 'Thread Diameter': 25, 'Thread Depth': 60, 'Thread Pitch': 1.5, 'Threads': 1, 'Speed Min': 44, 'Speed Max': 44 });
+    expect(run.sec).toBe(10);
+  });
+
   it('the milling calculator prices the line of every mill station, and of the live-tool turning machines', () => {
     expect(['3 Axis Mill', '4 Axis Mill', '5 Axis Mill', 'MillTurn', '3 Axis Lathe'].map((station) => calcs[station]?.name)).toEqual(Array(5).fill('Machining - Milling'));
   });

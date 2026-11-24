@@ -16,22 +16,23 @@ import { flattenMachiningLookupTable } from '../../../../../modules/bom-items/co
 import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import {
   realCapabilityRules,
-  realDrillingTable,
   realGrindingParams,
   realKeywayBroachReference,
   realSurfaceGrindingParams,
-  realTappingTable,
-} from './real-reference-tables';
+  } from './real-reference-tables';
+import { workbookFixture } from './workbook-fixture';
 
 // Every machining calculator input read from a table, a variable, a machine record or a calculation says which (SourceRef), so the
 // calculator dialog's eye opens it with the row outlined: a lookup through the `machining` reference domain (GET /processes/reference-lookup,
 // the table flattened as flattenMachiningLookupTable serves it), a variable by name, the machine's HR Rates record and column.
 const CALCS = specAsCalculators();
 const RULES = realCapabilityRules();
-const DRILLING = realDrillingTable();
+const WORKBOOK = workbookFixture();
+// The test mill's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+const SPINDLE = { 'Max Spindle Speed': { value: 8000, source: 'Machine: Test VMC specs.spindle_speed_rpm (mhr_records)' } };
 
 function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInput {
-  return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'CNC-VMC-3AX', ...overrides };
+  return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'CNC-VMC-3AX', maxSpindleRpm: 8000, ...overrides };
 }
 
 // A steel bracket: one hole size, one thread size, sharp edges to deburr.
@@ -44,7 +45,7 @@ const milled: MachiningCostInput = {
   mhrRate: rate(900), tappingRate: rate(900, { machineClass: 'tapping' }), deburrRate: rate(300, { machineClass: 'deburring', machineName: null }),
   inspectionRate: rate(450, { machineClass: 'cmm', machineName: null, commodityCode: null }),
   surfaceTreatment: null, machiningCalculators: CALCS, capabilityRules: RULES, location: 'India',
-  drillingTable: DRILLING, tappingTable: realTappingTable(),
+  workbook: workbookFixture(),
   sharpEdgeLengthMm: 600, deburrLinearSpeedMmPerSec: 22.7,
   deburrMatch: { table: 'tblDeburring', row: { material_cut_code_name: '1.0', deburr_type: 'Edge', tool_series: 'Virtual Debuiring Wire Wheel Brush' } },
 };
@@ -63,39 +64,31 @@ const rowsOf = (table: { rows: Array<Record<string, unknown>> }, ref: Extract<So
 
 describe('machining calculator inputs carry where they were read (SourceRef)', () => {
   // A hole-size group's drilling run (the mill sums it into its own line; a turned part has a Drilling line of it).
-  const drill = computeDrillCycle(8, milled.materialGrade, 20, DRILLING, CALCS, 4);
+  const drill = computeDrillCycle(8, milled.materialGrade, 20, WORKBOOK, CALCS, 4, undefined, SPINDLE);
+  /** The workbook table's rows a lookup ref's row identifies. */
+  const workbookRows = (ref: Extract<SourceRef, { kind: 'lookup' }>) =>
+    (WORKBOOK.tables[ref.table] ?? []).filter((r: Record<string, unknown>) => Object.entries(ref.row ?? {}).every(([k, v]) => String(r[k]) === String(v)));
 
-  it('Drilling: the cutting speed names its tblDrilling rows and column; the interpolated feed is the calculation over its two breakpoint rows', () => {
-    const trace = drill.trace;
-    const speed = inputStep(trace, 'Cutting Speed')!.ref as Extract<SourceRef, { kind: 'lookup' }>;
-    expect(speed).toMatchObject({ kind: 'lookup', domain: 'machining', table: 'tblDrilling', column: 'cutting_speed_m_min' });
-    const flat = flattenMachiningLookupTable('tblDrilling', DRILLING);
-    expect(flat.columns).toContain(speed.column);
-    // Every row of the code's construction band carries the one speed the input has.
-    const speedRows = rowsOf(flat, speed);
-    expect(speedRows.length).toBeGreaterThan(0);
-    expect(speedRows.every((r) => r.cutting_speed_m_min === inputStep(trace, 'Cutting Speed')!.value)).toBe(true);
-
-    const feed = inputStep(trace, 'Feed')!;
-    expect(feed.ref).toMatchObject({ kind: 'calculation', name: 'tblDrilling feed, interpolated by diameter' });
-    const steps = (feed.ref as Extract<SourceRef, { kind: 'calculation' }>).steps;
-    const points = steps.filter((s) => s.ref?.kind === 'lookup').map((s) => s.ref as Extract<SourceRef, { kind: 'lookup' }>);
-    expect(points).toHaveLength(2);
-    for (const p of points) {
-      expect(p.column).toBe('feed_mm_rev');
-      // Each breakpoint is exactly one row of the table, holding the step's value.
-      expect(rowsOf(flat, p)).toHaveLength(1);
+  it('Drilling: its speed range and feed are one row of the workbook\'s drilling table (material, operation, the hole\'s diameter band)', () => {
+    for (const field of ['Speed Min', 'Speed Max', 'Feed']) {
+      const step = inputStep(drill.trace, field)!;
+      const ref = step.ref as Extract<SourceRef, { kind: 'lookup' }>;
+      expect(ref).toMatchObject({
+        kind: 'lookup', domain: 'machining', table: 'tblDrillReamData',
+        row: { WorkMaterial: 'STEEL-LOW & MEDIUM STRENGTH WROUGHT', Operation: 'Drilling', DiameterMinMm: 6 },
+      });
+      const rows = workbookRows(ref);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]![ref.column]).toBe(step.value);
     }
-    expect(steps.at(-1)).toMatchObject({ kind: 'calculated', fieldName: 'Feed', value: feed.value });
-    // The legacy lookup match (the dialog's Case M) is still recorded.
-    expect(drill.lookups['Cutting Speed']?.table).toBe('tblDrilling');
+    expect(drill.lookups['Feed']?.table).toBe('tblDrillReamData');
   });
 
-  it('Tapping: the cutting speed is one tblTapping row (material code and pitch)', () => {
-    const speed = inputStep(traceOf('Tapping'), 'Cutting Speed')!;
+  it('Tapping: its speed range is the workbook\'s HSS tapping row for the material', () => {
+    const speed = inputStep(traceOf('Tapping'), 'Speed Min')!;
     expect(speed.ref).toEqual({
-      kind: 'lookup', domain: 'machining', table: 'tblTapping', column: 'CuttingSpeedMPerMin',
-      row: { MaterialCutCodeName: expect.any(Number), MetricPitchMm: expect.any(Number) },
+      kind: 'lookup', domain: 'machining', table: 'tblHssHoleSpeeds', column: 'SpeedMinMPerMin',
+      row: { WorkGroup: 'Mild steels', Operation: 'Tapping' },
     });
   });
 

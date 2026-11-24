@@ -171,7 +171,7 @@ const FACE = { id: 'PlanarFace-default_c1', feature_type: 'PlanarFace', variant:
 
 const FINISHING: Partial<Record<MaterialClass, MillingFinishingRow>> = { aluminum: ALUMINIUM, mild_steel: MILD_STEEL };
 const sequence = (features: unknown[], matClass: MaterialClass = 'aluminum', finishing: MillingFinishingRow | null | undefined = FINISHING[matClass], machinabilityFactor = 1.0) =>
-  buildOperationSequence(features, matClass, machinabilityFactor, null, null, null, null, null, CALCS, null, REMOVAL_RATE[matClass] ?? null, finishing ?? null);
+  buildOperationSequence(features, { matClass, machinabilityFactor, calculators: CALCS, removalRateMm3PerMin: REMOVAL_RATE[matClass] ?? null, finishing: finishing ?? null });
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
 
 describe('the sequencer mills a keyway as Obround Slot Milling', () => {
@@ -205,7 +205,7 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
     const [op] = named(ops, 'Obround Slot Milling');
     expect(op!.trace!.some((s) => s.fieldName === 'Removed Volume' || s.fieldName === 'Material Removal Rate')).toBe(false);
     // The removal rate does not time it: the same with none on file.
-    const noRate = buildOperationSequence([KEYWAY], 'aluminum', 1.0, null, null, null, null, null, CALCS, null, null, ALUMINIUM);
+    const noRate = buildOperationSequence([KEYWAY], { matClass: 'aluminum', machinabilityFactor: 1.0, calculators: CALCS, removalRateMm3PerMin: null, finishing: ALUMINIUM });
     expect(named(noRate, 'Obround Slot Milling')[0]!.timeSec).toBeCloseTo(1.6771875, 9);
   });
 

@@ -21,7 +21,7 @@ import {
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { calculatorInputSteps } from '../../../../../../modules/bom-items/costing/machining/process/machining-trace';
 import { lineDataGap } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
-import { realDrillingTable, realPartoffTable } from '../real-reference-tables';
+import { realPartoffTable } from '../real-reference-tables';
 import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
 
 import type { TurnedRing } from '../../../../../../modules/bom-items/costing/machining/process/turned-diameters';
@@ -71,7 +71,6 @@ function shaft(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput 
     },
     blankResult: bar(16),
     workbook: workbookFixture(),
-    drillingTable: realDrillingTable(),
     partoffTable: realPartoffTable(),
     ...overrides,
   };

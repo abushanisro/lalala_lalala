@@ -1622,12 +1622,10 @@ export class BomItemCostingService {
         `piece holds (${mm3(stockAround.pieceMm3)} mm³): the volumes are inconsistent, and no Bulk Milling of the stock around the part is costed.`,
       );
     }
-    const [counterboreTable, chamferParams, roundingParams, drillingTable, tappingTable, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
-      this.machiningLookup.getCounterboreTable(),
+    const [workbook, chamferParams, roundingParams, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
+      this.machiningWorkbookTables(),
       this.machiningLookup.getChamferParams(matClass),
       this.machiningLookup.getRoundingParams(matClass),
-      this.machiningLookup.getDrillingTable(),
-      this.machiningLookup.getTappingTable(),
       this.machiningLookup.getKeywayBroachReference(),
       this.machiningLookup.getOperationSizeRanges(),
       this.resolveMachiningCalculators(accessToken),
@@ -1668,23 +1666,14 @@ export class BomItemCostingService {
     }
 
     const rawFeatureOps = buildOperationSequence(
-      chemSplit.filteredFeatures, matClass, machinabilityFactor, grade,
-      counterboreTable, chamferParams.dataFound ? chamferParams.linearSpeedMmPerSec : null,
-      roundingParams.dataFound ? roundingParams.linearSpeedMmPerSec : null,
-      drillingTable,
-      machiningCalculators,
-      tappingTable,
-      await this.machiningLookup.getMillingRemovalRate(matClass),
-      await this.machiningLookup.getMillingFinishing(matClass),
-      stockAround,
-      stockOps,
+      chemSplit.filteredFeatures, { matClass, machinabilityFactor, materialGrade: grade, chamferLinearSpeedMmPerSec: chamferParams.dataFound ? chamferParams.linearSpeedMmPerSec : null, roundingLinearSpeedMmPerSec: roundingParams.dataFound ? roundingParams.linearSpeedMmPerSec : null, workbook, calculators: machiningCalculators, removalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(matClass), finishing: await this.machiningLookup.getMillingFinishing(matClass), stockAround, stockOps },
     );
     // Fix 5: inject drawing intelligence overrides into the operation list
     const allFeatureOps = injectDrawingIntelligence(
       rawFeatureOps,
       item.drawingIntelligence as Record<string, any> | null,
       grade,
-      tappingTable,
+      workbook,
       machiningCalculators,
     );
 
@@ -2463,11 +2452,9 @@ export class BomItemCostingService {
       // (MachiningLookupService — tblCounterboring/tblChamfering/
       // tblDeburring/tblReaming) resolved once per part, reused across
       // every candidate machine class below via baseCncInput's spread.
-      const [counterboreTable, chamferParams, deburrParams, reamTable, gunDrillTable, deepBoreMaterials, cylindricalGrindingParams, internalGrindingParams, jigBoreTable, keywayBroach, wireEdmParams, workbook, roundingParams, drillingTable, tappingTable, surfaceGrindingParams, operationSizeRanges, capabilityRuleSet] = await Promise.all([
-        this.machiningLookup.getCounterboreTable(),
+      const [chamferParams, deburrParams, gunDrillTable, deepBoreMaterials, cylindricalGrindingParams, internalGrindingParams, jigBoreTable, keywayBroach, wireEdmParams, workbook, roundingParams, surfaceGrindingParams, operationSizeRanges, capabilityRuleSet] = await Promise.all([
         this.machiningLookup.getChamferParams(matClass),
         this.machiningLookup.getDeburrParams(matClass),
-        this.machiningLookup.getReamTable(),
         this.machiningLookup.getGunDrillingTable(),
         this.machiningLookup.getDeepBoreMaterials(),
         this.machiningLookup.getCylindricalGrindingParams(matClass),
@@ -2477,8 +2464,6 @@ export class BomItemCostingService {
         this.machiningLookup.getWireEdmParams(matClass),
         this.machiningWorkbookInput(rates, locInfo.code),
         this.machiningLookup.getRoundingParams(matClass),
-        this.machiningLookup.getDrillingTable(),
-        this.machiningLookup.getTappingTable(),
         this.machiningLookup.getSurfaceGrindingParams(matClass),
         this.machiningLookup.getOperationSizeRanges(),
         this.machiningLookup.getCapabilityRules(),
@@ -2559,9 +2544,6 @@ export class BomItemCostingService {
         processIdentityByMachineClass: cncProcessIdentities,
         deburrLinearSpeedMmPerSec: deburrParams.dataFound ? deburrParams.linearSpeedMmPerSec : null,
         deburrMatch: deburrParams.dataFound ? deburrParams.match ?? null : null,
-        reamTable,
-        drillingTable,
-        tappingTable,
         machiningCalculators,
         workholderTable: await this.machiningLookup.getWorkholderTable(),
         toothForms: this.resolveToothForms(fg),
@@ -3176,9 +3158,7 @@ export class BomItemCostingService {
         const benchSteps = bench.steps;
         const machiningClasses = [mill, mhrRates.jigBore, mhrRates.gunDrill, mhrRates.deepBoreMachine, mhrRates.surfaceGrinder,
           mhrRates.internalGrinder, mhrRates.cylindricalGrinder, mhrRates.jigGrind, deburrMachine, mhrRates.manualBenchCell].map((r) => r?.machineClass).filter((c): c is string => !!c);
-        const [drillingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials, surfaceGrindingParams, internalGrindingParams, capabilityRuleSet, machiningCalculators, deburrParams, machiningIdentities] = await Promise.all([
-          this.machiningLookup.getDrillingTable(),
-          this.machiningLookup.getReamTable(),
+        const [finishBoringTable, gunDrillTable, deepBoreMaterials, surfaceGrindingParams, internalGrindingParams, capabilityRuleSet, machiningCalculators, deburrParams, machiningIdentities] = await Promise.all([
           this.machiningLookup.getFinishBoringTable(),
           this.machiningLookup.getGunDrillingTable(),
           this.machiningLookup.getDeepBoreMaterials(),
@@ -3206,7 +3186,7 @@ export class BomItemCostingService {
           instances: need.instances,
           calculators: machiningCalculators,
           lookupContext: {
-            matClass, drillingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials,
+            matClass, workbook: await this.machiningWorkbookTables(), finishBoringTable, gunDrillTable, deepBoreMaterials,
             surfaceGrindingParams, internalGrindingParams, capabilityRules: capabilityRuleSet.rules,
             deburrParams,
           },
@@ -6762,9 +6742,8 @@ export class BomItemCostingService {
       // primary quote (see this file's own "Single source of truth" rule
       // for CNC route selection).
       const routeMatClass = detectMaterialClass(grade);
-      const [routeDeburrParams, routeReamTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams, routeWorkbook] = await Promise.all([
+      const [routeDeburrParams, routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams, routeWorkbook] = await Promise.all([
         this.machiningLookup.getDeburrParams(routeMatClass),
-        this.machiningLookup.getReamTable(),
         this.machiningLookup.getCylindricalGrindingParams(routeMatClass),
         this.machiningLookup.getInternalGrindingParams(routeMatClass),
         this.machiningLookup.getFinishBoringTable(),
@@ -6782,15 +6761,15 @@ export class BomItemCostingService {
         return attachToRoutes(await this.buildMilledRoutes(
           id, item, fg, summary, grade, materialCostPerKg, materialDensityKgM3,
           materialSource, mhrRates, batchSize, comparisonWarnings, locInfo, location, stockMaterial,
-          cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
+          cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed,
           routeJigBoreTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeKeywayBroach, routeWireEdmParams,
-          accessToken,
+          accessToken, routeWorkbook,
         ));
       }
       const turned = await this.buildTurnedRoutes(
         id, item, fg, summary, grade, materialCostPerKg, materialDensityKgM3,
         materialSource, mhrRates, batchSize, comparisonWarnings, locInfo, location, stockMaterial,
-        cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
+        cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed,
         routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams,
         routeWorkbook,
         accessToken,
@@ -6804,9 +6783,9 @@ export class BomItemCostingService {
         const milled = await this.buildMilledRoutes(
           id, item, fg, summary, grade, materialCostPerKg, materialDensityKgM3,
           materialSource, mhrRates, batchSize, [], locInfo, location, stockMaterial,
-          cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
+          cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed,
           routeJigBoreTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeKeywayBroach, routeWireEdmParams,
-          accessToken,
+          accessToken, routeWorkbook,
         );
         // Fastest and best quality are awarded among the lathes; a mill route joins the ranking by its cost alone, so lowest cost is
         // decided again over all of them: it names the route the comparison recommends.
@@ -8522,11 +8501,8 @@ export class BomItemCostingService {
     }
 
     // Lookup-table inputs, keyed by the inputs above.
-    const [drillingTable, tappingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
+    const [finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
       grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, gearReference, keywayBroach, wireEdmParams, deburrParams] = await Promise.all([
-      this.machiningLookup.getDrillingTable(),
-      this.machiningLookup.getTappingTable(),
-      this.machiningLookup.getReamTable(),
       this.machiningLookup.getFinishBoringTable(),
       this.machiningLookup.getGunDrillingTable(),
       this.machiningLookup.getDeepBoreMaterials(),
@@ -8543,7 +8519,7 @@ export class BomItemCostingService {
     ]);
     const spec = await this.specLookups(def.name, matClass, inputs);
     const own = spec?.complete ? null : machiningLookupSeeds(operation, {
-      matClass, drillingTable, tappingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
+      matClass, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
       grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, shaving: gearReference.shaving, keywayBroach, wireEdmParams, deburrParams,
       capabilityRules: (await this.machiningLookup.getCapabilityRules()).rules,
     }, inputs);
@@ -8761,13 +8737,19 @@ export class BomItemCostingService {
   /** Finishing-process capability rules for MachiningCostInput (capability-rules.ts). */
   /** The machining workbook's tables (migration 1137) and the rupee rates its tool prices are converted with, for the turning engine. */
   private async machiningWorkbookInput(rates: { convertStrict(from: string, to: string): number }, localCode: string): Promise<MachiningWorkbookInput> {
-    const tables = Object.fromEntries(await Promise.all(WORKBOOK_TABLES.map(async (t) => [t, await this.machiningLookup.getWorkbookTable<any>(t)] as const)));
+    const { tables } = await this.machiningWorkbookTables();
     // A rate not on file is null: the line then names the tool cost it could not convert (withToolCost), it is never taken as 1.
     const inrTo = (code: string): number | null => {
       if (code === 'INR') return 1;
       try { return rates.convertStrict('INR', code); } catch { return null; }
     };
     return { tables, inrToLocal: inrTo(localCode), inrToUsd: inrTo('USD') };
+  }
+
+  /** The machining workbook's tables alone (a plan of the part's operations is made before any currency matters). */
+  private async machiningWorkbookTables(): Promise<MachiningWorkbookInput> {
+    const tables = Object.fromEntries(await Promise.all(WORKBOOK_TABLES.map(async (t) => [t, await this.machiningLookup.getWorkbookTable<any>(t)] as const)));
+    return { tables, inrToLocal: null, inrToUsd: null };
   }
 
   private async machiningCapabilityInput() {
@@ -8919,7 +8901,6 @@ export class BomItemCostingService {
     stockMaterial: StockRouteMaterial,
     surfaceTreatmentDbRate?: SurfaceTreatmentDbRate | null,
     deburrLinearSpeedMmPerSec?: number | null,
-    reamTable?: any[] | null,
     jigBoreTable?: any[] | null,
     cylindricalGrindingParams?: {
       workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number;
@@ -8932,6 +8913,8 @@ export class BomItemCostingService {
     keywayBroach?: KeywayBroachReference | null,
     wireEdmParams?: { roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean } | null,
     accessToken: string = '',
+    /** The machining workbook's cutting data and tool prices, with the rupee rates (machiningWorkbookInput). */
+    workbook: MachiningWorkbookInput | null = null,
   ): Promise<Omit<RouteComparisonDto, 'recommendedRouteId'>> {
     // Fix 1: milled parts always use feature recognizer hole count (not raw cylinder count)
     const milledCncSummary = machiningFeatureCounts(fg?.machining_features);
@@ -9001,9 +8984,7 @@ export class BomItemCostingService {
       location,
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,
       deburrMatch: (await this.machiningLookup.getDeburrParams(detectMaterialClass(grade))).match ?? null,
-      reamTable: reamTable ?? null,
-      drillingTable: await this.machiningLookup.getDrillingTable(),
-      tappingTable: await this.machiningLookup.getTappingTable(),
+      workbook,
       machiningCalculators: await this.resolveMachiningCalculators(accessToken),
       workholderTable: await this.machiningLookup.getWorkholderTable(),
       jigBoreTable: jigBoreTable ?? null,
@@ -9468,7 +9449,6 @@ export class BomItemCostingService {
     stockMaterial: StockRouteMaterial,
     surfaceTreatmentDbRate?: SurfaceTreatmentDbRate | null,
     deburrLinearSpeedMmPerSec?: number | null,
-    reamTable?: any[] | null,
     cylindricalGrindingParams?: {
       workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number;
       roughAxialFeedRevMm: number; finishAxialFeedRevMm: number; dataFound: boolean;
@@ -9541,9 +9521,6 @@ export class BomItemCostingService {
       location,
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,
       deburrMatch: (await this.machiningLookup.getDeburrParams(detectMaterialClass(grade))).match ?? null,
-      reamTable: reamTable ?? null,
-      drillingTable: await this.machiningLookup.getDrillingTable(),
-      tappingTable: await this.machiningLookup.getTappingTable(),
       machiningCalculators: await this.resolveMachiningCalculators(accessToken),
       workholderTable: await this.machiningLookup.getWorkholderTable(),
       // Same real Ra signal + real grinding physics getCostSummary resolves

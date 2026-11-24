@@ -6,11 +6,12 @@
 import { polygonCallout, resolvePolygons, splitPolygonPockets } from '../../../../../../modules/bom-items/costing/machining/operation/polygon-routing';
 import { computeMillingCostSummary, computeDrillCycle } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
-import { realDrillingTable, realRotaryBroachReference } from '../real-reference-tables';
+import { realRotaryBroachReference } from '../real-reference-tables';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const ROTARY = realRotaryBroachReference();
-const DRILLING = realDrillingTable();
+const DRILLING = workbookFixture();
 const rate = (r: number, extra: Record<string, unknown> = {}) => ({ rate: r, source: 'mhr_database' as const, machineName: null, commodityCode: null, ...extra }) as any;
 
 // The cad-engine hex-socket fixture (test_polygon_rings.py): radius-8 hexagon, 10 mm deep.
@@ -23,13 +24,13 @@ function milled(polygons: ReturnType<typeof resolvePolygons>) {
     materialGrade: 'AISI 1018', materialCostPerKg: 2, materialDensityKgM3: 7850,
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'milled', finishedWeightKg: 0.4,
-    mhrRate: rate(900, { machineClass: '3_axis_mill' }),
+    mhrRate: rate(900, { machineClass: '3_axis_mill', maxSpindleRpm: 8000 }),
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
     surfaceTreatment: null,
     machiningCalculators: CALCS,
-    drillingTable: DRILLING,
+    workbook: workbookFixture(),
     polygons,
     rotaryBroach: ROTARY,
   } as any, { machineClass: '3_axis_mill' } as any);
@@ -59,7 +60,8 @@ describe('Rotary Broaching end to end (real tables)', () => {
   it('prices a 13.86 mm A/F hex socket, 10 deep, in mild steel: pilot hole + broach', () => {
     const line = milled(resolvePolygons([HEX_SOCKET], 'HEX SOCKET')).processLines.find((l) => l.process === 'Rotary Broaching')!;
     expect(line).toBeDefined();
-    const pilot = computeDrillCycle(13.856 * ROTARY.pilotDiameterRatio[6]!, 'AISI 1018', 10 * ROTARY.pilotLengthRatio, DRILLING, CALCS, 1);
+    // The pilot is drilled on the part's mill, at its 8000 rpm spindle limit.
+    const pilot = computeDrillCycle(13.856 * ROTARY.pilotDiameterRatio[6]!, 'AISI 1018', 10 * ROTARY.pilotLengthRatio, DRILLING, CALCS, 1, undefined, { 'Max Spindle Speed': { value: 8000, source: 'test' } });
     const row = ROTARY.rows.find((r: any) => r.MaterialCutCodeName === '1.0')!; // 125 HB, nearest to mild steel
     const broachSec = (10 / (row.RPM * row.FeedMmPerRev * ROTARY.feedAdjustment)) * 60;
     expect(pilot.sec).not.toBeNull();
