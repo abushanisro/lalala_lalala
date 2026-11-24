@@ -4645,6 +4645,8 @@ function CostGuidePanel({
                   lineLabel="molding line"
                   override={(item.scenarioOverrides?.cavityCount as number | undefined) ?? null}
                   onChange={(v) => { patchScenarioOverrides.mutate({ id: item.id, patch: { cavityCount: v } }); }}
+                  automatic
+                  money={(usd) => `${cgpCostSummary?.currencySymbol ?? '$'}${(usd * (cgpCostSummary?.usdToDisplayRate ?? 1)).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`}
                 />
               </Section>
             )}
@@ -7003,22 +7005,30 @@ const BLANK_STOCK_FORM_LABELS: Record<string, string> = {
 };
 
 // Cavities per mold or die (injection molding, die casting): the reference
-// layouts (layoutNumCav) are the only choices, from the cost summary itself;
-// unset = the reference defaultNumCavities. The engine checks the choice
-// against the machine (clamp, shot, tie bars) and says so on its line when it
-// does not fit.
+// layouts (layoutNumCav) are the only choices, from the cost summary itself.
+// Unset: a die takes the reference defaultNumCavities; a mold takes the layout
+// with the lowest cost per part (piece cost plus the mold over annual volume x
+// production life), each priced on the press that holds it, listed here. The
+// engine checks the choice against the machine (clamp, shot, tie bars) and
+// says so on its line when it does not fit.
 const CAVITY_BASIS: Record<string, string> = {
   user: 'set here', default: 'reference default', large_part: 'one: part above largePartThreshold',
+  lowest_cost: 'lowest cost per part',
 };
 function MoldCavitiesSection({
-  cav: im, lineLabel, override, onChange,
+  cav: im, lineLabel, override, onChange, automatic = false, money,
 }: {
-  cav: Pick<InjectionMoldingBreakdown, 'cavityCount' | 'cavityLayouts' | 'defaultCavityCount'> & { cavityConstrainedBy: string };
+  cav: Pick<InjectionMoldingBreakdown, 'cavityCount' | 'cavityLayouts' | 'defaultCavityCount' | 'cavityOptions' | 'cavityNote'> & { cavityConstrainedBy: string };
   lineLabel: string;
   override: number | null;
   onChange: (v: number | null) => void;
+  /** Unset is the lowest-cost layout (a mold), not the reference default (a die). */
+  automatic?: boolean;
+  /** A USD amount in the display currency. */
+  money?: (usd: number) => string;
 }) {
   const layouts = im.cavityLayouts ?? [];
+  const options = im.cavityOptions ?? [];
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2 py-0.5">
@@ -7028,11 +7038,29 @@ function MoldCavitiesSection({
           value={override ?? ''}
           onChange={(e) => { onChange(e.target.value === '' ? null : Number(e.target.value)); }}
         >
-          <option value="">Reference default{im.defaultCavityCount != null ? ` (${im.defaultCavityCount})` : ''}</option>
+          <option value="">{automatic ? 'Automatic: lowest cost per part' : `Reference default${im.defaultCavityCount != null ? ` (${im.defaultCavityCount})` : ''}`}</option>
           {layouts.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
       </div>
       <Row label="Costed at" value={`${im.cavityCount} cavit${im.cavityCount === 1 ? 'y' : 'ies'} · ${CAVITY_BASIS[im.cavityConstrainedBy] ?? `not verified (see ${lineLabel})`}`} />
+      {im.cavityNote && <p className="text-[10px] text-muted-foreground leading-snug">{im.cavityNote}</p>}
+      {options.length > 0 && money && (
+        <div className="pt-1">
+          <p className="text-[10px] text-muted-foreground pb-0.5">Layouts compared: piece + mold, per part</p>
+          <ul className="space-y-0.5">
+            {options.map((o) => (
+              <li key={o.cavityCount} className={`flex items-baseline justify-between gap-2 text-xs ${o.chosen ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>
+                <span className="truncate" title={o.machineName ?? undefined}>
+                  {o.cavityCount} cav · {o.machineName ?? 'press'} ({Math.round(o.clampMachineT)} t)
+                </span>
+                <span className="tabular-nums shrink-0" title={`piece ${money(o.pieceCostUsd)} + mold ${o.moldCostPerPartUsd != null ? money(o.moldCostPerPartUsd) : 'not priced'}`}>
+                  {money(o.costPerPartUsd)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

@@ -30,6 +30,7 @@ import type {
   CalculationTraceStep,
   CostSummaryDto,
   ProcessLineCost,
+  CavityOption,
   InjectionMoldingBreakdown,
   ToolingCostDto,
 } from '../../../dto/cost-breakdown.dto';
@@ -171,12 +172,16 @@ export function recommendMoldClass(
 
 // ── Cavity count ──────────────────────────────────────────────────────────────
 // Cavities per mold: the user's count (Cost Guide, scenario override
-// cavityCount) when it is a reference mold layout (layoutNumCav), else the
-// reference defaultNumCavities ("user may override via Process Setup
-// Options"). A count with no reference layout is reported, never replaced. It
-// is never derived from a volume rule of thumb. The press must hold that many
-// cavities closed (reference clamp force) and fill them (GPPS-equivalent shot);
-// if it cannot, the molding line is marked incomplete with the reason.
+// cavityCount) when it is a reference mold layout (layoutNumCav). Otherwise,
+// when the mold can be priced (annual volume and production life known),
+// costMoldOnPresses() prices every reference layout on every press that holds
+// it and keeps the lowest cost per part: the piece cost plus the mold spread
+// over annual volume x production life (user decision 2026-11-25). Without
+// them it is the reference defaultNumCavities. A count with no reference
+// layout is reported, never replaced. The press must hold the cavities closed
+// (reference clamp force), fill them (GPPS-equivalent shot) and take the mold
+// base between its tie bars; if it cannot, the molding line is marked
+// incomplete with the reason.
 
 // ── Cost confidence ────────────────────────────────────────────────────────────
 
@@ -441,6 +446,116 @@ export function computeInjectionMoldedCostSummary(input: InjectionMoldingCostInp
     return unverified(`The selected press shot size (${shotG} g GPPS) cannot fill ${n} cavit${n === 1 ? 'y' : 'ies'}: it needs ${(n * b.shotGppsGPerCavity).toFixed(1)} g GPPS-equivalent.`);
   }
   return computeAtCavities(input, { count: n, constrainedBy: requested != null ? 'user' : 'default', unverifiedReason: null });
+}
+
+/** A press a mold may run on: what the engine reads of it, and its tie-bar spacing for the mold base. */
+export type MoldingPress = Pick<InjectionMoldingCostInput, 'mhrRate' | 'machineClampTonnes' | 'machineShotCapacityG' | 'pressTiming' | 'goodPartYield'> & {
+  tieBarXMm?: number | null;
+  tieBarYMm?: number | null;
+};
+
+/** The press and cavity count the costed result runs on: `press` indexes the presses given. */
+export interface MoldOnPress { result: EngineResult; press: number }
+
+type CavityBasis = InjectionMoldingBreakdown['cavityConstrainedBy'];
+
+/**
+ * The cavities and the press a part is molded with, priced by the engine itself: every count the basis allows on every press that holds it
+ * (clamp, shot, the mold base between the tie bars), the cheapest kept. With no user count and a priced mold, the counts are every reference
+ * layout and "cheapest" is the piece cost plus the mold's cost per part (annual volume x production life); a count with no priced mold or an
+ * incomplete line is not a candidate. Otherwise the count is the user's (or the reference default) and the cheapest press that holds it is
+ * kept. When no press holds any candidate, the part is costed on the first press at the user's or default count, which states why.
+ */
+export function costMoldOnPresses(part: Omit<InjectionMoldingCostInput, keyof MoldingPress>, presses: readonly MoldingPress[]): MoldOnPress {
+  if (presses.length === 0) throw new Error('costMoldOnPresses: no press to mold on');
+  const onPress = (p: MoldingPress) => moldingInputOn(part, p);
+  const input = onPress(presses[0]!);
+  const first = (): MoldOnPress => ({ result: computeInjectionMoldedCostSummary(input), press: 0 });
+  if (materialNotMoldable(input)) return first();
+  const b = pressSizingBasis(input);
+  const ref = b.plasticRef;
+  if (!ref || !b.clampPerCavity.derivable || b.shotGppsGPerCavity == null) return first();
+  const clampPerCavityT = b.clampPerCavity.requiredTonnes;
+  const shotPerCavityG = b.shotGppsGPerCavity;
+  const requested = input.cavityCountOverride ?? null;
+  if (requested != null && !ref.cavityLayouts.includes(requested)) return first();
+  const usdToLocal = input.usdToLocal ?? 1;
+  const moldPriced = (input.annualVolume ?? 0) > 0 && (input.productionLifeYears ?? 0) > 0;
+  const plans: Array<{ counts: readonly number[]; basis: CavityBasis }> = requested != null
+    ? [{ counts: [requested], basis: 'user' }]
+    : [...(moldPriced ? [{ counts: [...ref.cavityLayouts].sort((x, y) => x - y), basis: 'lowest_cost' as const }] : []), { counts: [ref.defaultNumCavities], basis: 'default' }];
+
+  // Why the layouts were not priced against each other, when they were not: said on the Cavities panel next to the default count.
+  let notOptimised: string | null = requested != null ? null : moldPriced ? null
+    : 'Not optimised: the mold is priced only with an annual volume and a production life, so the reference default is used.';
+  for (const plan of plans) {
+    type Candidate = { result: EngineResult; press: number; key: number; complete: boolean; option: CavityOption };
+    const candidates: Candidate[] = [];
+    presses.forEach((p, i) => {
+      const clampT = p.machineClampTonnes ?? null;
+      const shotG = p.machineShotCapacityG ?? null;
+      if (clampT == null || shotG == null) return;
+      for (const n of plan.counts) {
+        // The counts rise, and so does what they need of the press: the first one it cannot hold ends this press.
+        if (n * clampPerCavityT > clampT || n * shotPerCavityG > shotG) break;
+        if (!moldBaseFitsTieBars(input, ref, n, clampT, p)) break;
+        const result = computeAtCavities(onPress(p), { count: n, constrainedBy: plan.basis, unverifiedReason: null });
+        const complete = result.processLines.every((l) => !l.physicsGap);
+        const moldPerPartUsd = result.tooling?.moldCostPerPartUsd ?? null;
+        if (plan.basis === 'lowest_cost' && (moldPerPartUsd == null || !complete)) {
+          const gap = result.warnings.find((w) => w.startsWith('Tooling not costed: '))?.replace(/^Tooling not costed: /, '').replace(/\.$/, '');
+          notOptimised ??= moldPerPartUsd == null
+            ? `Not optimised: the mold is not priced (${gap ?? 'no mold price'}), so the reference default is used.`
+            : null;
+          continue;
+        }
+        const key = result.totalCost + (moldPerPartUsd ?? 0) * usdToLocal;
+        candidates.push({
+          result, press: i, key, complete,
+          option: {
+            cavityCount: n, machineName: p.mhrRate.machineName ?? null, clampMachineT: clampT,
+            pieceCostUsd: r6(result.totalCost / usdToLocal), moldCostPerPartUsd: moldPerPartUsd, costPerPartUsd: r6(key / usdToLocal), chosen: false,
+          },
+        });
+      }
+    });
+    if (candidates.length === 0) continue;
+    const best = candidates.reduce((a, c) => ((a.complete !== c.complete ? c.complete : c.key < a.key) ? c : a));
+    if (plan.basis === 'lowest_cost' && best.result.injectionMolding) {
+      // Each count once, at its cheapest press, cheapest first: what the choice was made from.
+      const byCount = new Map<number, CavityOption>();
+      for (const c of candidates) {
+        const was = byCount.get(c.option.cavityCount);
+        if (!was || c.option.costPerPartUsd < was.costPerPartUsd) byCount.set(c.option.cavityCount, { ...c.option, chosen: c === best });
+      }
+      best.result.injectionMolding.cavityOptions = [...byCount.values()].sort((x, y) => x.costPerPartUsd - y.costPerPartUsd);
+    }
+    if (plan.basis === 'default' && notOptimised && best.result.injectionMolding) best.result.injectionMolding.cavityNote = notOptimised;
+    return { result: best.result, press: best.press };
+  }
+  return first();
+}
+
+/** The part on a press: the engine's input with the press's rate, clamp, shot and process data, and `cavities` fixed when given. */
+export function moldingInputOn(part: Omit<InjectionMoldingCostInput, keyof MoldingPress>, p: MoldingPress, cavities?: number): InjectionMoldingCostInput {
+  return {
+    ...part, mhrRate: p.mhrRate, machineClampTonnes: p.machineClampTonnes ?? null, machineShotCapacityG: p.machineShotCapacityG ?? null,
+    pressTiming: p.pressTiming ?? null, goodPartYield: p.goodPartYield ?? null,
+    ...(cavities != null ? { cavityCountOverride: cavities } : {}),
+  };
+}
+
+/**
+ * Whether the mold base for `cavities` (tblStandardMoldBaseSizes, mold-base.ts) can be hung in the press: a mold is lowered in from above, so
+ * its narrower side must pass between the horizontal tie bars (tieBarXMm). A press with no tie-bar spacing on file, or a base the reference
+ * cannot size (the tooling says why), is not refused here.
+ */
+function moldBaseFitsTieBars(input: InjectionMoldingCostInput, ref: PlasticReference, cavities: number, clampT: number, press: MoldingPress): boolean {
+  const horizontal = press.tieBarXMm ?? null;
+  if (horizontal == null || horizontal <= 0) return true;
+  const choice = selectMoldBase({ partLengthMm: input.bboxMaxMm ?? 0, partWidthMm: input.bboxMidMm ?? 0, cavities, clampKn: clampT * 9.80665, ref: ref.moldBase });
+  if ('missing' in choice) return true;
+  return Math.min(choice.base.widthMm, choice.base.lengthMm) <= horizontal;
 }
 
 function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizing): EngineResult {
@@ -956,7 +1071,7 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
     usedFormulas({ isLsr, clampDerivable: clampPerCavity.derivable, pressSelected: machineClampTonnes != null, cycleDerivable: cycle.derivable, yieldKnown: yieldFrac != null, tooling: toolingResult != null, routedVisualInspection: processLines.some((l) => l.process === UNCOSTED_OPERATION_LABELS.visual_inspection), routedWeightCheck: processLines.some((l) => l.process === UNCOSTED_OPERATION_LABELS.weight_check), routedDrying: processLines.some((l) => l.process === UNCOSTED_OPERATION_LABELS.material_drying) }),
     unsupportedFormulas({ toolingGaps: toolingResult != null ? toolingGaps : [], routed, dryingCosted: processLines.some((l) => l.process === UNCOSTED_OPERATION_LABELS.material_drying) }),
   );
-  if (validation && plasticRef) line.calculationSnapshot = buildCalculationSnapshot(validation, plasticRef, COST_ENGINE_CONTRACT_VERSION, PLASTIC_ENGINE_BUILD, input as unknown as Record<string, unknown>, cycle.derivable ? [cycle.calculator] : []);
+  if (validation && plasticRef) line.calculationSnapshot = buildCalculationSnapshot(validation, plasticRef, COST_ENGINE_CONTRACT_VERSION, PLASTIC_ENGINE_BUILD, { ...input, cavityCountOverride: cavityCount } as unknown as Record<string, unknown>, cycle.derivable ? [cycle.calculator] : []);
 
   return {
     ...(uncosted.length ? { uncostedOperations: uncosted } : {}),

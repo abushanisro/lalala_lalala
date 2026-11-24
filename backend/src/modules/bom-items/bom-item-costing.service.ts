@@ -95,7 +95,9 @@ import { broachWidthRangeMm, splitKeywayOccurrences } from './costing/machining/
 import { catalogGapSummary, machiningCatalogCompatibility } from './costing/machining/operation/catalog-compatibility';
 import type { RouteCompatibility } from './costing/plastic-molding/operation/route-compatibility';
 import { splitWireEdmOccurrences } from './costing/machining/operation/wire-edm-routing';
-import { computeInjectionMoldedCostSummary } from './costing/plastic-molding/process/cost-injection-molding-engine';
+import { computeInjectionMoldedCostSummary, costMoldOnPresses, moldingInputOn, type MoldingPress } from './costing/plastic-molding/process/cost-injection-molding-engine';
+import { evaluateIMCandidate, injectionPressRequirements, moldingPressOf, selectionCostedOn } from './costing/plastic-molding/machine/machine-selector-im';
+import type { PlasticReference } from './costing/plastic-molding/plastic-reference';
 import { driverImpacts } from './costing/plastic-molding/cost-driver-sensitivity';
 import { appliedOtherMoldingRouteId, projectMoldingRoute, type OtherMoldingRouteId } from './costing/plastic-molding/molding-route-projection';
 import type { InjectionMoldingCostInput } from './costing/plastic-molding/process/cost-injection-molding-engine';
@@ -141,7 +143,7 @@ import {
 import type { MachineRequirement } from './costing/shared/capability/machine-selection/physics';
 import { estimatedToolHeightMm } from './costing/shared/capability/machine-selection/press-checks';
 import { explainCandidate, fetchMachinePool } from './costing/shared/capability/machine-selection/selector';
-import type { CapabilityCheck, MachineRecommendation, MachineSelectionResult } from './dto/machine-selection.dto';
+import type { CapabilityCheck, MachineCandidate, MachineRecommendation, MachineSelectionResult } from './dto/machine-selection.dto';
 import { convertSelectionRates } from './costing/shared/capability/machine-selection/rate-from-candidate';
 import { benchStepsFor } from './costing/machining/bench-steps';
 import { ExchangeRateService, RateSnapshot } from '../../common/exchange-rate/exchange-rate.service';
@@ -2017,6 +2019,57 @@ export class BomItemCostingService {
    * The part's quote: its family route (computeCostSummary) plus the shared
    * secondary operations (heat / surface / other) selected for it.
    */
+  /**
+   * A plain molded part's press and cavities (user decision 2026-11-25): the engine prices every reference cavity layout on every real press
+   * at the location that holds one cavity of the part, and keeps the lowest cost per part (piece cost plus the mold over annual volume x
+   * production life; costMoldOnPresses). A press the user picked stays the only press. With no real press, the selected press is used as
+   * before. The press costed leads the line's machine selection.
+   */
+  private async moldOnPresses(a: {
+    imInput: InjectionMoldingCostInput;
+    selection: MachineSelectionResult | undefined;
+    item: BOMItemResponseDto;
+    grade: string | null;
+    material: Parameters<typeof injectionPressRequirements>[0]['material'];
+    reference: PlasticReference | null;
+    location: string;
+    accessToken: string;
+  }): Promise<{ result: ReturnType<typeof computeInjectionMoldedCostSummary>; costedInput: InjectionMoldingCostInput; selection: MachineSelectionResult | undefined }> {
+    const { imInput, selection } = a;
+    const usdToLocal = imInput.usdToLocal ?? 1;
+    const asSelected = (): MoldingPress => ({
+      mhrRate: imInput.mhrRate, machineClampTonnes: imInput.machineClampTonnes ?? null, machineShotCapacityG: imInput.machineShotCapacityG ?? null,
+      tieBarXMm: selection?.balanced.candidate.capability.tieBarXMm ?? null, tieBarYMm: selection?.balanced.candidate.capability.tieBarYMm ?? null,
+      pressTiming: imInput.pressTiming ?? null, goodPartYield: imInput.goodPartYield ?? null,
+    });
+    let candidates: MachineCandidate[] = [];
+    if (a.reference && !selection?.overridden) {
+      const client = this.databaseService.getClient(a.accessToken);
+      const req = injectionPressRequirements({ item: a.item, grade: a.grade, material: a.material, reference: a.reference });
+      candidates = (await fetchMachinePool(client, a.location))
+        .filter((c) => c.machineClass === 'injection_molding' && c.machineId && c.capability.maxTonnage != null && c.capability.shotCapacityGrams != null)
+        .filter((c) => evaluateIMCandidate(c, req).capable);
+    }
+    if (candidates.length === 0) {
+      const press = asSelected();
+      const out = costMoldOnPresses(imInput, [press]);
+      return { result: out.result, costedInput: moldingInputOn(imInput, press, out.result.injectionMolding?.cavityCount), selection };
+    }
+    const records = await this.plasticReferenceService.getPressRecords(this.databaseService.getClient(a.accessToken), candidates.map((c) => c.machineId!));
+    const presses = candidates.map((c) => moldingPressOf(c, records, usdToLocal));
+    const out = costMoldOnPresses(imInput, presses);
+    const chosen = candidates[out.press]!;
+    const im = out.result.injectionMolding;
+    const reason = im?.cavityConstrainedBy === 'lowest_cost'
+      ? `Costed here: ${im.cavityCount} cavit${im.cavityCount === 1 ? 'y' : 'ies'} on this press is the lowest cost per part, mold included`
+      : 'Costed here: the lowest cost per part among the presses that hold the mold';
+    return {
+      result: out.result,
+      costedInput: moldingInputOn(imInput, presses[out.press]!, out.result.injectionMolding?.cavityCount),
+      selection: selection ? selectionCostedOn(selection, chosen, reason, usdToLocal) : selection,
+    };
+  }
+
   /** The other molding process (Structural Foam, Compression, Reaction Injection) the part's active saved rows were applied from, or null (injection tiers and every other case). */
   private async appliedOtherMoldingRouteId(id: string, accessToken: string): Promise<OtherMoldingRouteId | null> {
     const { data, error } = await this.databaseService.getClient(accessToken).from('process_cost_records').select('notes').eq('bom_item_id', id).eq('is_active', true);
@@ -3749,13 +3802,19 @@ export class BomItemCostingService {
           }),
         };
       };
-      const imResult = insertMolding
+      const moldingResult = insertMolding
         ? { ...(await this.priceInsertMolding({ id, item, imInput, mhrRates, accessToken, location, batchSize, forceRoute: forceDieCastingProcess })), ...currencyMeta }
         : multiShot
           ? { ...(await this.priceMultiShot({ id, item, grade, imInput, shotInputOf, accessToken, location, batchSize, forceRoute: forceDieCastingProcess })), ...currencyMeta }
-          : { ...computeInjectionMoldedCostSummary(imInput), ...currencyMeta };
-      // What each CAD driver is worth: the same engine, run again with one driver moved one step.
-      if (!insertMolding && !multiShot) imResult.driverImpacts = driverImpacts(imInput, imResult);
+          : null;
+      // The plain molded part: the engine prices every cavity layout on every capable press and keeps the lowest cost per part (moldOnPresses).
+      const plain = insertMolding || multiShot ? null : await this.moldOnPresses({
+        imInput, selection: mhrRates.injectionMolding.selection, item, grade, material: resolvedMaterial,
+        reference: activePlasticRef.reference, location, accessToken,
+      });
+      const imResult = moldingResult ?? { ...plain!.result, ...currencyMeta };
+      // What each CAD driver is worth: the same engine, run again with one driver moved one step, on the press and cavities costed.
+      if (plain) imResult.driverImpacts = driverImpacts(plain.costedInput, imResult);
       imResult.warnings.push(...materialWarnings);
       // The applied route decides the process the part is priced in: another molding process (Structural Foam, Compression, Reaction Injection) is priced by its own engine
       // in the route comparison, and the summary adopts that route, so the Cost tab, the saved rows and the comparison state one price.
@@ -3781,7 +3840,7 @@ export class BomItemCostingService {
       // Clamp / shot sizing against the selected press is computed by the engine
       // (reference clamp model, clamp-force.ts) and returned on injectionMolding.
 
-      this.attachMachineSelections(imResult.processLines, mhrRates);
+      this.attachMachineSelections(imResult.processLines, plain?.selection ? { ...mhrRates, injectionMolding: { ...mhrRates.injectionMolding, selection: plain.selection } } : mhrRates);
       this.rates.appendRateWarnings(imResult, location);
       this.overrides.applyCostOverrides(imResult, costOverrides);
       if (costOverrides.size > 0) imResult.costOverrides = Object.fromEntries(costOverrides);
@@ -5104,10 +5163,15 @@ export class BomItemCostingService {
       press: { name: pressName, tablePress: isTablePress(tableConfiguration) },
       toLocal: (l) => (usdToLocal === 1 ? l : lineToLocal(l, usdToLocal)),
       // The molding's insert operations (the pull test) count the inserts the loading loads: BOM, Cost Guide or CAD.
-      runEngine: (shot) => computeInjectionMoldedCostSummary({
+      // Each load method prices every cavity layout the insert press holds (its loading grows with the cavities) and keeps the lowest cost per part.
+      runEngine: (shot) => costMoldOnPresses({
         ...pressInput, shotCycle: shot,
         signals: { ...pressInput.signals, insertCount: inserts.reduce((n, i) => n + i.perPart, 0) || (pressInput.signals?.insertCount ?? 0) },
-      }),
+      }, [{
+        mhrRate: pressInput.mhrRate, machineClampTonnes: pressInput.machineClampTonnes ?? null, machineShotCapacityG: pressInput.machineShotCapacityG ?? null,
+        pressTiming: pressInput.pressTiming ?? null, goodPartYield: pressInput.goodPartYield ?? null,
+        tieBarXMm: candidate?.capability?.tieBarXMm ?? null, tieBarYMm: candidate?.capability?.tieBarYMm ?? null,
+      }]).result,
       appendLines,
     });
     const chosen = chooseInsertRoute(routes, a.forceRoute ?? (a.item.scenarioOverrides?.[INSERT_MOLDING_ROUTE_KEY] as string | undefined));

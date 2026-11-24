@@ -296,8 +296,8 @@ export const PLASTIC_FORMULAS: readonly FormulaEntry[] = [
   },
 
   {
-    id: 'F-25', version: 1, name: 'Mold base and plate steel',
-    expression: 'base = smallest tblStandardMoldBaseSizes holding (layout + borders); A = max(min_A, r x h + border_cav); B = max(min_B, (1 - r) x h + border_core); m = W x L x (clamp_top + A + B + support + clamp_bottom) x rho; cost = m x price x moldBaseCostFactor',
+    id: 'F-25', version: 2, name: 'Mold base and plate steel',
+    expression: 'base = smallest tblStandardMoldBaseSizes holding (layout + borders), over every layoutNumCav layout of the cavity count; A = max(min_A, r x h + border_cav); B = max(min_B, (1 - r) x h + border_core); m = W x L x (clamp_top + A + B + support + clamp_bottom) x rho; cost = m x price x moldBaseCostFactor',
     outputUnit: 'USD',
     inputs: [
       { name: 'layout, between-parts border, edge borders', unit: 'count, mm', source: `${MEM}/lookup: layoutNumCav, tblEdgeMoldBorderX/Y; variables: betweenPartsMoldBorder` },
