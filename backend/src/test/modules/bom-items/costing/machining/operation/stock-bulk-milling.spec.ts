@@ -27,6 +27,7 @@ import { realDrillingTable, realPartoffTable } from '../real-reference-tables';
 
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { FeatureOp } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const ALUMINIUM: MillingFinishingRow = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
@@ -261,10 +262,7 @@ describe('what the Bulk Milling of the stock around the part does not change', (
         rings: [{ id: 'od_0', diameterMm: 14, lengthMm: 8, faceIds: [9] }, { id: 'od_1', diameterMm: 12, lengthMm: 24, faceIds: [17] }],
       },
       blankResult: { form: 'round_bar', sizeLabel: 'Ø16 round bar', billetVolMm3: Math.PI * 8 ** 2 * 33, utilizationPct: 60, barDiameterMm: 16 },
-      turningParams: {
-        roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-        finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29, dataFound: true,
-      },
+      workbook: workbookFixture(),
       drillingTable: realDrillingTable(),
       partoffTable: realPartoffTable(),
       ...(featureOps ? { featureOps } : {}),

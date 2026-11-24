@@ -287,6 +287,176 @@
           "unit": "s",
           "formula": "{Rough Passes} * {Time per Pass}"
         }
+      ],
+      "supersededBy": 1138
+    },
+    {
+      "name": "Machining - Rough Turning",
+      "operation": "Rough Turning",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "Rough turning from the bar down to the diameter the finish cut starts at, as the Machining calculator workbook's Turning sheet times it: n = 1000 v / (pi D) at the bar diameter, capped at the machine's spindle limit; passes = (bar - finish start diameter) / (2 x depth of cut), rounded up to whole passes (the sheet leaves a fraction); time = (turned length + 10 mm) / (feed x n) x passes, rounded up to whole seconds. Cutting speed and feed from the workbook's Turning cutting conditions (carbide, the band holding the depth of cut), picked at the Range Position.",
+      "fields": [
+        {
+          "name": "Turned Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Turned Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Rough Depth of Cut",
+          "unit": "mm",
+          "source": "default",
+          "default": 2,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Turning sheet: depth of cut t = 2 mm in its worked rows (H8:H10)."
+        },
+        {
+          "name": "Finish Depth of Cut",
+          "unit": "mm",
+          "source": "default",
+          "default": 0.5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Facing and Internal Boring sheets: depth of cut 0.5 mm, the finishing cut."
+        },
+        {
+          "name": "Rough Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Rough Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Rough Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Rough Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Rough Feed Min",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMinMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Rough Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Rough Feed Max",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMaxMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Rough Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges (Turning cutting conditions: '120 - 200' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Turning sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Rough Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Rough Speed Min} + {Range Position} * ({Rough Speed Max} - {Rough Speed Min})"
+        },
+        {
+          "name": "Rough Feed",
+          "unit": "mm/rev",
+          "formula": "{Rough Feed Min} + {Range Position} * ({Rough Feed Max} - {Rough Feed Min})"
+        },
+        {
+          "name": "Finish Start Diameter",
+          "unit": "mm",
+          "formula": "min({Turned Diameter} + 2 * {Finish Depth of Cut}, {Bar Diameter})"
+        },
+        {
+          "name": "Rough Passes",
+          "unit": null,
+          "formula": "ceil(({Bar Diameter} - {Finish Start Diameter}) / (2 * {Rough Depth of Cut}))"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Rough Cutting Speed} * 1000 / (pi * {Bar Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Turned Length} + {Approach Length}) / ({Rough Feed} * {Spindle Speed}) * {Rough Passes}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        }
       ]
     },
     {
@@ -407,6 +577,164 @@
           "unit": "s",
           "formula": "({Turned Length} + {Approach Length}) / {Feed Rate} * 60"
         }
+      ],
+      "supersededBy": 1138
+    },
+    {
+      "name": "Machining - Finish Turning",
+      "operation": "Finish Turning",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "One finish turning pass over the turned length, as the Machining calculator workbook's Turning sheet times a cut: n = 1000 v / (pi D) at the diameter the cut starts at (turned diameter + 2 x finish depth, never more than the bar), capped at the machine's spindle limit; time = (turned length + 10 mm) / (feed x n), rounded up to whole seconds. Cutting speed and feed from the workbook's Turning cutting conditions (carbide, the band holding the finish depth of cut), picked at the Range Position.",
+      "fields": [
+        {
+          "name": "Turned Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Turned Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Finish Depth of Cut",
+          "unit": "mm",
+          "source": "default",
+          "default": 0.5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Facing and Internal Boring sheets: depth of cut 0.5 mm, the finishing cut."
+        },
+        {
+          "name": "Finish Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Finish Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Finish Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Finish Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Finish Feed Min",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMinMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Finish Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Finish Feed Max",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMaxMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Finish Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges (Turning cutting conditions: '120 - 200' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Turning sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Finish Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Finish Speed Min} + {Range Position} * ({Finish Speed Max} - {Finish Speed Min})"
+        },
+        {
+          "name": "Finish Feed",
+          "unit": "mm/rev",
+          "formula": "{Finish Feed Min} + {Range Position} * ({Finish Feed Max} - {Finish Feed Min})"
+        },
+        {
+          "name": "Finish Start Diameter",
+          "unit": "mm",
+          "formula": "min({Turned Diameter} + 2 * {Finish Depth of Cut}, {Bar Diameter})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Finish Cutting Speed} * 1000 / (pi * {Finish Start Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Turned Length} + {Approach Length}) / ({Finish Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        }
       ]
     },
     {
@@ -453,6 +781,100 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Cut Depth} / {Feed Rate} * 60"
+        }
+      ],
+      "supersededBy": 1138
+    },
+    {
+      "name": "Machining - Parting",
+      "operation": "Parting",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "Part-off plunge from the bar surface to its centre, as the Machining calculator workbook's Cutoff sheet times it: n = 1000 v / (pi D) at the bar diameter, capped at the machine's spindle limit; time = (travel + 10 mm) / (feed x n), rounded up to whole seconds. Corrections: the travel is the bar's radius, or a tube's wall (the sheet types 13 mm for a 50 mm bar), and speed and feed are the part-off insert's own (tblVirtualPartoffInsertCutData; the sheet's 18 m/min and 0.8 'feed per tooth' are not a part-off insert's). Tool price and life from the sheet.",
+      "fields": [
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Bore Diameter",
+          "unit": "mm",
+          "source": "engine",
+          "default": 0,
+          "note": "A tube's bore: its part-off cuts through the wall only. 0 for a solid bar."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblVirtualPartoffInsertCutData",
+          "column": "CuttingSpeedMPerMin"
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblVirtualPartoffInsertCutData",
+          "column": "FeedMm"
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Cutoff sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cut Depth",
+          "unit": "mm",
+          "formula": "({Bar Diameter} - {Bore Diameter}) / 2"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Bar Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Cut Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
         }
       ]
     },
@@ -2296,7 +2718,18 @@
       ],
       "migration": 1128,
       "sameFieldsAs": "Machining - Rough Turning",
-      "description": "Preparing the stock on a lathe before the part is machined: rough turning of the bar to the stock diameter, cutting data from tblGeneralTurning for the material."
+      "description": "Preparing the stock on a lathe before the part is machined: rough turning of the bar to the stock diameter, cutting data from tblGeneralTurning for the material.",
+      "supersededBy": 1138
+    },
+    {
+      "name": "Machining - Stock Prep Lathe",
+      "operation": "{station}",
+      "machineClasses": [
+        "stock_prep_lathe"
+      ],
+      "migration": 1138,
+      "sameFieldsAs": "Machining - Rough Turning",
+      "description": "Preparing the stock on a lathe before the part is machined: rough turning of the bar to the stock diameter, timed as Rough Turning is (the Machining calculator workbook's Turning sheet; cutting speed and feed from its Turning cutting conditions, the spindle capped at the machine's limit)."
     },
     {
       "name": "Machining - Bench Operation",
@@ -3404,6 +3837,445 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Keyways} * {Passes} * {Path per Pass} / {Feed Rate} * 60"
+        }
+      ]
+    },
+    {
+      "name": "Machining - End Facing",
+      "operation": "End Machining",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "Facing each end of a turned part square, as the Machining calculator workbook's Facing sheet times it: n = 1000 v / (pi D) at the bar diameter, capped at the machine's spindle limit; passes = facing stock / depth of cut, rounded up (at least one cleanup pass); time per face = (length of cut + 10 mm) / (feed x n) x passes, rounded up to whole seconds; both ends. Correction: the length of cut is the bar's radius, the tool's travel from the bar surface to the centre (the sheet types 13 mm for a 50 mm bar). Cutting speed and feed from the workbook's Turning cutting conditions (carbide, the band holding the depth of cut); tool price and life from the sheet.",
+      "fields": [
+        {
+          "name": "Bar Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Facing Stock",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Faces",
+          "unit": null,
+          "source": "engine",
+          "default": 2,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Facing sheet: No of uses 2, both ends of the part."
+        },
+        {
+          "name": "Depth of Cut",
+          "unit": "mm",
+          "source": "default",
+          "default": 0.5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Facing and Internal Boring sheets: depth of cut 0.5 mm, the finishing cut."
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Feed Min",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMinMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Feed Max",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMaxMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Depth of Cut"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges (Turning cutting conditions: '120 - 200' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Facing sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "formula": "{Feed Min} + {Range Position} * ({Feed Max} - {Feed Min})"
+        },
+        {
+          "name": "Length of Cut",
+          "unit": "mm",
+          "formula": "{Bar Diameter} / 2"
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "formula": "max(1, ceil({Facing Stock} / {Depth of Cut}))"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Bar Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Length of Cut} + {Approach Length}) / ({Feed} * {Spindle Speed}) * {Passes}"
+        },
+        {
+          "name": "Time per Face",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Faces} * {Time per Face}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Thread Turning",
+      "operation": "Thread Turning",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "Single-point thread turning, as the Machining calculator workbook's Threading sheet times it: n = 1000 v / (pi D) at the thread diameter, capped at the machine's spindle limit; the feed is the pitch; time = (thread length + 4 mm) / (pitch x n) x passes, rounded up to whole seconds, per thread. Cutting speed and passes are the sheet's values; tool price and life from the sheet (no supplier source).",
+      "fields": [
+        {
+          "name": "Thread Diameter",
+          "unit": "mm",
+          "source": "drawing"
+        },
+        {
+          "name": "Thread Length",
+          "unit": "mm",
+          "source": "drawing"
+        },
+        {
+          "name": "Pitch",
+          "unit": "mm",
+          "source": "drawing"
+        },
+        {
+          "name": "Threads",
+          "unit": null,
+          "source": "drawing",
+          "default": 1
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "default",
+          "default": 5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Threading sheet: cutting speed 5 m/min."
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Threading sheet: 4 passes."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Threading sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Thread Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Thread Length} + {Approach Length}) / ({Pitch} * {Spindle Speed}) * {Passes}"
+        },
+        {
+          "name": "Time per Thread",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Thread turning tool"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Thread turning tool"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Threads} * {Time per Thread}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Knurling",
+      "operation": "Knurling",
+      "machineClasses": "lathes",
+      "migration": 1138,
+      "description": "Knurling a diameter, as the Machining calculator workbook's Knurling sheet times it: n = 1000 v / (pi D) at the knurl diameter, capped at the machine's spindle limit; time = (knurl length + 4 mm) / (feed x n) x passes, rounded up to whole seconds. Correction: the axial feed is a turning feed (the workbook's finishing band), not 25.4 / TPI (the knurl's own pitch, which the sheet used as the feed). Cutting speed and passes are the sheet's values; tool price and life from the sheet (no supplier source).",
+      "fields": [
+        {
+          "name": "Knurl Diameter",
+          "unit": "mm",
+          "source": "drawing"
+        },
+        {
+          "name": "Knurl Length",
+          "unit": "mm",
+          "source": "drawing"
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "default",
+          "default": 6,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Knurling sheet: cutting speed 6 m/min."
+        },
+        {
+          "name": "Passes",
+          "unit": null,
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Knurling sheet: 4 passes."
+        },
+        {
+          "name": "Feed Band Depth",
+          "unit": "mm",
+          "source": "default",
+          "default": 0.5,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx): the axial feed is read from the Turning cutting conditions' finishing band (depth of cut 0.5 mm)."
+        },
+        {
+          "name": "Feed Min",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMinMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Feed Band Depth"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Feed Max",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblTurningConditions",
+          "column": "FeedMaxMmPerRev",
+          "group": {
+            "column": "WorkGroup",
+            "map": "TurningGroup"
+          },
+          "range": {
+            "min": "DepthMinMm",
+            "max": "DepthMaxMm",
+            "input": "Feed Band Depth"
+          },
+          "where": {
+            "ToolMaterial": "Carbide"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges (Turning cutting conditions: '120 - 200' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Knurling sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "formula": "{Feed Min} + {Range Position} * ({Feed Max} - {Feed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Knurl Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Knurl Length} + {Approach Length}) / ({Feed} * {Spindle Speed}) * {Passes}"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Knurling tool"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Knurling tool"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
         }
       ]
     }

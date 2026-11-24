@@ -101,45 +101,107 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(readFileSync(join(ROOT, 'migrations/1037_machining_part_setup_calculator.sql'), 'utf-8')).not.toContain('The engine\'s own value');
   });
 
-  it('turning is timed as the workbook\'s Turning sheet times a cut, shipped in 1128; the entries 804 and 1030 shipped are kept', () => {
-    const committed = readFileSync(join(ROOT, 'migrations/1128_machining_turning_follows_the_workbook.sql'), 'utf-8');
-    expect(committed).toBe(buildMachiningCalculatorMigrationSql(1128, spec));
-    for (const name of ['Rough Turning', 'Finish Turning', 'Stock Prep Lathe']) expect(committed).toContain(`-- Machining - ${name}`);
+  it('the turning family follows the workbook (1138); what 1128, 1030 and 804 shipped is kept', () => {
+    for (const [n, file] of [[1128, '1128_machining_turning_follows_the_workbook.sql'], [1138, '1138_machining_turning_family_workbook.sql']] as const) {
+      expect(readFileSync(join(ROOT, 'migrations', file), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(n, spec));
+    }
+    const committed = readFileSync(join(ROOT, 'migrations/1138_machining_turning_family_workbook.sql'), 'utf-8');
+    for (const name of ['Rough Turning', 'Finish Turning', 'Stock Prep Lathe', 'Parting', 'End Facing', 'Thread Turning', 'Knurling']) {
+      expect(committed).toContain(`Machining - ${name}`);
+    }
     // 804 still ships the formulas it was applied with; the engine sees only the current entries.
     expect(buildMachiningCalculatorsMigrationSql()).toContain('round({Rough Stock} / {Rough Depth of Cut})');
     expect(calcs['Rough Turning']?.fields.map((f) => f.field_name)).toEqual([
-      'Turned Diameter', 'Turned Length', 'Bar Diameter', 'Finish Depth of Cut', 'Rough Depth of Cut', 'Rough Cutting Speed', 'Rough Feed',
-      'Approach Length', 'Finish Start Diameter', 'Rough Passes', 'Spindle Speed', 'Feed Rate', 'Time per Pass', CYCLE_TIME_FIELD,
+      'Turned Diameter', 'Turned Length', 'Bar Diameter', 'Rough Depth of Cut', 'Finish Depth of Cut',
+      'Rough Speed Min', 'Rough Speed Max', 'Rough Feed Min', 'Rough Feed Max', 'Range Position', 'Max Spindle Speed', 'Approach Length',
+      'Rough Cutting Speed', 'Rough Feed', 'Finish Start Diameter', 'Rough Passes', 'Spindle Speed', 'Machining Time', CYCLE_TIME_FIELD,
     ]);
-    // The lathe's stock preparation is the same cut: it copies the current Rough Turning.
+    // The lathe's stock preparation is the same cut: it copies the current Rough Turning, and its 1128 entry kept the 1128 fields.
     expect(calcs['Stock Prep Lathe']?.fields).toEqual(calcs['Rough Turning']?.fields);
+    expect(readFileSync(join(ROOT, 'migrations/1128_machining_turning_follows_the_workbook.sql'), 'utf-8')).toContain('$q$Time per Pass$q$');
   });
 
-  it('Rough Turning reproduces the three worked rows of the workbook\'s Turning sheet', () => {
-    // Machining - Calculator Database, Turning sheet: n = 1000 v / (pi D1), np = (D1 - D2) / (2 t), Tc = pi D1 (L + 10) / (1000 v s) x np.
-    // A row is one cut from D1 to D2, so no finish allowance is left (Finish Depth of Cut 0). The sheet writes pi as 3.14 and 3.1428: its
-    // own figures (382.17 rpm, 2.75 min; 727.93 rpm, 16.24 min; 318.47 rpm, 17.29 min) are met to that precision.
-    const row = (d1: number, d2: number, length: number, v: number, s: number, t: number) => {
-      const seeds: Record<string, CalcSeed> = Object.fromEntries(Object.entries({
-        'Bar Diameter': d1, 'Turned Diameter': d2, 'Turned Length': length, 'Rough Cutting Speed': v, 'Rough Feed': s, 'Rough Depth of Cut': t, 'Finish Depth of Cut': 0,
-      }).map(([name, value]) => [name, { value, source: 'Turning sheet' }]));
-      const run = runMachiningCalculator(calcs, 'Rough Turning', seeds);
-      const value = (field: string) => Number(run.trace.find((step) => step.fieldName === field)?.value);
-      return { rpm: value('Spindle Speed'), passes: value('Rough Passes'), min: (run.sec ?? NaN) / 60, missing: run.missing };
-    };
+  /** Runs a calculator on the workbook sheet's own inputs (a range given as one value: min = max). */
+  const sheet = (operation: string, values: Record<string, number>) => {
+    const seeds: Record<string, CalcSeed> = Object.fromEntries(Object.entries({ 'Max Spindle Speed': 100_000, ...values })
+      .map(([name, value]) => [name, { value, source: 'workbook sheet' }]));
+    const run = runMachiningCalculator(calcs, operation, seeds);
+    const value = (field: string) => Number(run.trace.find((step) => step.fieldName === field)?.value);
+    return { value, sec: run.sec, missing: run.missing };
+  };
+
+  it('Rough Turning reproduces the workbook\'s Turning sheet rows, in whole passes and whole seconds', () => {
+    // Turning sheet: n = 1000 v / (pi D1), np = (D1 - D2) / (2 t), Tc = pi D1 (L + 10) / (1000 v s) x np. A row is one cut from D1 to D2,
+    // so no finish allowance is left (Finish Depth of Cut 0). pi is exact here (the sheet writes 3.14 and 3.1428).
+    const row = (d1: number, d2: number, length: number, v: number, s: number, t: number) => sheet('Rough Turning', {
+      'Bar Diameter': d1, 'Turned Diameter': d2, 'Turned Length': length, 'Rough Speed Min': v, 'Rough Speed Max': v,
+      'Rough Feed Min': s, 'Rough Feed Max': s, 'Rough Depth of Cut': t, 'Finish Depth of Cut': 0,
+    });
+    // Row 1: 1 pass, 381.97 rpm, pi x 100 x 210 / (1000 x 120 x 0.2) = 2.749 min = 164.9 s -> 165 s (the sheet: 2.75 min).
     const first = row(100, 96, 200, 120, 0.2, 2);
     expect(first.missing).toEqual([]);
-    expect(first.passes).toBe(1);
-    expect(first.rpm).toBeCloseTo(382.17, 0);
-    expect(first.min).toBeCloseTo(2.75, 2);
+    expect(first.value('Rough Passes')).toBe(1);
+    expect(first.value('Spindle Speed')).toBeCloseTo(381.97, 1);
+    expect(first.sec).toBe(165);
+    // Row 2: the sheet's 11.25 passes are 12 whole passes (correction): 1.4431 min a pass x 12 = 17.318 min = 1039.1 s -> 1040 s
+    // (the sheet: 16.24 min on its fraction of a pass).
     const second = row(70, 25, 200, 160, 0.2, 2);
-    expect(second.passes).toBe(11.25);
-    expect(second.rpm).toBeCloseTo(727.93, 0);
-    expect(second.min).toBeCloseTo(16.24, 1);
+    expect(second.value('Rough Passes')).toBe(12);
+    expect(second.sec).toBe(1040);
+    // Row 3: 10 passes, 318.31 rpm, 17.279 min = 1036.7 s -> 1037 s (the sheet: 17.29 min).
     const third = row(80, 40, 100, 80, 0.2, 2);
-    expect(third.passes).toBe(10);
-    expect(third.rpm).toBeCloseTo(318.47, 0);
-    expect(third.min).toBeCloseTo(17.29, 1);
+    expect(third.value('Rough Passes')).toBe(10);
+    expect(third.sec).toBe(1037);
+  });
+
+  it('a cut is capped at the machine\'s spindle limit', () => {
+    // Row 1 on a 300 rpm spindle: 2.749 min x 381.97 / 300 = 3.5 min = 210 s.
+    const capped = sheet('Rough Turning', {
+      'Max Spindle Speed': 300, 'Bar Diameter': 100, 'Turned Diameter': 96, 'Turned Length': 200, 'Rough Speed Min': 120, 'Rough Speed Max': 120,
+      'Rough Feed Min': 0.2, 'Rough Feed Max': 0.2, 'Rough Depth of Cut': 2, 'Finish Depth of Cut': 0,
+    });
+    expect(capped.value('Spindle Speed')).toBe(300);
+    expect(capped.sec).toBe(210);
+  });
+
+  it('Thread Turning reproduces the workbook\'s Threading sheet', () => {
+    // Threading sheet: M27 x 1 (Ø26.35 pitch diameter), 3.5 mm long, 5 m/min, 4 passes, feed = pitch:
+    // n = 5000 / (pi x 26.35) = 60.40 rpm; (3.5 + 4) / (1 x 60.40) x 4 = 0.4967 min = 29.80 s -> 30 s, the sheet's own 30 s.
+    const run = sheet('Thread Turning', { 'Thread Diameter': 26.35, 'Thread Length': 3.5, 'Pitch': 1 });
+    expect(run.missing.join('; ')).toMatch(/Tool Price.*Tool Life|Tool Life.*Tool Price/);
+    const timed = sheet('Thread Turning', { 'Thread Diameter': 26.35, 'Thread Length': 3.5, 'Pitch': 1, 'Tool Price': 100, 'Tool Life': 300 });
+    expect(timed.value('Spindle Speed')).toBeCloseTo(60.40, 1);
+    expect(timed.sec).toBe(30);
+    expect(timed.value('Tool Cost per Part')).toBeCloseTo(0.3333, 4);
+  });
+
+  it('Knurling: the sheet\'s 30 s on its own feed; the corrected feed is a turning feed, not 25.4 / TPI', () => {
+    const knurl = (feed: number) => sheet('Knurling', {
+      'Knurl Diameter': 27, 'Knurl Length': 3, 'Feed Min': feed, 'Feed Max': feed, 'Tool Price': 100, 'Tool Life': 300,
+    });
+    // Knurling sheet: 6 m/min on Ø27 = 70.74 rpm; feed 25.4 / 32 TPI = 0.79375; (3 + 4) / (0.79375 x 70.74) x 4 = 0.4989 min -> 30 s.
+    expect(knurl(25.4 / 32).sec).toBe(30);
+    // The workbook's finishing turning feed (aluminium 0.05-0.2, middle 0.125): 7 / (0.125 x 70.7355) x 4 = 3.1667 min = 190.004 s -> 191 s.
+    expect(knurl(0.125).sec).toBe(191);
+  });
+
+  it('End Facing and Parting: the workbook\'s Facing and Cutoff sheets, with the travel corrected to the bar\'s radius', () => {
+    // Facing sheet: Ø50, 50 m/min, 0.15 mm/rev, 1 mm of stock at 0.5 a pass = 2 passes, both ends. The sheet types a 13 mm length of
+    // cut: 2 x ceil(pi x 50 x 23 / (1000 x 50 x 0.15) x 2 x 60) = 2 x 58 = 116 s. Across the radius: n = 318.31 rpm;
+    // (25 + 10) / (0.15 x 318.31) x 2 = 1.4661 min = 87.96 s -> 88 s a face, 176 s both ends.
+    const facing = sheet('End Machining', {
+      'Bar Diameter': 50, 'Facing Stock': 1, 'Faces': 2, 'Speed Min': 50, 'Speed Max': 50, 'Feed Min': 0.15, 'Feed Max': 0.15,
+      'Tool Price': 732.4, 'Tool Life': 1000,
+    });
+    expect(facing.value('Passes')).toBe(2);
+    expect(facing.value('Time per Face')).toBe(88);
+    expect(facing.sec).toBe(176);
+    expect(facing.value('Tool Cost per Part')).toBeCloseTo(0.7324, 4);
+    // Cutoff sheet: Ø50, 18 m/min, 0.8 mm a rev, 13 mm typed: ceil(15.06 s) = 16 s. Through the radius: n = 114.59 rpm;
+    // (25 + 10) / (0.8 x 114.59) = 0.3818 min = 22.9 s -> 23 s. A tube's part-off cuts its wall only: Ø50 x Ø40, (5 + 10) mm -> 10 s.
+    const part = (bore: number) => sheet('Parting', { 'Bar Diameter': 50, 'Bore Diameter': bore, 'Cutting Speed': 18, 'Feed': 0.8, 'Tool Price': 732.4, 'Tool Life': 1000 });
+    expect(part(0).sec).toBe(23);
+    expect(part(40).sec).toBe(10);
   });
 
   it('the milling calculator prices the line of every mill station, and of the live-tool turning machines', () => {

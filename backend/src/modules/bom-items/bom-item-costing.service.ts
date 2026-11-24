@@ -61,7 +61,8 @@ import {
   meetsRequiredMilledClass, hasMachineRate, machiningRouteStanding,
   detectMaterialClass, MILLING_DOUBLE_BILLED_ELSEWHERE, resolveOperationName,
 } from './costing/machining/process/cost-machining-engine';
-import type { MachiningCostInput, MachineClassId, MachiningRouteStanding } from './costing/machining/process/cost-machining-engine';
+import type { MachiningCostInput, MachineClassId, MachiningRouteStanding, MachiningWorkbookInput } from './costing/machining/process/cost-machining-engine';
+import { WORKBOOK_TABLES } from './costing/machining/lookup/workbook-cutting-data';
 import { machiningFeatureCounts } from './costing/machining/operation/machining-feature-counts';
 import { requiredMilledClassFromToolAxes } from './costing/machining/setup-axis-rule';
 import { PlasticReferenceService } from './costing/plastic-molding/lookup/plastic-reference.service';
@@ -73,7 +74,7 @@ import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
 import { detectDrawingCadMismatches, drawingStatedBendCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
 import { loadMachiningCalculatorSpec } from './costing/machining/calculators/machining-calculator-spec';
-import { specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
+import { isWorkbookField, specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
 
 /** Lookup tables read by the generic spec resolver (specLookupSeeds), not by a resolver of their own. */
 const SPEC_RESOLVED_TABLES: ReadonlySet<string> = new Set(['tblRotarySurfaceGrinding', 'tblStraightBevelGearCutting', 'tblSpiralBevelGearCutting', 'tblShaping', 'tblChamfering', 'tblCornerRoundingMill', 'tblChemicalMilling', 'tblChemicalMillingEtchingRates']);
@@ -2465,7 +2466,7 @@ export class BomItemCostingService {
       // (MachiningLookupService — tblCounterboring/tblChamfering/
       // tblDeburring/tblReaming) resolved once per part, reused across
       // every candidate machine class below via baseCncInput's spread.
-      const [counterboreTable, chamferParams, deburrParams, reamTable, gunDrillTable, deepBoreMaterials, cylindricalGrindingParams, internalGrindingParams, jigBoreTable, keywayBroach, wireEdmParams, turningParams, roundingParams, drillingTable, tappingTable, surfaceGrindingParams, operationSizeRanges, capabilityRuleSet] = await Promise.all([
+      const [counterboreTable, chamferParams, deburrParams, reamTable, gunDrillTable, deepBoreMaterials, cylindricalGrindingParams, internalGrindingParams, jigBoreTable, keywayBroach, wireEdmParams, workbook, roundingParams, drillingTable, tappingTable, surfaceGrindingParams, operationSizeRanges, capabilityRuleSet] = await Promise.all([
         this.machiningLookup.getCounterboreTable(),
         this.machiningLookup.getChamferParams(matClass),
         this.machiningLookup.getDeburrParams(matClass),
@@ -2477,7 +2478,7 @@ export class BomItemCostingService {
         this.machiningLookup.getFinishBoringTable(),
         this.machiningLookup.getKeywayBroachReference(),
         this.machiningLookup.getWireEdmParams(matClass),
-        this.machiningLookup.getTurningParams(matClass),
+        this.machiningWorkbookInput(rates, locInfo.code),
         this.machiningLookup.getRoundingParams(matClass),
         this.machiningLookup.getDrillingTable(),
         this.machiningLookup.getTappingTable(),
@@ -2599,7 +2600,7 @@ export class BomItemCostingService {
         wireEdmCandidates: wireEdmSplit.wireEdmCandidates,
         wireEdmParams,
         wireEdmRate: mhrRates.wireEdm,
-        turningParams,
+        workbook,
         realOperationCategories,
       };
 
@@ -6761,7 +6762,7 @@ export class BomItemCostingService {
       // primary quote (see this file's own "Single source of truth" rule
       // for CNC route selection).
       const routeMatClass = detectMaterialClass(grade);
-      const [routeDeburrParams, routeReamTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams, routeTurningParams] = await Promise.all([
+      const [routeDeburrParams, routeReamTable, routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams, routeWorkbook] = await Promise.all([
         this.machiningLookup.getDeburrParams(routeMatClass),
         this.machiningLookup.getReamTable(),
         this.machiningLookup.getCylindricalGrindingParams(routeMatClass),
@@ -6769,7 +6770,7 @@ export class BomItemCostingService {
         this.machiningLookup.getFinishBoringTable(),
         this.machiningLookup.getKeywayBroachReference(),
         this.machiningLookup.getWireEdmParams(routeMatClass),
-        this.machiningLookup.getTurningParams(routeMatClass),
+        this.machiningWorkbookInput(rates, locInfo.code),
       ]);
       const routeDeburrLinearSpeed = routeDeburrParams.dataFound ? routeDeburrParams.linearSpeedMmPerSec : null;
       // What the part's stock is priced from, for every route builder below.
@@ -6791,7 +6792,7 @@ export class BomItemCostingService {
         materialSource, mhrRates, batchSize, comparisonWarnings, locInfo, location, stockMaterial,
         cncSurfaceTreatmentDbRate, routeDeburrLinearSpeed, routeReamTable,
         routeCylindricalGrindingParams, routeInternalGrindingParams, routeJigBoreTable, routeKeywayBroach, routeWireEdmParams,
-        routeTurningParams,
+        routeWorkbook,
         accessToken,
         family as MachiningFamily,
       );
@@ -8522,7 +8523,7 @@ export class BomItemCostingService {
 
     // Lookup-table inputs, keyed by the inputs above.
     const [drillingTable, tappingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
-      turningParams, grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, gearReference, keywayBroach, wireEdmParams, deburrParams] = await Promise.all([
+      grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, gearReference, keywayBroach, wireEdmParams, deburrParams] = await Promise.all([
       this.machiningLookup.getDrillingTable(),
       this.machiningLookup.getTappingTable(),
       this.machiningLookup.getReamTable(),
@@ -8531,7 +8532,6 @@ export class BomItemCostingService {
       this.machiningLookup.getDeepBoreMaterials(),
       this.machiningLookup.getPartoffTable(),
       this.machiningLookup.getWorkholderTable(),
-      this.machiningLookup.getTurningParams(matClass),
       this.machiningLookup.getCylindricalGrindingParams(matClass),
       this.machiningLookup.getInternalGrindingParams(matClass),
       this.machiningLookup.getSurfaceGrindingParams(matClass),
@@ -8541,11 +8541,16 @@ export class BomItemCostingService {
       this.machiningLookup.getWireEdmParams(matClass),
       this.machiningLookup.getDeburrParams(matClass),
     ]);
-    const lookup = (await this.specLookups(def.name, matClass, inputs)) ?? machiningLookupSeeds(operation, {
+    const spec = await this.specLookups(def.name, matClass, inputs);
+    const own = spec?.complete ? null : machiningLookupSeeds(operation, {
       matClass, drillingTable, tappingTable, reamTable, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
-      turningParams, grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, shaving: gearReference.shaving, keywayBroach, wireEdmParams, deburrParams,
+      grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, shaving: gearReference.shaving, keywayBroach, wireEdmParams, deburrParams,
       capabilityRules: (await this.machiningLookup.getCapabilityRules()).rules,
     }, inputs);
+    // The spec-resolved inputs (a workbook tool price beside Parting's own insert data) win for their own fields.
+    const lookup: LookupSeeds | null = spec || own
+      ? { seeds: { ...(own?.seeds ?? {}), ...(spec?.seeds.seeds ?? {}) }, missing: [...(own?.missing ?? []), ...(spec?.seeds.missing ?? [])] }
+      : null;
     const lookupMatches: Record<string, { table: string; row: Record<string, string | number> }> = { ...engineMatches };
     for (const [field, seed] of Object.entries(lookup?.seeds ?? {})) {
       if (!inputFields.has(field) || (field in engineMatches && Object.keys(keys).length === 0)) continue;
@@ -8566,20 +8571,28 @@ export class BomItemCostingService {
   }
 
   /**
-   * The lookup inputs of a calculator whose spec fields name their table (or variable) and row rule: read by the
-   * one generic resolver (specLookupSeeds). Null for a calculator whose lookups are resolved by its own function.
+   * The lookup inputs of a calculator whose spec fields name their table (or variable) and row rule, read by the one generic resolver
+   * (specLookupSeeds), and whether those are all its lookups. A calculator with lookups of its own (Parting's part-off insert) has the
+   * rest resolved by its operation's function, and the two are merged. Null when no field is spec-resolved.
    */
-  private async specLookups(calculatorName: string, matClass: ReturnType<typeof detectMaterialClass>, inputs: Record<string, number>): Promise<LookupSeeds | null> {
+  private async specLookups(
+    calculatorName: string, matClass: ReturnType<typeof detectMaterialClass>, inputs: Record<string, number>,
+  ): Promise<{ seeds: LookupSeeds; complete: boolean } | null> {
     const calc = loadMachiningCalculatorSpec().calculators.find((c) => c.name === calculatorName);
-    const fields = (calc?.fields ?? []).filter((f) => f.source === 'lookup' && (f.where || f.nearest || f.materialType || f.band || f.table === 'variables' || SPEC_RESOLVED_TABLES.has(f.table ?? '')));
-    if (!calc || fields.length === 0 || fields.length !== calc.fields.filter((f) => f.source === 'lookup').length) return null;
-    const tableNames = [...new Set(fields.map((f) => f.table!).filter((t) => t !== 'variables'))];
+    const fields = (calc?.fields ?? []).filter((f) => f.source === 'lookup' && (f.where || f.nearest || f.materialType || f.band || isWorkbookField(f) || f.table === 'variables' || SPEC_RESOLVED_TABLES.has(f.table ?? '')));
+    if (!calc || fields.length === 0) return null;
+    const complete = fields.length === calc.fields.filter((f) => f.source === 'lookup').length;
+    const tableNames = [...new Set([
+      ...fields.map((f) => f.table!).filter((t) => t !== 'variables'),
+      // A workbook table's row is the material's group: the class-to-group map is read with it.
+      ...(fields.some((f) => f.group) ? ['tblCuttingMaterialGroup'] : []),
+    ])];
     const [tables, variables, cutCode] = await Promise.all([
       Promise.all(tableNames.map(async (t) => [t, await this.machiningLookup.getTable(t)] as const)),
       this.machiningLookup.getVariables(fields.filter((f) => f.table === 'variables').map((f) => f.column!)),
       this.machiningLookup.getMaterialCutCode(matClass),
     ]);
-    return specLookupSeeds(calc.fields, { matClass, tables: Object.fromEntries(tables), variables, cutCode }, inputs);
+    return { seeds: specLookupSeeds(fields, { matClass, tables: Object.fromEntries(tables), variables, cutCode }, inputs), complete };
   }
 
   /** Gear/spline teeth the cad-engine recognised (machining_features AxiGroove), with their measured geometry. */
@@ -8746,6 +8759,17 @@ export class BomItemCostingService {
   // so the turned path's Cylindrical Grinding trigger sees the same real
   // value, not a second, independent reading of the same field.
   /** Finishing-process capability rules for MachiningCostInput (capability-rules.ts). */
+  /** The machining workbook's tables (migration 1137) and the rupee rates its tool prices are converted with, for the turning engine. */
+  private async machiningWorkbookInput(rates: { convertStrict(from: string, to: string): number }, localCode: string): Promise<MachiningWorkbookInput> {
+    const tables = Object.fromEntries(await Promise.all(WORKBOOK_TABLES.map(async (t) => [t, await this.machiningLookup.getWorkbookTable<any>(t)] as const)));
+    // A rate not on file is null: the line then names the tool cost it could not convert (withToolCost), it is never taken as 1.
+    const inrTo = (code: string): number | null => {
+      if (code === 'INR') return 1;
+      try { return rates.convertStrict('INR', code); } catch { return null; }
+    };
+    return { tables, inrToLocal: inrTo(localCode), inrToUsd: inrTo('USD') };
+  }
+
   private async machiningCapabilityInput() {
     const r = await this.machiningLookup.getCapabilityRules();
     return { capabilityRules: r.rules, capabilityRulesMissing: r.missing };
@@ -9456,11 +9480,7 @@ export class BomItemCostingService {
     jigBoreTable?: any[] | null,
     keywayBroach?: KeywayBroachReference | null,
     wireEdmParams?: { roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean } | null,
-    turningParams?: {
-      roughCutDepthMm: number; roughCuttingSpeedMPerMin: number; roughFeedMmPerRev: number;
-      finishCutDepthMm: number; finishCuttingSpeedMPerMin: number; finishFeedMmPerRev: number;
-      dataFound: boolean;
-    } | null,
+    workbook?: MachiningWorkbookInput | null,
     accessToken: string = '',
     /** turned or mill_turn: the stock is chosen for the part's own family, as on the Cost tab. */
     family: MachiningFamily = 'turned',
@@ -9549,7 +9569,7 @@ export class BomItemCostingService {
       wireEdmCandidates: featurePlan.wireEdmSplit.wireEdmCandidates,
       wireEdmParams: wireEdmParams ?? null,
       wireEdmRate: mhrRates.wireEdm,
-      turningParams: turningParams ?? null,
+      workbook: workbook ?? null,
     };
 
     // Discovered from the database, not a fixed 3-member array — see machine-discovery.service.ts: the location's turning machines,

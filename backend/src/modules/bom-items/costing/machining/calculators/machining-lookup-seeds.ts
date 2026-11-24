@@ -1,6 +1,7 @@
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { resolveDrillingParams, type DrillingTable } from '../lookup/drilling-table';
 import { resolvePartoffParams } from '../lookup/partoff-table';
+import { rowInBand, WORKBOOK_TABLES } from '../lookup/workbook-cutting-data';
 import {
   MACHINING_MATERIAL,
   nearestDiameterEntry,
@@ -35,11 +36,6 @@ export interface MachiningLookupContext {
   deepBoreMaterials?: any[] | null;
   partoffTable?: any[] | null;
   workholderTable?: any[] | null;
-  turningParams?: {
-    roughCutDepthMm: number; roughCuttingSpeedMPerMin: number; roughFeedMmPerRev: number;
-    finishCutDepthMm: number; finishCuttingSpeedMPerMin: number; finishFeedMmPerRev: number;
-    dataFound: boolean; materialCutCode?: string;
-  } | null;
   grindingParams?: {
     workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number;
     roughAxialFeedRevMm: number; finishAxialFeedRevMm: number; dataFound: boolean; materialCutCode?: string;
@@ -235,40 +231,6 @@ export function partingLookupSeeds(ctx: MachiningLookupContext, keys: Record<str
     'Feed': lookupSeed(p.feedMmPerRev, src, match, 'FeedMm'),
   };
   return out;
-}
-
-function turningRows(ctx: MachiningLookupContext) {
-  const tp = ctx.turningParams?.dataFound ? ctx.turningParams : null;
-  const row = (operation: string) => ({ table: 'tblGeneralTurning', row: { material_cut_code: tp?.materialCutCode ?? '', operation } });
-  return { tp, src: `tblGeneralTurning: ${ctx.matClass}`, rough: row('medium_rough_turning'), finish: row('finish_turning') };
-}
-
-export function roughTurningLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
-  const { tp, src, rough, finish } = turningRows(ctx);
-  if (!tp) return { seeds: {}, missing: [`tblGeneralTurning cutting data for ${ctx.matClass}`] };
-  return {
-    missing: [],
-    seeds: {
-      'Finish Depth of Cut': lookupSeed(tp.finishCutDepthMm, `${src} finish_turning`, finish, 'cut_depth_mm'),
-      'Rough Depth of Cut': lookupSeed(tp.roughCutDepthMm, `${src} medium_rough_turning`, rough, 'cut_depth_mm'),
-      'Rough Cutting Speed': lookupSeed(tp.roughCuttingSpeedMPerMin, `${src} medium_rough_turning`, rough, 'cutting_speed_m_min'),
-      'Rough Feed': lookupSeed(tp.roughFeedMmPerRev, `${src} medium_rough_turning`, rough, 'feed_rate_mm_rev'),
-    },
-  };
-}
-
-export function finishTurningLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
-  const { tp, src, finish } = turningRows(ctx);
-  if (!tp) return { seeds: {}, missing: [`tblGeneralTurning cutting data for ${ctx.matClass}`] };
-  return {
-    missing: [],
-    seeds: {
-      // The finish cut starts at the turned diameter plus its depth of cut on each side: the diameter its spindle speed is taken from.
-      'Finish Depth of Cut': lookupSeed(tp.finishCutDepthMm, `${src} finish_turning`, finish, 'cut_depth_mm'),
-      'Finish Cutting Speed': lookupSeed(tp.finishCuttingSpeedMPerMin, `${src} finish_turning`, finish, 'cutting_speed_m_min'),
-      'Finish Feed': lookupSeed(tp.finishFeedMmPerRev, `${src} finish_turning`, finish, 'feed_rate_mm_rev'),
-    },
-  };
 }
 
 /** The columns of the two grinding tables each grinding input is in (their staged spellings differ). */
@@ -677,6 +639,46 @@ const cutCodeOf = (row: any): number => Number(row.MaterialCutCodeName ?? row['M
  * table + column, a variables key, an optional `where` and `nearest`). One resolver for every such calculator,
  * so a new operation needs a spec entry and no resolver of its own. A value that cannot be read is named.
  */
+const WORKBOOK_TABLE_SET: ReadonlySet<string> = new Set(WORKBOOK_TABLES);
+
+/** An input read from one of the machining workbook's tables (migration 1137): by the material's group, a band, or `where` alone. */
+export function isWorkbookField(f: SpecField): boolean {
+  return f.source === 'lookup' && (!!f.group || !!f.range || WORKBOOK_TABLE_SET.has(f.table ?? ''));
+}
+
+/**
+ * One input from a machining workbook table (migration 1137): the rows of the material's workbook group (its name in
+ * tblCuttingMaterialGroup), then the row whose band holds the input. A material the workbook has no row for, or a size outside its
+ * bands, is a named gap (a string), never a neighbouring row.
+ */
+function workbookSeed(f: SpecField, rows: any[], data: SpecLookupData, keys: Record<string, number>): CalcSeed | string {
+  const key: Record<string, string | number> = { ...(f.where ?? {}) };
+  let own = rows;
+  let how = '';
+  if (f.group) {
+    const map = (data.tables.tblCuttingMaterialGroup ?? []).find((r) => r.MaterialClass === data.matClass);
+    const name = map?.[f.group.map];
+    if (typeof name !== 'string' || name === '') return `${f.name}: the machining workbook's ${f.table} has no row for ${data.matClass}`;
+    own = own.filter((r) => r[f.group!.column] === name);
+    key[f.group.column] = name;
+    how = name;
+  }
+  if (f.range) {
+    const size = keys[f.range.input];
+    if (!Number.isFinite(size)) return `${f.name}: ${f.range.input} (the ${f.table} row is chosen by it)`;
+    const row = rowInBand(own, f.range.min, f.range.max, size);
+    if (!row) return `${f.name}: ${f.table}${how ? ` ${how}` : ''} has no ${f.range.min}-${f.range.max} band for ${f.range.input} ${size}`;
+    own = [row];
+    key[f.range.min] = row[f.range.min];
+    const max = row[f.range.max];
+    how = `${how}${how ? ', ' : ''}${f.range.input} ${size} in ${row[f.range.min]}${max == null ? ' and over' : `-${max}`}`;
+  }
+  const value = Number(own[0]?.[f.column!]);
+  if (own.length === 0 || !Number.isFinite(value)) return `${f.name}: ${f.table} has no row for ${how || data.matClass}`;
+  const where = Object.entries(f.where ?? {}).map(([c, v]) => `, ${c} ${v}`).join('');
+  return { value, lookup: true, source: `${f.table}: ${how}${where}`, match: { table: f.table!, row: key } };
+}
+
 export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupData, keys: Record<string, number>): LookupSeeds {
   const out: LookupSeeds = { seeds: {}, missing: [] };
   for (const f of fields) {
@@ -691,6 +693,13 @@ export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupDa
     const all = data.tables[f.table];
     if (!all?.length) { out.missing.push(`${f.name}: ${f.table} (machining_reference_data) could not be read`); continue; }
     const rows = all.filter((r) => Object.entries(f.where ?? {}).every(([col, v]) => String(r[col]) === String(v)));
+    // The machining workbook's tables: the rows of the material's workbook group, then the one whose band holds the input.
+    if (isWorkbookField(f)) {
+      const seed = workbookSeed(f, rows, data, keys);
+      if (typeof seed === 'string') out.missing.push(seed);
+      else out.seeds[f.name] = seed;
+      continue;
+    }
     // Tables keyed by something other than the material cut code: the material's type name, or a size band.
     if (f.materialType || f.band) {
       let row: any;
@@ -748,8 +757,6 @@ export function machiningLookupSeeds(
     case 'Gun Drilling': return gunDrillingLookupSeeds(ctx, keys);
     case 'Deep Bore Machine': return deepBoreLookupSeeds(ctx, keys);
     case 'Parting': return partingLookupSeeds(ctx, keys);
-    case 'Rough Turning': case 'Stock Prep Lathe': return roughTurningLookupSeeds(ctx);
-    case 'Finish Turning': return finishTurningLookupSeeds(ctx);
     case 'Cylindrical Grinding': return grindingLookupSeeds(ctx);
     case 'Internal Grinding': return grindingLookupSeeds(ctx, undefined, 'tblInternalGrinding');
     case 'Jig Grind': return grindingLookupSeeds(ctx, 'jig_grind', 'tblInternalGrinding');

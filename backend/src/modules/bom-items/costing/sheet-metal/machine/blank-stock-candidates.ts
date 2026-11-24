@@ -34,6 +34,9 @@ export interface BlankResult {
    */
   purchasedVolMm3?: number;
   sizeSource?: string;
+  /** The stock model's choice: the stock left on each end of the piece (the lathe faces it off), and a tube's bore (a part-off cuts the wall only). */
+  endAllowanceMm?: number;
+  tubeIdMm?: number;
 }
 
 export function billetFallback(

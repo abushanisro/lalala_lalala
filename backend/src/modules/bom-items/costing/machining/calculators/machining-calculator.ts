@@ -9,6 +9,7 @@ import {
   type CalcRun,
   type CalcSeed,
   type LookupMatch,
+  type ReferenceCalcRun,
   type ReferenceCalculatorDef,
   type ReferenceCalculatorField,
   type ReferenceCalculators,
@@ -24,6 +25,6 @@ export function runMachiningCalculator(
   calculators: MachiningCalculators | null | undefined,
   operation: string,
   seeds: Record<string, CalcSeed>,
-): CalcRun {
+): ReferenceCalcRun {
   return runReferenceCalculator(calculators, operation, seeds);
 }

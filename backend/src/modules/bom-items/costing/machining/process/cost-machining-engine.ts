@@ -22,10 +22,11 @@ import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
 import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
+import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator-spec';
 import {
-  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, drillingLookupSeeds, finishTurningLookupSeeds, tappingLookupSeeds,
+  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, drillingLookupSeeds, isWorkbookField, specLookupSeeds, tappingLookupSeeds,
   grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds, reamingLookupSeeds,
-  rechuckLookupSeeds, roughTurningLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
+  rechuckLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
 } from '../calculators/machining-lookup-seeds';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -146,6 +147,10 @@ export interface MachiningCostInput {
     purchasedVolMm3?: number;
     /** What chose the stock, for a calculation's source text. */
     sizeSource?: string;
+    /** The stock left on each end of the piece (the stock model's end allowance): what End Facing takes off each face. */
+    endAllowanceMm?: number;
+    /** A tube's bore: its part-off cuts the wall, not to the centre. */
+    tubeIdMm?: number;
   };
   /**
    * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = it is loaded as a piece cut to
@@ -338,17 +343,8 @@ export interface MachiningCostInput {
     roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean; materialCutCode?: string; toolType?: string;
   } | null;
   wireEdmRate?: MHRRateInput;
-  // General OD Turning depth-of-cut (new) -- real per-material rough/finish
-  // cut_depth_mm/cutting_speed_m_min/feed_rate_mm_rev from tblGeneralTurning
-  // (MachiningLookupService.getTurningParams), replacing TURNING_MRR's flat
-  // table + x1.2 fudge factor with a genuine pass-count model. Falls back
-  // to the disclosed TURNING_MRR estimate (with a warning) only if this
-  // real data genuinely isn't resolvable.
-  turningParams?: {
-    roughCutDepthMm: number; roughCuttingSpeedMPerMin: number; roughFeedMmPerRev: number;
-    finishCutDepthMm: number; finishCuttingSpeedMPerMin: number; finishFeedMmPerRev: number;
-    dataFound: boolean; materialCutCode?: string; toolType?: string;
-  } | null;
+  /** The machining workbook's cutting data and tool prices, for the workbook-form calculators (migration 1137). */
+  workbook?: MachiningWorkbookInput | null;
   // Real, distinct operation names per machine class (new) --
   // BOMItemsService.resolveMachiningOperationCategories, queried from
   // process_taxonomy_operations (migration 754, real
@@ -1151,8 +1147,71 @@ function approachSeed(calculators: MachiningCalculators | null | undefined, oper
   return {
     'Approach Length': {
       value: mm,
-      source: `Assumption: the tool's approach and overrun on each pass (Machining calculator workbook, Turning sheet: length of cut + ${mm} mm)`,
+      source: `Assumption: the tool's approach and overrun on each pass (Machining calculator workbook: length of cut + ${mm} mm)`,
     },
+  };
+}
+
+/** The machining workbook's data (migration 1137) for its calculators, and the rupee rates its tool prices are converted with. */
+export interface MachiningWorkbookInput {
+  tables: Record<string, any[] | null | undefined>;
+  /** The line's currency per rupee, and US dollars per rupee: the workbook prices its tools in INR. Null when the rate is not on file. */
+  inrToLocal: number | null;
+  inrToUsd: number | null;
+}
+
+/**
+ * The inputs a workbook-form calculator reads from the workbook's tables (its spec fields with a material group, a band or a `where`),
+ * picked by the material's group and by its other inputs: the depth of cut picks the band its speed and feed are read from. Its default
+ * inputs count as given (Rough Depth of Cut 2 mm), the seeds override them.
+ */
+function workbookSeeds(
+  workbook: MachiningWorkbookInput | null | undefined, operation: string, machineClass: string, matClass: MaterialClass,
+  seeds: Record<string, CalcSeed | undefined>,
+): LookupSeeds {
+  const calc = loadMachiningCalculatorSpec().calculators.find((c) => c.operation === operation && c.machineClasses.includes(machineClass));
+  const fields = (calc?.fields ?? []).filter(isWorkbookField);
+  if (fields.length === 0) return { seeds: {}, missing: [] };
+  const keys: Record<string, number> = {};
+  for (const f of calc!.fields) if (typeof f.default === 'number') keys[f.name] = f.default;
+  for (const [name, s] of Object.entries(seeds)) if (s) keys[name] = s.value;
+  return specLookupSeeds(fields, { matClass, tables: workbook?.tables ?? {}, variables: {}, cutCode: null }, keys);
+}
+
+/** The selected machine's top spindle speed (mhr_records.specs, migration 1136), which a cutting calculator caps its spindle at. */
+function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+  const value = liveTool ? rate.liveToolingMaxRpm : rate.maxSpindleRpm;
+  if (value == null) return {};
+  const column = liveTool ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm';
+  const machineId = machineRecordId(rate);
+  return {
+    'Max Spindle Speed': {
+      value, source: `Machine: ${rate.machineName ?? 'selected machine'} ${column} (mhr_records)`,
+      ...(machineId ? { ref: { kind: 'machine' as const, machineId, machineName: rate.machineName ?? '', machineClass: rate.machineClass, location: location ?? null, column } } : {}),
+    },
+  };
+}
+
+/**
+ * A line's tool wear: the run's Tool Cost per Part (the workbook's tool price over its tool life, in rupees), in the line's currency on
+ * its run and total cost, and in USD as the line's other cost. A run with none is the line as it was; a rate not on file is named.
+ */
+function withToolCost(line: ProcessLineCost, run: { outputs?: Record<string, number> }, workbook: MachiningWorkbookInput | null | undefined, warnings: string[]): ProcessLineCost {
+  const inr = run.outputs?.['Tool Cost per Part'];
+  if (inr == null || !(inr > 0)) return line;
+  if (workbook?.inrToLocal == null || workbook.inrToUsd == null) {
+    warnings.push(`${line.process}: tool cost (Rs ${inr.toFixed(2)} per part) not costed, no INR exchange rate on file.`);
+    return line;
+  }
+  const local = inr * workbook.inrToLocal;
+  return {
+    ...line,
+    runCost: line.runCost + local,
+    totalCost: line.totalCost + local,
+    otherCostPerPart: local,
+    otherCostPerPartUsd: inr * workbook.inrToUsd,
+    // The tool's price and life are the line's own calculator inputs (shown in its steps); this names the charge they make.
+    otherCostDetail: `tool wear Rs ${inr.toFixed(2)} per part`,
   };
 }
 
@@ -2071,28 +2130,23 @@ export function computeTurningCostSummary(
 
   const roughExtraTrace: CalculationTraceStep[] = [];
   const turningMissing: string[] = [];
-  const tp = input.turningParams?.dataFound ? input.turningParams : null;
-  if (barMissing) {
-    turningMissing.push(barMissing);
-  } else if (cylinders.length > 0 && !tp) {
-    turningMissing.push(`tblGeneralTurning cutting data for ${matClass}`);
-  }
-  const turnedRuns = (tp ? cylinders : []).map((cylinder) => {
+  if (barMissing) turningMissing.push(barMissing);
+  // Each turning calculator in the workbook's form: its speed and feed from the workbook's Turning cutting conditions (the band holding
+  // its depth of cut), its spindle capped at this machine's. A material the workbook has no row for is the run's named gap.
+  const lathe = { ...spindleLimitSeed(mhrRate, input.location) };
+  const bar: Record<string, CalcSeed> = { 'Bar Diameter': { value: barDiameterMm, source: barDiameterSource } };
+  const workbookRun = (operation: string, seeds: Record<string, CalcSeed>) => {
+    const all = { ...seeds, ...lathe, ...approachSeed(input.machiningCalculators, operation) };
+    const lookups = workbookSeeds(input.workbook, operation, machineClass, matClass, all);
+    const run = runMachiningCalculator(input.machiningCalculators, operation, { ...all, ...lookups.seeds });
+    return lookups.missing.length > 0 ? { ...run, sec: null, missing: [...new Set([...lookups.missing, ...run.missing])] } : run;
+  };
+  const turnedRuns = cylinders.map((cylinder) => {
     const geometry = turnedCylinderSeeds(cylinder);
     return {
       cylinder,
-      rough: runMachiningCalculator(input.machiningCalculators, 'Rough Turning', {
-        ...geometry,
-        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-        ...roughTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-        ...approachSeed(input.machiningCalculators, 'Rough Turning'),
-      }),
-      finish: runMachiningCalculator(input.machiningCalculators, 'Finish Turning', {
-        ...geometry,
-        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-        ...finishTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-        ...approachSeed(input.machiningCalculators, 'Finish Turning'),
-      }),
+      rough: workbookRun('Rough Turning', { ...geometry, ...bar }),
+      finish: workbookRun('Finish Turning', { ...geometry, ...bar }),
     };
   });
   const rough = turningWork('Rough Turning', turnedRuns.map((r) => ({ cylinder: r.cylinder, run: r.rough })));
@@ -2186,7 +2240,24 @@ export function computeTurningCostSummary(
       input.processIdentityByMachineClass, setup?.disclosure,
     ), run, setup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
   };
-  if (turningMissing.length > 0) warnings.push(`Turning not priced — missing real input: ${turningMissing.join('; ')}.`);
+  // ── End facing ────────────────────────────────────────────────────────────
+  // Both ends of the part faced square (catalog "End Machining//End"), as the workbook's Facing sheet times it: across the bar's radius,
+  // in passes over the end allowance the stock model left on each end of the piece. With no bar, the turning gap above says why.
+  if (!barMissing) {
+    const endAllowance = input.blankResult?.endAllowanceMm;
+    const facing = workbookRun('End Machining', {
+      ...bar,
+      ...(endAllowance != null ? { 'Facing Stock': { value: endAllowance, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the end allowance left on each end of the piece` } } : {}),
+      'Faces': { value: 2, source: 'Both ends of the part (Machining calculator workbook, Facing sheet: No of uses 2)' },
+    });
+    const facingMin = (facing.sec ?? 0) / 60;
+    if (facing.missing.length > 0) warnings.push(`End facing not priced — missing real input: ${facing.missing.join('; ')}.`);
+    processLines.push(withToolCost(latheLine('End Machining', facingMin, facing), facing, input.workbook, warnings));
+  }
+
+  // Every turning gap once, whether the bar or a workbook input (a material with no turning row, a table not read, no spindle limit).
+  const turningGaps = [...new Set([...turningMissing, ...rough.run.missing, ...finish.run.missing])];
+  if (turningGaps.length > 0) warnings.push(`Turning not priced — missing real input: ${turningGaps.join('; ')}.`);
   if (roughTurningMin > 0 || turningMissing.length > 0 || rough.run.missing.length > 0) {
     processLines.push(withFeatureGroups(
       latheLine('Rough Turning', roughTurningMin, rough.run, roughExtraTrace, turningMissing, true),
@@ -2278,7 +2349,7 @@ export function computeTurningCostSummary(
   // A piece a band saw cut off its stock (stockCutOff 'saw') is not parted: the saw's own line prices that cut.
   if (input.stockCutOff !== 'saw') {
     const partingMissing: string[] = [];
-    let partingRun: CalcRun = EMPTY_RUN;
+    let partingRun: CalcRun & { outputs?: Record<string, number> } = EMPTY_RUN;
     let partingMin = 0;
     const partoff = barMissing ? null : partingLookupSeeds({ matClass, partoffTable: input.partoffTable }, { 'Bar Diameter': barDiameterMm });
     if (barMissing) {
@@ -2286,15 +2357,17 @@ export function computeTurningCostSummary(
     } else if (partoff && partoff.missing.length > 0) {
       partingMissing.push(...partoff.missing);
     } else if (partoff) {
-      partingRun = runMachiningCalculator(input.machiningCalculators, 'Parting', {
-        'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
+      const tubeId = input.blankResult?.tubeIdMm;
+      partingRun = workbookRun('Parting', {
+        ...bar,
+        ...(tubeId != null ? { 'Bore Diameter': { value: tubeId, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the tube's bore (the part-off cuts its wall)` } } : {}),
         ...partoff.seeds,
       });
       partingMin = (partingRun.sec ?? 0) / 60;
     }
     const partingGap = [...partingMissing, ...partingRun.missing];
     if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
-    processLines.push(latheLine('Parting', partingMin, partingRun, [], partingMissing));
+    processLines.push(withToolCost(latheLine('Parting', partingMin, partingRun, [], partingMissing), partingRun, input.workbook, warnings));
   }
   // Nothing is turned, drilled or parted on the machine (a bar at the part's
   // own diameter, cut off by a saw): no line of these carries the setup, so

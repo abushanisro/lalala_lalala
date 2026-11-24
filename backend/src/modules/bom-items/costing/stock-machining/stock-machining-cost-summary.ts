@@ -92,6 +92,8 @@ export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutO
     form: o.form, sizeLabel: o.sizeLabel, billetVolMm3: o.blank.volumeMm3, utilizationPct: o.utilizationPct,
     ...(o.circumscribedMm != null ? { barDiameterMm: o.circumscribedMm } : {}),
     purchasedVolMm3: o.purchasedVolumeMm3, sizeSource: STOCK_SIZE_SOURCE,
+    endAllowanceMm: o.endAllowanceMm,
+    ...(o.form === 'round_tube' && o.bMm != null ? { tubeIdMm: o.bMm } : {}),
     ...(selection.fallback && choice.settings.form ? { requestedFormUnavailable: { requested: choice.settings.form, reason: selection.fallback } } : {}),
   };
 }

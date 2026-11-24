@@ -71,6 +71,14 @@ function bandIndex(bands: { min: number; max: number | null }[], size: number): 
   return null;
 }
 
+/** The row whose `minColumn`..`maxColumn` band holds `size`, by the same rule (an empty max is an open last band); null outside. */
+export function rowInBand<T extends Record<string, unknown>>(rows: readonly T[], minColumn: string, maxColumn: string, size: number): T | null {
+  const bands = rows.map((r) => ({ min: Number(r[minColumn]), max: r[maxColumn] == null || r[maxColumn] === '' ? null : Number(r[maxColumn]) }));
+  if (bands.some((b) => !Number.isFinite(b.min))) return null;
+  const i = bandIndex(bands, size);
+  return i == null ? null : rows[i];
+}
+
 /** Turning cutting conditions for a depth of cut: the band holding the depth, its feed and speed ranges. */
 export function turningConditions(
   rows: TurningConditionsRow[], group: string, toolMaterial: 'HSS' | 'Carbide', depthOfCutMm: number,
