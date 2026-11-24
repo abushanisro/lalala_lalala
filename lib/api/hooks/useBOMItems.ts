@@ -33,6 +33,8 @@ export interface BOMItem {
   file3dPath?: string;
   file2dPath?: string;
   fileDxfPath?: string;
+  /** The board set (Gerber layers, drill file, Pick Place) kept as one zip; measured when the part is analysed. */
+  fileBoardPath?: string;
   /** The STEP model the CAD analysis reads. */
   fileStepPath?: string;
   createdAt: string;

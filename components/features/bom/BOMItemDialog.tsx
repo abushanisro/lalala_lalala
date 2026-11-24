@@ -59,6 +59,7 @@ import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculat
 import type { DrawingAnalysisResult } from '@/lib/api/vave';
 import { beginProtectedJob } from '@/lib/auth/session-idle/protected-jobs';
 import { describeRejection } from '@/lib/electronics/rejections';
+import { BOARD_SET_ACCEPT, isBoardSetFile } from '@/lib/features/board-files';
 import { familyToProcessGroupLabel, processGroupOptionLabel, processGroupOptionsFrom, processGroupToFamilyHint, processesForMaterialGroups } from '@/lib/features/process-group';
 import { BOMItemType, ITEM_TYPE_LABELS } from '@/lib/types/bom.types';
 import { cn } from '@/lib/utils';
@@ -515,6 +516,8 @@ export function BOMItemDialog({
   const [loading, setLoading] = useState(false);
   const [autoParentId, setAutoParentId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ file2d?: number; file3d?: number }>({});
+  // A circuit board's board set (Gerber layers, drill file, Pick Place, or one .zip of them): stored with the item, read when it is analysed.
+  const [boardFiles, setBoardFiles] = useState<File[]>([]);
   const [showHelp, setShowHelp] = useState<Record<string, boolean>>({});
   // ── Multi-file / auto-fill state ──────────────────────────────────────────
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -931,7 +934,12 @@ export function BOMItemDialog({
     selectProcess(candidates[0]!, 'material');
   }, [materialGroupsByName, processMaterialLinks, processGroupOptions, processSource, selectProcess, detectProcessAmong]);
 
-  const handleFileDrop = useCallback(async (acceptedFiles: File[]) => {
+  const handleFileDrop = useCallback(async (dropped: File[]) => {
+    if (!dropped.length) return;
+    // Board files go to the item's board set; they are not 3D models and are not measured here.
+    const board = dropped.filter((f) => isBoardSetFile(f.name));
+    if (board.length) setBoardFiles((prev) => [...prev.filter((p) => !board.some((b) => b.name === p.name)), ...board]);
+    const acceptedFiles = dropped.filter((f) => !isBoardSetFile(f.name));
     if (!acceptedFiles.length) return;
     const isDxfFile = (f: File) => /\.(dxf|dwg)$/i.test(f.name);
     const dxfFiles = acceptedFiles.filter(isDxfFile);
@@ -1044,7 +1052,8 @@ export function BOMItemDialog({
     accept: {
       // STEP/STP are analysed by the CAD engine (the only 3D formats it reads);
       // DXF/DWG are stored as the 2D drawing, not analysed.
-      'application/octet-stream': ['.step', '.stp', '.dxf', '.dwg'],
+      // A circuit board's Gerber set (layers, drill file, Pick Place, or one .zip of them) is kept as the item's board set.
+      'application/octet-stream': ['.step', '.stp', '.dxf', '.dwg', ...BOARD_SET_ACCEPT],
     },
     maxSize: 100 * 1024 * 1024,
     multiple: true,
@@ -1155,6 +1164,7 @@ export function BOMItemDialog({
     setProcessSource(null);
     setMaterialProcessChoices([]);
     setPendingFiles([]);
+    setBoardFiles([]);
     setActiveFileId(null);
     setAutoFilledFields(new Set());
     setActiveResult(null);
@@ -1471,9 +1481,11 @@ export function BOMItemDialog({
       });
 
       const dxfPending = pendingFiles.find(pf => /\.(dxf|dwg)$/i.test(pf.file.name));
-      if (formData.file2d || formData.file3d || dxfPending) {
+      if (formData.file2d || formData.file3d || dxfPending || boardFiles.length > 0) {
         const formDataUpload = new FormData();
         const fileNames: string[] = [];
+        for (const board of boardFiles) formDataUpload.append('fileBoard', board);
+        if (boardFiles.length > 0) fileNames.push(boardFiles.length === 1 ? boardFiles[0]!.name : `${boardFiles.length} board files`);
 
         if (dxfPending) {
           formDataUpload.append('file2d', dxfPending.file);
@@ -1712,10 +1724,10 @@ export function BOMItemDialog({
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-2">
                   <Package className="h-4 w-4" />
-                  3D Model (STEP) · 2D drawing (DXF, DWG)
-                  {pendingFiles.length > 0 && (
+                  3D Model (STEP) · 2D drawing (DXF, DWG) · Board files (Gerber)
+                  {pendingFiles.length + boardFiles.length > 0 && (
                     <Badge variant="secondary" className="text-xs ml-1">
-                      {pendingFiles.length} file{pendingFiles.length !== 1 ? 's' : ''}
+                      {pendingFiles.length + boardFiles.length} file{pendingFiles.length + boardFiles.length !== 1 ? 's' : ''}
                     </Badge>
                   )}
                 </Label>
@@ -1733,7 +1745,7 @@ export function BOMItemDialog({
                 )}
               >
                 <input {...getInputProps()} />
-                {pendingFiles.length === 0 ? (
+                {pendingFiles.length === 0 && boardFiles.length === 0 ? (
                   <div className="flex flex-col items-center gap-2 text-muted-foreground py-2">
                     <Package className="h-7 w-7 opacity-50" />
                     <p className="text-sm font-medium">
@@ -1741,12 +1753,7 @@ export function BOMItemDialog({
                     </p>
                     <p className="text-xs">Multiple files supported · 100 MB max each · STEP is analysed by the CAD engine and fills the form · DXF/DWG are stored as the drawing only (not analysed)</p>
                     <p className="text-xs">
-                      Circuit board files (Gerber, drill, Pick Place)? This form cannot read them.{' '}
-                      {electronicsHref ? (
-                        <a href={electronicsHref} onClick={(e) => e.stopPropagation()} className="font-medium text-primary underline underline-offset-2">Open the project Electronics module</a>
-                      ) : (
-                        <span>Use the Electronics module of a project.</span>
-                      )}
+                      Circuit board? Drop its Gerber set (layers, drill file, Pick Place) or one .zip of it: it is kept with the part and read when the part is analysed.
                     </p>
                   </div>
                 ) : (
@@ -1793,6 +1800,36 @@ export function BOMItemDialog({
                         </button>
                       </div>
                     ))}
+                    {boardFiles.length > 0 && (
+                      <div className="rounded-md border border-dashed px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium">Board files</span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setBoardFiles([]); }}
+                            className="text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            Remove all
+                          </button>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {boardFiles.map((b) => (
+                            <Badge key={b.name} variant="outline" className="gap-1 text-xs font-normal">
+                              {b.name}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${b.name}`}
+                                onClick={(e) => { e.stopPropagation(); setBoardFiles((prev) => prev.filter((p) => p !== b)); }}
+                                className="text-muted-foreground hover:text-foreground"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          ))}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">Kept with the part; the board is measured when the part is analysed (Refresh analysis).</p>
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground pt-1 px-1">
                       Click a file to load its properties · Drop more files to add
                     </p>

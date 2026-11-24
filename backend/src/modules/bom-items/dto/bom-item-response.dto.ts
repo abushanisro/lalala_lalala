@@ -16,7 +16,7 @@ import { BOMItemType } from './bom-items.dto';
 export const BOM_ITEM_DTO_COLUMNS =
   'annual_volume,bend_count,bom_id,coating,coating_confidence,complexity,created_at,' +
   'cut_length_mm,description,drawing_intelligence,family_classification,family_confidence,' +
-  'feature_graph,file_2d_path,file_3d_path,file_dxf_path,file_step_path,' +
+  'feature_graph,file_2d_path,file_3d_path,file_board_path,file_dxf_path,file_step_path,' +
   'flat_pattern_area_mm2,heat_treatment,hole_count,id,item_type,make_buy,' +
   'manufacturing_family_override,material,material_confidence,material_grade,material_source,' +
   'max_height,max_length,max_width,name,parent_item_id,part_number,pierce_count,quantity,' +
@@ -107,6 +107,9 @@ export class BOMItemResponseDto {
 
   @ApiPropertyOptional({ example: 'file-path-drawing.dxf.gz' })
   fileDxfPath?: string;
+
+  @ApiPropertyOptional({ example: 'file-path-board-set.zip', description: 'The board set (Gerber layers, drill file, Pick Place) kept as one zip' })
+  fileBoardPath?: string;
 
   @ApiPropertyOptional({ example: 'https://cdn.database.io/storage/v1/...' })
   thumbnailUrl?: string;
@@ -237,6 +240,7 @@ export class BOMItemResponseDto {
     dto.fileStepPath = row.file_step_path || undefined;
     dto.file2dPath = row.file_2d_path || undefined;
     dto.fileDxfPath = row.file_dxf_path || undefined;
+    dto.fileBoardPath = row.file_board_path || undefined;
     dto.thumbnailUrl = row.thumbnail_url || undefined;
     dto.manufacturingFamilyOverride = row.manufacturing_family_override || undefined;
     dto.scenarioOverrides = (row.scenario_overrides && typeof row.scenario_overrides === 'object') ? row.scenario_overrides : undefined;

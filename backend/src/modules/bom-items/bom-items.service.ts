@@ -42,6 +42,7 @@ export class BOMItemsService {
     fileStepPath: 'file_step_path',
     file2dPath: 'file_2d_path',
     fileDxfPath: 'file_dxf_path',
+    fileBoardPath: 'file_board_path',
     materialId: 'material_id',
     weight: 'weight',
     maxLength: 'max_length',
