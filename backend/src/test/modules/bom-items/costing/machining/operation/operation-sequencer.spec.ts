@@ -387,12 +387,13 @@ describe('injectDrawingIntelligence', () => {
     expect(tap!.missing).toBeUndefined();
   });
 
-  it('adds an unpriced Tapping op naming the missing depth for a callout without one', () => {
+  it('adds a Tapping op for a callout without a depth, tapped to the material\'s thread engagement (1 x D in steel), never unpriced', () => {
     const opsWithoutTap = baseOps.filter((o) => o.name !== 'Tapping');
-    const tap = injectDrawingIntelligence(opsWithoutTap, { threads: [{ spec: 'M6', count: 2 }] }, 'AISI 1018', workbookFixture(), specAsCalculators())
-      .find((o) => o.name === 'Tapping')!;
-    expect(tap.timeSec).toBe(0);
-    expect(tap.missing).toContain('Thread Depth');
+    const planned = injectDrawingIntelligence(opsWithoutTap, { threads: [{ spec: 'M6', count: 2 }] }, 'AISI 1018', workbookFixture(), specAsCalculators());
+    const [tap] = timeOperations(planned.filter((o) => o.name === 'Tapping'), specAsCalculators(), TEST_MACHINE);
+    expect(tap!.missing).toBeUndefined();
+    expect(tap!.timeSec).toBeGreaterThan(0);
+    expect(tap!.trace!.find((s) => s.fieldName === 'Thread Depth')).toMatchObject({ value: 6 });
   });
 
   it('does NOT add duplicate Rigid Tap when one already exists', () => {

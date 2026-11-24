@@ -20,7 +20,7 @@ import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/proc
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences, type InspectionReference } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
-import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, type ThreadEntry } from './costing/machining/feature-holes';
+import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
 import {
   ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, PCB_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
   MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, STOCK_MACHINING_PROCESS_GROUP, familiesOfProcessGroup,
@@ -73,7 +73,7 @@ import { routeCompatibility, noCompatibleProcess, NO_COMPATIBLE_PROCESS_MESSAGE 
 import { buildMoldingCommonInput, cadFaceCount } from './costing/plastic-molding/molding-input';
 import { SecondaryProcessService } from './services/secondary-process.service';
 import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
-import { detectDrawingCadMismatches, drawingStatedBendCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
+import { detectDrawingCadMismatches, drawingStatedBendCount, drawingStatedThreadCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
 import { loadMachiningCalculatorSpec } from './costing/machining/calculators/machining-calculator-spec';
 import { isWorkbookField, specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
@@ -7971,9 +7971,9 @@ export class BomItemCostingService {
         pierceCount:  (summary.pierceCount ?? item.pierceCount ?? 0) as number,
         bendCount:    (summary.bendCount   ?? item.bendCount   ?? 0) as number,
         holeCount:    (summary.holeCount   ?? item.holeCount   ?? 0) as number,
-        threads: ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
-          size: String(t.size ?? t.spec ?? '').trim(), count: Number(t.count) || 1,
-        })),
+        threads: this.resolveThreads(((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
+          size: String(t.size ?? t.spec ?? '').trim(), count: Number(t.count) || 1, ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
+        })), item.featureGraph ?? null),
         grade, materialCostPerKg, materialDensityKgM3, materialSource, batchSize, location, mhrRates,
       });
       if (smAlt) candidates.push(smAlt);
@@ -8673,10 +8673,8 @@ export class BomItemCostingService {
     const isSheetMetal = args.family === 'sheet_metal';
     const isMachining = isMachiningFamily(args.family);
 
-    const drawingThreads = (di?.threads ?? []) as Array<{ count?: unknown }>;
-    const drawingThreadCount = drawingThreads.length > 0
-      ? drawingThreads.reduce((s, t) => s + (Number(t.count) || 1), 0)
-      : null;
+    // Only a count the drawing states ("4 × M3"); a bare "M3" callout states none (drawingStatedThreadCount).
+    const drawingThreadCount = drawingStatedThreadCount(di?.threads as unknown[] | undefined);
     const cadTapped = isMachining ? this.cadTappedHoles(args.fg) : null;
 
     const bendFeatureIds = isSheetMetal
@@ -8727,13 +8725,12 @@ export class BomItemCostingService {
     drawingThreads: Array<{ size: string; count: number; pitchMm?: number }>,
     fg: any,
   ): ThreadEntry[] {
-    // Drawing threads carry no geometry: they light no holes (a hole picked by size would be a guess).
-    if (drawingThreads.length > 0) return normalizeThreadSpecs(drawingThreads);
-    // Drawing not yet analyzed: the tapped holes of the CAD engine's machining features (threaded holes and tapped bolt circles), with
-    // their real depth and through flag, and how many are off the turning centreline (tapped with a live tool).
+    // The tapped holes of the CAD engine's machining features (threaded holes and tapped bolt circles), with their real depth and through
+    // flag, the holes to light, and how many are off the turning centreline (tapped with a live tool), merged by size with the drawing's
+    // threads (feature-holes.ts mergeThreads): the CAD's holes for a size it tapped, the drawing's pitch and its sizes the CAD did not find.
     const byFace = occurrenceByFace(fg?.feature_graph_v2?.features);
     const tapped = tappedHolesOfFeatures(fg?.machining_features?.features ?? [], (faceIds) => occurrencesOfFaces(faceIds, byFace));
-    return tapped.length === 0 ? [] : normalizeThreadSpecs(tapped);
+    return mergeThreads(drawingThreads, tapped);
   }
 
 

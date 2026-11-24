@@ -588,7 +588,18 @@ def _extract_threads(flat: str) -> list[dict]:
     De-duplication key is the full size string so M4 and 3/8-16 are independent.
     """
     results: list[dict] = []
-    seen: set[str] = set()
+    seen: dict[str, dict] = {}
+
+    def stated_again(size_str: str, count_s: str | None) -> bool:
+        """A size already read: its callout is kept, except that a count a later callout states ("4 × M3") replaces the default 1 of
+        an earlier callout that named the size alone ("M3")."""
+        prior = seen.get(size_str)
+        if prior is None:
+            return False
+        if count_s is not None and not prior["countStated"]:
+            prior["count"] = int(count_s)
+            prior["countStated"] = True
+        return True
 
     # ── Metric: 2 × M4 × 0.7, M6x1.0, M10 ──────────────────────────────────
     for m in re.finditer(
@@ -596,18 +607,21 @@ def _extract_threads(flat: str) -> list[dict]:
         flat, re.I,
     ):
         size_str = f"M{m.group(2)}"
-        if size_str in seen:
+        if stated_again(size_str, m.group(1)):
             continue
-        seen.add(size_str)
         try:
             count = int(m.group(1)) if m.group(1) else 1
             pitch = float(m.group(3)) if m.group(3) else _default_pitch(float(m.group(2)))
-            results.append({
+            entry = {
                 "size": size_str, "pitch": pitch, "count": count,
+                # A callout that names the size alone ("M3") states no count: 1 is a default, not the drawing's word.
+                "countStated": m.group(1) is not None,
                 "standard": "metric",
                 "extractionConfidence": 0.85,
                 "extractionSource": "drawing_text",
-            })
+            }
+            seen[size_str] = entry
+            results.append(entry)
         except (ValueError, TypeError):
             pass
 
@@ -632,18 +646,20 @@ def _extract_threads(flat: str) -> list[dict]:
                 if int(fd) not in (2, 4, 8, 16, 32, 64):
                     continue
                 size_str = f"{fn}/{fd}-{tpi}"
-            if size_str in seen:
+            if stated_again(size_str, count_s):
                 continue
-            seen.add(size_str)
             count = int(count_s) if count_s else 1
-            results.append({
+            entry = {
                 "size": size_str,
                 "tpi": tpi,
                 "count": count,
+                "countStated": count_s is not None,
                 "standard": "imperial",
                 "extractionConfidence": 0.85,
                 "extractionSource": "drawing_text",
-            })
+            }
+            seen[size_str] = entry
+            results.append(entry)
         except (ValueError, TypeError):
             pass
 

@@ -86,6 +86,21 @@ export function drawingStatedBendCount(drawingIntelligence: Record<string, unkno
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * The number of threads a drawing states, or null when it states none. A drawing states a count only where every callout carries one
+ * ("4 × M3"); a callout that names the size alone ("M3" beside one hole of a pattern) says nothing of how many there are. The drawing
+ * analyser reads such a callout with a count of 1 and marks it countStated: false; compared with the 3D model's tapped holes, that 1 read as
+ * "drawing says 1, the model measures 12" on every such part. A record analysed before the analyser marked it holds no countStated: there a
+ * count of 1 from the drawing's text is the analyser's default, while a count above 1, or one another reading (an AI's) gave, was stated.
+ */
+export function drawingStatedThreadCount(threads: readonly unknown[] | null | undefined): number | null {
+  const list = (threads ?? []) as ReadonlyArray<{ count?: unknown; countStated?: unknown; extractionSource?: unknown }>;
+  if (list.length === 0) return null;
+  const stated = list.every((t) =>
+    t.countStated === true || (t.countStated == null && (t.extractionSource !== 'drawing_text' || Number(t.count) > 1)));
+  return stated ? list.reduce((s, t) => s + (Number(t.count) || 1), 0) : null;
+}
+
 export interface DrawingFacts {
   bendCount: number | null;
   sheetThicknessMm: number | null;
