@@ -222,8 +222,11 @@ describe('a milled part with no feature data: faced, bulk milled, drilled and bo
   // The fixture's 83 x 62 x 32 part (100 000 mm^3) from a 90 x 70 x 40 billet (252 000 mm^3), 4 mm faced off its top and bottom.
   const facing = { faces: 2, lengthMm: 90, widthMm: 70, depthMm: 4, volumeMm3: 90 * 70 * 8, basis: 'the test billet\'s top and bottom' };
   const blank = { ...boxBillet(90, 70, 40), facing };
-  const millOf = (over: Partial<MachiningCostInput>) => computeMillingCostSummary(milledInput({ workbook: workbookFixture(), blankResult: blank, ...over }), mc('3_axis_mill'))
-    .processLines.find((l) => l.process === '3 Axis Mill')!;
+  const linesOf = (over: Partial<MachiningCostInput>) => computeMillingCostSummary(milledInput({ workbook: workbookFixture(), blankResult: blank, ...over }), mc('3_axis_mill'))
+    .processLines;
+  const millOf = (over: Partial<MachiningCostInput>) => linesOf(over).find((l) => l.process === '3 Axis Mill')!;
+  // The holes are drilled on the mill's Drilling line, a line of its own (as with feature data).
+  const drillOf = (over: Partial<MachiningCostInput>) => linesOf(over).find((l) => l.process === 'Drilling')!;
   const step = (line: ReturnType<typeof millOf>, name: string) => line.calculationTrace!.find((st) => st.fieldName === name);
 
   it('faces the billet\'s faces and bulk mills only the rest: 252 000 - 100 000 - 50 400 faced = 101 600 mm^3', () => {
@@ -231,11 +234,17 @@ describe('a milled part with no feature data: faced, bulk milled, drilled and bo
     expect(step(line, 'Facing · Faces')!.value).toBe(2);
     expect(step(line, 'Facing · Stock Depth')!.source).toBe("Stock: the test billet's top and bottom");
     expect(step(line, 'Bulk Milling · Removed Volume')!.value).toBe(101600);
-    expect(step(line, 'Drilling · Hole Diameter')).toBeDefined();
+    expect(step(line, 'Drilling · Hole Diameter')).toBeUndefined();
     // The line's time is the sum of its operations' (no flat allowance).
     const total = step(line, '3 Axis Mill cycle time')!.value as number;
     expect(line.cycleTimeMin * 60).toBeCloseTo(total, 1);
     expect(line.physicsGap).toBeUndefined();
+    // The drilling: its own line on the mill, timed by the Drilling calculator, its time out of the milling line.
+    const drilling = drillOf({});
+    expect(step(drilling, 'Drilling · Hole Diameter')).toBeDefined();
+    expect(drilling.cycleTimeMin * 60).toBeCloseTo(step(drilling, 'Drilling cycle time')!.value as number, 1);
+    expect(drilling).toMatchObject({ machineClass: '3_axis_mill', hostMachineClass: '3_axis_mill', setupCost: 0 });
+    expect(drilling.physicsGap).toBeUndefined();
   });
 
   it('with no facing on the stock, the whole stock-to-part volume is bulk milled, as before', () => {
@@ -246,13 +255,17 @@ describe('a milled part with no feature data: faced, bulk milled, drilled and bo
 
   it('a hole the drills do not reach is drilled at the largest drill and bored to size, with the tools\' wear on the line', () => {
     const largest = largestDrillMm(workbookFixture(), 'aluminum')!;
-    const line = millOf({ holeCount: 1, holeGroups: [{ diameter_mm: largest + 20, count: 1, depth_mm: 20 }] });
+    const over = { holeCount: 1, holeGroups: [{ diameter_mm: largest + 20, count: 1, depth_mm: 20 }] };
+    const line = millOf(over);
+    const drilling = drillOf(over);
     expect(step(line, 'Boring · Initial Diameter')!.value).toBe(largest);
     expect(step(line, 'Boring · Final Diameter')!.value).toBe(largest + 20);
-    expect(step(line, 'Drilling · Hole Diameter')!.value).toBe(largest);
-    // The drill's and the boring bar's price over their lives.
+    expect(step(drilling, 'Drilling · Hole Diameter')!.value).toBe(largest);
+    // The boring bar's price over its life on the milling line, the drill's on the Drilling line.
     expect(line.otherCostPerPart).toBeGreaterThan(0);
+    expect(drilling.otherCostPerPart).toBeGreaterThan(0);
     expect(line.physicsGap).toBeUndefined();
+    expect(drilling.physicsGap).toBeUndefined();
   });
 });
 
@@ -986,8 +999,13 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
       milledInput({ featureOps: knownOps }),
       mc('3_axis_mill'),
     );
-    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    expect(millingMin).toBeCloseTo((385 + moves(3, 3)) / 60, 4);
+    // The drilling is a line of its own on the mill (MILLING_DRILLING_OPERATIONS): Facing + Rough Milling on the milling line with the moves of
+    // their 2 cutters and 2 features, Drilling on the Drilling line with its 1; together the one line they were, (385 + moves(3, 3)) / 60.
+    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill' && !l.hostMachineClass)!.cycleTimeMin;
+    const drillingMin = result.processLines.find((l) => l.process === 'Drilling')!.cycleTimeMin;
+    expect(millingMin).toBeCloseTo((345 + moves(2, 2)) / 60, 4);
+    expect(drillingMin).toBeCloseTo((40 + moves(1, 1)) / 60, 4);
+    expect(millingMin + drillingMin).toBeCloseTo((385 + moves(3, 3)) / 60, 4);
   });
 
   // Root-caused live (2026-09-18): "CNC Milling" summed the sequencer's
@@ -1008,9 +1026,12 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
       milledInput({ featureOps: knownOps }),
       mc('3_axis_mill'),
     );
-    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    // Only Face Mill (45s) + Drill (40s) = 85s, and the moves of their 2 cutters and 2 features.
-    expect(millingMin).toBeCloseTo((85 + moves(2, 2)) / 60, 4);
+    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill' && !l.hostMachineClass)!.cycleTimeMin;
+    const drillingMin = result.processLines.find((l) => l.process === 'Drilling')!.cycleTimeMin;
+    // Only Face Mill (45s) + Drill (40s), each on its line with the moves of its cutter and feature: Facing on the milling line, Drilling on
+    // the mill's Drilling line.
+    expect(millingMin).toBeCloseTo((45 + moves(1, 1)) / 60, 4);
+    expect(drillingMin).toBeCloseTo((40 + moves(1, 1)) / 60, 4);
     // The real, separately-billed Tapping/Deburring lines still exist and
     // are unaffected -- this fix removes a DUPLICATE, not the real charge.
     expect(result.processLines.some((l) => l.process === 'Tapping')).toBe(true);
@@ -2408,15 +2429,22 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
     { name: 'Center Drilling', timeSec: 10, source: 'feature' }, { name: 'Filleting', timeSec: 40, source: 'feature' },
     { name: 'Tapping', timeSec: 99, source: 'feature' }, { name: 'Deburr', timeSec: 90, source: 'fixed' },
   ];
-  const line = computeMillingCostSummary(milledInput({ featureOps }), mc('3_axis_mill')).processLines.find((l) => l.process === '3 Axis Mill')!;
+  const lines = computeMillingCostSummary(milledInput({ featureOps }), mc('3_axis_mill')).processLines;
+  const line = lines.find((l) => l.process === '3 Axis Mill')!;
+  // The drilling (Center Drilling, Drilling) is timed on the mill's Drilling line by the same calculator, out of the milling line.
+  const drillLine = lines.find((l) => l.process === 'Drilling')!;
   const step = (name: string) => line.calculationTrace!.find((st) => st.fieldName === name)!.value;
+  const drillStep = (name: string) => drillLine.calculationTrace!.find((st) => st.fieldName === name)!.value;
 
-  it('carries the calculator and each operation group as an input (Tapping and Deburr are their own lines)', () => {
+  it('carries the calculator and each operation group as an input (Tapping and Deburr are their own lines, the drilling its own)', () => {
     expect(line.calculatorId).toBe('Machining - Milling');
     expect(step('Rough Milling Time')).toBe(120);
-    expect(step('Hole Making Time')).toBe(30);
+    expect(step('Hole Making Time')).toBe(0);
     expect(step('Edge Treatment Time')).toBe(40);
-    expect(step('Cutting Time')).toBe(535);
+    expect(step('Cutting Time')).toBe(505);
+    expect(drillLine.calculatorId).toBe('Machining - Milling');
+    expect(drillStep('Hole Making Time')).toBe(30);
+    expect(drillStep('Cutting Time')).toBe(30);
   });
 
   it('each operation-group input names the CAD features it was computed on, so the calculator can show them on the model', () => {
@@ -2430,13 +2458,27 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
   });
 
   it('adds a tool change for each cutter and a rapid move to each feature at the mill\'s rapid traverse rate, not a flat 15 %', () => {
-    // 6 cutting operations (Tapping and Deburr are their own lines), one cutter and one feature each: 6 x 5 s + 6 x 0.083 s = 30.498 s.
-    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([6, 6, 5, 83, 0.5]);
+    // 6 cutting operations (Tapping and Deburr are their own lines), one cutter and one feature each: the milling line's 4 (Facing, Rough
+    // and Fine Finish Milling, Filleting) are 4 x 5 s + 4 x 0.083 s; the Drilling line's 2 (Center Drilling, Drilling) 2 x 5 s + 2 x 0.083 s.
+    // Together the one line's 6 x 5 s + 6 x 0.083 s = 30.498 s, on the same 535 s.
+    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([4, 4, 5, 83, 0.5]);
+    expect([drillStep('Tools'), drillStep('Feature Visits')]).toEqual([2, 2]);
     expect(step('Rapid Traverse Rate')).toBe(30000);
     expect(line.calculationTrace!.find((st) => st.fieldName === 'Rapid Traverse Rate')!.source).toBe('Machine: Test VMC specs.rapid_traverse_mm_per_min (mhr_records)');
-    expect(step('Tool Change Time Total')).toBe(30);
-    expect(step('Rapid Time')).toBeCloseTo(0.498, 3);
-    expect(line.cycleTimeMin).toBeCloseTo((535 + moves(6, 6)) / 60, 4);
+    expect(step('Tool Change Time Total')).toBe(20);
+    expect(step('Rapid Time')).toBeCloseTo(0.332, 3);
+    expect(line.cycleTimeMin).toBeCloseTo((505 + moves(4, 4)) / 60, 4);
+    expect(drillLine.cycleTimeMin).toBeCloseTo((30 + moves(2, 2)) / 60, 4);
+    // Each line keeps its cycle to four decimals of a minute, so their sum is the one line's to three.
+    expect(line.cycleTimeMin + drillLine.cycleTimeMin).toBeCloseTo((535 + moves(6, 6)) / 60, 3);
+  });
+
+  it('the drilling is a line of its own on the mill, after the milling line: the mill\'s rate, no setup of its own, the drills\' steps', () => {
+    const names = lines.map((l) => l.process);
+    expect(names.indexOf('Drilling')).toBe(names.indexOf('3 Axis Mill') + 1);
+    expect(drillLine).toMatchObject({ machineClass: '3_axis_mill', hostMachineClass: '3_axis_mill', hourlyRate: line.hourlyRate, setupCost: 0 });
+    // It shares the machine's setup, which its first line with a cycle time (the milling line) carries: none of its own, said so.
+    expect(drillLine).toMatchObject({ setupTimeMin: 0, setupTimeSource: 'none' });
   });
 
   it('two drills of different sizes are two tool changes; two features of one operation are two rapid moves', () => {
@@ -2445,7 +2487,9 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
       { name: 'Drilling', timeSec: 30, source: 'feature', count: 2, diameterMm: 8 },
       { name: 'Drilling', timeSec: 10, source: 'feature', count: 1, diameterMm: 6 },
     ];
-    const l = computeMillingCostSummary(milledInput({ featureOps: drills }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    // Only drilling: the mill's Drilling line, and no milling line (nothing to mill).
+    const r2 = computeMillingCostSummary(milledInput({ featureOps: drills }), mc('3_axis_mill'));
+    const l = r2.processLines.find((x) => x.process === 'Drilling')!;
     const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
     expect([s2('Tools'), s2('Feature Visits')]).toEqual([2, 6]);
   });
@@ -2453,9 +2497,9 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
   it('a tool whose calculator states no cutter size is one tool for every feature size: one spot drill centres the Ø6 and the Ø8 holes', () => {
     const holes = [6, 8].map((d) => ({ feature_type: 'SimpleHole', variant: 'through', diameter_mm: d, occurrences: [{ depth_mm: 10 }, { depth_mm: 10 }] }));
     const ops = buildOperationSequence(holes, { matClass: 'aluminum', materialGrade: 'AL6061-T6', calculators: CALCS, workbook: workbookFixture() });
-    const l = computeMillingCostSummary(milledInput({ featureOps: ops, workbook: workbookFixture() }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    const l = computeMillingCostSummary(milledInput({ featureOps: ops, workbook: workbookFixture() }), mc('3_axis_mill')).processLines.find((x) => x.process === 'Drilling')!;
     const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
-    // Centre drilling (one spot drill) + a Ø6 and a Ø8 drill; a rapid move to each of the 4 holes for each of the 2 operations.
+    // On the Drilling line: centre drilling (one spot drill) + a Ø6 and a Ø8 drill; a rapid move to each of the 4 holes for each of the 2 operations.
     expect([s2('Tools'), s2('Feature Visits')]).toEqual([3, 8]);
   });
 
