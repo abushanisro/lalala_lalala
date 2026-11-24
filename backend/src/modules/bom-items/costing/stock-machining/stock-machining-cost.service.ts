@@ -76,6 +76,8 @@ export interface StockMachiningChoice {
   remnant: { mm: number; source: string };
   /** Whether the chips are sold back: the Cost Guide's, else the data's enableScrapMaterialCredit. */
   scrapCredit: boolean;
+  /** The share of the scrap weight recovered and sold (%), and where it came from: the location's data, else the whole scrap weight. */
+  scrapRecovery: { percent: number; source: string };
   settings: StockMachiningSettings;
   /** The stock when a band saw cuts the piece, and when a bar-fed lathe parts it off the bar (the parting tool's width replaces the kerf). */
   selection: Readonly<Record<StockCutOff, StockSelection>>;
@@ -97,11 +99,16 @@ export function chooseStockMachining(input: {
   const unitSystem = unitSystemFor(input.location);
   const remnant = settings.remnantMm != null
     ? { mm: settings.remnantMm, source: 'the bar end set in the Cost Guide (mm)' }
-    : { mm: BAR_END_REMNANT_MM, source: BAR_END_REMNANT_SOURCE };
+    : input.stock.barEndMm != null
+      ? { mm: input.stock.barEndMm, source: `Stock Machining variable stockBarEndRemnant for ${input.location} (mm)` }
+      : { mm: BAR_END_REMNANT_MM, source: BAR_END_REMNANT_SOURCE };
+  const scrapRecovery = input.stock.scrapRecoveryPercent != null
+    ? { percent: input.stock.scrapRecoveryPercent, source: `Stock Machining variable scrapRecoveryPercent for ${input.location} (%)` }
+    : { percent: 100, source: `No scrap recovery staged for ${input.location}: the whole scrap weight is credited` };
   const select = (cutOff: StockCutOff) => selectStock(part, input.stock, { unitSystem, cutOff, remnantMm: remnant.mm, allowanceMm: settings.allowanceMm, snap: settings.snap }, settings.form);
   return {
     choice: {
-      ref: input.ref, stock: input.stock, part, faces, outline: plateOutlineOf(input.part.machiningStock), unitSystem, remnant, scrapCredit: settings.scrapCredit ?? input.stock.scrapCredit, settings,
+      ref: input.ref, stock: input.stock, part, faces, outline: plateOutlineOf(input.part.machiningStock), unitSystem, remnant, scrapCredit: settings.scrapCredit ?? input.stock.scrapCredit, scrapRecovery, settings,
       selection: { saw: select('saw'), parting: select('parting') },
       notes: note ? [note] : [],
     },
@@ -249,7 +256,7 @@ export function priceStockMachining(input: {
           ? `${material.name}: no ${STOCK_FORM_LABEL[priceForm]} price at ${input.location}, so that of ${material.priceBorrowedFrom[priceForm]}, its closest material priced there`
           : `${material.name}: its ${STOCK_FORM_LABEL[priceForm ?? option.form]} price at ${input.location} (Raw Materials)`,
       },
-      remnant: choice.remnant, scrapCredit: choice.scrapCredit, batchSize: input.batchSize, costContext: input.costContext, endFaceIds: choice.faces.endFaceIds,
+      remnant: choice.remnant, scrapCredit: choice.scrapCredit, scrapRecovery: choice.scrapRecovery, batchSize: input.batchSize, costContext: input.costContext, endFaceIds: choice.faces.endFaceIds,
     });
   };
   const sawLines = (quote: StockMachiningQuote) => quote.lines.map((l) => (usdToLocal === 1 ? l : lineToLocal(l, usdToLocal)));
@@ -439,22 +446,27 @@ export class StockMachiningCostService {
     private readonly catalog: CalculatorCatalogService,
   ) {}
 
-  private cached: { ref: SandReference; stock: StockReference } | null = null;
+  private readonly cached = new Map<string, { ref: SandReference; stock: StockReference }>();
 
-  /** The staged memory/Stock Maching variables and lookup tables and the stock rules read from them (read once; a read error is reported and not cached). */
-  async reference(): Promise<{ reference: { ref: SandReference; stock: StockReference } | null; missing: string[] }> {
-    if (this.cached) return { reference: this.cached, missing: [] };
-    const read = await readStagedReference(this.database, STOCK_MACHINING_SOURCE_VERSION, STOCK_MACHINING_PROCESS_GROUP, 1114);
+  /**
+   * The staged memory/Stock Maching variables and lookup tables and the stock rules read from them, for a location: a rule staged for it
+   * (India's, migration 1143) replaces the reference's own. Read once per location; a read error is reported and not cached.
+   */
+  async reference(location: string): Promise<{ reference: { ref: SandReference; stock: StockReference } | null; missing: string[] }> {
+    const held = this.cached.get(location);
+    if (held) return { reference: held, missing: [] };
+    const read = await readStagedReference(this.database, STOCK_MACHINING_SOURCE_VERSION, STOCK_MACHINING_PROCESS_GROUP, 1114, location);
     if (!read.reference) return { reference: null, missing: read.missing };
     const rules = stockReference(read.reference);
     if (!rules.reference) return { reference: null, missing: rules.missing };
-    this.cached = { ref: read.reference, stock: rules.reference };
-    return { reference: this.cached, missing: [] };
+    const reference = { ref: read.reference, stock: rules.reference };
+    this.cached.set(location, reference);
+    return { reference, missing: [] };
   }
 
   /** The part's stock for each cut-off, by the staged rules and the Cost Guide's settings. */
   async choose(req: { location: string; part: StockPartInput; overrides: Record<string, unknown> | null | undefined }): Promise<{ choice: StockMachiningChoice | null; missing: string[] }> {
-    const { reference, missing } = await this.reference();
+    const { reference, missing } = await this.reference(req.location);
     if (!reference) return { choice: null, missing };
     return chooseStockMachining({ ...reference, location: req.location, part: req.part, overrides: req.overrides });
   }

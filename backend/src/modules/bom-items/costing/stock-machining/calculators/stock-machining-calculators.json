@@ -406,7 +406,60 @@
           "unit": "USD",
           "formula": "({Mass per Part} - {Part Mass}) * {Price per kg} * {Scrap Cost Percent} / 100"
         }
-      ]
+      ],
+      "supersededBy": 1144
+    },
+    {
+      "key": "stock_machining.scrap_credit",
+      "name": "Stock Machining - Scrap Credit",
+      "operations": [],
+      "helper": true,
+      "output": "Scrap Credit",
+      "description": "What the chips sell for: the stock bought per part less the part's own mass, at the stock's price and the material's Scrap Cost Percent (memory/Stock Maching materials), of which the scrap recovery is sold: the location's scrapRecoveryPercent (India: the machining workbook's 95 %, migration 1143), else all of it. Taken off the material cost only when enableScrapMaterialCredit is true (India's, migration 1143; false in the reference data) or the Cost Guide turns it on.",
+      "fields": [
+        {
+          "name": "Mass per Part",
+          "unit": "kg",
+          "source": {
+            "engine": "mass_per_part_kg (the stock bought per part)"
+          }
+        },
+        {
+          "name": "Part Mass",
+          "unit": "kg",
+          "source": {
+            "engine": "part_mass_kg (the finished part)"
+          }
+        },
+        {
+          "name": "Price per kg",
+          "unit": "USD/kg",
+          "source": {
+            "engine": "price_per_kg (the stock form's price, material_stock_prices)"
+          }
+        },
+        {
+          "name": "Scrap Cost Percent",
+          "unit": "%",
+          "source": {
+            "engine": "scrap_cost_percent (the material's Scrap Cost Percent: materialsBandSaw)"
+          }
+        },
+        {
+          "name": "Scrap Recovery",
+          "unit": "%",
+          "source": {
+            "engine": "scrap_recovery_percent (the location's scrapRecoveryPercent, else 100: the whole scrap weight)"
+          }
+        },
+        {
+          "name": "Scrap Credit",
+          "unit": "USD",
+          "formula": "({Mass per Part} - {Part Mass}) * {Price per kg} * {Scrap Cost Percent} / 100 * {Scrap Recovery} / 100"
+        }
+      ],
+      "version": 2,
+      "migration": 1144
     },
     {
       "key": "stock_machining.perimeter_cut",

@@ -9,7 +9,7 @@ import { stockReference } from '../../../../../modules/bom-items/costing/stock/s
 import { selectStock, type StockForm, type StockPart, type StockSettings } from '../../../../../modules/bom-items/costing/stock/stock-selection';
 import { loadStockMachiningCalculatorSpec, stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
 import {
-  buildStockMachiningCalculatorsMigrationSql, buildStockMachiningPerimeterCutMigrationSql,
+  buildStockMachiningCalculatorsMigrationSql, buildStockMachiningPerimeterCutMigrationSql, buildStockMachiningScrapRecoveryMigrationSql,
 } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculators-migration';
 import {
   buildStockMachiningQuote, STOCK_MACHINING_PROCESS_GROUP, type StockMachiningInput, type StockMachiningMaterial,
@@ -34,7 +34,8 @@ function quote(part: StockPart, material: StockMachiningMaterial, over: Partial<
     option,
     q: buildStockMachiningQuote({
       ref: REF, stock: STOCK, calculators: stockMachiningCalculatorsByName(), saws: bandSaws('USA'), part, option, material, cutOff: settings.cutOff, sawCosted: true,
-      remnant: { mm: settings.remnantMm, source: 'the end of a bar that makes no part' }, scrapCredit: false, batchSize: 25, costContext: ZERO, endFaceIds: [3, 9], ...rest,
+      remnant: { mm: settings.remnantMm, source: 'the end of a bar that makes no part' }, scrapCredit: false,
+      scrapRecovery: { percent: 100, source: 'No scrap recovery staged for USA: the whole scrap weight is credited' }, batchSize: 25, costContext: ZERO, endFaceIds: [3, 9], ...rest,
     }),
   };
 }
@@ -42,13 +43,15 @@ const AREA = (Math.PI / 4) * 15.875 ** 2; // the 5/8 in bar's section: 197.93 mm
 const gapReason = (line: { physicsGap?: unknown }) => (line.physicsGap as { reason?: string } | undefined)?.reason;
 
 describe('the Stock Machining calculators', () => {
-  it('are the six of migration 1116 (the stock as supplied, its size, bar and plate yield, the band saw, the scrap credit) and the perimeter cut of 1119', () => {
+  it('are the six of migration 1116 (the stock as supplied, its size, bar and plate yield, the band saw, the scrap credit), the perimeter cut of 1119 and the scrap credit\'s version 2 of 1144', () => {
     const spec = loadStockMachiningCalculatorSpec();
     expect(spec.processGroup).toBe(STOCK_MACHINING_PROCESS_GROUP);
     expect(spec.calculators.map((c) => c.name)).toEqual(['Stock Machining - Material Stock', 'Stock Machining - Stock Size', 'Stock Machining - Bar Stock',
       'Stock Machining - Plate Stock', 'Stock Machining - Band Saw', 'Stock Machining - Scrap Credit', 'Stock Machining - Perimeter Cut']);
     // A calculator added after 1116 names the migration that ships it; 1116's own name none.
-    expect(spec.calculators.map((c) => c.migration ?? null)).toEqual([null, null, null, null, null, null, 1119]);
+    expect(spec.calculators.map((c) => c.migration ?? null)).toEqual([null, null, null, null, null, 1144, 1119]);
+    // 1116's scrap credit is version 1, kept for the migration that shipped it.
+    expect(loadStockMachiningCalculatorSpec({ includeSuperseded: true }).calculators.filter((c) => c.name === 'Stock Machining - Scrap Credit').map((c) => c.version ?? 1)).toEqual([1, 2]);
     // The two catalog processes of memory/Stock Maching each have their calculator; the rest are helpers.
     expect(spec.calculators.flatMap((c) => c.operations)).toEqual(['Material Stock', 'Band Saw']);
   });
@@ -58,6 +61,13 @@ describe('the Stock Machining calculators', () => {
     expect(readFileSync(join(__dirname, '../../../../../../migrations/1116_stock_machining_calculators.sql'), 'utf8')).toBe(sql);
     // An applied migration never changes: the calculator a later one ships is not in it.
     expect(sql).not.toContain('Stock Machining - Perimeter Cut');
+  });
+
+  it('the scrap credit\'s version 2 is what migration 1144 creates, and nothing else is', () => {
+    const sql = buildStockMachiningScrapRecoveryMigrationSql();
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1144_stock_machining_scrap_recovery.sql'), 'utf8')).toBe(sql);
+    expect(sql.match(/^-- Stock Machining - .*$/gm)).toEqual(['-- Stock Machining - Scrap Credit']);
+    expect(sql).toContain('{Scrap Cost Percent} / 100 * {Scrap Recovery} / 100');
   });
 
   it('the perimeter cut is what migration 1119 creates, and nothing else is', () => {
@@ -251,5 +261,13 @@ describe('the scrap credit', () => {
     const none = quote(SHAFT, { ...AL, scrapCostPercent: null }, { scrapCredit: true }).q;
     expect(none.material.creditUsd).toBe(0);
     expect(none.warnings.join(' ')).toContain('memory lists no Scrap Cost Percent');
+  });
+
+  it('only the recovered share is sold where the location stages one (India: the workbook\'s 95 %), and the step says where it came from', () => {
+    const full = quote(SHAFT, AL, { scrapCredit: true }).q;
+    const india = quote(SHAFT, AL, { scrapCredit: true, scrapRecovery: { percent: 95, source: 'Stock Machining variable scrapRecoveryPercent for India (%)' } }).q;
+    expect(india.material.creditUsd).toBeCloseTo(full.material.creditUsd * 0.95, 9);
+    const step = JSON.stringify(india);
+    expect(step).toContain('Stock Machining variable scrapRecoveryPercent for India (%)');
   });
 });

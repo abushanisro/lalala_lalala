@@ -25,6 +25,16 @@ export interface StockReference {
   maxBundle: number;
   /** Whether the chips are sold back (enableScrapMaterialCredit). */
   scrapCredit: boolean;
+  /**
+   * The bar end that makes no part (stockBarEndRemnant, mm), where the location states one (India: the machining workbook's minimum
+   * leftover, migration 1143). Null: the data states none, and the engine's own researched bar end stands (stock-research.ts).
+   */
+  barEndMm: number | null;
+  /**
+   * The share of the scrap weight recovered and sold (scrapRecoveryPercent, %), where the location states one (India: the machining
+   * workbook's 95 %, migration 1143). Null: none staged, and the whole scrap weight is credited, as before.
+   */
+  scrapRecoveryPercent: number | null;
   /** How a plate part is roughed out (defaultRoughingTechnique: All Bulk Milling, Perimeter Milling with Dropoff, Plate Cutting with Dropoff). */
   roughingTechnique: string;
   /** By unit system, ascending. */
@@ -39,6 +49,8 @@ const NUMBERS = [
   'bandSawKerf', 'maxPartsPerBundleBandSaw',
 ] as const;
 const FLAGS = ['snapStockSize', 'hexSnapStockSize', 'enableScrapMaterialCredit'] as const;
+/** An optional variable's value, when the data states a positive one. */
+const positive = (v: number | null | undefined): number | null => (v != null && Number.isFinite(v) && v > 0 ? v : null);
 const TEXTS = ['defaultRoughingTechnique'] as const;
 const TABLES = ['tblPreferredSizes', 'tblPartingRingWidth'] as const;
 
@@ -67,6 +79,8 @@ export function stockReference(ref: SandReference): { reference: StockReference 
       kerfMm: n('bandSawKerf'),
       maxBundle: n('maxPartsPerBundleBandSaw'),
       scrapCredit: ref.flag('enableScrapMaterialCredit')!,
+      barEndMm: positive(ref.number('stockBarEndRemnant')),
+      scrapRecoveryPercent: positive(ref.number('scrapRecoveryPercent')),
       roughingTechnique: ref.text('defaultRoughingTechnique')!.trim(),
       preferredSizes: { US: preferredSizesOf(ref, 'US'), metric: preferredSizesOf(ref, 'metric') },
       partingRings: partingRingsOf(ref),

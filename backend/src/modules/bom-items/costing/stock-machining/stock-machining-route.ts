@@ -77,6 +77,8 @@ export interface StockMachiningInput {
   remnant: { mm: number; source: string };
   /** Whether the chips are sold back (enableScrapMaterialCredit, or the Cost Guide's). */
   scrapCredit: boolean;
+  /** The share of the scrap weight recovered and sold (%), with where it came from. */
+  scrapRecovery: { percent: number; source: string };
   batchSize: number;
   costContext: CostContext;
   /** The faces of the part's two ends, where the saw's cuts lie, for the line's highlight. */
@@ -203,6 +205,7 @@ export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachini
       const credit = kit.run(STOCK_MACHINING_CALC.scrap, null, {
         mass_per_part_kg: seed(purchasedKg, 'the stock bought per part (kg)'), part_mass_kg: seed(partKg, 'the finished part (kg)'), price_per_kg: priceSeed,
         scrap_cost_percent: seed(material.scrapCostPercent, `${material.name}: Scrap Cost Percent (memory/Stock Maching materials)`),
+        scrap_recovery_percent: seed(inp.scrapRecovery.percent, inp.scrapRecovery.source),
       });
       if ('run' in credit) { creditRun = credit.run; creditUsd = Math.max(0, credit.sec); }
     }
