@@ -85,6 +85,8 @@ export interface MHRRateInput {
   // n = 1000 v / (pi D) at these; null when the machine has none staged.
   maxSpindleRpm?: number | null;
   liveToolingMaxRpm?: number | null;
+  // The selected machine's rapid traverse rate (mm/min, mhr_records.specs, migration 1141): the milling line's rapids between features.
+  rapidTraverseMmPerMin?: number | null;
   // The selected machine's own mhr_records.setup_time_hr (via
   // MachineCandidate — see its own doc comment). Generic across any class;
   // Compression Molding / Reaction Injection Molding are the first real

@@ -64,8 +64,9 @@ function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInpu
     machineClass: '3_axis_mill',
     machineName: 'Test VMC',
     commodityCode: 'CNC-VMC-3AX',
-    // The test machine's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+    // The test machine's own spindle limit and rapid traverse rate (mhr_records.specs, migrations 1136 and 1141).
     maxSpindleRpm: 8000,
+    rapidTraverseMmPerMin: 30000,
     ...overrides,
   };
 }
@@ -107,8 +108,14 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
   if (!('blankResult' in overrides)) input.blankResult = boxBillet(input.maxLength, input.maxWidth, input.maxHeight);
   // The removal rate of the part's material class, as tblMillingRemovalRate stages it (migration 1036), unless the test sets one.
   if (!('millingRemovalRateMm3PerMin' in overrides)) input.millingRemovalRateMm3PerMin = REMOVAL_RATE[detectMaterialClass(input.materialGrade)];
+  // The machining variables' rapidTransferDistanceFactor (migration 639), unless the test sets one.
+  if (!('rapidTransferDistanceFactor' in overrides)) input.rapidTransferDistanceFactor = 0.5;
   return input;
 }
+
+// The mill line's moves between its operations (migration 1142): a 5 s tool change for each cutter, and a rapid move to each feature of
+// 0.5 x the part's 83 mm box length at the test mill's 30 000 mm/min (0.083 s each).
+const moves = (tools: number, visits: number, boxMm = 83) => tools * 5 + visits * ((0.5 * boxMm) / 30000) * 60;
 
 describe('computeMillingCostSummary — billet and chip loss', () => {
   it('the billet is the stock chosen for the part', () => {
@@ -908,13 +915,13 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
     // Total = 385s (Face Mill + Pocket Rough + Drill) -- Deburr is excluded:
     // it has its own real, dedicated "Deburring" line elsewhere in this
     // function (tblDeburring-based) and must not also be folded in here.
-    // With 15% overhead -> 385 * 1.15 / 60 ≈ 7.38 min.
+    // With the moves of its 3 cutters and 3 features -> (385 + 15.249) / 60 ≈ 6.671 min.
     const result = computeMillingCostSummary(
       milledInput({ featureOps: knownOps }),
       mc('3_axis_mill'),
     );
     const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    expect(millingMin).toBeCloseTo((385 * 1.15) / 60, 1);
+    expect(millingMin).toBeCloseTo((385 + moves(3, 3)) / 60, 4);
   });
 
   // Root-caused live (2026-09-18): "CNC Milling" summed the sequencer's
@@ -936,8 +943,8 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
       mc('3_axis_mill'),
     );
     const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    // Only Face Mill (45s) + Drill (40s) = 85s, * 1.15 / 60
-    expect(millingMin).toBeCloseTo((85 * 1.15) / 60, 2);
+    // Only Face Mill (45s) + Drill (40s) = 85s, and the moves of their 2 cutters and 2 features.
+    expect(millingMin).toBeCloseTo((85 + moves(2, 2)) / 60, 4);
     // The real, separately-billed Tapping/Deburring lines still exist and
     // are unaffected -- this fix removes a DUPLICATE, not the real charge.
     expect(result.processLines.some((l) => l.process === 'Tapping')).toBe(true);
@@ -1448,7 +1455,7 @@ describe('Gun Drilling / Deep Bore Machine — new operations, real L/D-triggere
     const millingLine = result.processLines.find((l) => l.machineClass === '3_axis_mill')!;
     // Only Face Mill (45s) drives CNC Milling -- the gun-drilled holes are
     // billed exclusively on the separate "Gun Drilling" line.
-    expect(millingLine.cycleTimeMin).toBeCloseTo((45 * 1.15) / 60, 2);
+    expect(millingLine.cycleTimeMin).toBeCloseTo((45 + moves(1, 1)) / 60, 4);
     expect(result.processLines.some((l) => l.process === 'Gun Drilling')).toBe(true);
   });
 });
@@ -2350,8 +2357,30 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
     expect(l.calculationTrace!.find((st) => st.fieldName === 'Facing Time')!.ref).toBeUndefined();
   });
 
-  it('adds the rapids and tool-change allowance stored on the calculator (15 %)', () => {
-    expect(line.cycleTimeMin).toBeCloseTo((535 * 1.15) / 60, 4);
+  it('adds a tool change for each cutter and a rapid move to each feature at the mill\'s rapid traverse rate, not a flat 15 %', () => {
+    // 6 cutting operations (Tapping and Deburr are their own lines), one cutter and one feature each: 6 x 5 s + 6 x 0.083 s = 30.498 s.
+    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([6, 6, 5, 83, 0.5]);
+    expect(step('Rapid Traverse Rate')).toBe(30000);
+    expect(line.calculationTrace!.find((st) => st.fieldName === 'Rapid Traverse Rate')!.source).toBe('Machine: Test VMC specs.rapid_traverse_mm_per_min (mhr_records)');
+    expect(step('Tool Change Time Total')).toBe(30);
+    expect(step('Rapid Time')).toBeCloseTo(0.498, 3);
+    expect(line.cycleTimeMin).toBeCloseTo((535 + moves(6, 6)) / 60, 4);
+  });
+
+  it('two drills of different sizes are two tool changes; two features of one operation are two rapid moves', () => {
+    const drills: OperationLine[] = [
+      { name: 'Drilling', timeSec: 20, source: 'feature', count: 3, diameterMm: 6 },
+      { name: 'Drilling', timeSec: 30, source: 'feature', count: 2, diameterMm: 8 },
+      { name: 'Drilling', timeSec: 10, source: 'feature', count: 1, diameterMm: 6 },
+    ];
+    const l = computeMillingCostSummary(milledInput({ featureOps: drills }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
+    expect([s2('Tools'), s2('Feature Visits')]).toEqual([2, 6]);
+  });
+
+  it('without the machine\'s rapid traverse rate on file the line is a named gap, never a guessed allowance', () => {
+    const r = computeMillingCostSummary(milledInput({ featureOps, mhrRate: rate(900, { rapidTraverseMmPerMin: null }) }), mc('3_axis_mill'));
+    expect((r.processLines.find((l) => l.process === '3 Axis Mill')!.physicsGap as { reason?: string }).reason).toContain('Rapid Traverse Rate');
   });
 
   it('an operation the sequencer could not price makes the line a named gap: the route is not fully costed', () => {

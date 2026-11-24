@@ -2648,6 +2648,112 @@
           "unit": "s",
           "formula": "{Cutting Time} * (1 + {Rapids and Tool Change Allowance} / 100)"
         }
+      ],
+      "supersededBy": 1142
+    },
+    {
+      "name": "Machining - Milling",
+      "operation": "{station}",
+      "machineClasses": "lathes+mills",
+      "migration": 1142,
+      "description": "The milling line of a part on a mill or a live-tool turning machine: the time of every catalog operation the machine performs on the part's CAD features (operation-sequencer.ts), by operation group, then the moves between them: a tool change for each cutter the operations use, and a rapid move to each feature they cut, of the machining variables' rapid transfer distance (rapidTransferDistanceFactor x the part's box length) at the machine's own rapid traverse rate. (It replaces a flat 15 % allowance for rapids and tool changes on the cutting time: the project owner's decision of 2026-11-24.)",
+      "fields": [
+        {
+          "name": "Facing Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Rough Milling Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Finish Milling Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Contouring Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Slot and Groove Milling Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Hole Making Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Edge Treatment Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Other Operations Time",
+          "unit": "s",
+          "source": "engine"
+        },
+        {
+          "name": "Tools",
+          "unit": null,
+          "source": "engine",
+          "note": "The cutters the operations use: one for each operation and cutter size (a Ø6 and a Ø8 drill are two)."
+        },
+        {
+          "name": "Tool Change Time",
+          "unit": "s",
+          "source": "default",
+          "default": 5,
+          "note": "The engine's own value, by the project owner's decision of 2026-11-24: no mill record states a tool-change time (only the gear grinders' do). Edit it for the machine."
+        },
+        {
+          "name": "Feature Visits",
+          "unit": null,
+          "source": "engine",
+          "note": "The features the operations cut, each one a rapid move of the tool to it."
+        },
+        {
+          "name": "Part Box Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Rapid Transfer Distance Factor",
+          "unit": null,
+          "source": "engine",
+          "note": "The machining variables' rapidTransferDistanceFactor (memory/machining/variables.csv, migration 639): multiplied by the part's box length, the typical rapid transfer distance."
+        },
+        {
+          "name": "Rapid Traverse Rate",
+          "unit": "mm/min",
+          "source": "machine",
+          "note": "The selected machine's own rapid traverse rate (mhr_records.specs rapid_traverse_mm_per_min, migration 1141)."
+        },
+        {
+          "name": "Cutting Time",
+          "unit": "s",
+          "formula": "{Facing Time} + {Rough Milling Time} + {Finish Milling Time} + {Contouring Time} + {Slot and Groove Milling Time} + {Hole Making Time} + {Edge Treatment Time} + {Other Operations Time}"
+        },
+        {
+          "name": "Tool Change Time Total",
+          "unit": "s",
+          "formula": "{Tools} * {Tool Change Time}"
+        },
+        {
+          "name": "Rapid Time",
+          "unit": "s",
+          "formula": "{Feature Visits} * {Rapid Transfer Distance Factor} * {Part Box Length} / {Rapid Traverse Rate} * 60"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Cutting Time} + {Tool Change Time Total} + {Rapid Time}"
+        }
       ]
     },
     {

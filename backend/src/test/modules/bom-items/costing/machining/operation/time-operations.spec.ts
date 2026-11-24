@@ -69,21 +69,21 @@ describe('timeOperations', () => {
 
 describe('each mill route times the part\'s operations on its own spindle', () => {
   const rate = (rpm: number): MHRRateInput =>
-    ({ rate: 900, source: 'mhr_database', machineClass: '3_axis_mill', machineName: `Mill ${rpm}`, commodityCode: null, maxSpindleRpm: rpm } as MHRRateInput);
+    ({ rate: 900, source: 'mhr_database', machineClass: '3_axis_mill', machineName: `Mill ${rpm}`, commodityCode: null, maxSpindleRpm: rpm, rapidTraverseMmPerMin: 30000 } as MHRRateInput);
   const input = (rpm: number) => ({
     volume: 40_000, surfaceArea: 8000, maxLength: 100, maxWidth: 50, maxHeight: 20, holeCount: 0, holeGroups: [], pocketCount: 0,
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5, materialDensityKgM3: 2700, materialSource: 'db', threads: [],
     tightestToleranceMm: null, gdtFeatureCount: 0, batchSize: 10, family: 'milled', finishedWeightKg: 0.1,
     mhrRate: rate(rpm), tappingRate: rate(rpm), deburrRate: rate(rpm), inspectionRate: rate(rpm), surfaceTreatment: null,
-    machiningCalculators: CALCS, featureOps: [KEYWAY],
+    machiningCalculators: CALCS, featureOps: [KEYWAY], rapidTransferDistanceFactor: 0.5,
   } as unknown as MachiningCostInput);
   const millMinutes = (rpm: number) =>
     computeMillingCostSummary(input(rpm), '3_axis_mill' as MachineClassId).processLines.find((l) => l.process === '3 Axis Mill')!.cycleTimeMin;
 
-  it('the machine\'s limit replaces the calculator\'s 10 000 rpm default: 6000 rpm is 2.7953 s, 12 000 rpm 1.3977 s, plus the mill line\'s 15 %', () => {
+  it('the machine\'s limit replaces the calculator\'s 10 000 rpm default: 6000 rpm is 2.7953 s, 12 000 rpm 1.3977 s, plus the mill line\'s moves', () => {
     // 6000 rpm: 4 x 6.70875 / (6000 x 0.096 = 576 mm/min) x 60 = 2.7953 s.  12 000 rpm: 4 x 6.70875 / 1152 x 60 = 1.3977 s.
-    // The mill line adds its stored rapids and tool-change allowance, 15 % (Machining - Milling).
-    expect(millMinutes(6000) * 60).toBeCloseTo(((4 * 6.70875) / 576) * 60 * 1.15, 1);
-    expect(millMinutes(12000) * 60).toBeCloseTo(((4 * 6.70875) / 1152) * 60 * 1.15, 1);
+    // The mill line adds its moves (Machining - Milling): one 5 s tool change and one rapid move of 0.5 x 100 mm at 30 000 mm/min (0.1 s).
+    expect(millMinutes(6000) * 60).toBeCloseTo(((4 * 6.70875) / 576) * 60 + 5.1, 1);
+    expect(millMinutes(12000) * 60).toBeCloseTo(((4 * 6.70875) / 1152) * 60 + 5.1, 1);
   });
 });

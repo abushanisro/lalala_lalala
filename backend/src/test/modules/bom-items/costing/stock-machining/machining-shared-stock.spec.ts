@@ -97,7 +97,8 @@ function millRoute(p: StockMachiningPlan): CostSummaryDto {
     ...base('milled', STIFFENER.box, STIFFENER.volumeMm3),
     featureOps: [{ name: 'Rough Mill', timeSec: 120, source: 'feature' }],
     ...stockEngineInput(p.choice, 'saw', AL.pricePerKgUsd),
-    mhrRate: rate(600, '3_axis_mill'),
+    // The mill's rapid traverse rate (migration 1141) and the machining variables' rapid transfer factor (migration 639): its moves.
+    mhrRate: { ...rate(600, '3_axis_mill'), rapidTraverseMmPerMin: 30000 }, rapidTransferDistanceFactor: 0.5,
   }, '3_axis_mill' as MachineClassId);
   return withStockMachining(engine, p, 'saw');
 }

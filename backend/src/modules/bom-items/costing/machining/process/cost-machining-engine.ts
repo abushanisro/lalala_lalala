@@ -170,6 +170,11 @@ export interface MachiningCostInput {
   partSetup?: { loadTable: any[] | null; adjustmentFactor: number | null; repetitions: number | null; setups: number | null } | null;
   /** The material's milling removal rate (tblMillingRemovalRate, mm^3/min); null or unset = not on file. */
   millingRemovalRateMm3PerMin?: number | null;
+  /**
+   * The machining variables' rapidTransferDistanceFactor (memory/machining/variables.csv, migration 639): x the part's box length, the
+   * typical distance of a rapid move between the features the mill cuts. Null = not on file: the milling line's rapids are a named gap.
+   */
+  rapidTransferDistanceFactor?: number | null;
   // The part's sequenced operations (feature_graph_v2, operation-sequencer.ts): each feature's own, and on a milled route the
   // Bulk Milling of the stock around the part (stock-excess.ts). When absent, the whole stock-to-part volume is one Bulk Milling
   // operation ((stock volume − part volume) / MRR).
@@ -408,8 +413,46 @@ const MILLING_TIME_INPUT: Record<string, string> = {
   'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time',
 };
 
-/** The milling calculator's inputs: the part's sequenced operation times by group, with the operations behind each. */
-function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>): Record<string, CalcSeed> {
+/** What the milling line's moves between operations are timed on: the machine, and the part's size for its rapid moves. */
+export interface MillingMoves {
+  mhrRate: MHRRateInput;
+  location?: string | null;
+  /** The part's box length (mm): the rapid transfer distance is rapidTransferDistanceFactor x it. */
+  partBoxLengthMm: number | null;
+  rapidTransferDistanceFactor: number | null;
+}
+
+// The cutter size an operation's calculator run states, by the field each calculator names it.
+const CUTTER_FIELDS = ['Cutter Diameter', 'Tool Diameter', 'Hole Diameter', 'Step Diameter', 'Thread Diameter', 'Keyway Width', 'Initial Diameter', 'Final Diameter'];
+
+/** The cutters an operation uses: one per calculator run, by the operation and the cutter size the run states (a Ø6 and a Ø8 drill are two). */
+function cuttersOf(o: NonNullable<MachiningCostInput['featureOps']>[number]): string[] {
+  const runs = o.plan?.length ? o.plan : [{ seeds: {} as Record<string, CalcSeed> }];
+  return runs.map((p) => {
+    const field = CUTTER_FIELDS.find((f) => p.seeds[f] != null);
+    return `${o.name}|${field ? p.seeds[field]!.value : (o.diameterMm ?? '')}`;
+  });
+}
+
+/** The selected machine's rapid traverse rate (mhr_records.specs, migration 1141): the milling line's rapid moves are at it. */
+export function rapidTraverseSeed(rate: MHRRateInput, location: string | null | undefined): Record<string, CalcSeed> {
+  if (rate.rapidTraverseMmPerMin == null) return {};
+  const column = 'specs.rapid_traverse_mm_per_min';
+  const machineId = machineRecordId(rate);
+  return {
+    'Rapid Traverse Rate': {
+      value: rate.rapidTraverseMmPerMin, source: `Machine: ${rate.machineName ?? 'selected machine'} ${column} (mhr_records)`,
+      ...(machineId ? { ref: { kind: 'machine' as const, machineId, machineName: rate.machineName ?? '', machineClass: rate.machineClass, location: location ?? null, column } } : {}),
+    },
+  };
+}
+
+/**
+ * The milling calculator's inputs: the part's sequenced operation times by group, with the operations behind each; then the moves
+ * between them: the cutters the operations use (a tool change each), the features they cut (a rapid move to each), the part's box length
+ * and the machining variable that make the rapid distance, and the machine's rapid traverse rate.
+ */
+function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>, moves: MillingMoves): Record<string, CalcSeed> {
   const groups = new Map<string, { sec: number; ops: Set<string>; featureIds: Set<string> }>(
     [...new Set(Object.values(MILLING_TIME_INPUT)), 'Other Operations Time'].map((g) => [g, { sec: 0, ops: new Set<string>(), featureIds: new Set<string>() }]),
   );
@@ -420,12 +463,25 @@ function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>)
     g.ops.add(o.name);
     for (const id of o.featureIds ?? []) g.featureIds.add(id);
   }
-  return Object.fromEntries([...groups].map(([field, g]) => [field, {
+  const groupSeeds = Object.fromEntries([...groups].map(([field, g]) => [field, {
     value: g.sec,
     source: g.ops.size > 0 ? `CAD features: ${[...g.ops].join(', ')} (operation sequence)` : 'CAD features: none of this group on the part',
     // The features the time was computed on: the calculator input shows them on the model.
     ...(g.featureIds.size > 0 ? { ref: { kind: 'features' as const, label: field, features: [...g.featureIds].map((featureId) => ({ featureId })) } } : {}),
   }]));
+  // The moves: only an operation that cuts (has a time) changes to its cutter and moves to its features.
+  const cutting = featureOps.filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && o.timeSec > 0);
+  const tools = new Set(cutting.flatMap(cuttersOf));
+  const visits = cutting.reduce((n, o) => n + (o.count ?? 1), 0);
+  return {
+    ...groupSeeds,
+    'Tools': { value: tools.size, source: `Operation sequence: the cutters of ${[...new Set(cutting.map((o) => o.name))].join(', ') || 'no operation'}, one per operation and cutter size` },
+    'Feature Visits': { value: visits, source: 'Operation sequence: the features the operations cut' },
+    ...(moves.partBoxLengthMm != null && moves.partBoxLengthMm > 0 ? { 'Part Box Length': { value: moves.partBoxLengthMm, source: 'CAD: the part\'s bounding box length' } } : {}),
+    ...(moves.rapidTransferDistanceFactor != null && moves.rapidTransferDistanceFactor > 0
+      ? { 'Rapid Transfer Distance Factor': variableSeed(moves.rapidTransferDistanceFactor, 'rapidTransferDistanceFactor') } : {}),
+    ...rapidTraverseSeed(moves.mhrRate, moves.location),
+  };
 }
 
 // ── Drill cycle time (real, material-aware physics) ──────────────────────────
@@ -1709,14 +1765,16 @@ export function checkLatheCapability(
 }
 
 /**
- * What milling operations cost on a mill, as its line prices them: the station's "Machining - Milling" calculator on their times (the
- * rapids and tool-change allowance included), at the machine's rate with its operators' labour. It is what the operations add to the
- * mill's run cost (the calculator is linear in the operation times). Null when the station's calculator is not on file.
+ * What milling operations cost on a mill, as its line prices them: the station's "Machining - Milling" calculator on their times, with a
+ * tool change for each cutter and a rapid move to each feature they cut, at the machine's rate with its operators' labour. Null when the
+ * station's calculator is not on file or cannot time them.
  */
 export function millingOperationsCost(
-  machiningCalculators: MachiningCostInput['machiningCalculators'], mhrRate: MHRRateInput, machineClass: MachineClassId, ops: NonNullable<MachiningCostInput['featureOps']>,
+  machiningCalculators: MachiningCostInput['machiningCalculators'], machineClass: MachineClassId, ops: NonNullable<MachiningCostInput['featureOps']>,
+  moves: MillingMoves,
 ): number | null {
-  const run = runMachiningCalculator(machiningCalculators, realProcessName(machineClass), millingSeeds(ops));
+  const { mhrRate } = moves;
+  const run = runMachiningCalculator(machiningCalculators, realProcessName(machineClass), millingSeeds(ops, moves));
   if (run.sec == null) return null;
   const minutes = run.sec / 60;
   return makeLine(realProcessName(machineClass), 0, (minutes / 60) * mhrRate.rate, minutes, mhrRate).runCost;
@@ -1829,10 +1887,12 @@ export function computeMillingCostSummary(
     // process line at its OWN dedicated rate (tappingRate/deburrRate, not
     // mhrRate) — see MILLING_DOUBLE_BILLED_ELSEWHERE's own doc comment
     // above for why this exact set and why it's shared, not local.
-    // 15% rapids/ATC overhead added on top of pure cutting time.
     // The line's time is the "Machining - Milling" calculator of this machine's station: each catalog
-    // operation group's time on the part's features, plus the rapids / tool-change allowance.
-    millRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(input.featureOps));
+    // operation group's time on the part's features, then a tool change for each cutter and a rapid move to
+    // each feature, at this machine's rapid traverse rate.
+    millRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(input.featureOps, {
+      mhrRate, location: input.location, partBoxLengthMm: input.maxLength, rapidTransferDistanceFactor: input.rapidTransferDistanceFactor ?? null,
+    }));
     cncMillingMin = (millRun.sec ?? 0) / 60;
   } else {
     // No feature graph (the CAD engine did not return feature_graph_v2): the whole stock-to-part volume is one Bulk Milling operation,

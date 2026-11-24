@@ -40,14 +40,16 @@ const sequence = (features: unknown[], stockOps: OperationLine[]) => buildOperat
 
 const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass: 'x', machineName: 'M', commodityCode: null, ...extra } as MHRRateInput);
-const MILL = rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, labourRate: 36, operators: 1, maxSpindleRpm: 8000 });
+const MILL = rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, labourRate: 36, operators: 1, maxSpindleRpm: 8000, rapidTraverseMmPerMin: 30000 });
+// The mill's moves for the part: a rapid move is 0.5 (rapidTransferDistanceFactor) x the part's 159.5 mm box length at 30 000 mm/min.
+const MOVES = { mhrRate: MILL, partBoxLengthMm: 159.5, rapidTransferDistanceFactor: 0.5 };
 function milled(featureOps: OperationLine[]) {
   const input: MachiningCostInput = {
     volume: PART_MM3, surfaceArea: 15000, maxLength: 159.5, maxWidth: 42, maxHeight: 8, holeCount: 0, holeGroups: [], pocketCount: 1,
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700, materialSource: 'db', threads: [], tightestToleranceMm: null,
     gdtFeatureCount: 0, batchSize: 100, family: 'milled', finishedWeightKg: 0.041, mhrRate: MILL, tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }), inspectionRate: rate(450, { machineClass: 'machining_inspection' }), surfaceTreatment: null,
-    machiningCalculators: CALCS, millingRemovalRateMm3PerMin: 60000, featureOps, workbook: workbookFixture(),
+    machiningCalculators: CALCS, millingRemovalRateMm3PerMin: 60000, featureOps, workbook: workbookFixture(), rapidTransferDistanceFactor: 0.5,
     blankResult: { form: 'plate', sizeLabel: '1/2" plate, 159.5 x 42 mm outline', billetVolMm3: PIECE_MM3, utilizationPct: 11.5, purchasedVolMm3: 132735.2184 },
   };
   return computeMillingCostSummary(input, '3_axis_mill' as MachineClassId);
@@ -81,18 +83,19 @@ describe('on the mill line, the perimeter cut', () => {
   });
 
   it('makes the line longer by its time x 1.15, at the mill\'s rate and labour', () => {
-    // 122.5165 x 1.15 = 140.894 s. At 900 an hour that is 35.22, and 1.41 of labour at 36 an hour: 36.63.
-    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(140.894, 1);
-    expect(line.runCost - without.runCost).toBeCloseTo(36.63, 1);
+    // 122.5165 s, a 5 s tool change and a rapid move of 0.5 x 159.5 mm at 30 000 mm/min (0.1595 s): 127.676 s. At 900 an hour that is
+    // 31.92, and 1.28 of labour at 36 an hour: 33.20.
+    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(127.676, 1);
+    expect(line.runCost - without.runCost).toBeCloseTo(33.2, 1);
   });
 
   it('costs on its own what it adds to the line: the figure the roughing list shows for the quoted mill', () => {
-    const cost = millingOperationsCost(CALCS, MILL, '3_axis_mill' as MachineClassId, [{ name: 'Perimeter Milling', timeSec: CUT_SEC, source: 'stock' }])!;
-    // 140.894 s: 35.22 of machine at 900 an hour + 35.22 / 900 x 36 = 1.41 of labour.
-    expect(cost).toBeCloseTo(36.63, 2);
+    const cost = millingOperationsCost(CALCS, '3_axis_mill' as MachineClassId, [{ name: 'Perimeter Milling', timeSec: CUT_SEC, source: 'stock' }], MOVES)!;
+    // 127.676 s: 31.92 of machine at 900 an hour + 31.92 / 900 x 36 = 1.28 of labour.
+    expect(cost).toBeCloseTo(33.2, 1);
     expect(cost).toBeCloseTo(line.runCost - without.runCost, 1);
     // With no station calculator on file there is no figure, not an estimate.
-    expect(millingOperationsCost({}, MILL, '3_axis_mill' as MachineClassId, [{ name: 'Perimeter Milling', timeSec: CUT_SEC, source: 'stock' }])).toBeNull();
+    expect(millingOperationsCost({}, '3_axis_mill' as MachineClassId, [{ name: 'Perimeter Milling', timeSec: CUT_SEC, source: 'stock' }], MOVES)).toBeNull();
   });
 
   it('shows its own calculation on the line, under its name', () => {

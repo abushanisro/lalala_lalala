@@ -76,10 +76,30 @@ describe('the cutting machines spindle limits (migration 1136)', () => {
   });
 });
 
+describe('the cutting machines rapid traverse rates (migration 1141)', () => {
+  const file = join(MIGRATIONS, '1141_machining_rapid_traverse_rates.sql');
+
+  it('is what the generator writes from memory/machining/machine', () => {
+    const committed = readFileSync(file, 'utf8');
+    execFileSync('node', [join(BACKEND, 'scripts/generate-machining-rapid-traverse-migration.js')], { stdio: 'ignore' });
+    expect(readFileSync(file, 'utf8')).toBe(committed);
+  });
+
+  it('writes each machine its own rate by class and name, for every location, the machines 1136 gave a spindle limit', () => {
+    const sql = readFileSync(file, 'utf8');
+    expect(sql).toContain('($str$2_axis_bar_feed_lathe_with_sub_spindle$str$, $str$Haas DS-30 with BAR3010SS Feeder$str$, 24000)');
+    expect(sql).toContain('198 machines in 16 classes');
+    expect(sql).not.toMatch(/m\.location/);
+    expect(sql).not.toContain('Manual Bench Cell');
+    // Every machine of those classes must end with one: the migration stops otherwise.
+    expect(sql).toContain('Cutting machines still without a rapid traverse rate');
+  });
+});
+
 describe('the machine pool and line rate carry the spindle limits (mhr_records.specs, migrations 1093 / 1136)', () => {
   const selects: string[] = [];
   const rows = [
-    { id: 'a', machine_name: 'Haas DS-30Y with BAR3010SS Feeder', machine_class: '3_axis_bar_feed_lathe_with_sub_spindle', process_group: 'Machining', total_machine_hour_rate: 60, spindle_speed_rpm: 4000, live_tooling_speed_rpm: 3000 },
+    { id: 'a', machine_name: 'Haas DS-30Y with BAR3010SS Feeder', machine_class: '3_axis_bar_feed_lathe_with_sub_spindle', process_group: 'Machining', total_machine_hour_rate: 60, spindle_speed_rpm: 4000, live_tooling_speed_rpm: 3000, rapid_traverse_mm_per_min: 12000 },
     { id: 'b', machine_name: 'Lathe with nothing on file', machine_class: '2_axis_lathe', process_group: 'Machining', total_machine_hour_rate: 50 },
   ];
   const client = {
@@ -89,6 +109,7 @@ describe('the machine pool and line rate carry the spindle limits (mhr_records.s
   it('reads only the two specs keys, and a machine with none staged has no limit (not a made-up one)', async () => {
     const pool = await fetchMachinePool(client as never, `spindle-limit-test-${Date.now()}`);
     expect(selects[0]).toContain('spindle_speed_rpm:specs->spindle_speed_rpm, live_tooling_speed_rpm:specs->live_tooling_speed_rpm');
+    expect(selects[0]).toContain('rapid_traverse_mm_per_min:specs->rapid_traverse_mm_per_min');
     expect(selects[0]).not.toMatch(/(^|, )specs(,|$)/);
     const haas = pool.find((c) => c.machineName?.startsWith('Haas'))!;
     expect([haas.maxSpindleRpm, haas.liveToolingMaxRpm]).toEqual([4000, 3000]);
@@ -96,6 +117,8 @@ describe('the machine pool and line rate carry the spindle limits (mhr_records.s
     expect([bare.maxSpindleRpm, bare.liveToolingMaxRpm]).toEqual([null, null]);
     const rate = mhrRateFromCandidate(haas, '3_axis_bar_feed_lathe_with_sub_spindle', 1);
     expect([rate.maxSpindleRpm, rate.liveToolingMaxRpm]).toEqual([4000, 3000]);
+    // The rapid traverse rate (migration 1141) the same way; none staged is none.
+    expect([haas.rapidTraverseMmPerMin, bare.rapidTraverseMmPerMin, rate.rapidTraverseMmPerMin]).toEqual([12000, null, 12000]);
   });
 });
 

@@ -73,6 +73,9 @@ export interface MachineCandidate {
   // spindle speed n = 1000 v / (pi D) at these. null when not staged.
   maxSpindleRpm: number | null;
   liveToolingMaxRpm: number | null;
+  // mhr_records.specs rapid_traverse_mm_per_min (migration 1141; source memory/machining/machine/*.csv): the rate the machine moves
+  // between the features it cuts. null when not staged.
+  rapidTraverseMmPerMin: number | null;
   // mhr_records.setup_time_hr — real per-machine setup time, generically
   // available for any class (2026-09-02, added for Compression Molding /
   // Reaction Injection Molding, which have no per-operation lookup table
