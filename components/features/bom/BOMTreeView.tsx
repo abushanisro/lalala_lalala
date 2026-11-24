@@ -1,24 +1,45 @@
-import { motion, AnimatePresence } from 'framer-motion';
-import { useState, useMemo, useEffect } from 'react';
+'use client';
 
-// Fix TS6133: removed unused imports Info, Network
+// The hover details are drawn on the page's top layer: inside the canvas they would be cut off at its edge and scaled with its zoom.
+import { Portal as TooltipPortal } from '@radix-ui/react-tooltip';
+import { motion, AnimatePresence } from 'framer-motion';
+import dynamic from 'next/dynamic';
+import { useState, useMemo, useEffect } from 'react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Plus, Edit2, Trash2, ZoomIn, ZoomOut, Maximize2, AlertTriangle, CheckCircle, XCircle, FileText } from '@/components/ui/icons';
+import {
+  Plus, Edit2, ZoomIn, ZoomOut, Maximize2, AlertTriangle, CheckCircle, XCircle,
+  Box, Layers, Layers3, Package, ChevronRight, ArrowRight, FolderOpen, X,
+  type LucideIcon,
+} from '@/components/ui/icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { BOMItem as BOMItemRecord } from '@/lib/api/hooks/useBOMItems';
+import { familyToProcessGroupLabel } from '@/lib/features/process-group';
 import { BOMItemType } from '@/lib/types/bom.types';
 import { cn } from '@/lib/utils';
 
-// Fix TS6133: removed unused import Progress
-
+// The same lazily drawn picture of the part as the BOM list's rows (no SSR: it draws the model with WebGL).
+const BOMItemThumbnail = dynamic(
+  () => import('./BOMItemThumbnail').then((m) => m.BOMItemThumbnail),
+  { ssr: false, loading: () => null },
+);
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface BOMItem {
+/**
+ * One item of the tree. The page passes the BOM items as the API returns them, so every other field of the item (its CAD files,
+ * thumbnail, size, weight, material...) is there too and shown on the card and its hover details.
+ */
+export interface BOMItem extends Partial<Omit<BOMItemRecord, 'id' | 'name' | 'partNumber' | 'itemType' | 'quantity' | 'unit' | 'material'>> {
   id: string;
   name: string;
   partNumber?: string;
@@ -35,7 +56,10 @@ interface BOMTreeViewProps {
   projectId?: string;
   onAddItem: (parentId: string | null, type: BOMItemType) => void;
   onEditItem: (item: BOMItem) => void;
+  /** Called after the user confirms the delete in the tree's own dialog. */
   onDeleteItem: (id: string) => void;
+  /** A click on an item's card: the page opens the item's Manufacturing Intelligence page. */
+  onOpenItem?: (item: BOMItem) => void;
 }
 
 type ValidationIssueType  = 'circular' | 'orphaned' | 'missing_quantity' | 'invalid_hierarchy' | 'duplicate_parts' | 'missing_data';
@@ -65,6 +89,7 @@ interface BOMValidationResult {
   };
 }
 
+/** x: the card's left edge; y: its vertical middle. */
 interface NodePosition {
   x: number;
   y: number;
@@ -87,6 +112,49 @@ interface ItemCounts {
 interface CalcStatsResult {
   counts: ItemCounts;
   maxDepth: number;
+}
+
+// ---------------------------------------------------------------------------
+// Card geometry and type colours
+// ---------------------------------------------------------------------------
+
+const CARD_W        = 288;
+const CARD_H        = 76;
+const COLUMN_GAP    = 72;   // room between a parent's card and its children's, for the connectors and the expand button
+const ROW_H         = 96;   // one card and the gap below it
+const PAD_X         = 24;
+const PAD_Y         = 24;
+const LEVEL_SPACING = CARD_W + COLUMN_GAP;
+
+interface TypeStyle {
+  label: string;
+  Icon: LucideIcon;
+  bar: string;    // the card's left bar
+  text: string;   // the type label
+  stroke: string; // the connector leading to the card
+  ring: string;   // the card's hover ring
+}
+
+// The BOM list's type colours: assembly green, sub-assembly blue, child part yellow.
+const TYPE_STYLE: Record<string, TypeStyle> = {
+  [BOMItemType.ASSEMBLY]: {
+    label: 'Assembly', Icon: Layers, bar: 'bg-emerald-500', text: 'text-emerald-700 dark:text-emerald-400',
+    stroke: 'stroke-emerald-500', ring: 'hover:ring-emerald-500/40',
+  },
+  [BOMItemType.SUB_ASSEMBLY]: {
+    label: 'Sub-Assembly', Icon: Layers3, bar: 'bg-blue-500', text: 'text-blue-700 dark:text-blue-400',
+    stroke: 'stroke-blue-500', ring: 'hover:ring-blue-500/40',
+  },
+  [BOMItemType.CHILD_PART]: {
+    label: 'Part', Icon: Box, bar: 'bg-yellow-400', text: 'text-yellow-700 dark:text-yellow-300',
+    stroke: 'stroke-yellow-400', ring: 'hover:ring-yellow-400/50',
+  },
+};
+
+function typeStyleOf(type: string): TypeStyle {
+  return TYPE_STYLE[type] ?? {
+    label: type, Icon: Package, bar: 'bg-border', text: 'text-muted-foreground', stroke: 'stroke-border', ring: 'hover:ring-border',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +312,7 @@ function validateBOMStructure(items: BOMItem[]): BOMValidationResult {
   };
 }
 
+
 function countDescendants(item: BOMItem, expandedNodes: Set<string>): number {
   if (!item.children || item.children.length === 0 || !expandedNodes.has(item.id)) return 1;
   return item.children.reduce((sum, child) => sum + countDescendants(child, expandedNodes), 0);
@@ -257,16 +326,14 @@ function calculateHierarchicalPositions(
   parentPos?: NodePosition,
 ): { nodes: TreeNode[]; totalHeight: number } {
   const nodes: TreeNode[] = [];
-  const levelSpacing      = 280;
-  const verticalSpacing   = 110;
   let currentY            = startY;
 
   items.forEach(item => {
     const isExpanded      = expandedNodes.has(item.id);
     const descendantCount = countDescendants(item, expandedNodes);
-    const nodeHeight      = Math.max(descendantCount * verticalSpacing, verticalSpacing);
+    const nodeHeight      = Math.max(descendantCount * ROW_H, ROW_H);
     const nodeY           = currentY + nodeHeight / 2;
-    const nodeX           = level * levelSpacing;
+    const nodeX           = PAD_X + level * LEVEL_SPACING;
 
     const position: NodePosition = { x: nodeX, y: nodeY, level };
     nodes.push({ ...item, position, isExpanded, ...(parentPos !== undefined ? { parentPos } : {}) });
@@ -283,172 +350,247 @@ function calculateHierarchicalPositions(
 }
 
 // ---------------------------------------------------------------------------
-// HierarchicalNode
+// Hover details: the item's CAD and part properties
+// ---------------------------------------------------------------------------
+
+const fileNameOf = (path: string | undefined): string => (path ? (path.split('?')[0] ?? '').split('/').pop() ?? '' : '');
+const mm = (v: number | undefined): string => (v && v > 0 ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '0');
+
+function CadDetails({ node, onOpen }: { node: BOMItem; onOpen?: () => void }) {
+  const style    = typeStyleOf(node.itemType);
+  const hasModel = Boolean(node.file3dPath ?? node.file2dPath);
+  const childCount = node.children?.length ?? 0;
+  const size =
+    (node.maxLength ?? 0) > 0 || (node.maxWidth ?? 0) > 0 || (node.maxHeight ?? 0) > 0
+      ? `${mm(node.maxLength)} × ${mm(node.maxWidth)} × ${mm(node.maxHeight)} mm`
+      : '';
+
+  const sections: { title: string; rows: [string, string][] }[] = [
+    {
+      title: 'Details',
+      rows: [
+        ['Quantity', `${node.quantity} ${node.unit ?? 'pcs'}`],
+        ['Contains', childCount > 0 ? `${childCount} ${childCount === 1 ? 'item' : 'items'}` : ''],
+        ['Material', [node.material, node.materialGrade].filter(Boolean).join(' · ')],
+        ['Process', familyToProcessGroupLabel(node.familyClassification) ?? ''],
+        ['Make / Buy', node.makeBuy === 'buy' ? 'Buy' : node.makeBuy === 'make' ? 'Make' : ''],
+        ['Unit cost', typeof node.unitCost === 'number' ? node.unitCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''],
+        ['Revision', node.revision ?? ''],
+      ],
+    },
+    {
+      title: 'CAD',
+      rows: [
+        ['Size (L × W × H)', size],
+        ['Weight', node.weight && node.weight > 0 ? `${node.weight.toFixed(3)} kg` : ''],
+        ['Volume', node.volume && node.volume > 0 ? `${Math.round(node.volume).toLocaleString()} mm³` : ''],
+        ['Surface area', node.surfaceArea && node.surfaceArea > 0 ? `${(node.surfaceArea / 1000).toFixed(1)}k mm²` : ''],
+        ['Thickness', node.sheetThicknessMm && node.sheetThicknessMm > 0 ? `${mm(node.sheetThicknessMm)} mm` : ''],
+        ['3D model', fileNameOf(node.file3dPath)],
+        ['2D drawing', fileNameOf(node.file2dPath)],
+      ],
+    },
+  ];
+  // Only what is on file: an empty value leaves its row out.
+  const groups = sections.map(g => ({ ...g, rows: g.rows.filter(([, v]) => v !== '') }));
+
+  return (
+    <div className="w-80 text-popover-foreground">
+      {/* The part's picture, larger than on the card */}
+      {hasModel && (
+        <div className="flex justify-center border-b bg-muted/40 py-3">
+          <BOMItemThumbnail item={node as unknown as BOMItemRecord} onClick={() => onOpen?.()} />
+        </div>
+      )}
+      <div className="space-y-3 p-3">
+        <div className="min-w-0">
+          <div className={cn('flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider', style.text)}>
+            <style.Icon className="h-3 w-3" />
+            {style.label}
+          </div>
+          <div className="mt-0.5 break-words text-sm font-semibold leading-snug">{node.name}</div>
+          {node.partNumber && <div className="break-all font-mono text-[11px] text-muted-foreground">{node.partNumber}</div>}
+        </div>
+
+        {groups.map(g => g.rows.length > 0 && (
+          <div key={g.title}>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{g.title}</div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              {g.rows.map(([label, value]) => (
+                <div key={label} className="contents">
+                  <dt className="text-muted-foreground">{label}</dt>
+                  <dd className="truncate text-right font-medium tabular-nums" title={value}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
+
+        {!hasModel && (
+          <p className="rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">No CAD model attached yet.</p>
+        )}
+      </div>
+      {onOpen && (
+        <div className="flex items-center gap-1.5 border-t px-3 py-2 text-[11px] font-medium text-primary">
+          Click the card to open Manufacturing Intelligence
+          <ArrowRight className="h-3 w-3" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The expand / collapse button on a card's right edge, where its connectors start
+// ---------------------------------------------------------------------------
+
+function ExpandButton({ name, count, expanded, onToggle }: { name: string; count: number; expanded: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="absolute -right-3 top-1/2 z-10 flex h-6 min-w-6 -translate-y-1/2 items-center justify-center gap-0.5 rounded-full border bg-background px-1.5 text-[10px] font-semibold tabular-nums text-muted-foreground shadow-xs transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={expanded ? 'Collapse' : `Expand (${count})`}
+      aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
+      aria-expanded={expanded}
+      onClick={e => { e.stopPropagation(); onToggle(); }}
+    >
+      {!expanded && <span>{count}</span>}
+      <motion.span animate={{ rotate: expanded ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex">
+        <ChevronRight className="h-3 w-3" />
+      </motion.span>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// One item's card
 // ---------------------------------------------------------------------------
 
 function HierarchicalNode({
   node,
   onToggle,
   onEdit,
-  onDelete,
   onAdd,
+  onRemove,
+  onOpen,
 }: {
   node: TreeNode;
   onToggle: (id: string) => void;
   onEdit:   (item: BOMItem) => void;
-  onDelete: (id: string) => void;
-  onAdd:    (parentId: string, type: BOMItemType) => void;
+  onAdd:    (parentId: string | null, type: BOMItemType) => void;
+  onRemove: (item: BOMItem) => void;
+  onOpen?:  (item: BOMItem) => void;
 }) {
-  const [isHovered, setIsHovered] = useState(false);
-  const hasChildren = (node.children?.length ?? 0) > 0;
-
-  const getChildType = (): BOMItemType | null => {
-    if (node.itemType === BOMItemType.ASSEMBLY)     return BOMItemType.SUB_ASSEMBLY;
-    if (node.itemType === BOMItemType.SUB_ASSEMBLY) return BOMItemType.CHILD_PART;
-    return null;
-  };
-
-  const getTypeLabel = (): string => {
-    switch (node.itemType) {
-      case BOMItemType.ASSEMBLY:     return 'Assembly';
-      case BOMItemType.SUB_ASSEMBLY: return 'Sub-assembly';
-      case BOMItemType.CHILD_PART:   return 'Part';
-      default:                       return '';
-    }
-  };
-
-  const getTypeColors = () => {
-    switch (node.itemType) {
-      case BOMItemType.ASSEMBLY:
-        return { bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', hoverBorder: 'hover:border-emerald-500/50', text: 'text-emerald-700', hoverBg: 'bg-emerald-500/15', hoverBorderStrong: 'border-emerald-500/60' };
-      case BOMItemType.SUB_ASSEMBLY:
-        return { bg: 'bg-primary/10', border: 'border-primary/30', hoverBorder: 'hover:border-primary/50', text: 'text-primary', hoverBg: 'bg-primary/15', hoverBorderStrong: 'border-primary/60' };
-      case BOMItemType.CHILD_PART:
-        return { bg: 'bg-orange-500/10',  border: 'border-orange-500/30',  hoverBorder: 'hover:border-orange-500/50',  text: 'text-orange-700',  hoverBg: 'bg-orange-500/15',  hoverBorderStrong: 'border-orange-500/60'  };
-      default:
-        return { bg: 'bg-card',           border: 'border-border',          hoverBorder: 'hover:border-foreground/30',  text: 'text-muted-foreground', hoverBg: 'bg-card', hoverBorderStrong: 'border-primary/50' };
-    }
-  };
-
-  const childType  = getChildType();
-  const typeColors = getTypeColors();
+  const childCount = node.children?.length ?? 0;
+  const style      = typeStyleOf(node.itemType);
   const pos        = node.position;
+  const hasModel   = Boolean(node.file3dPath ?? node.file2dPath);
+
+  // The + adds a child part: into this card's item when it is an assembly or a sub-assembly, and beside it (same parent) when it is a
+  // child part, since nothing goes under a child part (lib/bom/drop-intent.ts).
+  const addParentId = node.itemType === BOMItemType.CHILD_PART ? (node.parentItemId ?? null) : node.id;
+
+  const open = () => onOpen?.(node);
+  const actionButton = 'h-6 w-6 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground';
 
   return (
-    <>
-      {node.parentPos && (
-        <motion.path
-          d={generateCurvedPath(node.parentPos.x, node.parentPos.y, pos.x, pos.y)}
-          stroke="hsl(var(--border))"
-          strokeWidth="2"
-          fill="none"
-          initial={{ pathLength: 0, opacity: 0 }}
-          animate={{ pathLength: 1, opacity: 0.3 }}
-          exit={{ pathLength: 0, opacity: 0 }}
-          transition={{ duration: 0.5, ease: 'easeOut' }}
-        />
-      )}
-
-      <motion.g
-        initial={{ opacity: 0, x: pos.x - 50 }}
-        animate={{ opacity: 1, x: pos.x, y: pos.y }}
-        exit={{ opacity: 0, x: pos.x - 50 }}
-        transition={{ duration: 0.3, ease: 'easeOut' }}
-      >
-        <foreignObject x={-80} y={-40} width="160" height="80">
+    <motion.div
+      className="absolute"
+      style={{ left: pos.x, top: pos.y - CARD_H / 2, width: CARD_W, height: CARD_H }}
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -16 }}
+      transition={{ duration: 0.25, ease: 'easeOut' }}
+    >
+      <Tooltip delayDuration={350}>
+        <TooltipTrigger asChild>
           <div
-            className="flex flex-col items-center justify-center h-full"
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
+            role="button"
+            tabIndex={0}
+            aria-label={`${node.name}: open Manufacturing Intelligence`}
+            className={cn(
+              'group relative flex h-full cursor-pointer items-center gap-3 overflow-hidden rounded-lg border bg-card py-2 pl-3.5 pr-3 shadow-xs',
+              'transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md hover:ring-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              style.ring,
+            )}
+            onClick={open}
+            // Only the card's own keys: Enter on one of its buttons is that button's.
+            onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(); } }}
           >
-            <div
-              className={cn(
-                'relative rounded-md p-2.5 w-full border transition-all duration-200 cursor-pointer',
-                typeColors.bg,
-                isHovered
-                  ? cn('shadow-lg scale-105', typeColors.hoverBg, typeColors.hoverBorderStrong)
-                  : cn('shadow-xs', typeColors.border, typeColors.hoverBorder),
-              )}
-              onClick={() => hasChildren && onToggle(node.id)}
-            >
-              <div className="space-y-1">
-                <div className="flex items-center justify-between gap-1">
-                  <div className={cn('text-[9px] uppercase tracking-wider font-semibold', typeColors.text)}>
-                    {getTypeLabel()}
-                  </div>
-                  {hasChildren && (
-                    <motion.div
-                      animate={{ rotate: node.isExpanded ? 90 : 0 }}
-                      transition={{ duration: 0.2 }}
-                      className={typeColors.text}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                        <path d="M4 2 L8 6 L4 10" stroke="currentColor" strokeWidth="2" fill="none" />
-                      </svg>
-                    </motion.div>
-                  )}
-                </div>
+            <span className={cn('absolute inset-y-0 left-0 w-1', style.bar)} aria-hidden="true" />
 
-                <h4 className="font-semibold text-foreground text-xs leading-tight line-clamp-1">
-                  {node.name}
-                </h4>
+            {hasModel ? (
+              <BOMItemThumbnail item={node as unknown as BOMItemRecord} size="sm" onClick={open} />
+            ) : (
+              <span className="flex h-12 w-16 shrink-0 items-center justify-center rounded bg-muted/50" aria-hidden="true">
+                <style.Icon className={cn('h-5 w-5', style.text)} />
+              </span>
+            )}
 
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                  {node.partNumber && <span className="font-medium">{node.partNumber}</span>}
-                  <span>•</span>
-                  <span>{node.quantity} {node.unit ?? 'pcs'}</span>
-                </div>
+            <div className="min-w-0 flex-1">
+              <div className={cn('text-[10px] font-semibold uppercase leading-none tracking-wider', style.text)}>{style.label}</div>
+              <div className="mt-1 truncate text-[13px] font-semibold leading-tight text-foreground">{node.name}</div>
+              <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-tight text-muted-foreground">
+                {node.partNumber && <span className="truncate font-mono">{node.partNumber}</span>}
+                {node.partNumber && <span aria-hidden="true">·</span>}
+                <span className="shrink-0 tabular-nums">{node.quantity} {node.unit ?? 'pcs'}</span>
               </div>
+            </div>
 
-              <AnimatePresence>
-                {isHovered && (
-                  <motion.div
-                    className="absolute -bottom-9 left-1/2 -translate-x-1/2 flex gap-0.5 bg-background rounded border border-border shadow-lg p-0.5 z-50"
-                    initial={{ opacity: 0, y: -5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -5 }}
-                    transition={{ duration: 0.15 }}
-                    onClick={e => e.stopPropagation()}
-                  >
-                    {childType && (
-                      <Button variant="ghost" size="icon" className="h-6 w-6"
-                        onClick={e => { e.stopPropagation(); onAdd(node.id, childType); }}>
-                        <Plus className="h-3 w-3" />
-                      </Button>
-                    )}
-                    <Button variant="ghost" size="icon" className="h-6 w-6"
-                      onClick={e => { e.stopPropagation(); onEdit(node); }}>
-                      <Edit2 className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-6 w-6 hover:text-destructive"
-                      onClick={e => { e.stopPropagation(); onDelete(node.id); }}>
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            {/* Actions on hover: add, edit, remove */}
+            <div
+              className="pointer-events-none absolute right-1.5 top-1.5 flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+              onClick={e => { e.stopPropagation(); }}
+            >
+              <Button variant="ghost" size="icon" className={actionButton} title="Add child part" aria-label="Add child part"
+                onClick={e => { e.stopPropagation(); onAdd(addParentId, BOMItemType.CHILD_PART); }}>
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className={actionButton} title="Edit" aria-label={`Edit ${node.name}`}
+                onClick={e => { e.stopPropagation(); onEdit(node); }}>
+                <Edit2 className="h-3 w-3" />
+              </Button>
+              <Button variant="ghost" size="icon" className={cn(actionButton, 'hover:bg-destructive/10 hover:text-destructive')} title="Remove" aria-label={`Remove ${node.name}`}
+                onClick={e => { e.stopPropagation(); onRemove(node); }}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
             </div>
           </div>
-        </foreignObject>
-      </motion.g>
-    </>
+        </TooltipTrigger>
+        <TooltipPortal>
+          <TooltipContent side="right" align="start" sideOffset={childCount > 0 ? 20 : 10} collisionPadding={12} className="overflow-hidden p-0">
+            <CadDetails node={node} {...(onOpen ? { onOpen: open } : {})} />
+          </TooltipContent>
+        </TooltipPortal>
+      </Tooltip>
+
+      {childCount > 0 && (
+        <ExpandButton name={node.name} count={childCount} expanded={node.isExpanded} onToggle={() => { onToggle(node.id); }} />
+      )}
+    </motion.div>
   );
+}
+
+/** The curved line from a parent's right edge to a child's left edge, in the colour of the child it leads to. */
+function connectorPath(from: NodePosition, to: NodePosition): string {
+  return generateCurvedPath(from.x + CARD_W, from.y, to.x, to.y);
 }
 
 // ---------------------------------------------------------------------------
 // BOMTreeView
 // ---------------------------------------------------------------------------
 
-export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditItem, onDeleteItem }: BOMTreeViewProps) {
+export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditItem, onDeleteItem, onOpenItem }: BOMTreeViewProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
     const expanded = new Set(items.map(i => i.id));
     expanded.add('project-root');
     return expanded;
   });
-  const [zoom,             setZoom]             = useState(0.8);
-  const [isRootHovered,    setIsRootHovered]    = useState(false);
+  const [zoom,             setZoom]             = useState(0.9);
   const [showValidation,   setShowValidation]   = useState(true);
   const [validationResult, setValidationResult] = useState<BOMValidationResult | null>(null);
+  // The item whose × was pressed, waiting for the user to confirm the delete.
+  const [pendingDelete,    setPendingDelete]    = useState<BOMItem | null>(null);
 
   useEffect(() => {
     if (items.length === 0) { setValidationResult(null); return; }
@@ -478,87 +620,86 @@ export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditIt
     });
   };
 
-  const { treeNodes, svgDimensions } = useMemo(() => {
-    if (items.length === 0 || !expandedNodes.has('project-root')) {
-      return { treeNodes: [], svgDimensions: { width: 800, height: 500 } };
+  const rootExpanded = expandedNodes.has('project-root');
+
+  const { treeNodes, rootPos, canvas } = useMemo(() => {
+    const rows   = rootExpanded ? items.reduce((sum, item) => sum + countDescendants(item, expandedNodes), 0) : 1;
+    const height = Math.max(rows, 1) * ROW_H;
+    // The project's card sits level with the middle of everything under it.
+    const root: NodePosition = { x: PAD_X, y: PAD_Y + height / 2, level: 0 };
+
+    if (items.length === 0 || !rootExpanded) {
+      return { treeNodes: [] as TreeNode[], rootPos: root, canvas: { width: PAD_X * 2 + CARD_W + 24, height: height + PAD_Y * 2 } };
     }
 
-    const rootPos: NodePosition = { x: 150, y: 50, level: 0 };
-    const result = calculateHierarchicalPositions(items, expandedNodes, 50, 1, rootPos);
+    const result = calculateHierarchicalPositions(items, expandedNodes, PAD_Y, 1, root);
+    const maxX   = Math.max(...result.nodes.map(n => n.position.x), root.x) + CARD_W + PAD_X + 24;
 
-    const maxX = Math.max(...result.nodes.map(n => n.position.x), rootPos.x) + 200;
-    const maxY = Math.max(result.totalHeight + 100, 500);
+    return { treeNodes: result.nodes, rootPos: root, canvas: { width: maxX, height: result.totalHeight + PAD_Y * 2 } };
+  }, [items, expandedNodes, rootExpanded]);
 
-    return { treeNodes: result.nodes, svgDimensions: { width: maxX, height: maxY } };
-  }, [items, expandedNodes]);
-
-  const hasItems      = items.length > 0;
+  const hasItems       = items.length > 0;
   const criticalIssues = validationResult?.issues.filter(i => i.severity === 'critical') ?? [];
   const highIssues     = validationResult?.issues.filter(i => i.severity === 'high')     ?? [];
 
-  return (
-    <div className="space-y-4">
+  const summaryCounts = validationResult ? [
+    { label: 'Assemblies',     value: validationResult.summary.assemblies,    dot: 'bg-emerald-500' },
+    { label: 'Sub-Assemblies', value: validationResult.summary.subAssemblies, dot: 'bg-blue-500'    },
+    { label: 'Child Parts',    value: validationResult.summary.childParts,    dot: 'bg-yellow-400'  },
+    { label: 'Max Depth',      value: validationResult.summary.maxDepth,      dot: 'bg-muted-foreground/50' },
+  ] : [];
 
-      {/* ── Full validation panel ─────────────────────────────────────────── */}
+  return (
+    <div className="space-y-3">
+
+      {/* ── Structure summary: one strip, with the issues under it when there are any ─────────── */}
       {validationResult && showValidation && (
-        <div className="bg-card border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <FileText className="h-5 w-5 text-primary" />
-              <div>
-                <h3 className="font-semibold text-lg">BOM Structure Analysis</h3>
-                <p className="text-sm text-muted-foreground">Structure validation and integrity checks</p>
+        <div className="rounded-lg border bg-card">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
+            {validationResult.isValid ? (
+              <div className="flex items-center gap-2 text-green-700 dark:text-green-400">
+                <CheckCircle className="h-4 w-4" />
+                <span className="text-sm font-semibold">BOM Structure Valid</span>
               </div>
+            ) : (
+              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                <XCircle className="h-4 w-4" />
+                <span className="text-sm font-semibold">{validationResult.issues.length} Issues Found</span>
+              </div>
+            )}
+            <Badge
+              variant={
+                validationResult.summary.estimatedComplexity === 'high'   ? 'destructive' :
+                validationResult.summary.estimatedComplexity === 'medium' ? 'default'     : 'secondary'
+              }
+              className="text-[10px]"
+            >
+              {validationResult.summary.estimatedComplexity.toUpperCase()} Complexity
+            </Badge>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              {summaryCounts.map(({ label, value, dot }) => (
+                <span key={label} className="flex items-center gap-1.5">
+                  <span className={cn('h-2 w-2 rounded-full', dot)} aria-hidden="true" />
+                  <span className="font-semibold tabular-nums">{value}</span>
+                  <span className="text-muted-foreground">{label}</span>
+                </span>
+              ))}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setShowValidation(false)}>
+
+            <Button variant="ghost" size="icon" className="ml-auto h-7 w-7 rounded-full" title="Hide" aria-label="Hide structure analysis" onClick={() => { setShowValidation(false); }}>
               <XCircle className="h-4 w-4" />
             </Button>
           </div>
 
-          {/* Summary statistics */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: 'Assemblies',     value: validationResult.summary.assemblies,    color: 'text-emerald-600' },
-              { label: 'Sub-Assemblies', value: validationResult.summary.subAssemblies, color: 'text-primary' },
-              { label: 'Child Parts',    value: validationResult.summary.childParts,    color: 'text-amber-600'   },
-              { label: 'Max Depth',      value: validationResult.summary.maxDepth,      color: 'text-muted-foreground' },
-            ].map(({ label, value, color }) => (
-              <div key={label} className="text-center p-3 bg-muted/30 rounded-lg">
-                <div className={`text-2xl font-bold ${color}`}>{value}</div>
-                <div className="text-xs text-muted-foreground">{label}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Validation status */}
-          <div className="flex items-center gap-3">
-            {validationResult.isValid ? (
-              <div className="flex items-center gap-2 text-green-700 dark:text-green-400">
-                <CheckCircle className="h-5 w-5" />
-                <span className="font-medium">BOM Structure Valid</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                <XCircle className="h-5 w-5" />
-                <span className="font-medium">{validationResult.issues.length} Issues Found</span>
-              </div>
-            )}
-            <Badge variant={
-              validationResult.summary.estimatedComplexity === 'high'   ? 'destructive' :
-              validationResult.summary.estimatedComplexity === 'medium' ? 'default'     : 'secondary'
-            }>
-              {validationResult.summary.estimatedComplexity.toUpperCase()} Complexity
-            </Badge>
-          </div>
-
           {/* Issue list */}
           {validationResult.issues.length > 0 && (
-            <div className="space-y-3">
-              <h4 className="font-medium flex items-center gap-2">
+            <div className="space-y-2 border-t px-4 py-3">
+              <h4 className="flex items-center gap-2 text-sm font-medium">
                 <AlertTriangle className="h-4 w-4" />
                 Validation Issues
               </h4>
-              <div className="space-y-2 max-h-32 overflow-y-auto">
+              <div className="space-y-2">
                 {validationResult.issues.map((issue, index) => (
                   <Alert
                     key={index}
@@ -567,14 +708,14 @@ export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditIt
                   >
                     <AlertTriangle className="h-4 w-4" />
                     <div className="space-y-1">
-                      <AlertTitle className="text-sm flex items-center gap-2">
+                      <AlertTitle className="flex items-center gap-2 text-sm">
                         {issue.title}
                         <Badge variant="outline" className="text-xs">{issue.severity.toUpperCase()}</Badge>
                       </AlertTitle>
                       <AlertDescription className="text-xs">{issue.description}</AlertDescription>
-                      <p className="text-xs text-muted-foreground mt-1">Suggestion: {issue.suggestion}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Suggestion: {issue.suggestion}</p>
                       {(issue.affectedItems?.length ?? 0) > 0 && (
-                        <p className="text-xs text-muted-foreground">Affected items: {issue.affectedItems!.length}</p>
+                        <p className="text-xs text-muted-foreground">Affected items: {issue.affectedItems?.length ?? 0}</p>
                       )}
                     </div>
                   </Alert>
@@ -587,7 +728,7 @@ export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditIt
 
       {/* ── Collapsed summary bar ─────────────────────────────────────────── */}
       {validationResult && !showValidation && (
-        <div className="flex items-center justify-between bg-muted/30 border rounded p-3">
+        <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-2">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               {validationResult.isValid
@@ -605,123 +746,149 @@ export function BOMTreeView({ items, projectName, projectId, onAddItem, onEditIt
               </div>
             )}
           </div>
-          <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowValidation(true)}>
+          <Button variant="outline" size="sm" className="h-7 rounded-full text-xs" onClick={() => { setShowValidation(true); }}>
             View Details
           </Button>
         </div>
       )}
 
-      {/* ── SVG canvas ───────────────────────────────────────────────────── */}
-      <div className="relative w-full h-[500px] md:h-[600px] lg:h-[700px] bg-background rounded-lg overflow-hidden border border-border">
+      {/* ── Canvas ───────────────────────────────────────────────────────── */}
+      <div className="relative h-[560px] w-full overflow-hidden rounded-lg border bg-muted/30 md:h-[640px] lg:h-[72vh]">
+
+        {/* Legend and how to use it */}
+        <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-wrap items-center gap-3 rounded-full border bg-background/90 px-3 py-1 text-[11px] text-muted-foreground shadow-xs backdrop-blur">
+          {[BOMItemType.ASSEMBLY, BOMItemType.SUB_ASSEMBLY, BOMItemType.CHILD_PART].map(t => (
+            <span key={t} className="flex items-center gap-1.5">
+              <span className={cn('h-2 w-2 rounded-full', typeStyleOf(t).bar)} aria-hidden="true" />
+              {typeStyleOf(t).label}
+            </span>
+          ))}
+          <span className="hidden border-l pl-3 sm:inline">Hover for details · click to open</span>
+        </div>
 
         {/* Zoom controls */}
-        <div className="absolute top-3 right-3 z-10 flex gap-1">
-          <Button variant="outline" size="icon" className="h-7 w-7" title="Zoom in"   onClick={() => setZoom(z => Math.min(z + 0.1, 1.5))}>
-            <ZoomIn   className="h-3 w-3" />
+        <div className="absolute right-3 top-3 z-20 flex items-center gap-0.5 rounded-full border bg-background/90 p-0.5 shadow-xs backdrop-blur">
+          <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full" title="Zoom out" onClick={() => { setZoom(z => Math.max(z - 0.1, 0.4)); }}>
+            <ZoomOut className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="outline" size="icon" className="h-7 w-7" title="Zoom out"  onClick={() => setZoom(z => Math.max(z - 0.1, 0.4))}>
-            <ZoomOut  className="h-3 w-3" />
+          <span className="w-10 text-center text-[11px] tabular-nums text-muted-foreground">{Math.round(zoom * 100)}%</span>
+          <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full" title="Zoom in" onClick={() => { setZoom(z => Math.min(z + 0.1, 1.5)); }}>
+            <ZoomIn className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="outline" size="icon" className="h-7 w-7" title="Reset zoom" onClick={() => setZoom(0.8)}>
-            <Maximize2 className="h-3 w-3" />
+          <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full" title="Reset zoom" onClick={() => { setZoom(0.9); }}>
+            <Maximize2 className="h-3.5 w-3.5" />
           </Button>
         </div>
 
-        <div className="w-full h-full overflow-auto">
-          <svg
-            className="min-w-full min-h-full"
-            width={svgDimensions.width  * zoom}
-            height={svgDimensions.height * zoom}
-            viewBox={`0 0 ${svgDimensions.width} ${svgDimensions.height}`}
-            preserveAspectRatio="xMinYMin meet"
-          >
-            {/* Project root node */}
-            <g transform="translate(150, 50)">
-              <foreignObject x="-90" y="-45" width="180" height="90">
-                <div
-                  className="flex items-center justify-center h-full"
-                  onMouseEnter={() => setIsRootHovered(true)}
-                  onMouseLeave={() => setIsRootHovered(false)}
-                >
-                  <div
-                    className={cn(
-                      'relative rounded-lg p-3 w-full cursor-pointer border-2 shadow-md transition-all duration-200',
-                      isRootHovered
-                        ? 'bg-primary/15 border-primary/60 shadow-lg scale-105'
-                        : 'bg-primary/10 border-primary/30 hover:border-primary/50',
-                    )}
-                    onClick={() => toggleNode('project-root')}
-                  >
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-[10px] text-primary font-bold uppercase tracking-wider">
-                          Project Root
-                        </div>
-                        {hasItems && (
-                          <motion.div
-                            animate={{ rotate: expandedNodes.has('project-root') ? 90 : 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="text-primary"
-                          >
-                            <svg width="14" height="14" viewBox="0 0 12 12" fill="currentColor">
-                              <path d="M4 2 L8 6 L4 10" stroke="currentColor" strokeWidth="2" fill="none" />
-                            </svg>
-                          </motion.div>
-                        )}
-                      </div>
-                      <h4 className="font-bold text-foreground text-sm leading-tight">
-                        {projectName ?? 'Project'}
-                      </h4>
-                      {projectId && (
-                        <div className="text-[10px] text-muted-foreground font-medium">
-                          ID: {projectId}
-                        </div>
-                      )}
-                    </div>
+        <div
+          className="h-full w-full overflow-auto [background-image:radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:20px_20px]"
+        >
+          {/* Sized to the zoomed tree, so the scroll bars match what is on screen */}
+          <div className="pt-10" style={{ width: canvas.width * zoom, height: canvas.height * zoom + 40 }}>
+            <div className="relative origin-top-left" style={{ width: canvas.width, height: canvas.height, transform: `scale(${zoom})` }}>
 
-                    <AnimatePresence>
-                      {isRootHovered && (
-                        <motion.div
-                          className="absolute -bottom-9 left-1/2 -translate-x-1/2 flex gap-0.5 bg-background rounded border border-border shadow-lg p-0.5 z-50"
-                          initial={{ opacity: 0, y: -5 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -5 }}
-                          transition={{ duration: 0.15 }}
-                          onClick={e => e.stopPropagation()}
-                        >
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            title="Add BOM Assembly"
-                            onClick={e => { e.stopPropagation(); onAddItem(null, BOMItemType.ASSEMBLY); }}
-                          >
-                            <Plus className="h-3 w-3" />
-                          </Button>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+              {/* Connectors, under the cards */}
+              <svg className="pointer-events-none absolute inset-0" width={canvas.width} height={canvas.height} aria-hidden="true">
+                <AnimatePresence>
+                  {treeNodes.map(node => node.parentPos && (
+                    <motion.path
+                      key={`edge-${node.id}`}
+                      d={connectorPath(node.parentPos, node.position)}
+                      className={typeStyleOf(node.itemType).stroke}
+                      strokeWidth={1.75}
+                      strokeLinecap="round"
+                      fill="none"
+                      initial={{ pathLength: 0, opacity: 0 }}
+                      animate={{ pathLength: 1, opacity: 0.7 }}
+                      exit={{ pathLength: 0, opacity: 0 }}
+                      transition={{ duration: 0.4, ease: 'easeOut' }}
+                    />
+                  ))}
+                </AnimatePresence>
+              </svg>
+
+              {/* Project root: as tall as its text, so the full name and ID show; centred on its connectors */}
+              <div
+                className="absolute -translate-y-1/2"
+                style={{ left: rootPos.x, top: rootPos.y, width: CARD_W, minHeight: CARD_H }}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label={rootExpanded ? 'Collapse project' : 'Expand project'}
+                  className="group relative cursor-pointer rounded-lg border border-primary/40 bg-primary/10 px-3.5 py-3 shadow-sm transition-all duration-150 hover:-translate-y-0.5 hover:border-primary/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => { toggleNode('project-root'); }}
+                  onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleNode('project-root'); } }}
+                >
+                  <div className="flex items-center gap-1.5 pr-7 text-[10px] font-semibold uppercase leading-none tracking-wider text-primary">
+                    <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                    Project Root
+                  </div>
+                  <div className="mt-1.5 break-words text-sm font-semibold leading-snug text-foreground">
+                    {projectName ?? 'Project'}
+                  </div>
+                  {projectId && (
+                    <div className="mt-1 break-all font-mono text-[10px] leading-snug text-muted-foreground">
+                      ID: {projectId}
+                    </div>
+                  )}
+
+                  <div className="pointer-events-none absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 rounded-full text-primary hover:bg-primary/15 hover:text-primary"
+                      title="Add BOM Assembly"
+                      onClick={e => { e.stopPropagation(); onAddItem(null, BOMItemType.ASSEMBLY); }}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
                 </div>
-              </foreignObject>
-            </g>
+                {hasItems && (
+                  <ExpandButton name="project" count={items.length} expanded={rootExpanded} onToggle={() => { toggleNode('project-root'); }} />
+                )}
+              </div>
 
-            {/* Child nodes */}
-            <AnimatePresence>
-              {treeNodes.map(node => (
-                <HierarchicalNode
-                  key={node.id}
-                  node={node}
-                  onToggle={toggleNode}
-                  onEdit={onEditItem}
-                  onDelete={onDeleteItem}
-                  onAdd={onAddItem}
-                />
-              ))}
-            </AnimatePresence>
-          </svg>
+              {/* Item cards */}
+              <AnimatePresence>
+                {treeNodes.map(node => (
+                  <HierarchicalNode
+                    key={node.id}
+                    node={node}
+                    onToggle={toggleNode}
+                    onEdit={onEditItem}
+                    onAdd={onAddItem}
+                    onRemove={setPendingDelete}
+                    {...(onOpenItem ? { onOpen: onOpenItem } : {})}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Asked before every delete from the tree */}
+      <AlertDialog open={pendingDelete !== null} onOpenChange={o => { if (!o) setPendingDelete(null); }}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure you want to delete?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{pendingDelete?.name}” will be deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => { if (pendingDelete) onDeleteItem(pendingDelete.id); setPendingDelete(null); }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

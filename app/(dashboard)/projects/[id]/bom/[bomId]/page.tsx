@@ -1341,6 +1341,7 @@ export default function BOMDetailPage() {
             onAddItem={handleAddTreeItem}
             onEditItem={handleEditItem}
             onDeleteItem={(id) => { void handleDeleteItem(id); }}
+            onOpenItem={(item) => { handleViewItem(item as BOMItem, 'intelligence'); }}
           />
         </TabsContent>
       </Tabs>
