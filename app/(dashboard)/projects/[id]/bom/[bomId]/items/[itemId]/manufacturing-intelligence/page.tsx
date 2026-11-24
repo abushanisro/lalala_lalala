@@ -151,7 +151,7 @@ import { ConciseNote } from '@/components/ui/concise-note';
 import { ArrowLeft, Maximize2, Minimize2, ChevronDown, ChevronRight, AlertCircle, GripVertical, GripHorizontal, Calculator, ShieldCheck, Flame, Loader2, Edit, X, FileSpreadsheet, Search, Database, Zap, XCircle, AlertTriangle, Info, CheckCircle2 } from '@/components/ui/icons';
 import { ListSkeleton } from '@/components/ui/loading-skeleton';
 import { modelViewerMessage } from '@/lib/cad-uploads/model-viewer-message';
-import { calculationOfLine, calculationOfRecord, NO_CALCULATION, seedOfCalculation, tracedLineOf, type LineCalculation } from '@/lib/calculators/calculator-run';
+import { calculationOfLine, calculationOfRecord, calculatorChangedSince, NO_CALCULATION, seedOfCalculation, tracedLineOf, type LineCalculation } from '@/lib/calculators/calculator-run';
 import { additiveSectionTitle } from '@/lib/costing/additive-view';
 import { isHydroformingItem } from '@/lib/costing/hydroforming-view';
 import { useAuth } from '@/lib/providers/auth-context';
@@ -1096,6 +1096,9 @@ function CostSummaryTab({
         const liveSeed = seedOfCalculation(liveCalculation) ?? (matchedEngineLine?.calculatorId ? engineCalculators[matchedEngineLine.calculatorId] : undefined);
         const savedSeed = seedOfCalculation(savedCalculation);
         const calculatorSeedFor = (liveCycle: boolean) => (liveCycle ? liveSeed ?? savedSeed : savedSeed ?? liveSeed);
+        // The line was saved with an earlier version of its calculator (its formulas have changed since): said on the row, so its saved figure
+        // and the Edit dialog's saved calculation are not taken for the current ones. Apply saves the line again with the calculator as it is.
+        const calculatorChanged = calculatorChangedSince(savedCalculation, liveCalculation);
 
         // Still needed on its own: the Cycle Time calculator popup below opens
         // seeded with the live geometry-derived value (see its use), not the
@@ -1160,6 +1163,14 @@ function CostSummaryTab({
                   <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap pl-[26px]">
                     <span className="truncate">{liveMachineName ?? machineDisplayLabel(proc)}</span>
                     {cycleMin && <span>· {cycleMin}</span>}
+                    {calculatorChanged && (
+                      <span
+                        className="rounded bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title={`Saved with an earlier version of ${matchedEngineLine?.calculatorName ?? 'its calculator'}: its formulas have changed since. Apply to save this line with the calculator as it is now.`}
+                      >
+                        Earlier calculator · Apply to update
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="shrink-0 text-right pr-2">
