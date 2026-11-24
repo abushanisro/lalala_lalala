@@ -66,6 +66,7 @@ export function mhrRateFromCandidate(
     speedSynchronizationTimeS: cand.speedSynchronizationTimeS,
     maxSpindleRpm: cand.maxSpindleRpm,
     liveToolingMaxRpm: cand.liveToolingMaxRpm,
+    rapidTraverseMmPerMin: cand.rapidTraverseMmPerMin,
     setupTimeHr: cand.setupTimeHr,
     directOverheadRate: cand.directOverheadRate,
     indirectOverheadRate: cand.indirectOverheadRate,

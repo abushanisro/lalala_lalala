@@ -204,6 +204,14 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(part(40).sec).toBe(10);
   });
 
+  it('the milling line times its moves from data (1142): tool changes and rapids, not a flat 15 %; Stock Prep Mill keeps what it shipped', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1142_machining_milling_rapids_tool_changes.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1142, spec));
+    const station = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Milling')!;
+    expect(station.fields.map((f) => f.name)).not.toContain('Rapids and Tool Change Allowance');
+    expect(station.fields.find((f) => f.name === 'Cycle Time')!.formula).toBe('{Cutting Time} + {Tool Change Time Total} + {Rapid Time}');
+    expect(loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Stock Prep Mill')!.fields.map((f) => f.name)).toContain('Rapids and Tool Change Allowance');
+  });
+
   it('the named milling operations follow the workbook (1140); Bulk Milling keeps the Rough Milling fields 1031 shipped it with', () => {
     expect(readFileSync(join(ROOT, 'migrations/1140_machining_milling_named_ops_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1140, spec));
     // Rough Milling is now the End Milling sheet; Bulk Milling (the stock around the part) is still the removed volume at the removal rate.

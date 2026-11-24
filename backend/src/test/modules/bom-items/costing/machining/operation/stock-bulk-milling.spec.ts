@@ -166,7 +166,8 @@ function milled(featureOps: OperationLine[] | undefined, blankResult: MachiningC
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700,
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'milled', finishedWeightKg: 0.183,
-    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, maxSpindleRpm: 8000 }),
+    // The mill's spindle limit and rapid traverse rate (migrations 1136, 1141), and the machining variables' rapid transfer factor.
+    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, maxSpindleRpm: 8000, rapidTraverseMmPerMin: 30000 }), rapidTransferDistanceFactor: 0.5,
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -200,13 +201,13 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
     }
   });
 
-  it('makes the line longer by exactly its time x 1.15 (the rapids and tool change allowance)', () => {
+  it('makes the line longer by its time, one tool change and one rapid move', () => {
     const cutting = (l: typeof line) => l.calculationTrace!.find((s) => s.fieldName === 'Cutting Time')!.value as number;
     expect(cutting(line) - cutting(without)).toBeCloseTo(BULK_SEC, 2);
-    // 34.5592 x 1.15 = 39.743 s.
-    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(39.743, 1);
-    // At 900 per hour (0.25 per second): 9.94 more.
-    expect(line.runCost - without.runCost).toBeCloseTo(9.94, 1);
+    // 34.5592 s, a 5 s tool change and a rapid move of 0.5 x 76 mm at 30 000 mm/min (0.076 s): 39.635 s.
+    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(39.635, 1);
+    // At 900 per hour (0.25 per second): 9.91 more.
+    expect(line.runCost - without.runCost).toBeCloseTo(9.91, 1);
   });
 
   it('shows its own calculation on the line, under its name', () => {

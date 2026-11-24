@@ -2542,6 +2542,7 @@ export class BomItemCostingService {
         location,
         machinabilityRating: machinabilityRating ?? undefined,
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(grade)),
+        rapidTransferDistanceFactor: await this.machiningRapidTransferFactor(),
         partSetup: await this.partSetupInput(await this.partSetupsFromToolAxes(fg)),
         featureOps: featureOps,
         latheMilling,
@@ -2716,7 +2717,9 @@ export class BomItemCostingService {
       const roughingOnMill = family === 'milled' && featurePlan.stockAround && quotedRate ? {
         partMm3: featurePlan.stockAround.partMm3, featureRemovedMm3: featurePlan.stockAround.featureRemovedMm3,
         facedFraction: featurePlan.stockAround.pieceMm3 > 0 ? featurePlan.stockAround.facedMm3 / featurePlan.stockAround.pieceMm3 : 0,
-        operationCost: (seconds: number) => millingOperationsCost(machiningCalculators, quotedRate, recommended.cls, [{ name: PERIMETER_MILLING, timeSec: seconds, source: 'stock' }]),
+        operationCost: (seconds: number) => millingOperationsCost(machiningCalculators, recommended.cls, [{ name: PERIMETER_MILLING, timeSec: seconds, source: 'stock' }], {
+          mhrRate: quotedRate, location, partBoxLengthMm: bbox.length, rapidTransferDistanceFactor: baseCncInput.rapidTransferDistanceFactor ?? null,
+        }),
       } : undefined;
       const stockBreakdown = stock ? stockMachiningBreakdown(stock.plan, quotedCutOff, batchSize, roughingOnMill) : undefined;
       if (stockBreakdown) cncResult.stockMachining = stockBreakdown;
@@ -8751,6 +8754,14 @@ export class BomItemCostingService {
     return { tables, inrToLocal: inrTo(localCode), inrToUsd: inrTo('USD') };
   }
 
+  /**
+   * The machining variables' rapidTransferDistanceFactor (memory/machining/variables.csv, migration 639): x the part's box length, a mill's
+   * rapid move between two features. Null when it is not on file: the milling line's rapids are then a named gap.
+   */
+  private async machiningRapidTransferFactor(): Promise<number | null> {
+    return (await this.machiningLookup.getVariables(['rapidTransferDistanceFactor'])).rapidTransferDistanceFactor ?? null;
+  }
+
   /** The machining workbook's tables alone (a plan of the part's operations is made before any currency matters). */
   private async machiningWorkbookTables(): Promise<MachiningWorkbookInput> {
     const tables = Object.fromEntries(await Promise.all(WORKBOOK_TABLES.map(async (t) => [t, await this.machiningLookup.getWorkbookTable<any>(t)] as const)));
@@ -8949,6 +8960,7 @@ export class BomItemCostingService {
     const baseInput: Omit<MachiningCostInput, 'mhrRate' | 'tappingRate'> = {
       machinabilityRating:  featurePlan.machinabilityRating ?? undefined,
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(grade)),
+        rapidTransferDistanceFactor: await this.machiningRapidTransferFactor(),
         partSetup: await this.partSetupInput(await this.partSetupsFromToolAxes(fg)),
       featureOps:           featurePlan.featureOps,
       gunDrillCandidates:   featurePlan.deepHoleSplit.gunDrillCandidates,

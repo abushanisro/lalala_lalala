@@ -20,7 +20,8 @@ const DRILLING = workbookFixture();
 const mc = (v: string): MachineClassId => v as MachineClassId;
 
 function rate(value: number, o: Partial<MHRRateInput> = {}): MHRRateInput {
-  return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'X', ...o };
+  // The test mill's rapid traverse rate (mhr_records.specs rapid_traverse_mm_per_min, migration 1141).
+  return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'X', rapidTraverseMmPerMin: 30000, ...o };
 }
 
 /** A billet of these sizes as the stock a part is cut from. The engine sizes no stock itself: the stock model chooses it (costing/stock). */
@@ -37,6 +38,8 @@ function input(o: Partial<MachiningCostInput> = {}): MachiningCostInput {
     deburrRate: rate(300, { machineClass: 'deburring', machineName: null }),
     inspectionRate: rate(450, { machineClass: 'cmm', machineName: null, commodityCode: null }),
     surfaceTreatment: null, machiningCalculators: CALCS, capabilityRules: realCapabilityRules(), location: 'India',
+    // The machining variables' rapidTransferDistanceFactor (migration 639).
+    rapidTransferDistanceFactor: 0.5,
     ...o,
   };
 }
@@ -70,7 +73,7 @@ describe('hand-calculated cost chain', () => {
     expect(allowed.materialCost).toBeCloseTo(84.64, 2);
   });
 
-  it('setup: machine setup_time_hr x rate / batch, plus the fixture / batch; run = cycle x 1.15 x rate', () => {
+  it('setup: machine setup_time_hr x rate / batch, plus the fixture / batch; run = (cutting + tool changes + rapids) x rate', () => {
     const result = computeMillingCostSummary(input({
       blankResult: billet(100, 50, 20), batchSize: 10, fixtureUnitCostLocal: 100,
       mhrRate: rate(600, { setupTimeHr: 0.5 }),
@@ -80,10 +83,11 @@ describe('hand-calculated cost chain', () => {
     // 30 min / 10 parts = 3 min x 600/h = 30.00, + fixture 100 / 10 = 10.00
     expect(line.setupCost).toBeCloseTo(40, 2);
     expect(line.setupTimeMin).toBe(30);
-    // 600 s = 10 min x 1.15 = 11.5 min (Tapping is billed on its own line, not here) x 600/h = 115.00
-    expect(line.cycleTimeMin).toBeCloseTo(11.5, 4);
-    expect(line.runCost).toBeCloseTo(115, 2);
-    expect(line.totalCost).toBeCloseTo(155, 2);
+    // 600 s of cutting (Tapping is billed on its own line, not here), one 5 s tool change and one rapid move of 0.5 x 100 mm at
+    // 30 000 mm/min (0.1 s): 605.1 s = 10.085 min x 600/h = 100.85
+    expect(line.cycleTimeMin).toBeCloseTo(10.085, 4);
+    expect(line.runCost).toBeCloseTo(100.85, 2);
+    expect(line.totalCost).toBeCloseTo(140.85, 2);
   });
 
   it('turning, timed as the workbook\'s Turning sheet times a cut: whole passes over the stock, each the length + 10 mm at the start diameter\'s speed', () => {

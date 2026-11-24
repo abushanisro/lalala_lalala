@@ -335,7 +335,8 @@ function milled(featureOps: OperationLine[]) {
     materialGrade: 'Aluminum, ANSI 6061', materialCostPerKg: 5.875, materialDensityKgM3: 2700,
     materialSource: 'db', threads: [], tightestToleranceMm: null, gdtFeatureCount: 0,
     batchSize: 100, family: 'milled', finishedWeightKg: 0.108,
-    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5 }),
+    // The mill's rapid traverse rate (migration 1141) and the machining variables' rapid transfer factor (migration 639): its moves.
+    mhrRate: rate(900, { machineClass: '3_axis_mill', setupTimeHr: 0.5, rapidTraverseMmPerMin: 30000 }), rapidTransferDistanceFactor: 0.5,
     tappingRate: rate(900, { machineClass: 'tapping' }),
     deburrRate: rate(300, { machineClass: 'manual_deburr' }),
     inspectionRate: rate(450, { machineClass: 'machining_inspection' }),
@@ -366,9 +367,10 @@ describe('on a mill the keyway counts toward the line\'s Slot and Groove Milling
     expect(input('Other Operations Time')).toMatchObject({ value: 0, source: 'CAD features: none of this group on the part' });
   });
 
-  it('the line is its groups plus the allowance: the keyways add exactly their time x 1.15', () => {
+  it('the line is its groups plus the moves: the keyways add their time, one tool change and a rapid move to each', () => {
     const without = millLine(sequence([FACE]));
-    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(3.354375 * 1.15, 1);
+    // One cutter (the 4 mm keyway end mill) at 5 s, and two rapid moves of 0.5 x 60 mm at 30 000 mm/min (0.06 s each).
+    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(3.354375 + 5 + 0.12, 1);
     const cutting = line.calculationTrace!.find((s) => s.fieldName === 'Cutting Time')!.value as number;
     const cuttingWithout = without.calculationTrace!.find((s) => s.fieldName === 'Cutting Time')!.value as number;
     expect(cutting - cuttingWithout).toBeCloseTo(3.354375, 3);
