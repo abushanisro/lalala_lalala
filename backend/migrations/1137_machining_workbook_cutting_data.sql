@@ -90,6 +90,8 @@ DECLARE absent text[];
 BEGIN
   SELECT array_agg(k ORDER BY k) INTO absent FROM unnest(ARRAY['tblTurningConditions', 'tblDrillReamData', 'tblHssHoleSpeeds', 'tblBoringFeed', 'tblMillingConditions', 'tblCorraxCutData', 'tblCuttingToolCost', 'tblThermalCutFeed', 'tblSawCutRate', 'tblCuttingMaterialGroup']) AS k
    WHERE NOT EXISTS (SELECT 1 FROM machining_reference_data
-                      WHERE category = 'lookup_table' AND source_version = '2026-03' AND key = k AND jsonb_array_length(raw) > 0);
+                      WHERE category = 'lookup_table' AND source_version = '2026-03' AND key = k
+                        -- other lookup tables stage an object (tblDrilling): the length is only taken of an array
+                        AND CASE WHEN jsonb_typeof(raw) = 'array' THEN jsonb_array_length(raw) > 0 ELSE false END);
   IF absent IS NOT NULL THEN RAISE EXCEPTION 'Machining workbook tables not staged: %', absent; END IF;
 END $workbook_check$;
