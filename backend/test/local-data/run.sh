@@ -201,6 +201,13 @@ INSERT INTO public.mhr_records (process_group, machine_class, machine_name, loca
 SELECT 'Sheet Metal Roll Forming', m[1], m[2], 'USA', '{}'::jsonb, m[3]::numeric, m[4]::numeric, m[5]::numeric
 FROM regexp_matches(pg_read_file('/migrations/1112_roll_forming_machines.sql'),
   '\(\$str\$(sheet_roll_forming_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+::numeric, [0-9.]+::numeric, [0-9.]+::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric', 'g') AS m;
+-- the row timestamp as the real database has it (timestamptz, default now()): migration 1129 copies the oldest USA row of a machine
+ALTER TABLE public.mhr_records ADD COLUMN created_at timestamptz DEFAULT now();
+-- the PCB fabrication machines migration 797 seeds for the USA: migration 1129 twins each one in India and fails if one is missing.
+-- Read from 1129's own list: 98 machines in 32 classes.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
+SELECT DISTINCT 'PCB', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1129_pcb_machines_india_and_classes.sql'),
+  '\(\$str\$([a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+, [0-9.]+, [0-9.]+, \$str\$', 'g') AS m;
 -- a material of its group (migration 855): migration 1112 links Sheet Metal Roll Forming to its own group and fails when the group holds none
 INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 1100', 'Sheet Metal Roll Forming');
 -- the machine envelope columns as the real database has them (migration 755 fills them for the lathes): migration 1093 fills them for the multi-spindle machines
