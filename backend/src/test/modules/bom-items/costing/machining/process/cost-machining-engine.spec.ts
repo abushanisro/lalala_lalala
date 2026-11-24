@@ -2378,6 +2378,15 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
     expect([s2('Tools'), s2('Feature Visits')]).toEqual([2, 6]);
   });
 
+  it('a tool whose calculator states no cutter size is one tool for every feature size: one spot drill centres the Ø6 and the Ø8 holes', () => {
+    const holes = [6, 8].map((d) => ({ feature_type: 'SimpleHole', variant: 'through', diameter_mm: d, occurrences: [{ depth_mm: 10 }, { depth_mm: 10 }] }));
+    const ops = buildOperationSequence(holes, { matClass: 'aluminum', materialGrade: 'AL6061-T6', calculators: CALCS, workbook: workbookFixture() });
+    const l = computeMillingCostSummary(milledInput({ featureOps: ops, workbook: workbookFixture() }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
+    // Centre drilling (one spot drill) + a Ø6 and a Ø8 drill; a rapid move to each of the 4 holes for each of the 2 operations.
+    expect([s2('Tools'), s2('Feature Visits')]).toEqual([3, 8]);
+  });
+
   it('without the machine\'s rapid traverse rate on file the line is a named gap, never a guessed allowance', () => {
     const r = computeMillingCostSummary(milledInput({ featureOps, mhrRate: rate(900, { rapidTraverseMmPerMin: null }) }), mc('3_axis_mill'));
     expect((r.processLines.find((l) => l.process === '3 Axis Mill')!.physicsGap as { reason?: string }).reason).toContain('Rapid Traverse Rate');
