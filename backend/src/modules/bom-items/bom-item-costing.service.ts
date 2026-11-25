@@ -16,6 +16,7 @@ import { asSuppliedFaces } from './costing/stock/stock-part';
 import { withoutAsSuppliedFaces } from './costing/machining/operation/as-supplied-faces';
 import { stockPriceFormOf, type StockPriceForm } from './costing/machining/stock-price';
 import { latheMillingOps } from './costing/machining/process/lathe-milling';
+import { turnedGrooveGroups } from './costing/machining/operation/turned-grooves';
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences } from './costing/machining/inspection-reference';
@@ -88,7 +89,7 @@ import { machiningLookupSeeds } from './costing/machining/calculators/machining-
 import type { MachiningCalculatorInputsDto } from './dto/machining-calculator-inputs.dto';
 import { engineRunsOf, inputsOfRun, type CalculatorInputsDto } from './costing/shared/calculators/calculator-inputs';
 import { BlankOptimizerService } from './costing/sheet-metal/machine/blank-optimizer.service';
-import { buildOperationSequence, injectDrawingIntelligence } from './costing/machining/operation/operation-sequencer';
+import { buildOperationSequence, injectDrawingIntelligence, toroidsWithoutArc } from './costing/machining/operation/operation-sequencer';
 import type { OperationLine } from './costing/machining/operation/operation-sequencer';
 import { featureRemovedVolumeMm3, stockExcess } from './costing/machining/operation/stock-excess';
 import { splitDeepHoleOccurrences, resolveDeepHoleRules } from './costing/machining/operation/deep-hole-routing';
@@ -1696,12 +1697,22 @@ export class BomItemCostingService {
     // A lathe's milling: the sequencer's operations on the keyways, slots and flats left to mill (lathe-milling.ts), each with the
     // time its own calculator gave it (the drawing's adjustments above are the milled line's).
     const latheMilling = latheMillingOps(rawFeatureOps);
+    // A lathe's grooves: the turned ones (Ring:groove), plunged on the lathe (turned-grooves.ts); a mill route mills them (Groove Milling).
+    const turnedGrooves = turnedGrooveGroups(chemSplit.filteredFeatures);
+    // Rounds, inside fillets and grooves the CAD has not measured the arc of (an analysis before geo_v89) are cut along their whole circle.
+    const unmeasuredArcs = toroidsWithoutArc(chemSplit.filteredFeatures);
+    if (unmeasuredArcs > 0) {
+      warnings.push(
+        `${unmeasuredArcs} round(s), fillet(s) or groove(s) were analysed before the CAD measured their arcs: each is cut along the whole circle `
+        + 'of its major diameter (pi x D), which can be several times the real arc. Re-analyse the part for the real arc (and a groove\'s depth and width).',
+      );
+    }
     // What a lathe makes only with a live tool (live-tooling.ts): the cross and off-axis holes, and those same keyways, slots and flats.
     const liveTool: LiveToolWork = {
       holes: liveToolHoles(fg?.machining_features?.features), milled: liveToolMilledFeatures(chemSplit.filteredFeatures),
     };
     return {
-      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool,
+      warnings, deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool, turnedGrooves,
       heatTreatment, machinabilityRating, stockAround,
     };
   }
@@ -2533,7 +2544,7 @@ export class BomItemCostingService {
         family === 'milled' ? stock?.millOps : undefined,
       );
       materialWarnings.push(...featurePlan.warnings);
-      const { deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool, heatTreatment } = featurePlan;
+      const { deepHoleSplit, keywaySplit, wireEdmSplit, featureOps, latheMilling, liveTool, turnedGrooves, heatTreatment } = featurePlan;
 
       // Stage 4 pipeline log — confirms what the cost engine receives
       this.logger.debug(
@@ -2610,6 +2621,8 @@ export class BomItemCostingService {
         hobbing: await this.machiningLookup.getHobbingReference(),
         ...(await this.gearInputs(item, mhrRates)),
         partoffTable: await this.machiningLookup.getPartoffTable(),
+        turnedGrooves,
+        groovingTable: await this.machiningLookup.getGroovingTable(),
         turnedGeometry: this.resolveTurnedGeometry(fg, bbox),
         gunDrillCandidates: deepHoleSplit.gunDrillCandidates,
         deepBoreCandidates: deepHoleSplit.deepBoreCandidates,
@@ -8584,12 +8597,13 @@ export class BomItemCostingService {
     }
 
     // Lookup-table inputs, keyed by the inputs above.
-    const [finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
+    const [finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, groovingTable, workholderTable,
       grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, gearReference, keywayBroach, wireEdmParams, deburrParams] = await Promise.all([
       this.machiningLookup.getFinishBoringTable(),
       this.machiningLookup.getGunDrillingTable(),
       this.machiningLookup.getDeepBoreMaterials(),
       this.machiningLookup.getPartoffTable(),
+      this.machiningLookup.getGroovingTable(),
       this.machiningLookup.getWorkholderTable(),
       this.machiningLookup.getCylindricalGrindingParams(matClass),
       this.machiningLookup.getInternalGrindingParams(matClass),
@@ -8602,7 +8616,7 @@ export class BomItemCostingService {
     ]);
     const spec = await this.specLookups(def.name, matClass, inputs);
     const own = spec?.complete ? null : machiningLookupSeeds(operation, {
-      matClass, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, workholderTable,
+      matClass, finishBoringTable, gunDrillTable, deepBoreMaterials, partoffTable, groovingTable, workholderTable,
       grindingParams, internalGrindingParams, surfaceGrindingParams, hobbing, shaving: gearReference.shaving, keywayBroach, wireEdmParams, deburrParams,
       capabilityRules: (await this.machiningLookup.getCapabilityRules()).rules,
     }, inputs);
@@ -9692,6 +9706,8 @@ export class BomItemCostingService {
       surfaceGrindingRate: mhrRates.surfaceGrinder,
       ...(await this.polygonInputs(item, fg)),
       latheMilling: featurePlan.latheMilling,
+      turnedGrooves: featurePlan.turnedGrooves,
+      groovingTable: await this.machiningLookup.getGroovingTable(),
       keywayCandidates: featurePlan.keywaySplit.keywayCandidates,
       keywayBroach: keywayBroach ?? null,
       broachRate: mhrRates.broach,

@@ -252,6 +252,92 @@ function keywayGroups(occurrences: readonly { length_mm?: unknown; width_mm?: un
 /** "length", "length and width", "length, width and depth". */
 const listed = (names: readonly string[]): string => names.join(', ').replace(/, ([^,]*)$/, ' and $1');
 
+/** The time, steps and calculator of an operation as the sequencer plans it. */
+type TimedOp = Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'>;
+
+/** The catalog has no operation for an inside fillet (an Edge is only Rounding, a convex edge): migration 1156 adds this one to the mills. */
+export const CONCAVE_FILLET_MILLING = 'Concave Fillet Milling';
+
+/** The length one edge or one toroid's path is cut along, and where it comes from. */
+interface EdgeLength { lengthMm: number; source: string }
+
+const mm3dp = (v: number) => Math.round(v * 1000) / 1000;
+
+/**
+ * The path a toroidal feature (a round, an inside fillet, a groove) is cut along: the arc the CAD measured (path_length_mm, geo_v89: the
+ * major radius x the sweep), else, for a part analysed before that, pi x its major diameter: the whole circle, said so with the re-analysis
+ * that measures the real arc. Null with neither.
+ */
+export function toroidPath(o: any, majorDiameterMm: number, what: string): EdgeLength | null {
+  const arc = Number(o?.path_length_mm);
+  if (arc > 0) {
+    const sweep = Number(o?.sweep_deg);
+    return { lengthMm: mm3dp(arc), source: `CAD: the ${what}'s arc${sweep > 0 ? `, ${sweep} deg of its Ø${majorDiameterMm} mm major circle` : ''} (path_length_mm)` };
+  }
+  if (majorDiameterMm > 0) {
+    return {
+      lengthMm: mm3dp(Math.PI * majorDiameterMm),
+      source: `CAD: pi x Ø${majorDiameterMm} mm, the whole circle: the part was analysed before the arc was measured (geo_v89); re-analyse it for the real arc`,
+    };
+  }
+  return null;
+}
+
+/**
+ * An inside fillet the CAD measured as a torus (Edge:round with concave=true: an occurrence of a toroid feature, which states a major diameter
+ * or its arc): finished by a ball nose end mill of its radius. A concave cylindrical arc (an inside fillet along a straight edge, a slot end, a
+ * rounded pocket corner: no major diameter, no arc) keeps the edge model, as before.
+ */
+export function isConcaveToroidFillet(o: any, majorDiameterMm: number): boolean {
+  return o?.concave === true && (Number(o?.path_length_mm) > 0 || o?.profile_deg != null || majorDiameterMm > 0);
+}
+
+/**
+ * The length of each edge of a chamfer or a round, in the CAD's own terms: a round's measured arc (path_length_mm); else pi x the feature's
+ * diameter (a round edge; for a round analysed before its arc was measured that is the whole circle, said so); else the edge face's longest
+ * extent (its length on a straight edge); else none (a named gap). `n` edges when the feature lists no occurrences.
+ */
+function edgeLengths(diameterMm: number, occurrences: readonly any[], n: number, what: 'chamfer' | 'round'): (EdgeLength | null)[] {
+  const circle = (o: any): EdgeLength | null => (what === 'round'
+    ? toroidPath(o, diameterMm, 'round')
+    : (diameterMm > 0 ? { lengthMm: mm3dp(Math.PI * diameterMm), source: `CAD: pi x Ø${diameterMm} mm` } : null));
+  if (occurrences.length === 0) return Array.from({ length: n }, () => circle({}));
+  return occurrences.map((o) => {
+    const round = circle(o);
+    if (round) return round;
+    const longest = Math.max(0, ...(Array.isArray(o?.extents_mm) ? o.extents_mm.map(Number).filter(Number.isFinite) : []));
+    return longest > 0 ? { lengthMm: mm3dp(longest), source: 'CAD: the edge face\'s longest extent' } : null;
+  });
+}
+
+/** Several runs of one operation as one: their times summed, each run's plan under its label, and every gap named. */
+function combinedRuns(runs: readonly { label: string; run: TimedOp }[], lacks: readonly string[]): TimedOp {
+  const missing = [...runs.flatMap((r) => (r.run.missing ? [r.run.missing] : [])), ...lacks];
+  if (runs.length === 1 && lacks.length === 0) return runs[0]!.run;
+  return {
+    timeSec: runs.reduce((t, r) => t + r.run.timeSec, 0),
+    ...(runs.length === 1 ? { trace: runs[0]!.run.trace } : {}),
+    ...(runs[0]?.run.calculator ? { calculator: runs[0].run.calculator } : {}),
+    plan: runs.flatMap((r) => (r.run.plan ?? []).map((pl) => ({ ...pl, label: r.label }))),
+    ...(missing.length > 0 ? { missing: missing.join('; ') } : {}),
+  };
+}
+
+/**
+ * The toroidal features (rounds, inside fillets, grooves) of a part analysed before the CAD measured their arcs (geo_v89): their path is
+ * read as the whole circle of their major diameter until the part is re-analysed. The count of such occurrences.
+ */
+export function toroidsWithoutArc(features: readonly unknown[] | null | undefined): number {
+  let n = 0;
+  for (const f of (features ?? []) as any[]) {
+    const key = `${f?.feature_type}:${f?.variant}`;
+    if (key !== 'Edge:round' && key !== 'Slot:groove' && key !== 'Ring:groove') continue;
+    if (!(Number(f?.diameter_mm) > 0)) continue;
+    for (const o of Array.isArray(f.occurrences) ? f.occurrences : []) if (!(Number(o?.path_length_mm) > 0)) n += 1;
+  }
+  return n;
+}
+
 /** One operation timed by its calculator: the time, its steps and the calculator that ran, or the missing inputs named (time 0). */
 function calcOp(
   calculators: MachiningCalculators | null,
@@ -338,6 +424,7 @@ const OP_ORDER: string[] = [
   "Countersinking",
   "Chamfering",
   "Filleting",
+  CONCAVE_FILLET_MILLING,
   "Groove Milling",
   "Tapping",
   "Deburr",
@@ -360,8 +447,9 @@ function opOrderIndex(name: string): number {
  *   resolveDrillingSpeedFeed/resolveTapPhysicsInputs already do.
  * @param workbook  the machining workbook's cutting data: drilling, step drilling (a counterbore), boring (a hole the drills do not reach)
  *   and tapping are timed on it; a material or size it has no row for is a named gap.
- * Chamfering, filleting, groove milling, spotting and countersinking are timed on the workbook (migration 1152): the edges by its End
- *   Milling sheet with the material's end mill, the spots and countersinks by its Drilling sheet.
+ * Chamfering, filleting, spotting and countersinking are timed on the workbook (migration 1152): the edges by its End
+ *   Milling sheet with the material's end mill, the spots and countersinks by its Drilling sheet. Inside fillets and grooves are finished by
+ *   a ball nose end mill of their radius along their arc, on Haas Tooling's ball nose data (tblBallNoseCutData, migrations 1154-1155).
  * @param stockAround  on a milled route, the stock around the part (stock-excess.ts):
  *   what it holds beyond the part and its features is milled away by one Bulk
  *   Milling operation. null/absent (a lathe's plan, a part with no stock chosen)
@@ -512,7 +600,6 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     const cycle = computeBoreCycle('Boring', largestDrill!, diamMm, depthMm, n, matClass, workbook, calculators);
     return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), plan: cycle.plan ? [cycle.plan] : undefined } : { timeSec: cycle.sec, plan: cycle.plan ? [cycle.plan] : undefined };
   };
-  // An edge with a CAD diameter is timed by its length (pi x D per edge) at the table's edge speed; one without, per edge.
   // A hole spotted before it is drilled, or countersunk after (the workbook's Drilling sheet: the spot or countersink's depth plus the
   // approach over the feed, at the drilling speed for the diameter; migration 1152).
   const spotOp = (diamMm: number, n: number) => workbookOp('Center Drilling', {
@@ -523,36 +610,59 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     'Hole Diameter': { value: holeMm, source: holeWhy },
     'Holes': { value: n, source: 'CAD: countersinks of this size' },
   });
-  // An edge chamfered, rounded or grooved in one pass of the material's end mill (the workbook's End Milling sheet; migration 1152): edges
-  // of one length are cut alike. A round edge's length is pi x its diameter; another's the CAD's longest extent of its face.
-  const edgeOp = (operation: string, diameterMm: number, edgeOccurrences: readonly any[], n: number): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+  // An edge chamfered or rounded in one pass of the material's end mill (the workbook's End Milling sheet; migration 1152): edges of one
+  // length are cut alike. Each edge's length is given (edgeLengths); one with none is a named gap.
+  const edgeOp = (operation: string, edges: readonly (EdgeLength | null)[]): TimedOp => {
     const cutter = endMillSeeds(standardToolMm, '');
     if (!cutter) return { timeSec: 0, missing: noEndMill };
-    const groups = new Map<number, { edges: number; source: string }>();
+    const groups = new Map<string, { lengthMm: number; edges: number; source: string }>();
     let unmeasured = 0;
-    if (diameterMm > 0) groups.set(Math.round(Math.PI * diameterMm * 1000) / 1000, { edges: n, source: `CAD: pi x Ø${diameterMm} mm` });
-    else {
-      for (const o of edgeOccurrences) {
-        const longest = Math.max(0, ...(Array.isArray(o?.extents_mm) ? o.extents_mm.map(Number).filter(Number.isFinite) : []));
-        if (!(longest > 0)) { unmeasured += 1; continue; }
-        const key = Math.round(longest * 1000) / 1000;
-        const g = groups.get(key) ?? { edges: 0, source: 'CAD: the edge face\'s longest extent' };
-        g.edges += 1;
-        groups.set(key, g);
-      }
+    for (const e of edges) {
+      if (!e) { unmeasured += 1; continue; }
+      const key = `${e.lengthMm}|${e.source}`;
+      const g = groups.get(key) ?? { lengthMm: e.lengthMm, edges: 0, source: e.source };
+      g.edges += 1;
+      groups.set(key, g);
     }
-    const runs = [...groups.entries()].map(([lengthMm, g]) => ({ lengthMm, run: workbookOp(operation, {
-      'Edge Length': { value: lengthMm, source: g.source }, 'Edges': { value: g.edges, source: 'CAD: edges of this length' }, ...cutter,
+    const runs = [...groups.values()].map((g) => ({ label: `Edge ${g.lengthMm} mm`, run: workbookOp(operation, {
+      'Edge Length': { value: g.lengthMm, source: g.source }, 'Edges': { value: g.edges, source: 'CAD: edges of this length' }, ...cutter,
     }) }));
-    const missing = [...runs.flatMap((r) => (r.run.missing ? [r.run.missing] : [])), ...(unmeasured > 0 ? [`the CAD length of ${unmeasured} edge${unmeasured === 1 ? '' : 's'}`] : [])];
-    if (runs.length === 1 && unmeasured === 0) return runs[0]!.run;
-    return {
-      timeSec: runs.reduce((t, r) => t + r.run.timeSec, 0),
-      ...(runs.length === 1 ? { trace: runs[0]!.run.trace } : {}),
-      ...(runs[0]?.run.calculator ? { calculator: runs[0].run.calculator } : {}),
-      plan: runs.flatMap((r) => (r.run.plan ?? []).map((pl) => ({ ...pl, label: `Edge ${r.lengthMm} mm` }))),
-      ...(missing.length > 0 ? { missing: missing.join('; ') } : {}),
-    };
+    return combinedRuns(runs, unmeasured > 0 ? [`the CAD length of ${unmeasured} edge${unmeasured === 1 ? '' : 's'}`] : []);
+  };
+  // A round-bottomed groove or an inside fillet, finished by a ball nose end mill of its own radius in one pass along the path its centre
+  // follows (the Groove Milling and Concave Fillet Milling calculators, migration 1155): those of one radius and path are cut alike. The
+  // ball's speed, feed and teeth are read from tblBallNoseCutData by the material and the ball's diameter (workbookSeeds). An occurrence with
+  // no CAD radius, or with neither its arc nor a major diameter, is a named gap, never priced on the others alone.
+  const ballNoseOp = (operation: 'Groove Milling' | typeof CONCAVE_FILLET_MILLING, what: 'groove' | 'fillet', occs: readonly any[], majorDiameterMm: number): TimedOp => {
+    const countField = what === 'groove' ? 'Grooves' : 'Fillets';
+    const groups = new Map<string, { cutterMm: number; radiusMm: number; path: EdgeLength; n: number }>();
+    let noRadius = 0;
+    let noPath = 0;
+    for (const o of occs) {
+      const radiusMm = Number(o?.radius_mm);
+      const path = toroidPath(o, majorDiameterMm, what);
+      if (!(radiusMm > 0)) { noRadius += 1; continue; }
+      if (!path) { noPath += 1; continue; }
+      const cutterMm = Math.round(2 * radiusMm * 1000) / 1000;
+      const key = `${cutterMm}|${path.lengthMm}|${path.source}`;
+      const g = groups.get(key) ?? { cutterMm, radiusMm, path, n: 0 };
+      g.n += 1;
+      groups.set(key, g);
+    }
+    const plural = (n: number) => `${n} ${what}${n === 1 ? '' : 's'}`;
+    const lacks = [
+      ...(noRadius > 0 ? [`the CAD radius of ${plural(noRadius)} (the ball nose end mill is chosen by it)`] : []),
+      ...(noPath > 0 ? [`the CAD path length of ${plural(noPath)} (no arc and no major diameter)`] : []),
+    ];
+    const runs = [...groups.values()].map((g) => ({
+      label: `R${g.radiusMm} ${what}, ${g.path.lengthMm} mm`,
+      run: workbookOp(operation, {
+        'Path Length': { value: g.path.lengthMm, source: g.path.source },
+        [countField]: { value: g.n, source: `CAD: ${what}s of this radius and path` },
+        'Cutter Diameter': { value: g.cutterMm, source: `CAD: 2 x the ${what}'s radius (R${g.radiusMm} mm): a ball nose end mill of the ${what}'s own radius` },
+      }),
+    }));
+    return combinedRuns(runs, lacks);
   };
 
   // The piece's faces, faced down to the part before any feature is cut (the workbook's Face Milling sheet). The stock model states the
@@ -746,7 +856,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
-          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, [], count, 'chamfer')), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
@@ -795,19 +905,38 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         break;
 
       case "Edge:chamfer":
-        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, occurrences, count, 'chamfer')), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
-      case "Edge:round":
-        // Convex toroidal blend: one pass of the end mill along each edge (the Filleting calculator, the workbook's End Milling sheet).
-        ops.push({ name: "Filleting", ...edgeOp('Filleting', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+      case "Edge:round": {
+        // An inside fillet the CAD measured as a torus (concave): finished by a ball nose end mill of its radius along its arc (Concave Fillet
+        // Milling, user decision 2026-11-25). One at a turned shoulder (turned_shoulder) is formed by the finish turning pass on a lathe,
+        // which mills no Edge feature (lathe-milling.ts), so it is cut only on a mill route, where nothing turns it. Every other round
+        // (convex, or a concave cylindrical arc): one pass of the end mill along its edge (the Filleting calculator, the workbook's End
+        // Milling sheet), over its arc when the CAD measured one.
+        const inside = occurrences.filter((o) => isConcaveToroidFillet(o, diamMm));
+        const edges = occurrences.filter((o) => !inside.includes(o));
+        if (edges.length > 0 || occurrences.length === 0) {
+          ops.push({
+            name: "Filleting", ...edgeOp('Filleting', edgeLengths(diamMm, edges, count, 'round')), source: "feature", cadFeatureType: ft,
+            diameterMm: diamMm > 0 ? diamMm : undefined, count: edges.length || count,
+          });
+        }
+        if (inside.length > 0) {
+          ops.push({
+            name: CONCAVE_FILLET_MILLING, ...ballNoseOp(CONCAVE_FILLET_MILLING, 'fillet', inside, diamMm), source: "feature", cadFeatureType: ft,
+            diameterMm: diamMm > 0 ? diamMm : undefined, count: inside.length,
+          });
+        }
         break;
+      }
 
       case "Slot:groove":
       case "Ring:groove":
-        // Concave toroidal recess ("Groove Milling//Slot" on a mill, "Plunging//Ring" on a lathe): one pass of the end mill along it, as an
-        // edge is rounded (the Groove Milling calculator copies Filleting's, the workbook's End Milling sheet).
-        ops.push({ name: "Groove Milling", ...edgeOp('Groove Milling', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        // A round-bottomed groove ("Groove Milling//Slot" on a mill): a ball nose end mill of its radius along its path (user decision
+        // 2026-11-25). A turned groove ("Plunging//Ring") is plunged on a lathe (the turning engine's Plunging line); on a mill, or milled
+        // with a live tool, it is milled the same way.
+        ops.push({ name: "Groove Milling", ...ballNoseOp('Groove Milling', 'groove', occurrences, diamMm), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "PlanarFace:default":

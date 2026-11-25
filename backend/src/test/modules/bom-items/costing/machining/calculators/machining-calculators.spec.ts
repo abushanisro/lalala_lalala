@@ -248,8 +248,84 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
       expect(fields(name).some((f) => /Time per (Hole|Unsized Edge)/.test(f.name) && f.source === 'default')).toBe(false);
       expect(fields(name).find((f) => f.name === 'Max Spindle Speed')).toMatchObject({ source: 'machine' });
     }
-    // Groove Milling copies the 1152 Filleting.
-    expect(fields('Machining - Groove Milling')).toEqual(fields('Machining - Filleting'));
+    // 1152 shipped Groove Milling as a copy of its Filleting; 1155 replaced it with the ball nose model, and 1152 still generates as applied.
+    const shipped = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators.find((c) => c.name === 'Machining - Groove Milling' && c.migration === 1152)!;
+    expect(shipped.supersededBy).toBe(1155);
+    expect(shipped.fields).toEqual(fields('Machining - Filleting'));
+    expect(fields('Machining - Groove Milling').map((f) => f.name)).toContain('Path Length');
+  });
+
+  it('a ball nose finishes grooves and inside fillets, and a lathe plunges its grooves (1155)', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1155_machining_ball_nose_fillets_and_plunging.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1155, spec));
+    const current = loadMachiningCalculatorSpec().calculators;
+    const byName = (name: string) => current.find((c) => c.name === name)!;
+    expect(calcs['Groove Milling']?.name).toBe('Machining - Groove Milling');
+    expect(calcs['Concave Fillet Milling']?.name).toBe('Machining - Concave Fillet Milling');
+    expect(calcs['Plunging']?.name).toBe('Machining - Plunging');
+    // Groove Milling keeps its place and its machines (a live-tool lathe mills a groove in a slot); the new ones are appended.
+    expect(current.findIndex((c) => c.name === 'Machining - Groove Milling')).toBeLessThan(current.findIndex((c) => c.name === 'Machining - Mask Cure'));
+    expect(current.slice(-2).map((c) => c.name)).toEqual(['Machining - Concave Fillet Milling', 'Machining - Plunging']);
+    expect(byName('Machining - Groove Milling').machineClasses).toHaveLength(9);
+    expect(byName('Machining - Concave Fillet Milling').machineClasses).toEqual(['3_axis_mill', '4_axis_mill', '5_axis_mill']);
+    expect(byName('Machining - Plunging').machineClasses).toHaveLength(6);
+    for (const name of ['Machining - Groove Milling', 'Machining - Concave Fillet Milling']) {
+      const ballNose = byName(name);
+      // Speed, feed and teeth from Haas's ball nose data by the material's milling name and the ball's diameter band.
+      for (const field of ['Teeth', 'Cutting Speed', 'Table Cutter Diameter', 'Table Feed per Tooth']) {
+        expect(ballNose.fields.find((f) => f.name === field)).toMatchObject({
+          source: 'lookup', table: 'tblBallNoseCutData', group: { column: 'MillingMaterial', map: 'MillingMaterial' },
+          range: { min: 'DiameterMinMm', max: 'DiameterMaxMm', input: 'Cutter Diameter' },
+        });
+      }
+      expect(ballNose.description).toMatch(/Haas/);
+      expect(ballNose.description).toMatch(/not for slotting/);
+    }
+  });
+
+  /** A ball nose run on the workbook's real rows: Haas's mild steel row for the ball's diameter band. */
+  const ballNose = (operation: string, values: Record<string, number>, tableRow: { teeth: number; vc: number; d: number; fz: number }) => sheet(operation, {
+    Teeth: tableRow.teeth, 'Cutting Speed': tableRow.vc, 'Table Cutter Diameter': tableRow.d, 'Table Feed per Tooth': tableRow.fz,
+    'Tool Price': 1337.5, 'Tool Life': 1000, ...values,
+  });
+  const STEEL_EIGHTH = { teeth: 4, vc: 161.544, d: 3.175, fz: 0.0254 };
+
+  it('a Ø4 ball in mild steel along a 12.12 mm arc: 12 855 rpm, 1306 mm/min, (12.12 + 10 + 2) / 1306 min = 1.11 s -> 2 s', () => {
+    // Haas 4 flute 3D profiling, P1 125 HB: 530 SFM = 161.544 m/min; the 1/8 in row (its band 0-4.7615 mm) .0010 in = 0.0254 mm a tooth.
+    // n = 161 544 / (pi x 4) = 12 855.3 rpm; vf = 0.0254 x 4 x 12 855.3 = 1306.1 mm/min; 24.12 / 1306.1 = 0.018467 min = 1.108 s.
+    const r = ballNose('Concave Fillet Milling', { 'Path Length': 12.12, Fillets: 3, 'Cutter Diameter': 4 }, STEEL_EIGHTH);
+    expect(r.missing).toEqual([]);
+    expect(r.value('Feed per Tooth')).toBeCloseTo(0.0254, 9);
+    expect(r.value('Spindle Speed')).toBeCloseTo(12855.27, 1);
+    expect(r.value('Machining Time')).toBeCloseTo(24.12 / (0.0254 * 4 * (161544 / (Math.PI * 4))), 4);
+    expect(r.value('Time per Fillet')).toBe(2);
+    expect(r.sec).toBe(6);
+    expect(r.value('Tool Cost per Part')).toBeCloseTo(1.3375, 9);
+    // Held to a 10 000 rpm machine: 24.12 / (0.0254 x 4 x 10 000) = 0.023740 min = 1.42 s -> still 2 s.
+    expect(ballNose('Groove Milling', { 'Path Length': 12.12, Grooves: 1, 'Cutter Diameter': 4, 'Max Spindle Speed': 10000 }, STEEL_EIGHTH).sec).toBe(2);
+  });
+
+  it('a ball smaller than Haas\'s smallest is fed at the smallest row\'s chip load per diameter: Ø2 in steel = 0.008 x D', () => {
+    const r = ballNose('Concave Fillet Milling', { 'Path Length': 50, Fillets: 1, 'Cutter Diameter': 2 }, STEEL_EIGHTH);
+    expect(r.value('Feed per Tooth')).toBeCloseTo(0.016, 9);
+    // n = 161 544 / (pi x 2) = 25 710.5 rpm; vf = 0.016 x 4 x 25 710.5 = 1645.5 mm/min; (50 + 10 + 1) / 1645.5 = 0.03707 min = 2.22 s -> 3 s.
+    expect(r.sec).toBe(3);
+  });
+
+  it('Plunging a Ø30 R2 half-round groove in mild steel: a 4 mm insert, 0.1356 mm/rev, 2657 rpm, (2 + 10) / (0.1356 x 2657) = 2.0 s -> 2 s', () => {
+    // tblGrooving code 1.0 (125 HB): 250.4 m/min; feed 0.06 at 1.75 mm, 0.27 at 8 mm: at 4 mm 0.06 + (4 - 1.75) / 6.25 x 0.21 = 0.1356.
+    // n = 250 400 / (pi x 30) = 2656.8 rpm; (2 + 10) / (0.1356 x 2656.8) = 0.033309 min = 1.9985 s -> 2 s a groove.
+    const plunge = (width: number, insert: number) => sheet('Plunging', {
+      'Groove Diameter': 30, 'Groove Depth': 2, 'Groove Width': width, Grooves: 2, 'Insert Width': insert, 'Cutting Speed': 250.4, Feed: 0.1356,
+      'Tool Price': 732.4, 'Tool Life': 1000,
+    });
+    const r = plunge(4, 4);
+    expect(r.missing).toEqual([]);
+    expect(r.value('Spindle Speed')).toBeCloseTo(2656.83, 1);
+    expect(r.value('Plunges')).toBe(1);
+    expect(r.value('Time per Groove')).toBe(2);
+    expect(r.sec).toBe(4);
+    // A groove wider than the widest insert (8 mm) takes several plunges: 12 mm / 8 = 2 plunges.
+    expect(plunge(12, 8).value('Plunges')).toBe(2);
   });
 
   it('Center Drilling and Countersinking reproduce the Drilling sheet; an edge the End Milling sheet', () => {

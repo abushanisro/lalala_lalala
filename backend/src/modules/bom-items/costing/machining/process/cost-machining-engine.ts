@@ -21,6 +21,7 @@ import type { StockFacing } from '../../stock/stock-facing';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
 import type { OperationLine } from '../operation/operation-sequencer';
+import type { TurnedGroove } from '../operation/turned-grooves';
 import { timeOperations } from '../operation/time-operations';
 import { runMachiningCalculator, runPlanned, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
 import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
@@ -28,7 +29,7 @@ import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator
 import {
   keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, isWorkbookField, specLookupSeeds,
   grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds,
-  rechuckLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
+  groovingLookupSeeds, rechuckLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
 } from '../calculators/machining-lookup-seeds';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -142,6 +143,14 @@ export interface MachiningCostInput {
   } | null;
   // Real tblVirtualPartoffInsertCutData rows (MachiningLookupService.getPartoffTable()).
   partoffTable?: any[] | null;
+  /**
+   * The part's turned grooves (Ring:groove, operation/turned-grooves.ts), by size: a lathe plunges each with a grooving insert (the Plunging
+   * line, timed by the Machining - Plunging calculator on tblGrooving). Absent or empty: none. A mill route mills them instead (the
+   * sequencer's Groove Milling).
+   */
+  turnedGrooves?: readonly TurnedGroove[];
+  // Real tblGrooving rows (MachiningLookupService.getGroovingTable()): the grooving inserts a groove is plunged with.
+  groovingTable?: any[] | null;
   /**
    * The stock the part is cut from: a machined part's is the stock model's choice (costing/stock, stock-machining-cost-summary.ts
    * stockBlankResult), a multi-spindle's its own bar. Absent: no stock is chosen. The engine then prices no material and turns, parts and
@@ -429,7 +438,7 @@ const MILLING_TIME_INPUT: Record<string, string> = {
   'Slot Milling': 'Slot and Groove Milling Time', 'Groove Milling': 'Slot and Groove Milling Time', 'Obround Slot Milling': 'Slot and Groove Milling Time',
   'Center Drilling': 'Hole Making Time', 'Drilling': 'Hole Making Time', 'Step Drilling': 'Hole Making Time', 'Boring': 'Hole Making Time',
   'Countersinking': 'Hole Making Time',
-  'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time',
+  'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time', 'Concave Fillet Milling': 'Edge Treatment Time',
 };
 
 /** What the milling line's moves between operations are timed on: the machine, and the part's size for its rapid moves. */
@@ -2567,6 +2576,45 @@ export function computeTurningCostSummary(
   }
   if (finishTurningMin > 0 || finish.run.missing.length > 0) {
     processLines.push(withFeatureGroups(latheLine('Finish Turning', finishTurningMin, finish.run), finish.rings));
+  }
+
+  // ── Plunging ──────────────────────────────────────────────────────────────
+  // The part's turned grooves (Ring:groove: "Plunging//Ring"), each plunged with a grooving insert as wide as the groove (the Machining -
+  // Plunging calculator, the workbook's Cutoff sheet form), its speed and feed the material's tblGrooving rows, on this lathe's spindle.
+  // One run per groove size; a groove whose depth, width or diameter the CAD does not state (a part analysed before geo_v89), or a material
+  // with no grooving row, is a named gap on the line.
+  if ((input.turnedGrooves ?? []).length > 0) {
+    const mm = (v: number | null) => (v == null ? '?' : String(Math.round(v * 1000) / 1000));
+    const runs = (input.turnedGrooves ?? []).map((g) => {
+      const label = `Ø${mm(g.diameterMm)} groove ${mm(g.widthMm)} x ${mm(g.depthMm)} mm`;
+      const ref = g.faceIds.length > 0 ? { ref: { kind: 'faces' as const, label, faceIds: [...g.faceIds] } } : {};
+      if (g.lacks.length > 0) {
+        const run: CalcRun = {
+          ...EMPTY_RUN,
+          missing: [`the CAD ${g.lacks.join(' and ')} of ${g.grooves > 1 ? `${g.grooves} grooves` : 'the groove'} (an analysis before geo_v89 has none: re-analyse the part)`],
+        };
+        return { g, label, run };
+      }
+      const seeds: Record<string, CalcSeed> = {
+        'Groove Diameter': { value: g.diameterMm!, source: 'CAD: the groove\'s major diameter (the circle its round profile runs round)', ...ref },
+        'Groove Depth': { value: g.depthMm!, source: 'CAD: the depth of the groove\'s round profile', ...ref },
+        'Groove Width': { value: g.widthMm!, source: 'CAD: the chord width of the groove\'s round profile', ...ref },
+        'Grooves': { value: g.grooves, source: 'CAD: grooves of this size' },
+      };
+      const lookup = groovingLookupSeeds({ matClass, groovingTable: input.groovingTable }, { 'Groove Width': g.widthMm!, 'Groove Depth': g.depthMm! });
+      const run = workbookRun('Plunging', { ...seeds, ...lookup.seeds });
+      return { g, label, run: lookup.missing.length > 0 ? { ...run, sec: null, missing: [...lookup.missing, ...run.missing.filter((m) => !m.startsWith('Plunging:'))] } : run };
+    });
+    const summed = sumRuns(runs.map(({ label, run }) => ({ label, run })), 'Plunging cycle time');
+    if (summed.missing.length > 0) warnings.push(`Plunging not priced — missing real input: ${summed.missing.join('; ')}.`);
+    const toolInr = runs.reduce((t, { run }) => t + ((run as { outputs?: Record<string, number> }).outputs?.['Tool Cost per Part'] ?? 0), 0);
+    const rows: FeatureOp[] = runs.flatMap(({ g, label, run }) => (run.sec != null && run.sec > 0 ? [{
+      name: `Plunging // ${label}`, timeSec: run.sec, featureType: 'Ring', count: g.grooves,
+      ...(g.featureIds.length > 0 ? { featureIds: [...g.featureIds] } : {}),
+      ...(g.faceIds.length > 0 ? { faceIds: [...g.faceIds] } : {}),
+    }] : []));
+    const line = latheLine('Plunging', (summed.sec ?? 0) / 60, summed);
+    processLines.push(withFeatureGroups(withToolCost(line, { outputs: { 'Tool Cost per Part': toolInr } }, input.workbook, warnings), rows));
   }
 
   // ── Thread turning and knurling ───────────────────────────────────────────

@@ -5036,7 +5036,159 @@
       "machineClasses": "lathes+mills",
       "migration": 1152,
       "description": "Milling a groove along its length, one pass, as the Filleting calculator times an edge (the workbook's End Milling sheet).",
-      "sameFieldsAs": "Machining - Filleting"
+      "sameFieldsAs": "Machining - Filleting",
+      "supersededBy": 1155
+    },
+    {
+      "name": "Machining - Groove Milling",
+      "operation": "Groove Milling",
+      "machineClasses": "lathes+mills",
+      "migration": 1155,
+      "description": "Milling a round-bottomed groove with a ball nose end mill of the groove's radius, one pass along the groove's path, timed as the Machining calculator workbook's End Milling sheet times a cut: n = 1000 v / (pi D) at the ball's diameter, capped at the machine's spindle limit; time = (path length + 10 mm + D / 2) / (feed per tooth x teeth x n), rounded up to whole seconds a groove. The path is the CAD's: the length of the arc the ball's centre follows (the groove's major radius x its sweep, path_length_mm; a part analysed before that was measured reads pi x the major diameter and says so). Speed, feed per tooth and teeth are Haas Tooling's published ball nose end mill speeds and feeds (tblBallNoseCutData, migration 1154: the 4 flute 3D profiling table for steels, stainless, tool steel and titanium; the 2 flute HSAM1 table for aluminium; the 2 flute uncoated 3D profiling table for copper alloys and plastics; each row with its URL). Haas publishes these for 3D profiling, at the width and depth of cut each row states (ae 0.5D, ap 1.0D for steel; lighter for the others), not for slotting: a ball cutting the full radius in one pass is timed at the published profiling feed, as the project owner decided on 2026-11-25 (Haas data as published). A ball smaller than the table's smallest diameter is read at that row and fed at its feed per tooth scaled by the two diameters (Feed per Tooth = the row's x Cutter Diameter / its diameter: the chip load per diameter of the smallest published ball); one larger than the largest published is a named gap. The end mill's price and life from the workbook. Was one pass of the material's flat end mill along pi x the major diameter (the edge model, 1152; project owner decision of 2026-11-25).",
+      "fields": [
+        {
+          "name": "Path Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Grooves",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "Teeth",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "SpeedMPerMin",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Table Cutter Diameter",
+          "unit": "mm",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "ToolDiameterMm",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Table Feed per Tooth",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "FeedPerToothMm",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), End Milling sheet: the length of cut plus 10 mm for the cutter's approach and overrun."
+        },
+        {
+          "name": "Feed per Tooth",
+          "unit": "mm/tooth",
+          "formula": "{Table Feed per Tooth} * min(1, {Cutter Diameter} / {Table Cutter Diameter})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Path Length} + {Approach Length} + {Cutter Diameter} / 2) / ({Feed per Tooth} * {Teeth} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Groove",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Grooves} * {Time per Groove}"
+        }
+      ]
     },
     {
       "name": "Machining - Mask Cure",
@@ -6781,6 +6933,268 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Time per Lot} / {Lot Size}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Concave Fillet Milling",
+      "operation": "Concave Fillet Milling",
+      "machineClasses": "mills",
+      "migration": 1155,
+      "description": "Finishing an inside (concave) fillet with a ball nose end mill of the fillet's radius, one pass along the fillet, timed as the Machining calculator workbook's End Milling sheet times a cut: n = 1000 v / (pi D) at the ball's diameter, capped at the machine's spindle limit; time = (path length + 10 mm + D / 2) / (feed per tooth x teeth x n), rounded up to whole seconds a fillet. The path is the CAD's: the arc the ball's centre follows (the fillet's major radius x its sweep, path_length_mm), not the whole circle. Speed, feed per tooth and teeth are Haas Tooling's published ball nose end mill speeds and feeds (tblBallNoseCutData, migration 1154: the 4 flute 3D profiling table for steels, stainless, tool steel and titanium; the 2 flute HSAM1 table for aluminium; the 2 flute uncoated 3D profiling table for copper alloys and plastics; each row with its URL). Haas publishes these for 3D profiling, at the width and depth of cut each row states (ae 0.5D, ap 1.0D for steel; lighter for the others), not for slotting: a ball cutting the full radius in one pass is timed at the published profiling feed, as the project owner decided on 2026-11-25 (Haas data as published). A ball smaller than the table's smallest diameter is read at that row and fed at its feed per tooth scaled by the two diameters (Feed per Tooth = the row's x Cutter Diameter / its diameter: the chip load per diameter of the smallest published ball); one larger than the largest published is a named gap. The end mill's price and life from the workbook. A fillet at a turned shoulder (turned_shoulder) is formed by the finish turning pass and not milled on a lathe (project owner decision of 2026-11-25).",
+      "fields": [
+        {
+          "name": "Path Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Fillets",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "Teeth",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "SpeedMPerMin",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Table Cutter Diameter",
+          "unit": "mm",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "ToolDiameterMm",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Table Feed per Tooth",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblBallNoseCutData",
+          "column": "FeedPerToothMm",
+          "group": {
+            "column": "MillingMaterial",
+            "map": "MillingMaterial"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Cutter Diameter"
+          }
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), End Milling sheet: the length of cut plus 10 mm for the cutter's approach and overrun."
+        },
+        {
+          "name": "Feed per Tooth",
+          "unit": "mm/tooth",
+          "formula": "{Table Feed per Tooth} * min(1, {Cutter Diameter} / {Table Cutter Diameter})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Path Length} + {Approach Length} + {Cutter Diameter} / 2) / ({Feed per Tooth} * {Teeth} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Fillet",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Fillets} * {Time per Fillet}"
+        }
+      ]
+    },
+    {
+      "name": "Machining - Plunging",
+      "operation": "Plunging",
+      "machineClasses": "lathes",
+      "migration": 1155,
+      "description": "Plunging a turned groove with a grooving insert, as the Machining calculator workbook's Cutoff sheet times a radial plunge: n = 1000 v / (pi D) at the groove's diameter, capped at the machine's spindle limit; plunges = the groove's width over the insert's, rounded up; time = plunges x (groove depth + 10 mm) / (feed x n), rounded up to whole seconds a groove. The insert is as wide as the groove, at most the widest of the grooving table; its cutting speed and feed are the material's rows of tblGrooving (migration 746, nearest hardness within the material's cut-code family, as Parting reads its part-off inserts), the feed read between the 1.75 mm and 8 mm inserts in proportion to the insert's width (the 1.75 mm row's feed for a narrower one). The groove's diameter, depth and width are the CAD's (its major diameter, and the depth and chord width of its round profile). Tool price and life from the workbook's Cutoff sheet (the insert holder).",
+      "fields": [
+        {
+          "name": "Groove Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Groove Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Groove Width",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Grooves",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Insert Width",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblGrooving",
+          "column": "Cutting Speed (m / min)"
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblGrooving",
+          "column": "Feed (mm / rev)"
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136, from memory/machining/machine). The workbook has no cap; a machine cannot turn faster than its spindle."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Cutoff sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Groove Diameter}))"
+        },
+        {
+          "name": "Plunges",
+          "unit": null,
+          "formula": "max(1, ceil({Groove Width} / {Insert Width}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "{Plunges} * ({Groove Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Groove",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Turning insert holder"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Grooves} * {Time per Groove}"
         }
       ]
     }

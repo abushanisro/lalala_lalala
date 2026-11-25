@@ -30,7 +30,8 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(line.physicsGap?.gapType).toBe('unsupported_operation');
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
-import { realCapabilityRules, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams } from '../real-reference-tables';
+import { realCapabilityRules, realGrindingParams, realGroovingTable, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams } from '../real-reference-tables';
+import type { TurnedGroove } from '../../../../../../modules/bom-items/costing/machining/operation/turned-grooves';
 import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
 import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
@@ -600,6 +601,52 @@ describe('a turned part\'s Drilling line lists the holes it drills', () => {
     });
     // The rows' time is the line's.
     expect(drilling.featureBreakdown!.reduce((t, b) => t + b.timeSec, 0)).toBeCloseTo(drilling.cycleTimeMin * 60, 0);
+  });
+});
+
+describe('a turned groove is plunged on the lathe (Plunging, tblGrooving)', () => {
+  // A Ø30 R2 half-round groove (geo_v89: depth 2, chord width 4) in mild steel: tblGrooving code 1.0 (125 HB), 250.4 m/min, a 4 mm insert
+  // fed at 0.06 + (4 - 1.75) / (8 - 1.75) x (0.27 - 0.06) = 0.1356 mm/rev; n = 250 400 / (pi x 30) = 2656.8 rpm (under the lathe's 4000);
+  // (2 + 10) / (0.1356 x 2656.8) = 0.033309 min = 1.9985 s -> 2 s a groove.
+  const groove = (over: Partial<TurnedGroove> = {}): TurnedGroove => ({
+    diameterMm: 30, depthMm: 2, widthMm: 4, grooves: 2, faceIds: [11, 12], featureIds: ['Ring-groove_d30.0_c2'], lacks: [], ...over,
+  });
+  const run = (grooves: TurnedGroove[], over: Partial<MachiningCostInput> = {}) => computeTurningCostSummary(turnedInput({
+    materialGrade: 'MS', workbook: workbookFixture(), turnedGrooves: grooves, groovingTable: realGroovingTable(), ...over,
+  } as any), mc('2_axis_lathe'));
+
+  it('one Plunging line after Finish Turning, 2 s a groove, its grooves as rows, the insert holder\'s wear charged', () => {
+    const result = run([groove()]);
+    const names = result.processLines.map((l) => l.process);
+    const line = result.processLines.find((l) => l.process === 'Plunging')!;
+    expect(line).toBeDefined();
+    expect(line.cycleTimeMin * 60).toBe(4);
+    expect(line.calculatorId).toBe('Machining - Plunging');
+    const step = (name: string) => line.calculationTrace!.find((t) => t.fieldName === name)!;
+    expect(step('Feed').value).toBe(0.1356);
+    expect(step('Cutting Speed').value).toBe(250.4);
+    expect(step('Insert Width').value).toBe(4);
+    expect(step('Spindle Speed').value).toBeCloseTo(2656.83, 1);
+    expect(step('Time per Groove').value).toBe(2);
+    expect(line.featureBreakdown).toEqual([expect.objectContaining({
+      name: 'Plunging // Ø30 groove 4 x 2 mm', timeSec: 4, featureType: 'Ring', count: 2, featureIds: ['Ring-groove_d30.0_c2'], faceIds: [11, 12],
+    })]);
+    expect(line.otherCostDetail).toMatch(/tool wear/);
+    if (names.includes('Finish Turning')) expect(names.indexOf('Plunging')).toBeGreaterThan(names.indexOf('Finish Turning'));
+    expect(result.warnings.some((w) => w.includes('Plunging not priced'))).toBe(false);
+  });
+
+  it('a groove analysed before geo_v89 (no depth or width) and a material with no grooving row are named gaps, never estimated', () => {
+    const legacy = run([groove({ depthMm: null, widthMm: null, lacks: ['depth', 'width'] })]).processLines.find((l) => l.process === 'Plunging')!;
+    expect(legacy.cycleTimeMin).toBe(0);
+    expect(legacy.physicsGap).toBeDefined();
+    const titanium = run([groove()], { materialGrade: 'Ti-6Al-4V' });
+    expect(titanium.processLines.find((l) => l.process === 'Plunging')!.cycleTimeMin).toBe(0);
+    expect(titanium.warnings.some((w) => w.includes('Plunging not priced') && w.includes('tblGrooving insert for titanium'))).toBe(true);
+  });
+
+  it('no grooves, no Plunging line', () => {
+    expect(run([]).processLines.some((l) => l.process === 'Plunging')).toBe(false);
   });
 });
 
