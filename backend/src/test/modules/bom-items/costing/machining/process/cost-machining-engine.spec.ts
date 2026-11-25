@@ -274,10 +274,26 @@ describe('RM Composition Analysis: the raw material lot\'s composition checked o
   it('is 60 s a lot shared over the batch, on the XRF analyzer\'s rate, with no setup', () => {
     // 60 s over the batch of 60 = 1 s a part; at 15.2794 an hour, 0.004244.
     const line = xrfOf(computeMillingCostSummary(milledInput({ xrfRate: XRF }), mc('3_axis_mill')))!;
-    expect(line.cycleTimeMin * 60).toBeCloseTo(1, 2); // a line keeps its cycle to four decimals of a minute
+    expect(line.cycleTimeMin * 60).toBeCloseTo(1, 4); // a line keeps its cycle to the stored four decimals of a second
     expect(line.runCost).toBeCloseTo(15.2794 / 3600, 6);
     expect(line).toMatchObject({ setupCost: 0, machineClass: 'xrf_analyzer', machineName: 'Handheld XRF Alloy Analyzer' });
     expect(line.calculationTrace!.find((s) => s.fieldName === 'Time per Lot')!.value).toBe(60);
+  });
+
+  it('a large batch keeps its sub-second share: 60 s over 25 000 parts is 0.0024 s a part, costed and saved, never "no cycle time"', () => {
+    // FusionComponent (batch 25 000): four decimals of a minute (0.006 s) rounded 0.0024 s to 0, and Apply saved a not-costed line.
+    const r = computeMillingCostSummary(milledInput({ xrfRate: XRF, batchSize: 25000 }), mc('3_axis_mill'));
+    const line = xrfOf(r)!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(0.0024, 9);
+    expect(line.runCost).toBeCloseTo((0.0024 / 3600) * 15.2794, 9);
+    expect(line.totalCost).toBeGreaterThan(0);
+    expect(findRouteDataGaps([line])).toEqual([]);
+  });
+
+  it('a share below the stored precision (0.00005 s) is still too small to save, and says so', () => {
+    const r = computeMillingCostSummary(milledInput({ xrfRate: XRF, batchSize: 2_000_000 }), mc('3_axis_mill'));
+    // 60 / 2 000 000 = 0.00003 s rounds to 0.0000 s at the column's scale.
+    expect(findRouteDataGaps([xrfOf(r)!]).map((g) => g.reason)).toEqual(['no cycle time was resolved for this operation, so it cannot be costed or persisted']);
   });
 
   it('a quote given no XRF work centre (a sheet metal part\'s) has no such line', () => {
