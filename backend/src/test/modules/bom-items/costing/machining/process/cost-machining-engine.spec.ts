@@ -30,12 +30,11 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(line.physicsGap?.gapType).toBe('unsupported_operation');
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
-import { realCapabilityRules, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams, realInspectionReference } from '../real-reference-tables';
+import { realCapabilityRules, realGrindingParams, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams } from '../real-reference-tables';
 import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
 import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
 const TAPPING = workbookFixture();
-const INSPECTION = realInspectionReference();
 // Finishing-process rules from the real staged files (capability-rules.ts).
 const RULES = realCapabilityRules();
 
@@ -90,7 +89,6 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
     threads: [{ size: 'M4', count: 12 }],
     tightestToleranceMm: 0.05,
     gdtFeatureCount: 2,
-    inspectionReference: INSPECTION,
     batchSize: 60,
     family: 'milled',
     finishedWeightKg: 0.27,
@@ -287,22 +285,52 @@ describe('RM Composition Analysis: the raw material lot\'s composition checked o
   });
 });
 
-describe('inspection line — memory/Machining reference (one analysis per inspected part + final inspection)', () => {
-  // Real reference: tblInspection diametrical 400 s per analysis, sample ratio 0.25, final inspection 5 min.
-  const CYCLE_S = INSPECTION.timePerAnalysisS * INSPECTION.sampleRatio + INSPECTION.finalInspectionMin * 60;
+describe('inspection line — the machining workbook\'s Inspection sheet (60 s a batch for 5 of every 50 parts)', () => {
   const inspOf = (r: ReturnType<typeof computeMillingCostSummary>) => r.processLines.find((l) => l.process === 'Inspection')!;
   const step = (r: ReturnType<typeof computeMillingCostSummary>, field: string) => inspOf(r).calculationTrace!.find((s) => s.fieldName === field)!;
+  const atBatch = (batchSize: number) => computeMillingCostSummary(milledInput({ batchSize, workbook: workbookFixture() }), mc('3_axis_mill'));
+  // The calculator's own cycle (the line keeps its minutes to 4 decimals).
+  const secPerPart = (batchSize: number) => Number(step(atBatch(batchSize), 'Cycle Time').value);
 
-  it('is one analysis on the share of parts inspected plus every part\'s final inspection, all from the reference, and the gauge\'s wear', () => {
-    expect(INSPECTION).toEqual({ inspectionType: 'diametrical', timePerAnalysisS: 400, sampleRatio: 0.25, finalInspectionMin: 5 });
-    const r = computeMillingCostSummary(milledInput({ workbook: workbookFixture() }), mc('3_axis_mill'));
-    const insp = inspOf(r);
-    expect(insp.cycleTimeMin).toBeCloseTo(CYCLE_S / 60, 3);
+  it('reproduces the sheet: a 50-part batch samples 5 parts at 12 s each, 60 s shared over 50 parts = 1.2 s a part, and the gauge\'s wear', () => {
+    const r = atBatch(50);
+    expect(step(r, 'Sampled Parts').value).toBe(5);
+    expect(step(r, 'Time per Sampled Part').value).toBe(12);
+    expect(secPerPart(50)).toBeCloseTo(1.2, 6);
     // The workbook's inspection gauge, Rs 3500 over 10 000 parts = Rs 0.35 a part, at the test's Rs 84 to the dollar.
+    const insp = inspOf(r);
     expect(insp.otherCostPerPart).toBeCloseTo(0.35 / TEST_INR_PER_USD, 9);
-    expect(insp.runCost).toBeCloseTo((CYCLE_S / 3600) * 450 + 0.35 / TEST_INR_PER_USD, 6);
+    expect(insp.runCost).toBeCloseTo((1.2 / 3600) * 450 + 0.35 / TEST_INR_PER_USD, 6);
     expect([step(r, 'Tool Price').value, step(r, 'Tool Life').value]).toEqual([3500, 10000]);
     expect(insp.hourlyRate).toBe(450);
+  });
+
+  it('a batch smaller than the sample is inspected whole: 3 parts, each 12 s', () => {
+    expect(step(atBatch(3), 'Sampled Parts').value).toBe(3);
+    expect(secPerPart(3)).toBeCloseTo(12, 6);
+  });
+
+  it('a batch of exactly the sample quantity: 5 parts, each inspected, 12 s a part', () => {
+    expect(step(atBatch(5), 'Sampled Parts').value).toBe(5);
+    expect(secPerPart(5)).toBeCloseTo(12, 6);
+  });
+
+  it('a batch above the sample: 5 of every 50 started, the time shared over the batch', () => {
+    // 60 parts start two lots of 50: 10 sampled x 12 s / 60 = 2 s; 120 parts: 15 x 12 / 120 = 1.5 s; 1,000 parts: 100 x 12 / 1,000 = 1.2 s.
+    expect(step(atBatch(60), 'Sampled Parts').value).toBe(10);
+    expect(secPerPart(60)).toBeCloseTo(2, 6);
+    expect(secPerPart(120)).toBeCloseTo(1.5, 6);
+    expect(secPerPart(1000)).toBeCloseTo(1.2, 6);
+  });
+
+  it('every input opens where it was read: the workbook\'s Inspection sheet and the BOM batch', () => {
+    const r = atBatch(50);
+    expect(step(r, 'Batch Inspection Time')).toMatchObject({ value: 60 });
+    expect(step(r, 'Sample Quantity')).toMatchObject({ value: 5 });
+    expect(step(r, 'Sample Lot Size')).toMatchObject({ value: 50 });
+    expect(String(step(r, 'Batch Size').source)).toMatch(/^BOM: the batch size/);
+    // The memory/Machining reference model is gone from the line.
+    for (const field of ['Time Per Analysis', 'Inspection Sample Ratio', 'Final Inspection Time']) expect(step(r, field)).toBeUndefined();
   });
 
   it('without the workbook the gauge\'s price is not read: the line is a named gap, never priced without it', () => {
@@ -310,17 +338,10 @@ describe('inspection line — memory/Machining reference (one analysis per inspe
     expect(inspOf(r).cycleTimeMin).toBe(0);
   });
 
-  it('does not grow with the hole count: one analysis is one inspected part (holes only listed)', () => {
+  it('does not grow with the hole count: the batch\'s sample inspection covers the holes (they are only listed)', () => {
     const few = inspOf(computeMillingCostSummary(milledInput({ holeCount: 2, holeGroups: [{ diameter_mm: 4, count: 2 }] }), mc('3_axis_mill')));
     const many = inspOf(computeMillingCostSummary(milledInput(), mc('3_axis_mill')));
     expect(few.cycleTimeMin).toBe(many.cycleTimeMin);
-  });
-
-  it('every input opens where it was read: the tblInspection row and the two variables', () => {
-    const r = computeMillingCostSummary(milledInput(), mc('3_axis_mill'));
-    expect(step(r, 'Time Per Analysis').ref).toEqual({ kind: 'lookup', domain: 'machining', table: 'tblInspection', column: 'Time Per Analysis (s)', row: { Name: 'diametrical' } });
-    expect(step(r, 'Inspection Sample Ratio').ref).toEqual({ kind: 'variable', domain: 'machining', name: 'defaultInspectionSampleRatio' });
-    expect(step(r, 'Final Inspection Time').ref).toEqual({ kind: 'variable', domain: 'machining', name: 'defaultFinalInspectionTime' });
   });
 
   it('lists the inspected holes on the line, so the Process tree shows and lights them', () => {
@@ -329,12 +350,6 @@ describe('inspection line — memory/Machining reference (one analysis per inspe
     expect(insp.featureBreakdown).toEqual([expect.objectContaining({
       name: 'Feature Inspection ×3', count: 3, featureIds: ['hole_d4', 'step_1'], occurrenceRefs: inspected,
     })]);
-  });
-
-  it('without the reference the line is a named gap, never a coded allowance', () => {
-    const r = computeMillingCostSummary(milledInput({ inspectionReference: null }), mc('3_axis_mill'));
-    expect(inspOf(r).cycleTimeMin).toBe(0);
-    expect(r.warnings.some((w) => w.includes('inspection reference'))).toBe(true);
   });
 
   it('emits the inspection line on turned parts too', () => {

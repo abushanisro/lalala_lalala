@@ -24,7 +24,7 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(committed).toContain('tblInspection');
     // The engine sees only the current entry.
     expect(spec.calculators.filter((c) => c.name === 'Machining - Inspection').map((c) => c.fields.map((f) => f.name))).toEqual([
-      ['Time Per Analysis', 'Inspection Sample Ratio', 'Final Inspection Time', 'Tool Price', 'Tool Life', 'Tool Cost per Part', 'Cycle Time'],
+      ['Batch Inspection Time', 'Sample Quantity', 'Sample Lot Size', 'Batch Size', 'Sampled Parts', 'Time per Sampled Part', 'Tool Price', 'Tool Life', 'Tool Cost per Part', 'Cycle Time'],
     ]);
     expect(buildMachiningCalculatorsMigrationSql()).toContain('Positioning Time');
   });
@@ -206,6 +206,33 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
 
   it('the inspection gauge and the XRF composition check ship in 1146', () => {
     expect(readFileSync(join(ROOT, 'migrations/1146_machining_inspection_gauge_and_xrf.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1146, spec));
+  });
+
+  it('Inspection follows the workbook (1151); what 1146, 1029 and 804 shipped is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1151_machining_inspection_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1151, spec));
+    expect(readFileSync(join(ROOT, 'migrations/1146_machining_inspection_gauge_and_xrf.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1146, spec));
+    expect(calcs['Inspection']?.fields.map((f) => f.field_name)).toEqual([
+      'Batch Inspection Time', 'Sample Quantity', 'Sample Lot Size', 'Batch Size', 'Sampled Parts', 'Time per Sampled Part',
+      'Tool Price', 'Tool Life', 'Tool Cost per Part', 'Cycle Time',
+    ]);
+  });
+
+  it('Inspection reproduces the workbook\'s Inspection sheet: 60 s a batch for 5 of its 50 parts, 1.2 s a part, the gauge Rs 0.35 a part', () => {
+    // The sheet: Part inspection quantity 5, Batch size 50, Time/batch 60 s, Time/part = 60 / 50 = 1.2 s; Tool cost 3500 / 10 000 = 0.35.
+    const r = sheet('Inspection', { 'Batch Size': 50, 'Tool Price': 3500, 'Tool Life': 10000 });
+    expect(r.missing).toEqual([]);
+    expect(r.value('Sampled Parts')).toBe(5);
+    expect(r.value('Time per Sampled Part')).toBe(12);
+    expect(r.sec).toBeCloseTo(1.2, 9);
+    expect(r.value('Tool Cost per Part')).toBeCloseTo(0.35, 9);
+  });
+
+  it.each([
+    [1, 1, 12], [3, 3, 12], [5, 5, 12], [49, 5, 60 / 49], [50, 5, 1.2], [51, 10, 120 / 51], [100, 10, 1.2], [300, 30, 1.2],
+  ])('Inspection of a %i-part batch: %i sampled, %f s a part', (batch, sampled, perPart) => {
+    const r = sheet('Inspection', { 'Batch Size': batch, 'Tool Price': 3500, 'Tool Life': 10000 });
+    expect(r.value('Sampled Parts')).toBe(sampled);
+    expect(r.sec).toBeCloseTo(perPart, 9);
   });
 
   it('RM Composition Analysis reproduces the workbook\'s sheet: 60 s a lot over its 300 parts, 0.2 s a part', () => {
