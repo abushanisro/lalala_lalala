@@ -11,6 +11,7 @@ import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { seedsFor } from '../casting/sand/sand-seeds';
 import { selectAndCost, type StepOutcome } from '../casting/sand/sand-steps';
 import { runReferenceCalculator, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { derivedSeed, inputStep, resultStep } from '../shared/calculators/seed-refs';
 import { MULTI_SPINDLE_PROCESS_GROUP } from '../shared/core/part-family-process-group';
 
 import type { WorkOp } from './multi-spindle-work';
@@ -133,10 +134,19 @@ export function buildMultiSpindleRoutes(input: {
       if ('missing' in plan) return { ok: false, reasons: [plan.missing] };
       const slowest = plan.slowest;
       const doing = slowest.ops.map((o) => o.name).join(', ') || 'the part eject';
+      const specRef = (column: string) => ({ kind: 'machine' as const, machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
+      // The station plan: each station's time (its operations on its slides, each with the tool positioning), the slowest of them.
+      const slowestSeed = derivedSeed(slowest.seconds, `Station ${slowest.spindle}${slowest.back ? ' (back work)' : ''}: ${doing}, the slowest of ${plan.stations.length}. ${MULTI_SPINDLE_CYCLE_SOURCE}`,
+        `The station plan on ${m.name}`, [
+          inputStep('Tool positioning', 's', num(m.specs.tool_positioning_time_s) ?? 0, `${m.name}: tool_positioning_time_s (HR Rates), added to each operation`, specRef('tool_positioning_time_s')),
+          inputStep('Part eject', 's', num(m.specs.part_eject_time_s) ?? 0, `${m.name}: part_eject_time_s (HR Rates), on the last back-work station`, specRef('part_eject_time_s')),
+          ...notes.map((n, i) => inputStep(`Split ${i + 1}`, null, n, 'tblMultiSpindleOpSplitting: an operation split over stations')),
+          ...plan.stations.map((st) => inputStep(`Station ${st.spindle}${st.back ? ' (back work)' : ''}`, 's', st.seconds,
+            st.ops.length ? st.ops.map((o) => `${o.name} on the ${o.slide} slide ${Math.round(o.seconds * 100) / 100} s`).join('; ') : 'no operation')),
+          resultStep('Slowest Station', 's', slowest.seconds, 'the longest station: its slides work in parallel, the slowest slide sets it'),
+        ]);
       const { seeds, missing } = seedsFor(calc, {
-        engine: (source) => (keyName(source) === 'slowest_station_s'
-          ? { value: slowest.seconds, source: `Station ${slowest.spindle}${slowest.back ? ' (back work)' : ''}: ${doing}, the slowest of ${plan.stations.length}. ${MULTI_SPINDLE_CYCLE_SOURCE}` }
-          : null),
+        engine: (source) => (keyName(source) === 'slowest_station_s' ? slowestSeed : null),
         machine: (column) => {
           const value = machineValue(m, column);
           return value == null ? null : {

@@ -5,7 +5,7 @@
 // For every moulding machine that can hold the part a whole route is built; the cheapest complete one is the route (the moulding process
 // follows from it, unless the user chose one). Nothing is substituted: what the data or the measurements lack is named, and a step no machine
 // can do is a named gap line, which makes the route incomplete.
-import type { MachineChoiceDto, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { MachineChoiceDto, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 import { machineChoice, roundPerPart } from '../machine-choice';
 import type { DomainCalculatorSpec } from '../../shared/calculators/domain-calculator-spec';
 import type { ReferenceCalcRun, ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
@@ -14,11 +14,12 @@ import { coreboxTooling, coreLine, sandCores, type CoreboxTooling, type CoreRegi
 import { cleanStep, degateStep, finishStep, inspectStep, shakeoutStep, type SandFinishContext } from './sand-finishing-steps';
 import { referenceYieldNote } from './sand-yield';
 import { coreRefractoryLines, mouldRefractoryLines, PLANT_REFRACTORY, type RefractorySettings } from './sand-refractory';
-import { designGating, type GatingSystem, type SandFlask } from './sand-gating';
+import { designGating, GATING_CALCULATOR, RISERS_CALCULATOR, type GatingSystem, type SandFlask } from './sand-gating';
+import { calculatedSeed, calculationRef, inputStep, resultStep, seedStep } from '../casting-source-refs';
 import { ingateVelocityNote, RISER_EFFICIENCY_NOTE } from './sand-velocity';
 import { machineValue, type SandMachine } from './sand-machines';
 import type { SandReference } from './sand-reference';
-import { valuesProvider } from './sand-seeds';
+import { SAND_DOMAIN, valuesProvider } from './sand-seeds';
 import { cavitiesPerMould, coolStep, meltStep, mouldStep, pourStep, runStep, selectAndCost, type CostedStep, type HotBoxSettings, type SandMaterial, type SandRouteContext } from './sand-steps';
 
 export const METAL_PER_CASTING = 'Sand Casting - Metal per casting';
@@ -62,6 +63,8 @@ export interface SandScenario {
   energyPricePerKwh: number | null;
   /** Where the energy price comes from, for the trace. */
   energyPriceSource?: string | null;
+  /** The record it was read from (the location's electricity price row, or the Cost Guide entry), for the trace's eye. */
+  energyPriceRef?: SourceRef | null;
   /** The plant's hot box settings; each null until the user sets it (no default is assumed). */
   hotBox: HotBoxSettings;
   /** The Cost Guide's coating settings; absent: the plant's defaults (sand-refractory.ts PLANT_REFRACTORY). */
@@ -133,7 +136,7 @@ interface Shared {
   cores: ReturnType<typeof sandCores>['cores'];
 }
 
-function sharedFor(input: SandRouteInput, mould: SandMachine, cavities: number): { shared: Shared | null; missing: string[] } {
+function sharedFor(input: SandRouteInput, mould: SandMachine, cavities: number, cavitiesRef: SourceRef): { shared: Shared | null; missing: string[] } {
   const { ref, part, scenario } = input;
   const fail = (...missing: string[]) => ({ shared: null, missing });
   const density = input.material.columns['density_kg_m3'];
@@ -157,16 +160,37 @@ function sharedFor(input: SandRouteInput, mould: SandMachine, cavities: number):
   const base: SandRouteContext = {
     ref, spec: input.spec, calculators: input.calculators, material: input.material,
     part: { netKg, modulusMm: modulus, dimsMm: part.dimsMm, wallNominalMm: thickness },
-    cavities, coresPerCasting: 0, poured: { perCastingKg: netKg, perMouldKg: netKg * cavities }, energyPricePerKwh: scenario.energyPricePerKwh, energyPriceSource: scenario.energyPriceSource ?? null, hotBox: scenario.hotBox, batchSize: scenario.batchSize,
+    cavities, cavitiesRef, coresPerCasting: 0, poured: { perCastingKg: netKg, perMouldKg: netKg * cavities }, energyPricePerKwh: scenario.energyPricePerKwh, energyPriceSource: scenario.energyPriceSource ?? null, energyPriceRef: scenario.energyPriceRef ?? null, hotBox: scenario.hotBox, batchSize: scenario.batchSize,
   };
+  const lengthSeed = calculatedSeed(l, 'longest side across the draw direction', 'Part Length', [
+    inputStep('Part', 'mm', part.dimsMm.map((v) => r2(v)).join(' x '), 'CAD: the part across the draw direction (length, width) and along it (height)'),
+    resultStep('Part Length', 'mm', l, 'The longest side across the draw direction'),
+  ]);
+  const ingatesRef = calculationRef('Ingates', [
+    seedStep('Part length', 'mm', lengthSeed),
+    inputStep('ingateGap', 'mm', ref.number('ingateGap')!, 'Sand casting variable ingateGap', { kind: 'variable', domain: SAND_DOMAIN, name: 'ingateGap' }),
+    resultStep('Ingates', null, ingates, 'ceil({Part length} / {ingateGap}), at least 1'),
+  ]);
+  const materialDensityRef: SourceRef = { kind: 'material', materialId: input.material.id, materialName: input.material.name, column: 'density_kg_m3' };
   const { system: gating, missing: gatingMissing } = designGating({
-    netKg, volumeMm3: part.volumeMm3, modulusMm: modulus, densityKgM3: density, materialName: input.material.name,
+    netKg, volumeMm3: part.volumeMm3, modulusMm: modulus, densityKgM3: density, materialName: input.material.name, materialRef: materialDensityRef,
     materialType: input.material.materialType, cutCode: input.material.columns['cut_code'] ?? null, wallNominalMm: thickness,
     mould: {
-      cavities, ingates,
-      partLengthMm: { value: l, source: 'longest side across the draw direction' },
-      copeHeightMm: { value: flaskHeight! / 2, source: `half the flask height of ${mould.name}` },
-      abovePartingMm: { value: above, source: part.abovePartingMm != null ? 'measured: casting top above the parting line' : 'estimate: half the draw depth' },
+      cavities, cavitiesRef, ingates, ingatesRef,
+      partLengthMm: lengthSeed,
+      copeHeightMm: calculatedSeed(flaskHeight! / 2, `half the flask height of ${mould.name}`, 'Cope Height', [
+        inputStep('Flask height', 'mm', flaskHeight!, `machine ${mould.name}: flask_height_mm`,
+          { kind: 'machine', machineId: mould.id, machineName: mould.name, machineClass: mould.machineClass, location: mould.location, column: 'flask_height_mm' }),
+        resultStep('Cope Height', 'mm', flaskHeight! / 2, '{Flask height} / 2: the cope is the flask half above the parting plane'),
+      ]),
+      abovePartingMm: part.abovePartingMm != null
+        ? calculatedSeed(above, 'measured: casting top above the parting line', 'Casting Height in Cope', [
+          inputStep('Casting Height in Cope', 'mm', above, "CAD casting analysis: the casting's top above the parting plane"),
+        ])
+        : calculatedSeed(above, 'estimate: half the draw depth', 'Casting Height in Cope', [
+          inputStep('Draw depth', 'mm', h, 'CAD: the part along the draw direction'),
+          resultStep('Casting Height in Cope', 'mm', above, 'Not measured: {Draw depth} / 2'),
+        ]),
     },
     ref, spec: input.spec, calculators: input.calculators,
   });
@@ -175,7 +199,10 @@ function sharedFor(input: SandRouteInput, mould: SandMachine, cavities: number):
 
   const metal = runStep(
     base, METAL_PER_CASTING, null,
-    { gating_kg: { value: gating.gatingKg, source: 'Sand Casting - Gating system' }, risers_kg: { value: gating.risersKg, source: 'Sand Casting - Risers' } },
+    {
+      gating_kg: { value: gating.gatingKg, source: 'Sand Casting - Gating system', ref: { kind: 'calculation', name: GATING_CALCULATOR, evidence: null, steps: gating.runs.gating.trace } },
+      risers_kg: { value: gating.risersKg, source: 'Sand Casting - Risers', ref: { kind: 'calculation', name: RISERS_CALCULATOR, evidence: null, steps: gating.runs.risers.trace } },
+    },
     { cad: valuesProvider({ volume_mm3: { value: part.volumeMm3, source: 'part volume (mm³)' } }) },
     'Poured Weight',
   );
@@ -191,14 +218,39 @@ function sharedFor(input: SandRouteInput, mould: SandMachine, cavities: number):
 
   const cored = sandCores({ ...base, poured }, part.cores);
   if (cored.missing.length) return fail(...cored.missing);
+  // How the cores of a casting were counted: the cores the analysis measured, less those too thin to make in sand (left solid).
+  const coresRef = calculationRef('Cores per casting', [
+    inputStep('Cores measured', null, part.cores.length, 'CAD casting analysis: the cores the part needs (regions no straight pull of the pattern reaches)'),
+    ...(cored.thin > 0 ? [
+      inputStep('minSandCastableHoleDia', 'mm', ref.number('minSandCastableHoleDia') ?? NaN, 'Sand casting variable minSandCastableHoleDia', { kind: 'variable', domain: SAND_DOMAIN, name: 'minSandCastableHoleDia' }),
+      inputStep('Left solid', null, cored.thin, 'Cores thinner than minSandCastableHoleDia: left solid and machined later'),
+    ] : []),
+    resultStep('Cores', null, cored.cores.length, cored.thin > 0 ? '{Cores measured} - {Left solid}' : 'Every measured core is made of sand'),
+  ]);
   const coreSandKgPerMould = cored.cores.reduce((s, c) => s + c.kg, 0) * cavities;
   const ctx: SandFinishContext = {
-    ...base, poured, coresPerCasting: cored.cores.length,
+    ...base, poured, coresPerCasting: cored.cores.length, coresRef,
     surfaceAreaMm2: part.surfaceAreaMm2,
-    gates: { ingateAreaMm2: gating.ingateAreaMm2, ingateWidthMm: gating.ingateWidthMm, riserContactMm2: gating.riserContactMm2, riserDiameterMm: gating.riserDiameterMm },
+    gates: {
+      ingateAreaMm2: gating.ingateAreaMm2, ingateWidthMm: gating.ingateWidthMm, riserContactMm2: gating.riserContactMm2, riserDiameterMm: gating.riserDiameterMm,
+      // Where they were designed: the gating calculator's run (the ingate area), and the risers' contact worked out from the risers calculator.
+      ingateAreaRef: { kind: 'calculation', name: GATING_CALCULATOR, evidence: null, steps: gating.runs.gating.trace },
+      riserContactRef: calculationRef('Riser Contact', [
+        inputStep('Risers', null, gating.risers, 'One riser per ingate'),
+        inputStep('Riser Diameter', 'mm', gating.riserDiameterMm, RISERS_CALCULATOR, { kind: 'calculation', name: RISERS_CALCULATOR, evidence: null, steps: gating.runs.risers.trace }),
+        resultStep('Riser Contact', 'mm²', gating.riserContactMm2, '{Risers} x pi x {Riser Diameter}^2 / 4'),
+      ]),
+    },
     partingLine: part.partingLineMm != null
-      ? { value: part.partingLineMm, source: 'measured silhouette along the draw direction' }
-      : { value: 2 * (l + w), source: 'estimate: box perimeter' },
+      ? { value: part.partingLineMm, source: 'measured silhouette along the draw direction', ref: { kind: 'cad', evidence: 'parting_perimeter' } }
+      : {
+        value: 2 * (l + w), source: 'estimate: box perimeter',
+        ref: calculationRef('Parting Line', [
+          inputStep('Part length', 'mm', l, 'CAD: the part across the draw direction, its longer side'),
+          inputStep('Part width', 'mm', w, 'CAD: the part across the draw direction, its shorter side'),
+          resultStep('Parting Line', 'mm', 2 * (l + w), 'Not measured: the box perimeter, 2 x ({Part length} + {Part width})'),
+        ]),
+      },
     coreSandKgPerMould, coresCount: cored.cores.length,
   };
   if (part.partingLineMm == null) notes.push('Parting line not measured: the box perimeter is used.');
@@ -239,10 +291,12 @@ function routeOn(input: SandRouteInput, mould: SandMachine, mouldingProcess: str
   const cav = cavitiesPerMould(ref, mould, part.dimsMm, part.volumeMm3 * 1e-9 * density, scenario.cavities);
   if ('reasons' in cav) return fail(...cav.reasons);
   const cavities = cav.cavities;
-  const key = `${machineValue(mould, 'flask_height_mm')}|${cavities}|${mould.machineClass === PIT_CLASS}`;
+  // Moulding machines share the steps when they share what the steps read of them: the flask height, the cavities and how they were decided
+  // (their ref names no machine), and pit moulding.
+  const key = `${machineValue(mould, 'flask_height_mm')}|${cavities}|${mould.machineClass === PIT_CLASS}|${JSON.stringify(cav.ref)}`;
   let built = cache.get(key);
   if (!built) {
-    built = sharedFor(input, mould, cavities);
+    built = sharedFor(input, mould, cavities, cav.ref);
     cache.set(key, built);
   }
   if (!built.shared) return fail(...built.missing);
@@ -288,8 +342,23 @@ function routeOn(input: SandRouteInput, mould: SandMachine, mouldingProcess: str
       const m = runStep(
         ctx, MATERIAL_COST, null,
         {
-          net_kg: { value: netKg, source: 'metal per casting' }, poured_kg: { value: pouredKg, source: 'metal per casting' },
-          furnace_yield_loss_factor: { value: yieldLoss, source: `machine ${furnace.name}` }, final_yield: { value: finalYield, source: 'good-part yields of the machines' },
+          net_kg: calculatedSeed(netKg, 'metal per casting', 'Net Weight', [
+            inputStep('Part volume', 'mm³', part.volumeMm3, 'CAD: the part volume', { kind: 'cad', evidence: 'part_volume' }),
+            inputStep('Density', 'kg/m³', density, `${input.material.name}: density_kg_m3`, { kind: 'material', materialId: input.material.id, materialName: input.material.name, column: 'density_kg_m3' }),
+            resultStep('Net Weight', 'kg', netKg, '{Part volume} x 1e-9 x {Density}'),
+          ]),
+          poured_kg: { value: pouredKg, source: 'metal per casting', ...(ctx.poured.ref ? { ref: ctx.poured.ref } : {}) },
+          furnace_yield_loss_factor: {
+            value: yieldLoss, source: `machine ${furnace.name}`,
+            ref: { kind: 'machine', machineId: furnace.id, machineName: furnace.name, machineClass: furnace.machineClass, location: furnace.location, column: 'yield_loss_factor' },
+          },
+          final_yield: calculatedSeed(finalYield, 'good-part yields of the machines', 'Final Yield', [
+            ...steps.filter((st) => st.machine && machineValue(st.machine, 'good_part_yield') != null).map((st) => inputStep(
+              st.line.process, null, machineValue(st.machine!, 'good_part_yield')!, `machine ${st.machine!.name}: good_part_yield`,
+              { kind: 'machine', machineId: st.machine!.id, machineName: st.machine!.name, machineClass: st.machine!.machineClass, location: st.machine!.location, column: 'good_part_yield' },
+            )),
+            resultStep('Final Yield', null, finalYield, 'The product of the good-part yields of the machines of the route (1 for a machine with none on file)'),
+          ]),
         },
         {},
         'Material Cost',

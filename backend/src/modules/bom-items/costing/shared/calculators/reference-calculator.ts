@@ -65,6 +65,31 @@ export function withFieldOverrides(calculators: ReferenceCalculators | null | un
 
 const overrideSource = (o: FieldOverride, was: string) => `Engineer's value for this part: ${o.reason} (instead of ${was})`;
 
+/**
+ * Where a field the part overrides takes its value: the engineer's value set on this part (calculator_field_overrides, with its reason), and the
+ * value it replaces with that value's own source (the seed's ref, else the calculator's table of defaults); the value in use is the engineer's.
+ */
+function overrideRef(def: ReferenceCalculatorDef, f: ReferenceCalculatorField, own: FieldOverride, seeded: CalcSeed | undefined): SourceRef {
+  const unit = f.unit ?? null;
+  const label = (name: string) => (unit ? `${name} (${unit})` : name);
+  const replaced: CalculationTraceStep | null = seeded && Number.isFinite(seeded.value)
+    ? { fieldName: 'Value it replaces', displayLabel: label('Value it replaces'), kind: 'input', value: round(seeded.value), unit, source: seeded.source, ...(seeded.ref ? { ref: seeded.ref } : {}) }
+    : hasValue(f.default_value) && Number.isFinite(Number(f.default_value))
+      ? {
+        fieldName: 'Value it replaces', displayLabel: label('Value it replaces'), kind: 'input', value: Number(f.default_value), unit,
+        source: calculatorDefaultSource(def.name, f.note), ref: calculatorFieldRef(def, f.field_name),
+      }
+      : null;
+  return {
+    kind: 'calculation', name: `${f.field_name}: set by the engineer on this part`, evidence: null,
+    steps: [
+      { fieldName: 'Set for this part', displayLabel: label('Set for this part'), kind: 'input', value: round(own.value), unit, source: `The engineer's value for this part (calculator field override): ${own.reason}` },
+      ...(replaced ? [replaced] : []),
+      { fieldName: f.field_name, displayLabel: label(f.field_name), kind: 'calculated', value: round(own.value), unit, formula: 'The engineer\'s value for this part, used instead of the value it replaces' },
+    ],
+  };
+}
+
 /** Calculator per operation / calculator key ("Drilling", "High Pressure Die Casting", ...). */
 export type ReferenceCalculators = Record<string, ReferenceCalculatorDef>;
 
@@ -189,8 +214,9 @@ export function runReferenceCalculator(
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'input',
         value: round(seed.value), unit: f.unit ?? null, source: seed.source,
         ...(seed.lookup ? { stepType: 'lookup' as const } : {}),
-        // A value the part's own override replaced was not read from the seed's source: no ref then.
+        // A value the part's own override replaced was not read from the seed's source: its eye opens the override instead, and the value it replaces.
         ...(seed.ref && !own ? { ref: seed.ref, ...(evidenceOf(seed.ref) ? { evidence: evidenceOf(seed.ref)! } : {}) } : {}),
+        ...(own ? { ref: overrideRef(def, f, own, seeded) } : {}),
         ...(own ? { override: { original: seeded && Number.isFinite(seeded.value) ? round(seeded.value) : null, reason: own.reason } } : {}),
       });
     } else if (hasValue(f.default_value) && Number.isFinite(Number(f.default_value))) {

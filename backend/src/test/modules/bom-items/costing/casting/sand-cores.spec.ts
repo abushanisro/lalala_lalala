@@ -10,7 +10,7 @@ const iron = sandMaterial('ASTM Grade 20 Gray Iron');
 const ctx: SandRouteContext = {
   ref, spec, calculators: sandCastingCalculatorsByName(), material: iron,
   part: { netKg: 8, modulusMm: 10, dimsMm: [300, 200, 100], wallNominalMm: 12 },
-  cavities: 1, coresPerCasting: 1, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
+  cavities: 1, cavitiesRef: { kind: 'calculation', name: 'Cavities per mould', evidence: null, steps: [{ fieldName: 'Cavities', displayLabel: 'Cavities', kind: 'calculated', value: 1, formula: 'one cavity' }] }, coresPerCasting: 1, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
 };
 const spec$ = (m: { specs: Readonly<Record<string, unknown>> }, k: string) => Number(m.specs[k]);
 const v = (k: string) => ref.number(k)!;

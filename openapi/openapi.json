@@ -20369,6 +20369,26 @@
         ]
       }
     },
+    "/api/v1/processes/press-brake-machines-table": {
+      "get": {
+        "operationId": "ProcessesController_getPressBrakeMachinesTable_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Table retrieved successfully"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Bend cycle time (time per stroke) and press force of every press brake in the machine library, shaped as a lookup table",
+        "tags": [
+          "Processes"
+        ]
+      }
+    },
     "/api/v1/processes/reference-domains": {
       "get": {
         "operationId": "ProcessesController_getReferenceDomains_v1",
@@ -20420,7 +20440,7 @@
             "bearer": []
           }
         ],
-        "summary": "One staged reference lookup table (columns + rows) of a reference-data domain",
+        "summary": "One staged reference lookup table (columns + rows) of a reference-data domain, or a table served like one (the plastic reference package, a costing table)",
         "tags": [
           "Processes"
         ]

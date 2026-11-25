@@ -45,7 +45,8 @@
 // Core Refractory Coat, Refractory Coat Air / Oven Dry, Corebox; migration 893). Corebox Cost Intercept / Percent / Learning
 // Rate have no formula in memory and are not used.
 
-import type { CalculatorRunDto, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculatorRunDto, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, measuredRef, resultStep } from './casting-source-refs';
 import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
 import { castingSeed, runView, SeedSet } from './casting-calculator-seeds';
 import { gap, line, type CostContext, type FinishingMachine } from './casting-finishing';
@@ -168,7 +169,13 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
   if (input.cores.length === 0) return { lines, corebox: null, warnings };
   const batch = Math.max(input.batchSize, 1);
   const coreCount = input.cores.length;
-  const coreCountSeed = castingSeed.cad(coreCount, 'sand cores (trapped regions no die half reaches)');
+  const coreCountSeed = castingSeed.engine(coreCount, 'CAD: sand cores (trapped regions no die half reaches)', measuredRef('Core count', null, coreCount,
+    'CAD casting analysis (core_geometry trapped_cores): the regions of the part no die half reaches by a straight pull, each made as a sand core'));
+  // A figure summed over the cores (their volumes, areas, boxes), as the calculation it is: each core's own, from the casting analysis.
+  const coreSum = (name: string, unit: string, per: (c: CastingCore) => number, what: string): SourceRef => calculationRef(name, [
+    ...input.cores.map((c, i) => inputStep(`Core ${i + 1}`, unit, per(c), `CAD casting analysis (core_geometry): the ${what} of trapped region ${i + 1}`)),
+    resultStep(name, unit, input.cores.reduce((t, c) => t + per(c), 0), 'The sum over the cores'),
+  ]);
 
   // ── Coremaking (calculator Coremaking) ──────────────────────────────────
   const cmEvals = input.coremakers.map((m) => {
@@ -231,10 +238,11 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
   // Core sand, a consumable of the coremaking line (calculator Core Sand).
   const coreVolume = input.cores.reduce((s, c) => s + c.volumeMm3, 0);
   const sandRun = runReferenceCalculator(calcs, 'Core Sand', {
-    'Core Volume': castingSeed.cad(coreVolume, `volume of the ${coreCount} core${coreCount === 1 ? '' : 's'} (mm³)`),
+    'Core Volume': castingSeed.engine(coreVolume, `CAD: volume of the ${coreCount} core${coreCount === 1 ? '' : 's'} (mm³)`, coreSum('Core Volume', 'mm³', (c) => c.volumeMm3, 'volume')),
     'Sand Density': castingSeed.lookup('sand', 'Density (kg / m^3)', cm.sandRow.densityKgM3, { Name: cm.sandType }),
     'Sand New Cost': castingSeed.lookup('sand', 'New Cost (USD / kg)', cm.sandRow.newCostUsdPerKg, { Name: cm.sandType }),
-    'USD to Local': castingSeed.engine(input.usdToLocal, 'exchange rate USD to the factory currency (FX snapshot)'),
+    'USD to Local': castingSeed.engine(input.usdToLocal, 'exchange rate USD to the factory currency (FX snapshot)',
+      measuredRef('USD to Local', null, input.usdToLocal, "The exchange rate in use, USD to the factory location's currency (the costing's FX snapshot)")),
   }, 'Cost per Part');
   if (sandRun.value == null) lines.push(gap('Core Sand', GROUP, 'die_casting_coremaking', sandRun.missing.join('; ')));
   else {
@@ -256,7 +264,7 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
     return withCorebox();
   }
   const coatRun = runReferenceCalculator(calcs, 'Core Refractory Coat', {
-    'Core Area': castingSeed.cad(coreArea, `outer area of the ${coreCount} core${coreCount === 1 ? '' : 's'} (mm²)`),
+    'Core Area': castingSeed.engine(coreArea, `CAD: outer area of the ${coreCount} core${coreCount === 1 ? '' : 's'} (mm²)`, coreSum('Core Area', 'mm²', (c) => c.areaMm2, 'outer area')),
     'Application Rate': castingSeed.lookup('tblRefractoryCoating', 'Application Rate (m^2 / min)', ref.coatMethod.m2PerMin, { 'Application Method': ref.coatMethod.name }),
     'Coat Applications': castingSeed.variable('defaultNumCoreRefractoryCoatingApplications', ref.v.defaultNumCoreRefractoryCoatingApplications),
   });
@@ -294,8 +302,9 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
   // ── Refractory dry: air or oven, the cheaper (calculators Refractory Coat Air / Oven Dry) ──
   const setVolume = input.cores.reduce((s, c) => s + c.boxMm[0] * c.boxMm[1] * c.boxMm[2], 0);
   const common = {
-    'Core Set Box Volume': castingSeed.cad(setVolume, `box volume of one part's ${coreCount} core${coreCount === 1 ? '' : 's'} (mm³)`),
-    'Batch Size': castingSeed.scenario(batch, 'batch size'),
+    'Core Set Box Volume': castingSeed.engine(setVolume, `CAD: box volume of one part's ${coreCount} core${coreCount === 1 ? '' : 's'} (mm³)`,
+      coreSum('Core Set Box Volume', 'mm³', (c) => c.boxMm[0] * c.boxMm[1] * c.boxMm[2], 'bounding box volume (length x width x height)')),
+    'Batch Size': castingSeed.scenario(batch, 'batch size', 'batchSize'),
   };
   const dryOptions = [
     ...input.airDryers.map((m) => ({ m, kind: 'Refractory Coat Air Dry', cls: 'die_casting_refractory_coat_air_dry', minutes: ref.v.defaultAirDryAndCoolTime, prepHr: ref.v.defaultRefractoryCoatingAirDryPreparationTime,
@@ -356,8 +365,8 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
     const b = cm!.box;
     const seeds = new SeedSet()
       .put('Refurbs per Tool', b.refurbsPerTool, (x) => castingSeed.lookup('coreboxMaterial', 'Corebox Refurbs Per Tool', x, { Type: cm!.boxMaterial }), `coreboxMaterial has no Refurbs Per Tool for ${cm!.boxMaterial}`)
-      .put('Annual Volume', input.annualVolume, (x) => castingSeed.scenario(x, 'annual volume'), 'annual volume')
-      .put('Production Life', input.productionLifeYears, (x) => castingSeed.scenario(x, 'production life (yr)'), 'production life');
+      .put('Annual Volume', input.annualVolume, (x) => castingSeed.scenario(x, 'annual volume', 'annualVolume'), 'annual volume')
+      .put('Production Life', input.productionLifeYears, (x) => castingSeed.scenario(x, 'production life (yr)', 'productionLifeYears'), 'production life');
     if (seeds.missing.length) {
       warnings.push(`Corebox (${cm!.boxMaterial}) not costed: ${seeds.missing.join(', ')} not set.`);
       return { lines, corebox: null, warnings };

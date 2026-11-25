@@ -12,7 +12,9 @@ import { INSERT_MOLDING_ROUTES, insertLoading, type LoadingStep, type MoldInsert
 import { MULTI_SHOT_PROCESS_GROUP } from '../../shared/core/part-family-process-group';
 import { gap } from '../../casting/casting-finishing';
 
-import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
+import { calc, inputStep, resultStep } from '../calculators/plastic-cycle-time-seeds';
+import { runReferenceCalculator } from '../../shared/calculators/reference-calculator';
 import type { CostContext } from '../../casting/casting-finishing';
 import type { SandMachine } from '../../casting/sand/sand-machines';
 import type { SandReference } from '../../casting/sand/sand-reference';
@@ -140,8 +142,24 @@ export interface MultiShotRoute {
 
 export const isGapLine = (l: ProcessLineCost) => l.physicsGap != null;
 
+/** Where the multi-shot cycle's inputs came from: the shots' cycles, the components' loading and the press's tool index time. */
+export interface CycleRefs { longest: SourceRef; load: SourceRef; index: SourceRef }
+
 /** The multi-shot cycle calculator run: max(the longest shot, the loading) + the tool index time; null when it could not run. */
-export type CycleRun = (longestShotSec: number, loadSec: number, indexSec: number) => { sec: number; trace: CalculationTraceStep[] } | null;
+export type CycleRun = (longestShotSec: number, loadSec: number, indexSec: number, refs?: CycleRefs) => { sec: number; trace: CalculationTraceStep[] } | null;
+
+/** The multi-shot cycle by its stored calculator (MULTI_SHOT_CYCLE_CALC), each input with where it came from. */
+export function multiShotCycleRun(calculators: Readonly<Record<string, ReferenceCalculatorDef>>): CycleRun {
+  return (longest, load, index, refs) => {
+    const val = (value: number, source: string, ref: SourceRef | undefined) => ({ value, source, ...(ref ? { ref } : {}) });
+    const run = runReferenceCalculator(calculators, MULTI_SHOT_CYCLE_CALC, {
+      'Longest Shot Cycle': val(longest, 'the longest of the shots\' injection cycles on this press', refs?.longest),
+      'Load Time': val(load, load > 0 ? 'the component loading of the shot (Pick and Place)' : 'no components to load', refs?.load),
+      'Tool Index Time': val(index, 'the press: toolIndexTime (memory/Countries data, migration 1085)', refs?.index),
+    }, 'Shot Cycle');
+    return run.value == null ? null : { sec: run.value, trace: run.trace };
+  };
+}
 
 /**
  * Every orientation's route. A route prices each capable press of its orientation (every shot by `runEngine` on it) and keeps the cheapest
@@ -170,23 +188,49 @@ export function priceMultiShotRoutes(input: {
     ? insertLoading({ ...input.loading, inserts: input.components, route: loadRoute, batchSize: input.batchSize, step: COMPONENT_LOADING_STEP })
     : null;
   const loadSec = loading?.secPerPart ?? 0;
+  const loadTrace = loading?.step.line.calculationTrace ?? [];
+  // The components the insert operations count (the pull test): the part's other BOM children.
+  const withComponents = (i: InjectionMoldingCostInput): InjectionMoldingCostInput => ({ ...i, inserts: input.components });
+  /** The loading of a shot (the components' loading per part x the cavities), or that there is none: the Load Time's eye. */
+  const loadRef = (cavities: number, cavitiesRef: SourceRef | undefined): SourceRef => (loading
+    ? calc('Load Time: the component loading of the shot', [
+      inputStep('Component loading per part', 's', loadSec, 'Pick and Place: the loader\'s time per part',
+        loadTrace.length > 0 ? { kind: 'calculation', name: `${COMPONENT_LOADING_STEP.process}: ${loading.step.machine?.name ?? loadRoute.label}`, evidence: null, steps: loadTrace } : undefined),
+      inputStep('Cavities per Mold', null, cavities, 'The costed cavity count', cavitiesRef),
+      resultStep('Load Time', 's', loadSec * cavities, '{Component loading per part} * {Cavities per Mold}'),
+    ])
+    : calc('Load Time: no components', [
+      inputStep('Components loaded', null, 0, 'The part\'s BOM children that are not shots: none'),
+      resultStep('Load Time', 's', 0, 'No components to load'),
+    ]));
 
   const priceOn = (press: MultiShotPress) => {
     // The other shots first: their own injection cycles on this press (the engine's, unchanged: the hook only records it).
     const others = input.shots.slice(1).map((shot) => {
       let mold: number | null = null;
-      const summary = input.runEngine({ ...input.onPress(shot, press), shotCycle: (sec) => { mold = sec; return null; } });
-      return { shot, summary, mold: mold as number | null };
+      let moldRef: SourceRef | null = null;
+      const summary = input.runEngine({ ...withComponents(input.onPress(shot, press)), shotCycle: (sec, _cavities, refs) => { mold = sec; moldRef = refs?.molding ?? null; return null; } });
+      return { shot, summary, mold: mold as number | null, moldRef: moldRef as SourceRef | null };
     });
     // The first shot carries the press line, timed by the multi-shot cycle over every shot and the mold that holds them all.
     let first: number | null = null;
     let cycleSec: number | null = null;
     const base = input.runEngine({
-      ...input.onPress(input.shots[0]!, press),
+      ...withComponents(input.onPress(input.shots[0]!, press)),
       multiShotMold: input.mold,
-      shotCycle: (sec, cavities) => {
+      shotCycle: (sec, cavities, refs) => {
         first = sec;
-        const run = input.cycle(Math.max(sec, ...others.map((o) => o.mold ?? 0)), loadSec * cavities, press.indexSec);
+        const longest = Math.max(sec, ...others.map((o) => o.mold ?? 0));
+        const m = press.machine;
+        const run = input.cycle(longest, loadSec * cavities, press.indexSec, {
+          longest: calc('Longest Shot Cycle: every station molds at once', [
+            inputStep(`${input.shots[0]!.name} cycle`, 's', sec, `${input.shots[0]!.name}: its injection cycle on this press`, refs?.molding),
+            ...others.map((o) => inputStep(`${o.shot.name} cycle`, 's', o.mold ?? 0, `${o.shot.name}: its injection cycle on this press`, o.moldRef ?? undefined)),
+            resultStep('Longest Shot Cycle', 's', longest, 'The longest of the shots\' cycles'),
+          ]),
+          load: loadRef(cavities, refs?.cavities),
+          index: { kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column: 'tool_index_time_s' },
+        });
         cycleSec = run?.sec ?? null;
         return run;
       },

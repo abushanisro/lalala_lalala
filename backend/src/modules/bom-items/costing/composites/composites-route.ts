@@ -11,6 +11,7 @@
 import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { batchSizeSeed, derivedSeed, inputStep, resultStep, runRef, seedStep, withSeedRef } from '../shared/calculators/seed-refs';
 import type { CostContext } from '../casting/casting-finishing';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
@@ -288,15 +289,31 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
 
   // ── Materials: the plies and the core ────────────────────────────────────────────────────────────────────────────────────────────
   const warnings = [...stack.notes];
+  // A ply's values are measured on the laminate zone it covers (the cad-engine's laminate zones, by thickness level): its eye lights that zone.
+  const zone = (p: CompositePly) => ({ kind: 'features' as const, label: `ply ${p.index}: laminate zone ${p.level}`, features: [{ featureId: 'laminate-zones', occurrenceIndex: p.level }] });
   const plySeeds = (p: CompositePly) => ({
-    ply_area_mm2: seed(p.areaMm2, `ply ${p.index}: the region at least its place in the stack thick (mm²)`),
-    ply_perimeter_mm: seed(p.perimeterMm, `ply ${p.index}: the region's outline (mm)`),
-    ply_length_mm: seed(p.lengthMm, `ply ${p.index}: its long extent (mm)`),
-    ply_width_mm: seed(p.widthMm, `ply ${p.index}: its short extent (mm)`),
-    ply_cutout_area_mm2: seed(p.cutoutAreaMm2, `ply ${p.index}: openings in its outline (mm²)`),
-    ply_outer_area_mm2: seed(p.outerAreaMm2, `ply ${p.index}: its outline, openings filled (mm²)`),
-    ply_curvature_per_m: seed(part.curvaturePerM, 'tool side curvature, area-weighted average (1/m)'),
+    ply_area_mm2: withSeedRef(seed(p.areaMm2, `ply ${p.index}: the region at least its place in the stack thick (mm²)`), zone(p)),
+    ply_perimeter_mm: withSeedRef(seed(p.perimeterMm, `ply ${p.index}: the region's outline (mm)`), zone(p)),
+    ply_length_mm: withSeedRef(seed(p.lengthMm, `ply ${p.index}: its long extent (mm)`), zone(p)),
+    ply_width_mm: withSeedRef(seed(p.widthMm, `ply ${p.index}: its short extent (mm)`), zone(p)),
+    ply_cutout_area_mm2: withSeedRef(seed(p.cutoutAreaMm2, `ply ${p.index}: openings in its outline (mm²)`), zone(p)),
+    ply_outer_area_mm2: withSeedRef(seed(p.outerAreaMm2, `ply ${p.index}: its outline, openings filled (mm²)`), zone(p)),
+    ply_curvature_per_m: withSeedRef(seed(part.curvaturePerM, 'tool side curvature, area-weighted average (1/m)'), { kind: 'cad', evidence: 'tool_area' }),
   });
+  // The plies in the stack: the laminate's thickest over the cured ply thickness, or the count set in the Cost Guide.
+  const plyCountSeed = derivedSeed(stack.plies.length, 'plies in the stack', 'Plies in the stack', [
+    inputStep('Laminate at its thickest', 'mm', stack.laminateMm, 'CAD: the laminate zones, any core taken out',
+      { kind: 'features', label: 'laminate zones', features: part.levels.map((_, i) => ({ featureId: 'laminate-zones', occurrenceIndex: i })) }),
+    inputStep('Cured ply thickness', 'mm', stack.plyThicknessMm, `${material.name}: cured_thickness`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'cured_thickness' }),
+    ...(stack.plySource === 'scenario' ? [inputStep('Plies set', null, stack.plies.length, 'the ply count set in the Cost Guide')] : []),
+    resultStep('Plies', null, stack.plies.length, stack.plySource === 'scenario' ? '{Plies set}' : 'max(1, round({Laminate at its thickest} / {Cured ply thickness}))'),
+  ]);
+  /** A time summed over the plies, each ply's own calculator run a step of it. */
+  const perPlySeed = (sum: number, source: string, calculator: string, per: ReadonlyArray<{ ply: CompositePly; run: ReferenceCalcRun }>, label: string): CalcSeed =>
+    derivedSeed(sum, source, `${label}: ${per.length} plies`, [
+      ...per.map(({ ply, run: pr }) => inputStep(`Ply ${ply.index}`, 's', pr.value!, `${calculator}: ply ${ply.index}`, runRef(`${calculator}: ply ${ply.index}`, pr))),
+      resultStep(label, 's', sum, 'the sum over the plies'),
+    ]);
   const plyMaterialRuns = stack.plies.map((p) => run(COMPOSITES_CALC.plyMaterial, null, plySeeds(p)));
   const badMaterial = plyMaterialRuns.find((r) => 'reasons' in r);
   if (badMaterial && 'reasons' in badMaterial) return none(...badMaterial.reasons);
@@ -307,10 +324,12 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
   let coreCost = 0;
   const materialRuns: Record<string, ReferenceCalcRun> = { ...(plyRuns[0] ? { ply: plyRuns[0] } : {}) };
   const core = stack.core;
+  // The core is measured on the laminate zone it rises over: its eye lights that zone.
+  const coreZone = core ? { kind: 'features' as const, label: `core: laminate zone ${core.level}`, features: [{ featureId: 'laminate-zones', occurrenceIndex: core.level }] } : undefined;
   const coreSeeds = core ? {
-    core_area_mm2: seed(core.areaMm2, 'core: the region it rises over (mm²)'),
-    core_perimeter_mm: seed(core.perimeterMm, 'core: that region\'s outline (mm)'),
-    core_depth_mm: seed(core.depthMm, 'core: how far the laminate rises over it (mm)'),
+    core_area_mm2: withSeedRef(seed(core.areaMm2, 'core: the region it rises over (mm²)'), coreZone),
+    core_perimeter_mm: withSeedRef(seed(core.perimeterMm, 'core: that region\'s outline (mm)'), coreZone),
+    core_depth_mm: withSeedRef(seed(core.depthMm, 'core: how far the laminate rises over it (mm)'), coreZone),
   } : {};
   if (core) {
     if (!input.coreMaterial) warnings.push(`The core is not costed as material: Raw Materials has no core material "${ref.text('defaultCoreMaterial') ?? 'defaultCoreMaterial'}" (group Composites).`);
@@ -331,7 +350,7 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
     const method = String(m.specs['cleaning_method'] ?? '');
     const manual = bandRow(manualRates, 'Component Area (mm^2)', toolArea);
     const rate: CalcSeed | undefined = own != null && own > 0
-      ? { value: own, source: `machine ${m.name}: clean_rate_mm2_per_s (${method || 'machine'} cleaning)` }
+      ? { value: own, source: `machine ${m.name}: clean_rate_mm2_per_s (${method || 'machine'} cleaning)`, ref: { kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column: 'clean_rate_mm2_per_s' } }
       : lookupSeed('tblManualToolCleanRates', manual, 'Manual Clean Rate (mm^2 / s)', ['Component Area (mm^2)']);
     if (!rate) return fail('no clean rate: the machine has none and tblManualToolCleanRates is not staged');
     return timed(COMPOSITES_CALC.toolClean, m, { clean_rate_mm2_s: rate });
@@ -343,17 +362,21 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
   const cut = step('Ultrasonic Cut', COMPOSITES_CLASS.cut, (m) => {
     const table = machineValue(m, 'table_length_mm');
     if (table != null && table < longest) return fail(`its ${table} mm table is shorter than the longest ply (${r2(longest)} mm)`);
-    const per: Array<{ ply: CompositePly; sec: number }> = [];
+    const per: Array<{ ply: CompositePly; sec: number; run: ReferenceCalcRun }> = [];
     for (const p of stack.plies) {
       const r = run(COMPOSITES_CALC.plyCut, m, plySeeds(p));
       if ('reasons' in r) return fail(...r.reasons);
-      per.push({ ply: p, sec: r.run.value! });
+      per.push({ ply: p, sec: r.run.value!, run: r.run });
     }
     const sum = per.reduce((s, x) => s + x.sec, 0);
     const outcome = timed(COMPOSITES_CALC.cut, m, {
-      ply_cut_s: seed(sum, `the plies cut, each by Composites - Ply cutting (${per.length} plies)`),
-      material_rolls: seed(1, `one roll of ${material.name}`),
-      batch_size: seed(scenario.batchSize, 'batch size'),
+      ply_cut_s: perPlySeed(sum, `the plies cut, each by Composites - Ply cutting (${per.length} plies)`, COMPOSITES_CALC.plyCut, per, 'Ply Cutting Time'),
+      // Every ply is of the one ply material: one roll of it is loaded.
+      material_rolls: derivedSeed(1, `one roll of ${material.name}`, 'Rolls: one ply material', [
+        inputStep('Ply material', null, material.name, 'every ply of the stack is of the one ply material', { kind: 'material', materialId: material.id, materialName: material.name, column: 'name' }),
+        resultStep('Rolls', null, 1, 'one roll of the one ply material'),
+      ]),
+      batch_size: batchSizeSeed(scenario.batchSize),
     });
     return outcome.ok ? { ...outcome, notes: [], perPly: per } as StepOutcome : outcome;
   }, ['Its table takes the longest ply']);
@@ -367,7 +390,9 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
     if ('reasons' in load) return fail(...load.reasons);
     const n = load.run.value!;
     if (!(n > 0)) return fail(`the tool (${r2(tool[0])} x ${r2(tool[1])} mm, ${r2(part.heightMm + (num('toolHeightAllowance') ?? 0))} mm high) does not fit within its usable ${machineValue(m, 'useable_diameter_mm')} mm diameter and ${machineValue(m, 'useable_length_mm')} mm length (autoclaveSizeCapacitySafetyFactor)`);
-    const outcome = timed(COMPOSITES_CALC.cure, m, { parts_per_load: seed(n, `${r2(n)} parts per load (Composites - Autoclave load${shared ? ', shared autoclave' : ''})`) }, {});
+    const outcome = timed(COMPOSITES_CALC.cure, m, {
+      parts_per_load: withSeedRef(seed(n, `${r2(n)} parts per load (Composites - Autoclave load${shared ? ', shared autoclave' : ''})`), runRef(`${COMPOSITES_CALC.autoclaveLoad} on ${m.name}`, load.run)),
+    }, {});
     return outcome.ok ? { ...outcome, loadParts: n } as StepOutcome : outcome;
   }, ['The tool fits its usable diameter and length within the safety factor']);
   partsPerLoad = (cure.outcome as { loadParts?: number } | null)?.loadParts ?? null;
@@ -403,7 +428,7 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
     const layup = step(r.process, r.machineClass, (m) => {
       const misfit = r.weights === 'HLU' ? fitsArea(m) : fitsTable(m);
       if (misfit) return fail(misfit);
-      const per: Array<{ ply: CompositePly; sec: number }> = [];
+      const per: Array<{ ply: CompositePly; sec: number; run: ReferenceCalcRun }> = [];
       for (const [i, p] of stack.plies.entries()) {
         const complexitySeed = seed(cx[i]!, `ply ${p.index}: Composites - Ply complexity (${r.weights} weightings)`);
         let pr: Run;
@@ -431,10 +456,11 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
           });
         }
         if ('reasons' in pr) return fail(...pr.reasons);
-        per.push({ ply: p, sec: pr.run.value! });
+        per.push({ ply: p, sec: pr.run.value!, run: pr.run });
       }
       const placement = per.reduce((s, x) => s + x.sec, 0);
       let coreSec = 0;
+      let coreRun: ReferenceCalcRun | null = null;
       if (core && r.weights === 'HLU') {
         const c = run(COMPOSITES_CALC.core, m, {
           ...coreSeeds,
@@ -443,10 +469,19 @@ export function buildCompositesRoutes(input: CompositesRouteInput): { routes: Co
         });
         if ('reasons' in c) return fail(...c.reasons);
         coreSec = c.run.value!;
+        coreRun = c.run;
       }
       const engine = r.weights === 'HLU'
-        ? { ply_placement_s: seed(placement, `the plies laid, each by Composites - Hand ply placement (${per.length} plies)`), core_placement_s: seed(coreSec, core ? 'the core placed (Composites - Core placement)' : 'no core'), ply_count: seed(stack.plies.length, 'plies in the stack') }
-        : { ply_placement_s: seed(placement, `the plies laid, each by Composites - Automated ply placement (${per.length} plies)`) };
+        ? {
+          ply_placement_s: perPlySeed(placement, `the plies laid, each by Composites - Hand ply placement (${per.length} plies)`, COMPOSITES_CALC.handPly, per, 'Ply Placement Time'),
+          core_placement_s: core
+            ? withSeedRef(seed(coreSec, 'the core placed (Composites - Core placement)'), runRef(COMPOSITES_CALC.core, coreRun))
+            : derivedSeed(0, 'no core', 'Core placement: no core', [
+              inputStep('Core', null, 'none', 'the laminate rises over no core (the ply stack read from the laminate zones)'), resultStep('Core Placement Time', 's', 0, 'no core to place'),
+            ]),
+          ply_count: plyCountSeed,
+        }
+        : { ply_placement_s: perPlySeed(placement, `the plies laid, each by Composites - Automated ply placement (${per.length} plies)`, COMPOSITES_CALC.autoPly, per, 'Ply Placement Time') };
       const outcome = timed(r.weights === 'HLU' ? COMPOSITES_CALC.handLayup : COMPOSITES_CALC.autoLayup, m, engine);
       return outcome.ok ? { ...outcome, perPly: per, coreSec } as StepOutcome : outcome;
     }, r.weights === 'HLU' ? ['The clean room cell takes the tool'] : ['Its table takes the tool', 'A band width for the material']);

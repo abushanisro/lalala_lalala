@@ -20,6 +20,7 @@ import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import type { CadEvidenceKey } from '../shared/cad-evidence';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { batchSizeSeed, derivedSeed, inputStep, resultStep, runRef, seedStep, withSeedRef } from '../shared/calculators/seed-refs';
 import type { CostContext } from '../casting/casting-finishing';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
@@ -166,14 +167,27 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
   const [footLong, footShort] = [Math.max(...build.candidate.footprintMm), Math.min(...build.candidate.footprintMm)];
   // The calculator dialog's eye highlights the faces a measurement was taken on; they are the cad-engine's own direction's, at 45 degrees.
   const measuredHere = build.axis === part.measuredAxis && Math.round(angle.deg) === DEFAULT_SELF_SUPPORTING_DEG;
-  const cadSeed = (value: number, source: string, evidence: CadEvidenceKey): CalcSeed => ({ value, source, ...(measuredHere ? { ref: { kind: 'cad' as const, evidence } } : {}) });
+  const buildWhy = build.source === 'engineer' ? 'the build direction set in the Cost Guide' : `the direction of least overhang at ${angle.deg} degrees (${angle.source})`;
+  // Measured along another direction (or at another angle) than the one whose faces the cad-engine names: the measurement for that build,
+  // shown with the direction it was taken along; its faces are lit only for the measured direction at the default angle.
+  const cadSeed = (value: number, source: string, evidence: CadEvidenceKey): CalcSeed => {
+    if (measuredHere) return { value, source, ref: { kind: 'cad', evidence } };
+    const what = source.replace(/ \(.*\)$/, '');
+    return derivedSeed(value, source, `${what}, built along ${build.axis}`, [
+      inputStep('Build direction', null, build.axis, buildWhy),
+      inputStep('Self-supporting angle', 'deg', angle.deg, angle.source),
+      inputStep('Measured', null, value, `CAD: the part measured built along ${build.axis} at ${angle.deg} degrees (cad-engine additive measurements)`),
+      resultStep(what, null, value, `the measurement along ${build.axis}`),
+    ]);
+  };
   const cad: Record<string, CalcSeed | undefined> = {
     build_height: cadSeed(build.candidate.buildHeightMm, `build height along ${build.axis} (mm)`, 'build_height'),
     footprint_length: cadSeed(footLong, 'footprint on the plate, long side (mm)', 'footprint_length'),
     footprint_width: cadSeed(footShort, 'footprint on the plate, short side (mm)', 'footprint_width'),
     part_volume: { value: part.partVolumeMm3, source: "the solid's volume (mm³)", ref: { kind: 'cad', evidence: 'part_volume' } },
     surface_area: { value: part.surfaceAreaMm2, source: 'every face of the part (mm²)', ref: { kind: 'cad', evidence: 'part_surface' } },
-    overhang_regions: { value: at.overhangRegions, source: `overhanging faces needing support at ${angle.deg} degrees` },
+    // The regions are the overhanging faces: their eye lights those faces.
+    overhang_regions: cadSeed(at.overhangRegions, `overhanging faces needing support at ${angle.deg} degrees`, 'overhang_area'),
     overhang_area: cadSeed(at.overhangAreaMm2, `overhang flatter than ${angle.deg} degrees (mm²)`, 'overhang_area'),
     plate_contact_area: cadSeed(at.plateContactAreaMm2, 'the faces on the plate and the overhang seen from below (mm²)', 'plate_contact_area'),
   };
@@ -201,7 +215,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
     const calc = input.spec.calculators.find((c) => c.name === calculator);
     if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
     const providers: SeedProviders = {
-      variable, cad: named(cad), engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: { value: scenario.batchSize, source: 'batch size' } }),
+      variable, cad: named(cad), engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: batchSizeSeed(scenario.batchSize) }),
       material: materialProvider,
       machine: (key) => {
         const value = machine ? machineValue(machine, key) : null;
@@ -225,6 +239,23 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
       ref: { kind: 'lookup', domain: domain.key, table, column, row: id },
     };
   };
+  const machineRef = (m: SandMachine, key: string) => ({ kind: 'machine' as const, machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column: key });
+  const allowanceStep = () => seedStep('Nesting allowance', 'mm', variableSeed('nestingAllowance') ?? seed(0, `${domain.name} variable nestingAllowance (none)`));
+  // The tapped density the bed's powder is weighed at: the powder's additive_tblMaterialBuild row, else the material's density.
+  const tappedSeed = (): CalcSeed => (material.tappedDensityKgM3 != null
+    ? { value: material.tappedDensityKgM3, source: `additive_tblMaterialBuild (Grade ${material.grade}): Tapped Density (kg / m^3)`,
+      ref: { kind: 'lookup', domain: domain.key, table: 'additive_tblMaterialBuild', column: 'Tapped Density (kg / m^3)', row: { Grade: material.grade } } }
+    : { ...current.density!, source: `${current.density!.source} (no tapped density on file)` });
+  /** The bed's powder mass: the bed's area times the build's height in it at the tapped density, step by step. */
+  const bedPowderSeed = (m: SandMachine, kg: number, heightSteps: ReturnType<typeof inputStep>[], heightMm: number, heightFormula: string): CalcSeed =>
+    derivedSeed(r3(kg), `the bed's powder: its area times the build's height at the tapped density (${r3(kg)} kg)`, 'Bed powder mass', [
+      inputStep('Bed length', 'mm', machineValue(m, 'bed_length_mm') ?? 0, `machine ${m.name}: bed_length_mm`, machineRef(m, 'bed_length_mm')),
+      inputStep('Bed width', 'mm', machineValue(m, 'bed_width_mm') ?? 0, `machine ${m.name}: bed_width_mm`, machineRef(m, 'bed_width_mm')),
+      ...heightSteps,
+      resultStep('Build height in the bed', 'mm', heightMm, heightFormula),
+      seedStep('Tapped density', 'kg/m³', tappedSeed()),
+      resultStep('Bed Powder Mass', 'kg', r3(kg), '{Bed length} * {Bed width} * {Build height in the bed} * {Tapped density} / 1e9'),
+    ]);
   const step = (process: string, machineClass: string, evaluate: (m: SandMachine) => StepOutcome, criteria: string[]): CostedStep =>
     selectAndCost({
       process, machineClass, machines: input.machinesByClass[machineClass] ?? [], evaluate, criteria,
@@ -258,6 +289,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
 
   // ── Cleaning: by surface (Additive), or per hole and void (Rapid Prototyping) ────────────────────────────────────────────────────────
   const cleaned: CleanedFeature[] = [];
+  const cleanedRuns: ReferenceCalcRun[] = [];
   const cleaningRuns: string[] = [];
   if (domain.cleaning === 'features' && C.featureCleaning && part.cleaningFeatures) {
     for (const f of part.cleaningFeatures) {
@@ -275,6 +307,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
         continue;
       }
       cleaned.push({ id: f.id, type: f.type, label: rule.label, size: r2(f.size), measure: rule.measure, depthMm: r2(f.depthMm), timeSec: r2(r.run.value!) });
+      cleanedRuns.push(r.run);
     }
   }
   const featureSeconds = cleaned.reduce((s, f) => s + f.timeSec, 0);
@@ -282,7 +315,12 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
     if (domain.cleaning === 'surface') return timed(C.cleaning, m, {});
     if (!part.cleaningFeatures) return fail('the holes and voids to clean: press Refresh analysis so the part is analysed for them');
     if (cleaningRuns.length) return fail(...cleaningRuns);
-    return timed(C.cleaning, m, { feature_time_s: seed(r2(featureSeconds), `${cleaned.length} hole(s) and void(s): ${C.featureCleaning} each`) });
+    // Each hole and void's own cleaning run (its size and depth bands), added up.
+    const featureTime = derivedSeed(r2(featureSeconds), `${cleaned.length} hole(s) and void(s): ${C.featureCleaning} each`, `Feature cleaning: ${cleaned.length} hole(s) and void(s)`, [
+      ...cleaned.map((f, i) => inputStep(`${f.label} ${f.id}`, 's', f.timeSec, `${C.featureCleaning}: ${f.id}, ${f.measure} ${f.size}, depth ${f.depthMm} mm`, runRef(`${C.featureCleaning}: ${f.id}`, cleanedRuns[i]))),
+      resultStep('Feature Time', 's', r2(featureSeconds), "the sum of the holes' and voids' cleaning times"),
+    ]);
+    return timed(C.cleaning, m, { feature_time_s: featureTime });
   }, domain.cleaning === 'surface' ? ['A cleaning rate'] : ['Any cleaning station']);
 
   const routes: AdditiveRoute[] = [];
@@ -306,7 +344,19 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
     const baseSupport = dmls ? num('baseSupportHeightPowerRemoval') ?? 0 : 0;
     // The supports: the overhang's columns and, under a metal part, the support base it is cut off along.
     const supportVolume = sls ? 0 : at.supportVolumeMm3 + (dmls ? at.plateContactAreaMm2 * baseSupport : 0);
-    const supportSeed = seed(supportVolume, dmls ? `overhang supports and the ${baseSupport} mm support base under the part (mm³)` : sls ? 'none: a powder bed holds the part' : 'overhang supports (mm³)');
+    const overhangSupports = cadSeed(at.supportVolumeMm3, 'overhang supports (mm³)', 'support_volume');
+    const supportSeed = dmls
+      ? derivedSeed(supportVolume, `overhang supports and the ${baseSupport} mm support base under the part (mm³)`, 'Support volume: the overhang supports and the support base', [
+        seedStep('Overhang supports', 'mm³', overhangSupports),
+        seedStep('Plate contact area', 'mm²', cad.plate_contact_area!),
+        seedStep('Support base height', 'mm', variableSeed('baseSupportHeightPowerRemoval') ?? seed(0, `${domain.name} variable baseSupportHeightPowerRemoval (none)`)),
+        resultStep('Support Volume', 'mm³', supportVolume, '{Overhang supports} + {Plate contact area} * {Support base height}'),
+      ])
+      : sls
+        ? derivedSeed(0, 'none: a powder bed holds the part', 'Support volume: none in a powder bed', [
+          inputStep('Route', null, r.label, 'the route builds in a powder bed, which holds the part'), resultStep('Support Volume', 'mm³', 0, 'no supports'),
+        ])
+        : overhangSupports;
 
     // ── The build step: the part nested on the machine's bed ───────────────────────────────────────────────────────────────────────────
     let partsPerBuild: number | null = null;
@@ -323,7 +373,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
       if ('reasons' in n) return fail(...n.reasons);
       const perLayer = n.run.outputs['Parts per Layer']!;
       const parts = n.run.value!;
-      const nestSeed = seed(parts, `${parts} parts per build (${C.nesting}: ${perLayer} per layer${sls ? `, ${n.run.outputs['Parts Stacked']} stacked` : ''})`);
+      const nestSeed = withSeedRef(seed(parts, `${parts} parts per build (${C.nesting}: ${perLayer} per layer${sls ? `, ${n.run.outputs['Parts Stacked']} stacked` : ''})`), runRef(`${C.nesting} on ${m.name}`, n.run));
       const bedL = machineValue(m, 'bed_length_mm') ?? 0;
       const bedW = machineValue(m, 'bed_width_mm') ?? 0;
       if (dmls && C.complexity && C.metalMaterial && C.metalSintering) {
@@ -335,21 +385,41 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
         if ('reasons' in cx) return fail(...cx.reasons);
         const mat = run(C.metalMaterial, m, { support_volume_mm3: supportSeed });
         if ('reasons' in mat) return fail(...mat.reasons);
+        const layerSeed = derivedSeed(t, `the machine's minimum layer, not below tblLayerThickness Metal Sintering (${t} mm)`, "Layer thickness: the machine's minimum, not below the table's", [
+          inputStep('Machine minimum layer', 'mm', machineMin ?? 0, `machine ${m.name}: minimum_layer_thickness_mm`, machineRef(m, 'minimum_layer_thickness_mm')),
+          inputStep('Table minimum layer', 'mm', Number.isFinite(tableMin) ? tableMin : 0, 'tblLayerThickness: Metal Sintering, Minimum Layer Thickness (mm)',
+            { kind: 'lookup', domain: domain.key, table: 'tblLayerThickness', column: 'Minimum Layer Thickness (mm)', row: { 'Process Name': 'Metal Sintering' } }),
+          resultStep('Layer Thickness', 'mm', t, 'max({Machine minimum layer}, {Table minimum layer})'),
+        ]);
         const out = timed(C.metalSintering, m, {
-          layer_thickness_mm: seed(t, `the machine's minimum layer, not below tblLayerThickness Metal Sintering (${t} mm)`),
-          melted_volume_mm3: seed(mat.run.outputs['Melted Volume']!, `the part and its lattice supports (${C.metalMaterial})`),
-          complexity_factor: seed(cx.run.value!, `melt complexity (surface over volume ${r3(cx.run.outputs['Melting Modulus'] ?? 0)} per mm)`),
+          layer_thickness_mm: layerSeed,
+          melted_volume_mm3: withSeedRef(seed(mat.run.outputs['Melted Volume']!, `the part and its lattice supports (${C.metalMaterial})`), runRef(C.metalMaterial, mat.run)),
+          complexity_factor: withSeedRef(seed(cx.run.value!, `melt complexity (surface over volume ${r3(cx.run.outputs['Melting Modulus'] ?? 0)} per mm)`), runRef(C.complexity, cx.run)),
           parts_per_build: nestSeed,
         });
         if (!out.ok) return out;
-        return { ...out, materialCostUsd: consumables(m, out.run.outputs['Build Time']!, nestSeed, C.metalSintering), parts, layers: out.run.outputs.Layers, materialRun: mat.run,
-          bedKg: (bedL * bedW * (out.run.outputs.Layers! * t) * (material.tappedDensityKgM3 ?? density)) / 1e9 } as StepOutcome;
+        const bedKg = (bedL * bedW * (out.run.outputs.Layers! * t) * (material.tappedDensityKgM3 ?? density)) / 1e9;
+        return { ...out, materialCostUsd: consumables(m, out.run.outputs['Build Time']!, nestSeed, C.metalSintering), parts, layers: out.run.outputs.Layers, materialRun: mat.run, nestRun: n.run,
+          bedKg, bedSeed: bedPowderSeed(m, bedKg, [
+            inputStep('Layers', null, out.run.outputs.Layers!, `${C.metalSintering}: the build's layers`, runRef(C.metalSintering, out.run)),
+            seedStep('Layer thickness', 'mm', layerSeed),
+          ], out.run.outputs.Layers! * t, '{Layers} * {Layer thickness}') } as StepOutcome;
       }
       if (sls) {
         const t = num('slsLayerThickness') ?? 0;
         const stackedRows = Math.ceil(parts / Math.max(1, perLayer));
         const fill = Math.min(machineValue(m, 'bed_height_mm') ?? Infinity, stackedRows * (build.candidate.buildHeightMm + 2 * allowance) + slsBase);
-        const fillSeed = seed(fill, `${stackedRows} stacked row(s) of ${r2(build.candidate.buildHeightMm + 2 * allowance)} mm${slsBase ? ` over the ${slsBase} mm base layers` : ''}`);
+        const bedHeight = machineValue(m, 'bed_height_mm');
+        const fillSeed = derivedSeed(fill, `${stackedRows} stacked row(s) of ${r2(build.candidate.buildHeightMm + 2 * allowance)} mm${slsBase ? ` over the ${slsBase} mm base layers` : ''}`,
+          'Bed fill height: the stacked rows of parts over the base layers', [
+            seedStep('Parts per build', null, nestSeed),
+            inputStep('Parts per layer', null, perLayer, `${C.nesting}: Parts per Layer`, runRef(`${C.nesting} on ${m.name}`, n.run)),
+            seedStep('Build height', 'mm', cad.build_height!),
+            allowanceStep(),
+            ...(domain.slsBaseVariable ? [seedStep('Base layers', 'mm', variableSeed(domain.slsBaseVariable) ?? seed(0, `${domain.name} variable ${domain.slsBaseVariable} (none)`))] : []),
+            ...(bedHeight != null ? [inputStep('Bed height', 'mm', bedHeight, `machine ${m.name}: bed_height_mm`, machineRef(m, 'bed_height_mm'))] : []),
+            resultStep('Bed Fill Height', 'mm', fill, 'min({Bed height}, ceil({Parts per build} / {Parts per layer}) * ({Build height} + 2 * {Nesting allowance}) + {Base layers})'),
+          ]);
         const out = timed(C.laserSintering, m, { bed_fill_height_mm: fillSeed, parts_per_build: nestSeed });
         if (!out.ok) return out;
         const powder = domain.powderLookups ? ref.table('additive_tblMaterialBuild').find((x) => x['Grade'] === material.grade) : undefined;
@@ -359,8 +429,9 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
           'additive_tblMaterialBuild.Max Powder Cycles': lookupSeed('additive_tblMaterialBuild', powder, 'Max Powder Cycles', ['Grade']),
         } : {});
         if ('reasons' in mat) return fail(...mat.reasons);
-        return { ...out, materialCostUsd: consumables(m, out.run.outputs['Build Time']!, nestSeed, C.laserSintering), parts, layers: out.run.outputs.Layers, materialRun: mat.run,
-          bedKg: (bedL * bedW * fill * (material.tappedDensityKgM3 ?? density)) / 1e9 } as StepOutcome;
+        const bedKg = (bedL * bedW * fill * (material.tappedDensityKgM3 ?? density)) / 1e9;
+        return { ...out, materialCostUsd: consumables(m, out.run.outputs['Build Time']!, nestSeed, C.laserSintering), parts, layers: out.run.outputs.Layers, materialRun: mat.run, nestRun: n.run,
+          bedKg, bedSeed: bedPowderSeed(m, bedKg, [seedStep('Bed fill height', 'mm', fillSeed)], fill, '{Bed fill height}') } as StepOutcome;
       }
       const printing = r.key === 'printing';
       const perRow = Math.max(1, Math.floor(bedL / (footLong + 2 * allowance)));
@@ -370,28 +441,47 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
       const mat = run(C.resinMaterial, m, {
         support_volume_mm3: supportSeed,
         support_fill: printing
-          ? (lattice != null ? { value: lattice, source: `${domain.name} variable printingLatticeSpacingFactor` } : seed(1, `solid supports: the ${domain.name} variables hold no printingLatticeSpacingFactor`))
-          : { value: num('slaSupportVolumeFraction') ?? 0, source: `${domain.name} variable slaSupportVolumeFraction` },
-        support_density: printing ? { value: num('printingSupportMaterialDensity') ?? 0, source: `${domain.name} variable printingSupportMaterialDensity` } : { ...current.density!, source: `${current.density!.source} (the supports are of the resin)` },
-        support_unit_cost: printing ? { value: num('printingSupportMaterialCost') ?? 0, source: `${domain.name} variable printingSupportMaterialCost` } : { ...current.cost!, source: `${current.cost!.source} (the supports are of the resin)` },
+          ? (lattice != null ? variableSeed('printingLatticeSpacingFactor')! : derivedSeed(1, `solid supports: the ${domain.name} variables hold no printingLatticeSpacingFactor`, 'Support fill: solid supports', [
+            inputStep('printingLatticeSpacingFactor', null, 'not set', `the ${domain.name} variables hold no printingLatticeSpacingFactor`, { kind: 'variable', domain: domain.key, name: 'printingLatticeSpacingFactor' }),
+            resultStep('Support Fill', null, 1, 'solid supports: no lattice spacing to thin them'),
+          ]))
+          : variableSeed('slaSupportVolumeFraction') ?? seed(0, `${domain.name} variable slaSupportVolumeFraction`),
+        support_density: printing ? variableSeed('printingSupportMaterialDensity') ?? seed(0, `${domain.name} variable printingSupportMaterialDensity`) : { ...current.density!, source: `${current.density!.source} (the supports are of the resin)` },
+        support_unit_cost: printing ? variableSeed('printingSupportMaterialCost') ?? seed(0, `${domain.name} variable printingSupportMaterialCost`) : { ...current.cost!, source: `${current.cost!.source} (the supports are of the resin)` },
       });
       if ('reasons' in mat) return fail(...mat.reasons);
+      const bedStep = (key: 'bed_length_mm' | 'bed_width_mm', label: string, value: number) => inputStep(label, 'mm', value, `machine ${m.name}: ${key}`, machineRef(m, key));
       const out = printing
         ? timed(C.printing, m, {
-          nested_length_mm: seed(nestedLength, `${Math.min(parts, perRow)} part(s) along the bed (mm)`), nested_width_mm: seed(nestedWidth, `${Math.ceil(parts / perRow)} row(s) across the bed (mm)`),
+          nested_length_mm: derivedSeed(nestedLength, `${Math.min(parts, perRow)} part(s) along the bed (mm)`, 'Nested length: the parts along the bed', [
+            seedStep('Parts per build', null, nestSeed), bedStep('bed_length_mm', 'Bed length', bedL), seedStep('Footprint, long side', 'mm', cad.footprint_length!), allowanceStep(),
+            resultStep('Nested Length', 'mm', nestedLength, 'min({Bed length}, min({Parts per build}, floor({Bed length} / ({Footprint, long side} + 2 * {Nesting allowance}))) * ({Footprint, long side} + 2 * {Nesting allowance}))'),
+          ]),
+          nested_width_mm: derivedSeed(nestedWidth, `${Math.ceil(parts / perRow)} row(s) across the bed (mm)`, 'Nested width: the rows across the bed', [
+            seedStep('Parts per build', null, nestSeed), bedStep('bed_length_mm', 'Bed length', bedL), bedStep('bed_width_mm', 'Bed width', bedW),
+            seedStep('Footprint, long side', 'mm', cad.footprint_length!), seedStep('Footprint, short side', 'mm', cad.footprint_width!), allowanceStep(),
+            resultStep('Nested Width', 'mm', nestedWidth, 'min({Bed width}, ceil({Parts per build} / floor({Bed length} / ({Footprint, long side} + 2 * {Nesting allowance}))) * ({Footprint, short side} + 2 * {Nesting allowance}))'),
+          ]),
           parts_per_build: nestSeed,
         })
         : timed(C.resinCuring, m, { support_volume_mm3: supportSeed, parts_per_build: nestSeed });
       if (!out.ok) return out;
       const extra = printing || !C.laserUse ? 0 : consumables(m, out.run.outputs['Build Time']!, nestSeed, C.resinCuring);
-      return { ...out, ...(extra ? { materialCostUsd: extra } : {}), parts, layers: out.run.outputs.Layers, materialRun: mat.run } as StepOutcome;
+      return { ...out, ...(extra ? { materialCostUsd: extra } : {}), parts, layers: out.run.outputs.Layers, materialRun: mat.run, nestRun: n.run } as StepOutcome;
     }, [domain.buildCriterion, 'The build fits its bed (footprint with the nesting allowance, height)']);
-    const bo = buildStep.outcome as (Extract<StepOutcome, { ok: true }> & { parts?: number; layers?: number; materialRun?: ReferenceCalcRun; bedKg?: number }) | null;
+    const bo = buildStep.outcome as (Extract<StepOutcome, { ok: true }> & { parts?: number; layers?: number; materialRun?: ReferenceCalcRun; nestRun?: ReferenceCalcRun; bedKg?: number; bedSeed?: CalcSeed }) | null;
+    let nestRun: ReferenceCalcRun | null = null;
+    let bedSeed: CalcSeed | null = null;
     if (bo) {
       partsPerBuild = bo.parts ?? null; layers = bo.layers ?? null; bedPowderKg = bo.bedKg ?? 0;
-      chosenBuild = buildStep.machine; materialRun = bo.materialRun ?? null;
+      chosenBuild = buildStep.machine; materialRun = bo.materialRun ?? null; nestRun = bo.nestRun ?? null; bedSeed = bo.bedSeed ?? null;
     }
-    const partsSeed = seed(partsPerBuild ?? 1, partsPerBuild != null ? `${partsPerBuild} parts per build on ${chosenBuild?.name ?? 'the build machine'}` : 'one part (the build step has no machine)');
+    // The parts one build nests on the chosen build machine's bed (its nesting run); one part when no machine builds it.
+    const partsSeed = partsPerBuild != null
+      ? withSeedRef(seed(partsPerBuild, `${partsPerBuild} parts per build on ${chosenBuild?.name ?? 'the build machine'}`), runRef(`${C.nesting} on ${chosenBuild?.name ?? 'the build machine'}`, nestRun))
+      : derivedSeed(1, 'one part (the build step has no machine)', 'Parts per build: no build machine', [
+        inputStep('Build machine', null, 'none', `no ${r.process} machine takes the part`), resultStep('Parts per Build', null, 1, 'one part'),
+      ]);
 
     // ── Post steps ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
     const { classes } = domain;
@@ -402,7 +492,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
     steps.push({ s: buildStep, kind: 'build' });
     if ((dmls || sls) && classes.sieving && C.sieving) {
       steps.push({ s: step('Sieving', classes.sieving, (m) => timed(C.sieving!, m, {
-        bed_powder_mass_kg: seed(r3(bedPowderKg), `the bed's powder: its area times the build's height at the tapped density (${r3(bedPowderKg)} kg)`), parts_per_build: partsSeed,
+        bed_powder_mass_kg: bedSeed ?? seed(r3(bedPowderKg), `the bed's powder: its area times the build's height at the tapped density (${r3(bedPowderKg)} kg)`), parts_per_build: partsSeed,
       }), ['Any sieve']), kind: 'whole' });
     }
     if (dmls && classes.baseRemoval && C.baseRemoval) steps.push({ s: step('Power Tool Base Removal', classes.baseRemoval, (m) => timed(C.baseRemoval!, m, {}), ['A cutting rate']), kind: 'support' });
@@ -419,7 +509,7 @@ export function buildAdditiveRoutes(input: AdditiveRouteInput): { routes: Additi
         if (refused) return fail(refused);
         const n = nest(m, build.candidate.buildHeightMm, false, 0);
         if ('reasons' in n) return fail(...n.reasons);
-        return timed(C.partCuring, m, { parts_per_load: seed(n.run.value!, `${n.run.value} parts per oven load (${C.nesting} on the oven)`) });
+        return timed(C.partCuring, m, { parts_per_load: withSeedRef(seed(n.run.value!, `${n.run.value} parts per oven load (${C.nesting} on the oven)`), runRef(`${C.nesting} on ${m.name}`, n.run)) });
       }, ['The oven takes the part']), kind: 'whole' });
     }
 

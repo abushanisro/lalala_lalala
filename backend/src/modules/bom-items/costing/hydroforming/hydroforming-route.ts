@@ -6,11 +6,12 @@ import { hydroformFeatures, hydroformingCatalogOperations, type HydroformGraphFe
 import { cappingTools, hydroformTooling, isHighStrength, stepRow, type HydroformingTool, type HydroformToolShop } from './hydroforming-tooling';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { fail, routeKit, type RouteKit } from '../shared/calculators/route-kit';
+import { calculationRef, inputStep, resultStep, runRef, withSeedRef } from '../shared/calculators/seed-refs';
 import { HYDROFORMING_PROCESS_GROUP } from '../shared/core/part-family-process-group';
 import { NOT_A_SHEET_CAUSES, NOT_A_SHEET_RATIO, SHEET_WARN_RATIO, sheetShare } from '../shared/physics/sheet-share';
 
 import type { HydroformPart } from './hydroforming-part';
-import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { FeatureOp, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
 import type { CostContext } from '../casting/casting-finishing';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { SeedProvider } from '../casting/sand/sand-seeds';
@@ -240,19 +241,45 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
   const addendum = blankAddendum(ref, part);
   // The blank grows by its outline x the addendum. An outline the cad-engine declined (an unfolded blank) adds nothing when there is no
   // addendum to grow it by; with an addendum it is missing, and the Blank calculator says so.
-  const perimeter = part.blank.perimeterMm != null ? seed(part.blank.perimeterMm, `the blank's outline (${part.blank.method}, mm)`)
-    : addendum.mm === 0 ? seed(0, "the blank's outline was not measured; with no addendum it adds nothing to the blank") : undefined;
+  // Where each CAD value was measured: the blank's feature (the faces it lights) or the holes' faces when the graph names them; else the
+  // cad-engine's hydroform measurement it was read from (feature_graph.summary.hydroformGeometry), as the calculation that states it.
+  const measured = (label: string, unit: string, value: number, where: string): SourceRef => calculationRef(`${label}: measured on the CAD`, [
+    inputStep(label, unit, value, `CAD: ${where} (the cad-engine's hydroform measurement, feature_graph.summary.hydroformGeometry)`),
+    resultStep(label, unit, value, `{${label}}`),
+  ]);
+  const blankFeatures: SourceRef | undefined = features.blank.length ? { kind: 'features', label: 'the blank', features: features.blank.map((featureId) => ({ featureId })) } : undefined;
+  const cadSeed = (value: number, source: string, label: string, unit: string, where: string, faces?: SourceRef): CalcSeed =>
+    ({ value, source, ref: faces ?? measured(label, unit, value, where) });
+  const holeFaces = part.holes.flatMap((h) => h.faceIds);
+  const perimeter = part.blank.perimeterMm != null
+    ? cadSeed(part.blank.perimeterMm, `the blank's outline (${part.blank.method}, mm)`, 'Blank perimeter', 'mm', `the blank's outer cut length (${part.blank.method})`, blankFeatures)
+    : addendum.mm === 0 ? {
+      value: 0, source: "the blank's outline was not measured; with no addendum it adds nothing to the blank",
+      ref: calculationRef('Blank perimeter: not measured', [
+        inputStep('Addendum', 'mm', 0, addendum.source),
+        resultStep('Blank perimeter', 'mm', 0, 'the outline adds nothing to the blank when there is no addendum to grow it by'),
+      ]),
+    } : undefined;
   const cad: Record<string, CalcSeed | undefined> = {
-    tool_area_mm2: seed(part.developedAreaMm2, "the part's developed area (mm²)"),
-    plan_length_mm: seed(part.planLengthMm, "the part's plan along the press axis, long side (mm)"),
-    plan_width_mm: seed(part.planWidthMm, "the part's plan along the press axis, short side (mm)"),
-    manual_form_length_mm: seed(handLength, 'the curved flanges the press cannot form (mm)'),
+    tool_area_mm2: cadSeed(part.developedAreaMm2, "the part's developed area (mm²)", 'Developed area', 'mm²', "the part's developed area"),
+    plan_length_mm: cadSeed(part.planLengthMm, "the part's plan along the press axis, long side (mm)", 'Plan length', 'mm', "the part's plan along the press axis, long side"),
+    plan_width_mm: cadSeed(part.planWidthMm, "the part's plan along the press axis, short side (mm)", 'Plan width', 'mm', "the part's plan along the press axis, short side"),
+    manual_form_length_mm: {
+      value: handLength, source: 'the curved flanges the press cannot form (mm)',
+      ref: calculationRef('Manual form length: the flanges the press cannot form', [
+        ...part.flanges.map((f, i) => inputStep(`Flange ${i + 1} (${f.kind}, ${r2(f.angleDeg)}°)`, 'mm', f.lengthMm, `CAD: a ${f.kind} flange, ${f.heightMm != null ? `${r2(f.heightMm)} mm high` : 'height not measured'}${f.edgeRadiusMm != null ? `, ${r2(f.edgeRadiusMm)} mm edge radius` : ''}`)),
+        ...(['bendAngleFormingThreshold', 'excessiveCurvedFormThreshold', 'flangeAngleThreshold'] as const).filter((n) => ref.number(n) != null)
+          .map((n) => inputStep(n, null, ref.number(n)!, `Hydroforming variable ${n}`, { kind: 'variable', domain: HYDROFORMING_DOMAIN, name: n })),
+        resultStep('Manual Form Length', 'mm', handLength, 'the length of the curved flanges turned beyond {bendAngleFormingThreshold} or curved beyond {excessiveCurvedFormThreshold} (none under {flangeAngleThreshold})'),
+      ]),
+    },
     blank_perimeter_mm: perimeter,
-    pierced_hole_perimeter_mm: seed(part.blank.piercedHolePerimeterMm + wallHolePerimeterMm, wallHoles.length
+    pierced_hole_perimeter_mm: cadSeed(part.blank.piercedHolePerimeterMm + wallHolePerimeterMm, wallHoles.length
       ? `every hole, pierced in the flat blank: ${r2(part.blank.piercedHolePerimeterMm)} mm in the flat + ${r2(wallHolePerimeterMm)} mm of ${wallHoles.length} through a formed wall (mm)`
-      : 'the holes pierced in the flat (mm)'),
-    thickness_mm: seed(input.thicknessMm, 'the sheet thickness (mm)'),
-    blank_area_mm2: seed(part.blank.areaMm2, `the measured blank (${part.blank.method}, mm²)`),
+      : 'the holes pierced in the flat (mm)', 'Pierced hole perimeter', 'mm', 'the perimeters of the holes pierced in the blank',
+    holeFaces.length ? { kind: 'faces', label: `${part.holes.length} hole(s) pierced in the blank`, faceIds: holeFaces } : undefined),
+    thickness_mm: cadSeed(input.thicknessMm, 'the sheet thickness (mm)', 'Sheet thickness', 'mm', 'the sheet thickness'),
+    blank_area_mm2: cadSeed(part.blank.areaMm2, `the measured blank (${part.blank.method}, mm²)`, 'Blank area', 'mm²', `the blank's area (${part.blank.method})`, blankFeatures),
   };
   const materialProvider: SeedProvider = (column) => {
     const v = column === 'density_kg_m3' ? material.densityKgM3 : column === 'cost' ? material.costPerKgUsd : column === 'shear_strength_mpa' ? material.shearStrengthMpa : null;
@@ -268,14 +295,33 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
 
   // ── The blank and its material ─────────────────────────────────────────────────────────────────────────────────────────────────────
   const blankRun = kit.run(HYDRO_CALC.blankSize, null, {
-    addendum_mm: addendum.row ? kit.lookupSeed('blankAddendumWidth', addendum.row, 'Addendum Width (mm)', ['Total Form Depth (mm)']) : seed(0, addendum.source),
+    addendum_mm: addendum.row ? kit.lookupSeed('blankAddendumWidth', addendum.row, 'Addendum Width (mm)', ['Total Form Depth (mm)']) : {
+      value: 0, source: addendum.source,
+      ref: calculationRef('Addendum: none', [
+        inputStep('Drawn depth', 'mm', part.drawn?.depthMm ?? 0, part.drawn ? "CAD: the drawn form's depth" : 'CAD: the part has no drawn form'),
+        ...(part.drawn ? [inputStep('blankAddendumWidth', null, 'no row', 'Hydroforming lookup blankAddendumWidth: no row for the drawn depth', { kind: 'lookup', domain: HYDROFORMING_DOMAIN, table: 'blankAddendumWidth', column: 'Addendum Width (mm)', row: null })] : []),
+        resultStep('Addendum', 'mm', 0, part.drawn ? 'no addendum: blankAddendumWidth has no row for the drawn depth' : 'no addendum: the blank is cut to its net shape'),
+      ]),
+    },
   });
   if (!('run' in blankRun)) return none(...blankRun.reasons);
   const blankKg = blankRun.sec;
   const blankAreaMm2 = blankRun.run.outputs['Blank Area'] ?? part.blank.areaMm2;
   const partKg = (part.developedAreaMm2 * input.thicknessMm * material.densityKgM3) / 1e9;
   const materialRun = kit.run(HYDRO_CALC.material, null, {
-    gross_kg: seed(nest.grossKgPerPart, `${nest.method === 'true_shape' ? 'true-shape' : 'rectangular'} nest on ${nest.sheetLengthMm} x ${nest.sheetWidthMm} mm: ${nest.partsPerSheet} blanks a sheet, ${r2(nest.utilizationPct)} % used`),
+    gross_kg: {
+      ...seed(nest.grossKgPerPart, `${nest.method === 'true_shape' ? 'true-shape' : 'rectangular'} nest on ${nest.sheetLengthMm} x ${nest.sheetWidthMm} mm: ${nest.partsPerSheet} blanks a sheet, ${r2(nest.utilizationPct)} % used`),
+      // The sheet each blank takes: the nest of the blank on the stock sheet, its share of the sheet's mass.
+      ref: calculationRef('Gross mass per part: the blank nested on the sheet', [
+        inputStep('Sheet', 'mm', `${nest.sheetLengthMm} x ${nest.sheetWidthMm}`, 'The stock sheet the blanks are nested on'),
+        inputStep('Blanks a sheet', null, nest.partsPerSheet, `${nest.method === 'true_shape' ? 'True-shape' : 'Rectangular'} nest of the blank`),
+        inputStep('Sheet used', '%', nest.utilizationPct, 'The nest: the blanks\' area over the sheet\'s'),
+        inputStep('Sheet thickness', 'mm', input.thicknessMm, 'CAD: the sheet thickness'),
+        inputStep('Density', 'kg/m³', material.densityKgM3, `${material.name}: density_kg_m3`,
+          material.id ? { kind: 'material', materialId: material.id, materialName: material.name, column: 'density_kg_m3' } : undefined),
+        resultStep('Gross Mass per Part', 'kg', nest.grossKgPerPart, '{Sheet} length x width x {Sheet thickness} x {Density} / {Blanks a sheet}'),
+      ]),
+    },
   });
   if (!('run' in materialRun)) return none(...materialRun.reasons);
   const warnings: string[] = [];
@@ -305,7 +351,7 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
     if (maxWidth != null && maxWidth > 0 && strip > maxWidth) return fail(`a ${r2(strip)} mm strip over its ${maxWidth} mm`);
     return kit.timed('Offline Blank', m, {
       strokes_per_minute: kit.lookupSeed('pressMaterialAdvanceRate', advance, 'Strokes Per Minute', ['Part Length (mm)']),
-      blank_mass_kg: seed(blankKg, `${HYDRO_CALC.blankSize}: ${r2(blankKg)} kg`),
+      blank_mass_kg: withSeedRef(seed(blankKg, `${HYDRO_CALC.blankSize}: ${r2(blankKg)} kg`), runRef(HYDRO_CALC.blankSize, blankRun.run)),
     });
   }, ['Its press force takes the blanking and piercing', 'The strip fits the press (pitch and width)']);
 
@@ -328,8 +374,32 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
     const opening = part.drawn?.openingWidthMm ?? part.minWidthMm;
     const blankDia = Math.sqrt((4 * blankAreaMm2) / Math.PI);
     const draws = deep ? drawCount(ref, blankDia, opening, input.thicknessMm, high) : { draws: 1, ratiosPct: [] };
+    // The draws: on a deep draw press, the fewest the drawReductionPercentage row of the thickness takes the blank down to the opening in;
+    // a fluid cell press forms in one cycle.
+    const drawRow = stepRow(ref.table('drawReductionPercentage'), 'Material Thickness (mm)', input.thicknessMm);
+    const derate = ref.number('highStrengthMatlDeratePercent');
+    const drawsRef: SourceRef = deep && draws ? calculationRef('Draws: the fewest that reach the opening', [
+      inputStep('Blank area', 'mm²', blankAreaMm2, `${HYDRO_CALC.blankSize}: the blank with its addendum`, runRef(HYDRO_CALC.blankSize, blankRun.run)),
+      resultStep('Blank diameter', 'mm', blankDia, 'sqrt(4 x {Blank area} / pi): the equal-area round blank'),
+      inputStep('Opening', 'mm', opening, part.drawn ? 'CAD: the drawn form\'s opening width' : "CAD: the part's narrowest plan width"),
+      inputStep('Sheet thickness', 'mm', input.thicknessMm, 'CAD: the sheet thickness'),
+      ...(drawRow ? ['Draw Punch Ratio00', 'Draw Punch Ratio01', 'Draw Punch Ratio02', 'Draw Punch Ratio03']
+        .filter((c) => Number.isFinite(Number(drawRow[c])) && Number(drawRow[c]) > 0)
+        .map((c) => inputStep(c, '%', Number(drawRow[c]), `drawReductionPercentage at ${String(drawRow['Material Thickness (mm)'])} mm`,
+          { kind: 'lookup', domain: HYDROFORMING_DOMAIN, table: 'drawReductionPercentage', column: c, row: { 'Material Thickness (mm)': drawRow['Material Thickness (mm)'] as number } })) : []),
+      ...(high && derate != null ? [inputStep('High-strength derate', '%', derate, 'Hydroforming variable highStrengthMatlDeratePercent (a high-strength material)', { kind: 'variable', domain: HYDROFORMING_DOMAIN, name: 'highStrengthMatlDeratePercent' })] : []),
+      resultStep('Draws', null, draws.draws, 'the fewest draws n with {Blank diameter} x ratio1 x ... x ratio_n <= {Opening} (the last ratio repeating)'),
+    ]) : calculationRef('Draws: one press cycle on a fluid cell press', [
+      inputStep('Route', null, def.label, 'The route: a fluid cell press forms the part in one cycle'),
+      resultStep('Draws', null, 1, 'one draw on Fluid Cell'),
+    ]);
     const pad = kit.run(HYDRO_CALC.throwPad, null, {
-      throw_pad_used: seed(!deep && ref.flag('requiredThrowPadDefault') !== false ? 1 : 0, deep ? 'Deep Draw has no throw pad' : 'requiredThrowPadDefault'),
+      throw_pad_used: deep
+        ? { value: 0, source: 'Deep Draw has no throw pad', ref: calculationRef('Throw pad: none on a deep draw press', [
+          inputStep('Route', null, def.label, 'The route: a deep draw press forms with a punch, not a rubber pad'),
+          resultStep('Throw Pad Used', null, 0, 'no throw pad on Deep Draw'),
+        ]) }
+        : { value: ref.flag('requiredThrowPadDefault') !== false ? 1 : 0, source: 'requiredThrowPadDefault', ref: { kind: 'variable', domain: HYDROFORMING_DOMAIN, name: 'requiredThrowPadDefault' } },
     });
     const timing = (m: SandMachine): PressTiming => {
       const none = (outcome: StepOutcome): PressTiming => ({ outcome, ops: [], parts: 1, partsThatFit: null });
@@ -338,6 +408,7 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
       if (maxDepth != null && maxDepth > 0 && part.depthMm > maxDepth) return none(fail(`the part is ${r2(part.depthMm)} mm deep, over its ${maxDepth} mm`));
       let parts = 1;
       let partsThatFit: number | null = null;
+      let trayRef: SourceRef | undefined;
       if (deep) {
         const dia = machineValue(m, 'forming_area_dia_mm');
         const tool = machineValue(m, 'max_tool_dia_mm');
@@ -354,12 +425,19 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
         const tray = kit.run(HYDRO_CALC.tray, m, {
           tray_length_mm: seed(round ? side : len, round ? `the inscribed square of its ${dia ?? 0} mm forming area` : `its forming area length ${len} mm`),
           tray_width_mm: seed(round ? side : wid, round ? `the inscribed square of its ${dia ?? 0} mm forming area` : `its forming area width ${wid} mm`),
-          requested_parts: seed(requested, scenario.partsPerTray != null ? `${requested} (Cost Guide)` : `${requested} (defaultNumPartPerFluidCellTray)`),
+          requested_parts: scenario.partsPerTray != null
+            ? { value: requested, source: `${requested} (Cost Guide)`, ref: calculationRef('Parts per tray: set in the Cost Guide', [
+              inputStep('Parts per tray (Cost Guide)', null, requested, "The part's Cost Guide: the parts on a fluid cell tray, set by the engineer"),
+              ...(ref.number('defaultNumPartPerFluidCellTray') != null ? [inputStep('Parts per tray the data gives', null, ref.number('defaultNumPartPerFluidCellTray')!, 'Hydroforming variable defaultNumPartPerFluidCellTray', { kind: 'variable', domain: HYDROFORMING_DOMAIN, name: 'defaultNumPartPerFluidCellTray' })] : []),
+              resultStep('Requested Parts', null, requested, '{Parts per tray (Cost Guide)}'),
+            ]) }
+            : { value: requested, source: `${requested} (defaultNumPartPerFluidCellTray)`, ...(ref.number('defaultNumPartPerFluidCellTray') != null ? { ref: { kind: 'variable' as const, domain: HYDROFORMING_DOMAIN, name: 'defaultNumPartPerFluidCellTray' } } : {}) },
         });
         if (!('run' in tray)) return none(fail(...tray.reasons));
         partsThatFit = tray.run.outputs['Parts That Fit'] ?? null;
         if (!(tray.sec >= 1)) return none(fail('the part in its holder does not fit its forming area'));
         parts = tray.sec;
+        trayRef = runRef(HYDRO_CALC.tray, tray.run);
       }
       if (!('run' in clean)) return none(fail(...clean.reasons));
       if (!('run' in hand)) return none(fail(...hand.reasons));
@@ -368,11 +446,21 @@ export function buildHydroformingRoutes(input: HydroformingRouteInput): { routes
       const outcome = kit.timed('Hydroform', m, {
         loading_time_s: kit.lookupSeed('tblMaterialHandling', loadRow, 'Load Time (s)', ['Weight (kg)']),
         unloading_time_s: kit.lookupSeed('tblMaterialHandling', unloadRow, 'Load Time (s)', ['Weight (kg)']),
-        draws: seed(draws.draws, deep ? `drawReductionPercentage: ${draws.draws} draw(s) from the ${r2(blankDia)} mm blank to the ${r2(opening)} mm opening` : 'Fluid Cell forms in one press cycle'),
-        parts_per_cycle: seed(parts, deep ? 'Deep Draw forms one part a cycle' : `${HYDRO_CALC.tray}: ${parts}`),
-        clean_tooling_time_s: seed(clean.sec, `${HYDRO_CALC.clean}: ${r2(clean.sec)} s`),
-        throw_pad_time_s: seed(pad.sec, `${HYDRO_CALC.throwPad}: ${r2(pad.sec)} s`),
-        hand_adjusting_time_s: seed(handSec, deep ? 'Deep Draw forms the drawn shape whole' : `${HYDRO_CALC.hand}: ${r2(hand.sec)} s`),
+        draws: { value: draws.draws, source: deep ? `drawReductionPercentage: ${draws.draws} draw(s) from the ${r2(blankDia)} mm blank to the ${r2(opening)} mm opening` : 'Fluid Cell forms in one press cycle', ref: drawsRef },
+        parts_per_cycle: deep
+          ? { value: parts, source: 'Deep Draw forms one part a cycle', ref: calculationRef('Parts per Cycle: one on a deep draw press', [
+            inputStep('Route', null, def.label, 'The route: a deep draw press draws one blank a stroke'),
+            resultStep('Parts per Cycle', null, parts, 'one part a cycle on Deep Draw'),
+          ]) }
+          : withSeedRef(seed(parts, `${HYDRO_CALC.tray}: ${parts}`), trayRef),
+        clean_tooling_time_s: withSeedRef(seed(clean.sec, `${HYDRO_CALC.clean}: ${r2(clean.sec)} s`), runRef(HYDRO_CALC.clean, clean.run)),
+        throw_pad_time_s: withSeedRef(seed(pad.sec, `${HYDRO_CALC.throwPad}: ${r2(pad.sec)} s`), runRef(HYDRO_CALC.throwPad, pad.run)),
+        hand_adjusting_time_s: deep
+          ? { value: handSec, source: 'Deep Draw forms the drawn shape whole', ref: calculationRef('Hand Adjusting Time: none on a deep draw press', [
+            inputStep('Route', null, def.label, 'The route: a deep draw press forms the drawn shape whole, with no flange left to hand-form'),
+            resultStep('Hand Adjusting Time', 's', 0, 'no hand adjusting on Deep Draw'),
+          ]) }
+          : withSeedRef(seed(handSec, `${HYDRO_CALC.hand}: ${r2(hand.sec)} s`), runRef(HYDRO_CALC.hand, hand.run)),
       });
       if (!outcome.ok) return none(outcome);
       // Each operation of memory's route, per part (the calculator's own terms), for the line's breakdown.

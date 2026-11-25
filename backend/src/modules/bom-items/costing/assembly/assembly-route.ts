@@ -11,6 +11,7 @@ import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
 import { type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
 import { cell as n, fail, routeKit } from '../shared/calculators/route-kit';
+import { derivedSeed, inputStep, resultStep, runRef, withSeedRef } from '../shared/calculators/seed-refs';
 
 import type { AssemblyComponent, AssemblyJoint } from './assembly-joints';
 import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
@@ -166,6 +167,18 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
     const isSelf = (componentId: string | null) => componentId != null && componentId === inp.selfId;
     // Where a count came from on the part on the page: exactly those features, so the calculator's eye highlights them.
     const featureRef = (label: string, featureIds: readonly string[]) => ({ kind: 'features' as const, label, features: featureIds.map((featureId) => ({ featureId })) });
+    // A value read from a joint: the joint's row (its process, where it came from, and the values the input is made of), step by step.
+    const nameOf = (id: string | null) => components.find((c) => c.id === id)?.name ?? 'its part';
+    const jointSeed = (j: AssemblyJoint, value: number, source: string, field: string, unit: string | null, parts: Array<[string, string | null, number]>, formula: string): CalcSeed =>
+      derivedSeed(value, source, `${j.label}: ${field.toLowerCase()}`, [
+        inputStep('Joint', null, `${j.process}${j.operation ? ` (${j.operation})` : ''}`, j.source === 'derived'
+          ? `derived from the threaded holes of ${nameOf(j.componentId)} (its feature graph)` : "the assembly's joint table in the Cost Guide"),
+        ...parts.map(([label, u, v]) => inputStep(label, u, v, j.source === 'derived' ? `${nameOf(j.componentId)}: its threaded holes` : `${j.label}: set in the joint table`)),
+        resultStep(field, unit, value, formula),
+      ]);
+    // A value that is a fact of the route or the step, not read from a table: what it is and why, step by step.
+    const factSeed = (value: number, source: string, field: string, fact: string, why: string): CalcSeed =>
+      derivedSeed(value, source, field, [inputStep(fact, null, why, source), resultStep(field, null, value, why)]);
 
     // ── Pick and Place: each component loaded, by the componentLoadTimes row its weight and size fall in ─────────────────────────────────
     const bands = new Map<Row, AssemblyComponent[]>();
@@ -180,14 +193,16 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
     for (const [row, group] of bands) {
       const quantity = group.reduce((s, c) => s + c.quantity, 0);
       const loadSeed = lookupSeed('componentLoadTimes', row, 'Load Time (s)', ['Equipment', 'Weight (kg)', 'Part Max Dimension (mm)']);
+      const quantitySource = `${quantity} component instance(s) up to ${String(row['Weight (kg)'])} kg and ${String(row['Part Max Dimension (mm)'])} mm (${group.map((c) => `${c.name}: ${c.massKg} kg${c.massSource === 'volume' ? `, its volume at the density of ${c.material ?? 'its material'}` : ''}`).join('; ')})`;
       const s = step('Pick and Place', (m) => timed('Pick and Place', m, {
-        quantity: {
-          value: quantity,
-          source: `${quantity} component instance(s) up to ${String(row['Weight (kg)'])} kg and ${String(row['Part Max Dimension (mm)'])} mm (${group.map((c) => `${c.name}: ${c.massKg} kg${c.massSource === 'volume' ? `, its volume at the density of ${c.material ?? 'its material'}` : ''}`).join('; ')})`,
-          // The part on the page, loaded: its whole solid is what is handled.
-          ...(group.length === 1 && isSelf(group[0]!.id) ? { ref: { kind: 'cad' as const, evidence: 'part_volume' as const } } : {}),
-        },
-        unload_time_s: seed(0, 'components are loaded; the finished assembly is unloaded on its own line'),
+        // The part on the page, loaded: its whole solid is what is handled. Children: their BOM quantities in this weight and size band.
+        quantity: group.length === 1 && isSelf(group[0]!.id)
+          ? { value: quantity, source: quantitySource, ref: { kind: 'cad' as const, evidence: 'part_volume' as const } }
+          : derivedSeed(quantity, quantitySource, `Components up to ${String(row['Weight (kg)'])} kg and ${String(row['Part Max Dimension (mm)'])} mm`, [
+            ...group.map((c) => inputStep(c.name, null, c.quantity, `BOM: its quantity under the assembly (${c.massKg} kg${c.massSource === 'volume' ? `, its volume at the density of ${c.material ?? 'its material'}` : ', its BOM weight'}; ${c.maxDimensionMm} mm, its bounding box)`)),
+            resultStep('Quantity', null, quantity, 'the sum of their quantities'),
+          ]),
+        unload_time_s: factSeed(0, 'components are loaded; the finished assembly is unloaded on its own line', 'Unload Time', 'Unloaded', 'the finished assembly is unloaded once, on its own Pick and Place line'),
       }, { 'componentLoadTimes.Load Time (s)': loadSeed }), ['Any pick and place station']);
       const each = (n(row, 'Load Time (s)') ?? 0) * (ref.number('handlingMultiplier') ?? 1) * (ref.number('cycleTimeAdjustmentFactor') ?? 1);
       add(s, group.map((c) => componentOp(c, r2(each * c.quantity))), group.length === 1 && isSelf(group[0]!.id));
@@ -208,7 +223,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         lines.push({ ...gap('Pick and Place', ASSEMBLY_PROCESS_GROUP, ASSEMBLY_PROCESS_CLASS['Pick and Place'], a.massKg == null ? 'the unload time of the finished assembly: a component has no weight' : `the unload time of the ${r3(a.massKg)} kg, ${r2(a.maxDimensionMm ?? 0)} mm assembly: componentLoadTimes has no row for it`), featureBreakdown: [unloadOp] });
       } else {
         const s = step('Pick and Place', (m) => timed('Pick and Place', m, {
-          quantity: seed(0, 'the finished assembly: nothing loaded'),
+          quantity: factSeed(0, 'the finished assembly: nothing loaded', 'Quantity', 'Loaded', 'nothing: this line unloads the finished assembly, its components are loaded on their own lines'),
           unload_time_s: (() => {
             const u = lookupSeed('componentLoadTimes', row, 'Unload Time (s)', ['Equipment', 'Weight (kg)', 'Part Max Dimension (mm)']);
             return u && { ...u, source: `${u.source}, for the finished assembly: ${r3(a.massKg!)} kg, ${a.sizeSource}` };
@@ -229,7 +244,11 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
       const countSource = `${j.count} on the joint (${j.source === 'derived' ? 'from the threaded holes of its part' : 'the joint table'})`;
       const count: CalcSeed = isSelf(j.componentId) && j.featureIds.length > 0
         ? { value: j.count, source: countSource, ref: featureRef(j.label, j.featureIds) }
-        : seed(j.count, countSource);
+        : jointSeed(j, j.count, countSource, 'Joints', null, [['Count', null, j.count]], '{Count}');
+      const onJoint = (field: string, unit: string, value: number, source: string, label: string) =>
+        jointSeed(j, value, source, field, unit, [[label, unit, value]], `{${label}}`);
+      const perJoint = (field: string, unit: string, per: number, source: string, label: string) =>
+        jointSeed(j, per * j.count, source, field, unit, [['Count', null, j.count], [label, unit, per]], `{Count} * {${label}}`);
       const problems: string[] = [];
       const need = (what: string, v: number | null): boolean => {
         if (v != null && v > 0) return true;
@@ -242,7 +261,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
       if (j.process === 'Mechanical Assembly') {
         const op = j.operation ?? 'Screw Tighten - Manual';
         const row = dfa(op);
-        const time = j.timeS != null ? seed(j.timeS, `${op}: the time set on the joint (s)`) : lookupSeed(DFA_TABLE, row, 'Total Time (s)', ['Operation']);
+        const time = j.timeS != null ? onJoint('Operation Time', 's', j.timeS, `${op}: the time set on the joint (s)`, 'Time per joint') : lookupSeed(DFA_TABLE, row, 'Total Time (s)', ['Operation']);
         if (!time) problems.push(`${j.label}: ${op} has no verified DFA time in ${DFA_TABLE}: enter its time per joint`);
         else evaluate = (m) => timed(process, m, { joint_count: count, operation_time_s: time });
         criteria.push('Any assembly bench');
@@ -254,7 +273,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         criteria.push('A lock speed');
       } else if (j.process === 'Rivet') {
         if (j.timeS == null) problems.push(`${j.label}: a rivet's time: memory/Assembly's rivet machine and the DFA baseline give none, enter it on the joint`);
-        else evaluate = (m) => timed(process, m, { joint_count: count, operation_time_s: seed(j.timeS!, 'the time set on the joint (s)') });
+        else evaluate = (m) => timed(process, m, { joint_count: count, operation_time_s: onJoint('Operation Time', 's', j.timeS!, 'the time set on the joint (s)', 'Time per joint') });
         criteria.push('Any riveting station');
       } else if (j.process === 'MIG Welding' || j.process === 'TIG Welding') {
         const kind: 'MIG' | 'TIG' = j.process === 'MIG Welding' ? 'MIG' : 'TIG';
@@ -281,8 +300,10 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
             };
             const length = j.lengthMm! * j.count;
             const engine = {
-              weld_length_mm: seed(length, `${j.count} x ${j.lengthMm} mm of weld`), weld_count: count, travel_speed_mm_s: speedSeed,
-              efficiency: route.key === 'robotic' ? seed(1, 'a robot: efficiency 1') : variable('weldingEfficiencyFactor') ?? undefined,
+              weld_length_mm: perJoint('Weld Length', 'mm', j.lengthMm!, `${j.count} x ${j.lengthMm} mm of weld`, 'Length per weld'), weld_count: count, travel_speed_mm_s: speedSeed,
+              efficiency: route.key === 'robotic'
+                ? factSeed(1, 'a robot: efficiency 1', 'Efficiency', 'Welded by', 'a robot: it welds at its programmed speed, no operator efficiency (weldingEfficiencyFactor is the manual welder\'s)')
+                : variable('weldingEfficiencyFactor') ?? undefined,
             };
             const passesSeed = lookupSeed('tblNumWeldPasses', passes, 'Num Passes', ['Weld Process Type', 'Max Design Throat (mm)']);
             const spray = kind === 'MIG' && ref.text('weldAntiSpatterSprayEnabled')?.toLowerCase() === 'true'
@@ -304,12 +325,14 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
               const sprayLookups = Object.fromEntries(['Spray Cost (USD)', 'Volume (mL)', 'Discharge Rate (g / s)', 'Relative Density (g / cm^3)', 'Spray Time Per Weld Length (s)']
                 .map((c) => [`tblWeldAntiSpatterSpray.${c}`, lookupSeed('tblWeldAntiSpatterSpray', spray, c, ['Spray Name'])]));
               const c = run(CONSUMABLES_CALC, m, {
-                arc_time_s: seed(t.run.outputs['Arc Time'], `the arc time (${calcOf(process)})`), weld_length_mm: engine.weld_length_mm,
+                arc_time_s: withSeedRef(seed(t.run.outputs['Arc Time'], `the arc time (${calcOf(process)})`), runRef(calcOf(process), t.run)), weld_length_mm: engine.weld_length_mm,
                 wire_feed_speed_mm_s: feed,
                 wire_diameter_mm: lookupSeed(table, speedRow, kind === 'MIG' ? 'Wire Diameter (mm)' : 'Filler Rod Diameter (mm)', kind === 'MIG' ? ['Material Type', 'Gas Type', 'Throat Thickness (mm)', 'Wire Diameter (mm)'] : ['Material', 'Max Throat Thickness (mm)']),
                 weld_density_kg_m3: density,
                 gas_cost_usd_hr: gasRow && gasMultiplier != null ? { ...gasRow, value: gasRow.value * gasMultiplier, ...(gasMultiplier !== 1 ? { source: `${gasRow.source} x ${gasMultiplier} for ${gas}` } : {}) } : undefined,
-                spray_on: seed(sprayOn ? 1 : 0, sprayOn ? `weldAntiSpatterSprayEnabled: ${String(spray?.['Spray Name'])}, the cheapest per gram` : kind === 'TIG' ? 'no anti-spatter spray on a TIG weld' : 'weldAntiSpatterSprayEnabled is off'),
+                spray_on: kind === 'TIG'
+                  ? factSeed(0, 'no anti-spatter spray on a TIG weld', 'Spray On', 'Weld', 'a TIG weld spatters no filler wire: no anti-spatter spray')
+                  : { value: sprayOn ? 1 : 0, source: sprayOn ? `weldAntiSpatterSprayEnabled: ${String(spray?.['Spray Name'])}, the cheapest per gram` : 'weldAntiSpatterSprayEnabled is off', ref: { kind: 'variable', domain: ASSEMBLY_DOMAIN, name: 'weldAntiSpatterSprayEnabled' } },
               }, sprayLookups);
               if ('reasons' in c) return fail(...c.reasons);
               runs[`${j.id} consumables`] = c.run;
@@ -319,7 +342,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
           }
         }
       } else if (j.process === 'Spot Welding') {
-        evaluate = (m) => timed(process, m, { weld_count: seed(j.count, `${j.count} spot welds`) });
+        evaluate = (m) => timed(process, m, { weld_count: jointSeed(j, j.count, `${j.count} spot welds`, 'Spots', null, [['Spot welds', null, j.count]], '{Spot welds}') });
         criteria.push('A spot weld time and gun placement');
       } else if (j.process === 'Electron Beam Welding' || j.process === 'Laser Welding') {
         const ebw = j.process === 'Electron Beam Welding';
@@ -328,7 +351,8 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
           if (maxDepth != null && j.depthMm! > maxDepth) problems.push(`${j.label}: a ${j.depthMm} mm penetration is deeper than ${ebw ? 'EBWMaximumWeldDepth' : 'LWMaximumWeldDepth'} (${maxDepth} mm)`);
           else {
             evaluate = (m) => timed(process, m, {
-              weld_length_mm: seed(j.lengthMm! * j.count, `${j.count} x ${j.lengthMm} mm of weld`), weld_depth_mm: seed(j.depthMm!, 'the penetration set on the joint (mm)'), weld_count: count,
+              weld_length_mm: perJoint('Weld Length', 'mm', j.lengthMm!, `${j.count} x ${j.lengthMm} mm of weld`, 'Length per weld'),
+              weld_depth_mm: onJoint('Weld Depth', 'mm', j.depthMm!, 'the penetration set on the joint (mm)', 'Penetration'), weld_count: count,
             });
             criteria.push(`A beam power and maximum speed${ebw ? ', pump and vent times' : ''}`);
             warnings.push(`${j.label}: the ${ebw ? 'electron beam' : 'laser'} weld speed rule is unverified (memory/Assembly gives the factors, not how they combine).`);
@@ -345,9 +369,9 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         criteria.push('An ultrasonic welder');
       } else if (j.process === 'Adhesive Bonding' || j.process === 'Fay Sealing') {
         if (need('bonded or sealed area', j.areaMm2)) {
-          const area = seed(j.areaMm2! * j.count, `${j.count} x ${j.areaMm2} mm² faying area`);
+          const area = perJoint(j.process === 'Adhesive Bonding' ? 'Bond Area' : 'Seal Area', 'mm²', j.areaMm2!, `${j.count} x ${j.areaMm2} mm² faying area`, 'Faying area per joint');
           if (j.process === 'Adhesive Bonding') {
-            const mass = run(BOND_MATERIAL_CALC, null, { bond_area_mm2: area, sealant_volume_mm3: seed(0, 'no sealant on a bonded joint') });
+            const mass = run(BOND_MATERIAL_CALC, null, { bond_area_mm2: area, sealant_volume_mm3: factSeed(0, 'no sealant on a bonded joint', 'Sealant Volume', 'Joint', 'a bonded joint: adhesive, no sealant') });
             if ('run' in mass) {
               adhesiveKg += mass.sec;
               runs[`${j.id} adhesive`] = mass.run;
@@ -358,7 +382,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         }
       } else if (j.process === 'Fillet Sealing') {
         if (need('bead length', j.lengthMm)) {
-          evaluate = (m) => timed(process, m, { bead_length_mm: seed(j.lengthMm! * j.count, `${j.count} x ${j.lengthMm} mm of bead`) });
+          evaluate = (m) => timed(process, m, { bead_length_mm: perJoint('Bead Length', 'mm', j.lengthMm!, `${j.count} x ${j.lengthMm} mm of bead`, 'Bead per joint') });
           criteria.push('An application rate (s/mm)');
         }
       }
@@ -377,7 +401,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
 
       // A seam weld's edges prepared before and ground clean after, along its length.
       if (SEAM_WELDS.has(j.process) && j.lengthMm != null) {
-        const length = seed(j.lengthMm * j.count, `${j.count} x ${j.lengthMm} mm of weld`);
+        const length = perJoint('Weld Length', 'mm', j.lengthMm, `${j.count} x ${j.lengthMm} mm of weld`, 'Length per weld');
         if (j.prep) add(step('Weld Prep', (m) => timed('Weld Prep', m, { weld_length_mm: length }), ['Grinding and wire brushing speeds']), [{ ...jointOp, name: `${j.label}: edges prepared` }]);
         if (j.cleanUp) add(step('Weld Clean Up', (m) => timed('Weld Clean Up', m, { weld_length_mm: length }), ['A grinding speed']), [{ ...jointOp, name: `${j.label}: ground clean` }]);
       }

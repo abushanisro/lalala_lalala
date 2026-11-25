@@ -143,10 +143,10 @@ export interface CalculatorFieldDefault {
  * The sheet-metal reference tables a calculator input can be read from, each served whole to the calculator dialog: the sm_lookup_* cost
  * tables and inspection_operation_defaults by GET /processes/sm-lookup-tables/by-name/:table (sm-lookup-bridge.config.ts allowlist), and the
  * machine-library tables of sm_reference_data by their own endpoints (turret-reference-tables.ts, ProcessesService): turret_machines
- * (/turret-machines-table), waterjet_machines (/waterjet-machines-table), deslag_allowance (/deslag-allowance-table) and stroke_rate_factor
- * (/stroke-rate-factor-table, Lookup Table 1). Row keys are the served table's own column names.
+ * (/turret-machines-table), waterjet_machines (/waterjet-machines-table), deslag_allowance (/deslag-allowance-table), stroke_rate_factor
+ * (/stroke-rate-factor-table, Lookup Table 1) and press_brake_machines (/press-brake-machines-table). Row keys are the served table's own column names.
  */
-export const SHEET_METAL_LIBRARY_TABLES = ['turret_machines', 'waterjet_machines', 'deslag_allowance', 'stroke_rate_factor'] as const;
+export const SHEET_METAL_LIBRARY_TABLES = ['turret_machines', 'waterjet_machines', 'deslag_allowance', 'stroke_rate_factor', 'press_brake_machines'] as const;
 export type SheetMetalSourceTable =
   | (typeof SHEET_METAL_LIBRARY_TABLES)[number]
   | 'inspection_operation_defaults'

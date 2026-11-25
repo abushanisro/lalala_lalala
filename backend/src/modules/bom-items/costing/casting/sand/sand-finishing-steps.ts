@@ -2,7 +2,9 @@
 // moulding-side steps (sand-steps.ts): each seeds its calculator from the declared source of every input, checks the machine against what
 // the step needs, and names every reason it cannot be done. Ported from the retired petrus-demo prototype (its design records, D-numbers, are archived outside the repo) (D122, D128-D130, D146).
 import { machineText, machineValue, type SandMachine } from './sand-machines';
-import { runStep, type SandRouteContext, type StepOutcome } from './sand-steps';
+import { cavitiesSource, coresSeed, runStep, type SandRouteContext, type StepOutcome } from './sand-steps';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
+import { calculatedSeed, inputStep, resultStep } from '../casting-source-refs';
 import type { SandReference } from './sand-reference';
 import { valuesProvider } from './sand-seeds';
 
@@ -19,9 +21,13 @@ export interface SandFinishContext extends SandRouteContext {
   /** The part's outer surface (mm²): blast-room cleaning and inspection are by surface. */
   surfaceAreaMm2: number;
   /** The designed ingates and risers of one casting (sand-gating.ts), which are cut off and ground. */
-  gates: { ingateAreaMm2: number; ingateWidthMm: number; riserContactMm2: number; riserDiameterMm: number };
-  /** The parting line to grind (mm) and where its length came from. */
-  partingLine: { value: number; source: string };
+  gates: {
+    ingateAreaMm2: number; ingateWidthMm: number; riserContactMm2: number; riserDiameterMm: number;
+    /** Where the ingate area and the risers' contact were worked out (the gating and risers calculators' runs). */
+    ingateAreaRef: SourceRef; riserContactRef: SourceRef;
+  };
+  /** The parting line to grind (mm), where its length came from, and what it opens (its measured faces, or the estimate). */
+  partingLine: { value: number; source: string; ref: SourceRef };
   /** Core sand in the mould, kg (0 without cores): it goes through the shakeout with the metal. */
   coreSandKgPerMould: number;
   /** Cores made of sand in each casting. */
@@ -71,15 +77,15 @@ export function shakeoutStep(ctx: SandFinishContext, m: SandMachine): StepOutcom
   if (longest > maxLength) return fail(`shakes out parts up to ${maxLength} mm automatically (maxAutoShakeoutLength), the part is ${longest.toFixed(0)} mm long`);
   const minutes = interpolate(points(ctx.ref, 'tblShakeoutTime', 'Rough Mass (kg)', 'Shakeout Time (min)'), rough);
   if (minutes == null) return fail('tblShakeoutTime is not staged');
-  return done(runStep(ctx, SHAKEOUT, m, { cavities: { value: ctx.cavities, source: 'cavities that fit the flask (layoutNumCav, sand borders)' } }, {
+  return done(runStep(ctx, SHAKEOUT, m, { cavities: cavitiesSource(ctx) }, {
     lookup: valuesProvider({ 'tblShakeoutTime.Shakeout Time (min)': { value: minutes, source: `tblShakeoutTime for ${rough.toFixed(1)} kg of metal and cores per mould` } }),
   }));
 }
 
 /** The designed gates and risers of one casting, as the engine inputs degating and grinding cut and grind. */
 const gateInputs = (ctx: SandFinishContext) => ({
-  ingate_area_mm2: { value: ctx.gates.ingateAreaMm2, source: 'Sand Casting - Gating system: ingate area' },
-  riser_contact_mm2: { value: ctx.gates.riserContactMm2, source: 'Sand Casting - Risers: riser diameter' },
+  ingate_area_mm2: { value: ctx.gates.ingateAreaMm2, source: 'Sand Casting - Gating system: ingate area', ref: ctx.gates.ingateAreaRef },
+  riser_contact_mm2: { value: ctx.gates.riserContactMm2, source: 'Sand Casting - Risers: riser diameter', ref: ctx.gates.riserContactRef },
 });
 
 /** Degating: a machine that cuts (it has a feed rate), takes the part, and cuts across the widest ingate or riser. */
@@ -110,10 +116,18 @@ export function cleanStep(ctx: SandFinishContext, m: SandMachine): StepOutcome {
     if (!((machineValue(m, 'external_surface_blast_rate_m2_per_min') ?? 0) > 0)) return fail('no time per load and no blast rate');
     return done(runStep(ctx, CLEANING_ROOM, m, {}, area));
   }
-  let perLoad = Math.max(1, Math.floor(capacity / ctx.part.netKg));
+  const byWeight = Math.max(1, Math.floor(capacity / ctx.part.netKg));
   const most = machineValue(m, 'max_batch_size');
-  if (most != null && most > 0) perLoad = Math.min(perLoad, most);
-  return done(runStep(ctx, CLEANING_LOADS, m, { parts_per_load: { value: perLoad, source: 'weight capacity / part weight, at most max batch size' } }));
+  const perLoad = most != null && most > 0 ? Math.min(byWeight, most) : byWeight;
+  const machineRef = (column: string): SourceRef => ({ kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
+  return done(runStep(ctx, CLEANING_LOADS, m, {
+    parts_per_load: calculatedSeed(perLoad, 'weight capacity / part weight, at most max batch size', 'Parts per Load', [
+      inputStep('Weight capacity', 'kg', capacity, `machine ${m.name}: weight_capacity_kg`, machineRef('weight_capacity_kg')),
+      inputStep('Part weight', 'kg', ctx.part.netKg, 'Part volume x the material density'),
+      ...(most != null && most > 0 ? [inputStep('Max batch size', null, most, `machine ${m.name}: max_batch_size`, machineRef('max_batch_size'))] : []),
+      resultStep('Parts per Load', null, perLoad, most != null && most > 0 ? 'floor({Weight capacity} / {Part weight}), at least 1, at most {Max batch size}' : 'floor({Weight capacity} / {Part weight}), at least 1'),
+    ]),
+  }));
 }
 
 /** Grinding: the machine must take the part; stub and flash sizes by the part's weight (tblGrindingDimensions), the speed factor by the material's cut code. */
@@ -156,7 +170,7 @@ export function inspectStep(ctx: SandFinishContext, m: SandMachine): StepOutcome
   if (!band) return fail('tblVisualInspection is not staged');
   return done(runStep(
     ctx, INSPECTION, m,
-    { cores: { value: ctx.coresCount, source: 'cores made of sand' } },
+    { cores: { ...coresSeed(ctx, 'cores made of sand'), value: ctx.coresCount } },
     {
       lookup: (key) => (key === 'tblVisualInspection.External Inspection Rate (min / m^2)'
         ? {

@@ -5,7 +5,7 @@
 // lookup-table row (with the row identity, so the table viewer can highlight it),
 // the scenario, or another calculator's output -- and the calculator computes.
 import type { CalcRun, CalcSeed, ReferenceCalcRun } from '../shared/calculators/reference-calculator';
-import type { CalculationTraceStep, CalculatorRunDto, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CalculatorRunDto, CostingInputField, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
 import type { CadEvidenceKey } from '../shared/cad-evidence';
 import { CASTING_MATERIALS_TABLE, CASTING_VARIABLES_TABLE } from './calculators/die-casting-calculator-spec';
 
@@ -53,8 +53,10 @@ export const castingSeed = {
     value, source: `${machine.name}: ${label} (HR Rates)`,
     ref: { kind: 'machine', machineId: machine.id, machineName: machine.name, column },
   }),
-  scenario: (value: number, what: string): CalcSeed => ({ value, source: `Scenario: ${what}` }),
-  engine: (value: number, why: string): CalcSeed => ({ value, source: why }),
+  /** One of the part's costing inputs (the batch, the annual volume, the production life): it opens them. */
+  scenario: (value: number, what: string, field: CostingInputField): CalcSeed => ({ value, source: `Scenario: ${what}`, ref: { kind: 'costingInput', field } }),
+  /** A value the engine decided or worked out; `ref` is where it opens (the calculation it is, the Cost Guide entry, the row it read). */
+  engine: (value: number, why: string, ref: SourceRef): CalcSeed => ({ value, source: why, ref }),
   /** Another calculator's output; given its run, the steps that produced it (and the CAD faces they rest on, if any). */
   calculator: (value: number, calculatorName: string, run?: { trace: CalculationTraceStep[] }, evidence: CadEvidenceKey | null = null): CalcSeed => ({
     value, source: `${calculatorName} calculator`,

@@ -102,8 +102,8 @@ describe('the mold tooling calculator', () => {
     expect(r.outputs['Side Action Cost']).toBeCloseTo(r.outputs['Side Action Steel Cost']! + surface * 0.18 * 100.55 + (1.52 * 3 + 5) * 100.55, 6);
     expect(r.trace.find((t) => t.fieldName === 'Lifter Block Volume')?.source).toMatch(/2 small x 75 in³ \(smallLifterVolume\)/);
     expect(r.trace.find((t) => t.fieldName === 'Slide Block Volume')?.source).toMatch(/1 medium x 1100 in³ \(mediumSlideVolume\)/);
-    // Without the bundles' ids (an older signal) the volumes name no features.
-    expect(r.trace.find((t) => t.fieldName === 'Slide Block Volume')?.ref).toBeUndefined();
+    // Without the bundles' ids (an older signal) the volumes light no features: they open their calculation, each class's count x its volume variable.
+    expect(r.trace.find((t) => t.fieldName === 'Slide Block Volume')?.ref).toMatchObject({ kind: 'calculation', name: 'Slide Block Volume: the slide bundles by size class' });
     const named = runMoldTooling(facts({
       sideActionBlocks: { slide: { ...NONE, medium: 1 }, lifter: { ...NONE, small: 2 }, unsized: 0 },
       sideActionBundleIds: { slide: ['bundle-1'], lifter: ['bundle-2', 'bundle-3'] },

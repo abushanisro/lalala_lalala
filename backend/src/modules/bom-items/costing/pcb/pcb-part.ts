@@ -6,8 +6,30 @@
 // reference's default (memory/PCBA/pcb_variables.csv), else it is missing. Every value carries where it came from, and the Cost Guide
 // shows it: a default is never presented as measured.
 
+import type { SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, resultStep } from '../shared/calculators/seed-refs';
+
 /** Where a board value came from. */
 export type PcbBasis = 'board_files' | 'cad_model' | 'cost_guide' | 'reference_default' | 'derived';
+
+const BASIS_SAYS: Readonly<Record<PcbBasis, string>> = {
+  board_files: 'Measured from the board files', cad_model: 'Measured on the board\'s CAD model', cost_guide: 'Set in the Cost Guide',
+  reference_default: 'The reference\'s default', derived: 'Worked out',
+};
+
+/**
+ * Where a board value came from, as its eye opens it: a reference default read from a PCB variable opens that variable; any other value
+ * (measured from the board files or the model, set in the Cost Guide, worked out) is shown with its basis and the file or field that states it.
+ */
+export function pcbFactRef(f: { value: unknown; basis: PcbBasis; source: string }, label: string, unit: string | null = null): SourceRef {
+  const variable = f.basis === 'reference_default' ? /PCB variable (\w+)/.exec(f.source)?.[1] : undefined;
+  if (variable) return { kind: 'variable', domain: 'pcb', name: variable };
+  const value = typeof f.value === 'number' || typeof f.value === 'string' ? f.value : Array.isArray(f.value) ? `${f.value.length} item(s)` : String(f.value);
+  return calculationRef(label, [
+    inputStep(label, unit, value, `${BASIS_SAYS[f.basis]}: ${f.source}`),
+    ...(typeof value === 'number' ? [resultStep(label, unit, value, BASIS_SAYS[f.basis].toLowerCase())] : []),
+  ]);
+}
 
 export interface PcbFact<T> {
   value: T;

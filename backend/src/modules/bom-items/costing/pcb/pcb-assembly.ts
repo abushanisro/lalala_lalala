@@ -14,8 +14,10 @@ import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { CostedStep, StepOutcome } from '../casting/sand/sand-steps';
 import type { PcbNest } from './pcb-panel';
-import type { BoardSide, PcbPart } from './pcb-part';
-import { saySourced, type SourcedValue } from './pcb-reference';
+import { pcbFactRef, type BoardSide, type PcbPart } from './pcb-part';
+import { saySourced, sourcedRef, type SourcedValue } from './pcb-reference';
+import { batchSizeSeed, derivedSeed, inputStep, resultStep, seedStep } from '../shared/calculators/seed-refs';
+import type { SourceRef } from '../../dto/cost-breakdown.dto';
 
 /** The HR Rates machine class of each assembly process (migration 1133); insertion and hand soldering are bench work. */
 export const PCBA_CLASS = {
@@ -101,7 +103,7 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
 
 /** A keyed sourced value of memory/PCBA/Assembly (assembly_rates or assembly_costs), its rows narrowed to a region when given. */
-function sourcedOf(rows: readonly Row[], key: string, region?: string): SourcedValue | null {
+function sourcedOf(rows: readonly Row[], key: string, table: string, region?: string): SourcedValue | null {
   const keyed = rows.filter((r) => r['item_key'] === key && (region == null || r['region'] === region || r['region'] === 'any'));
   const lows = keyed.map((r) => num(r['value_min'])).filter((x): x is number => x != null);
   const highs = keyed.map((r) => num(r['value_max']) ?? num(r['value_min'])).filter((x): x is number => x != null);
@@ -111,10 +113,11 @@ function sourcedOf(rows: readonly Row[], key: string, region?: string): SourcedV
   return {
     key, min, max, mid: (min + max) / 2, unit: String(keyed[0]?.['unit'] ?? ''),
     sources: keyed.map((r) => ({ url: String(r['source_url'] ?? ''), date: String(r['source_date'] ?? ''), note: String(r['source_note'] ?? '') })),
+    table, columns: ['value_min', 'value_max'] as const, row: { item_key: key },
   };
 }
-export const assemblyRate = (ref: SandReference, key: string): SourcedValue | null => sourcedOf(ref.table('assembly_rates'), key);
-export const assemblyCost = (ref: SandReference, key: string, region: string): SourcedValue | null => sourcedOf(ref.table('assembly_costs'), key, region);
+export const assemblyRate = (ref: SandReference, key: string): SourcedValue | null => sourcedOf(ref.table('assembly_rates'), key, 'assembly_rates');
+export const assemblyCost = (ref: SandReference, key: string, region: string): SourcedValue | null => sourcedOf(ref.table('assembly_costs'), key, 'assembly_costs', region);
 
 /** Whether the board is assembled, and why. */
 export function assemblyIncluded(part: PcbPart, mode: PcbAssemblyMode, bomComponents: number): { included: boolean; basis: string } {
@@ -137,7 +140,18 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   const warnings: string[] = [];
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
   const sourced = (v: SourcedValue, what: string, scale = 1, unit = ''): CalcSeed =>
-    ({ value: r4(v.mid * scale), source: `${what}: ${saySourced(v)}${scale !== 1 ? ` x ${scale}${unit ? ` ${unit}` : ''}` : ''} (${v.sources.map((s) => s.url).join(', ')})` });
+    ({ value: r4(v.mid * scale), source: `${what}: ${saySourced(v)}${scale !== 1 ? ` x ${scale}${unit ? ` ${unit}` : ''}` : ''} (${v.sources.map((s) => s.url).join(', ')})`, ref: sourcedRef(v, what, scale, unit) });
+  // The placements of the Pick Place file, each side's, as the steps a count is made of.
+  const placedOn = (side: BoardSide) => part.placements.filter((p) => p.side === side && p.count > 0);
+  const placementSteps = (sidesOf: readonly BoardSide[]) => sidesOf.flatMap((s) => placedOn(s).map((p) =>
+    inputStep(`${s}: ${p.footprint ?? p.packageClass}`, null, p.count, `${part.placementsSource ?? 'the Pick Place file'}: ${p.packageClass}`)));
+  const machineRef = (m: SandMachine, column: string): SourceRef => ({ kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
+  /** A machine's hourly rate as the line charges it: its machine rate and its crew's labour. */
+  const rateSteps = (m: SandMachine, times = 1) => [
+    inputStep(`${times > 1 ? `${times} x ` : ''}${m.name} machine rate`, 'USD/h', m.machineRatePerHr ?? 0, `machine ${m.name}: mhr_usd_per_hour`, machineRef(m, 'mhr_usd_per_hour')),
+    inputStep(`${m.name} labour rate`, 'USD/h', m.labourRatePerHr ?? 0, `machine ${m.name}: usd_labor_rate_per_hr`, machineRef(m, 'usd_labor_rate_per_hr')),
+    inputStep(`${m.name} operators`, null, m.operators ?? 0, `machine ${m.name}: operators`, machineRef(m, 'operators')),
+  ];
 
   const bySide: Partial<Record<BoardSide, number>> = {};
   const feedersBySide: Partial<Record<BoardSide, Set<string>>> = {};
@@ -172,10 +186,21 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   const array = nest.array ?? { lengthMm: part.lengthMm.value, widthMm: part.widthMm.value };
   const perArray = nest.array ? nest.boardsPerArray : 1;
   const arrayWidth = r2(Math.min(array.lengthMm, array.widthMm));
+  const boardSteps = [
+    inputStep('Board length', 'mm', part.lengthMm.value, part.lengthMm.source, pcbFactRef(part.lengthMm, 'Board length', 'mm')),
+    inputStep('Board width', 'mm', part.widthMm.value, part.widthMm.source, pcbFactRef(part.widthMm, 'Board width', 'mm')),
+  ];
+  const nestSays = nest.array ? `the fabrication nest: ${nest.note}` : 'no array: the board alone';
   const arraySeeds: Record<string, CalcSeed> = {
-    boards_per_array: seed(perArray, nest.array ? `${perArray} board(s) per ${r2(array.lengthMm)} x ${r2(array.widthMm)} mm array (the fabrication nest)` : 'the board alone (no array)'),
-    array_length_mm: seed(r2(Math.max(array.lengthMm, array.widthMm)), nest.array ? 'the array\'s long side' : 'the board\'s long side'),
-    array_width_mm: seed(arrayWidth, nest.array ? 'the array\'s short side' : 'the board\'s short side'),
+    boards_per_array: derivedSeed(perArray, nest.array ? `${perArray} board(s) per ${r2(array.lengthMm)} x ${r2(array.widthMm)} mm array (the fabrication nest)` : 'the board alone (no array)', 'Boards per array', [
+      ...boardSteps, resultStep('Boards per Array', null, perArray, nestSays),
+    ]),
+    array_length_mm: derivedSeed(r2(Math.max(array.lengthMm, array.widthMm)), nest.array ? 'the array\'s long side' : 'the board\'s long side', 'Array length', [
+      ...boardSteps, resultStep('Array Length', 'mm', r2(Math.max(array.lengthMm, array.widthMm)), nestSays),
+    ]),
+    array_width_mm: derivedSeed(arrayWidth, nest.array ? 'the array\'s short side' : 'the board\'s short side', 'Array width', [
+      ...boardSteps, resultStep('Array Width', 'mm', arrayWidth, nestSays),
+    ]),
   };
   const need = (key: string, what: string): SourcedValue | null => {
     const v = assemblyRate(ref, key);
@@ -187,7 +212,9 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   const smt: { key: 'print' | 'spi' | 'place' | 'reflow' | 'aoi'; step: CostedStep }[] = [];
   let smtLine: PcbAssembly['smtLine'] = null;
   if (sides.length) {
-    const sidesSeed = seed(sides.length, `${sides.join(' and ')} (the sides the Pick Place file places parts on)`);
+    const sidesSeed = derivedSeed(sides.length, `${sides.join(' and ')} (the sides the Pick Place file places parts on)`, 'Populated sides', [
+      ...placementSteps(sides), resultStep('Sides', null, sides.length, 'the sides the Pick Place file places parts on'),
+    ]);
     const print = need('print_core_cycle_s', 'Stencil printing');
     const spi = need('spi_cm2_per_s', 'Solder paste inspection');
     const aoi = need('aoi_cm2_per_s', 'Assembly AOI');
@@ -203,7 +230,9 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
       if (!share) return kit.fail('no sourced share of the IPC rate');
       if (machineValue(m, 'ipc_cph') == null) return kit.fail('no IPC-9850 or rated placement speed on file');
       return kit.timed('Pick and Place', m, {
-        placements: seed(placements, `${sides.map((s) => `${bySide[s] ?? 0} on the ${s}`).join(', ')} (${part.placementsSource ?? 'the Pick Place file'})`),
+        placements: derivedSeed(placements, `${sides.map((s) => `${bySide[s] ?? 0} on the ${s}`).join(', ')} (${part.placementsSource ?? 'the Pick Place file'})`, 'Placements', [
+          ...placementSteps(sides), resultStep('Placements', null, placements, 'the parts placed, summed'),
+        ]),
         placement_actual_pct_of_ipc: sourced(share, 'actual share of the IPC-9850 speed'),
       });
     }, ['A placer with a stated speed']) });
@@ -243,14 +272,21 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
       const lineRate = r2(otherRate + placers * placerRate);
       const lineWhy = [...smt.filter((x) => x.key !== 'place').map((x) => `${x.step.machine!.name} ${r2(rateOf(x.step.machine))}`),
         `${placers} x ${placer.machine!.name} ${r2(placerRate)}`].join(' + ');
+      const lineRateSeed = derivedSeed(lineRate, `the line: ${lineWhy} USD/h`, 'The SMT line\'s rate', [
+        ...smt.filter((x) => x.key !== 'place').flatMap((x) => rateSteps(x.step.machine!)), ...rateSteps(placer.machine!, placers),
+        resultStep('Line Rate', 'USD/h', lineRate, 'each machine\'s machine rate + labour rate x operators, the placer\'s times the placers in series'),
+      ]);
       const placersWhy = `${placers} placer(s) in series: the cheapest line for the board of 1 to ${maxPlacers} (the line studies run ${placersRange ? `${placersRange.min}-${placersRange.max}` : '1'}: ${placersRange?.sources.length ?? 0} sources)`;
       const fixed = need('line_changeover_fixed_min', 'The line changeover');
       const perFeeder = need('feeder_load_min', 'The line changeover');
       if (fixed && perFeeder) {
         const c = kit.run(PCBA_HELPER.changeover, null, {
-          smt_sides: sidesSeed, feeders: seed(feeders, `${sides.map((s) => `${feedersBySide[s]!.size} on the ${s}`).join(', ')}: the distinct footprints placed`),
+          smt_sides: sidesSeed,
+          feeders: derivedSeed(feeders, `${sides.map((s) => `${feedersBySide[s]!.size} on the ${s}`).join(', ')}: the distinct footprints placed`, 'Feeders', [
+            ...placementSteps(sides), resultStep('Feeders', null, feeders, 'one feeder a distinct footprint on each side'),
+          ]),
           changeover_fixed_min: sourced(fixed, 'changeover per side'), feeder_load_min: sourced(perFeeder, 'feeder load'),
-          line_usd_per_h: seed(lineRate, `the line: ${lineWhy} USD/h`), batch_size: seed(kit.batchSize, 'the batch'),
+          line_usd_per_h: lineRateSeed, batch_size: batchSizeSeed(kit.batchSize, 'the batch'),
         });
         if ('run' in c) {
           const l = kit.consumableLine('SMT Line Changeover', PCBA_CLASS.place, c.run, `${r2(c.run.outputs['Changeover Time'] ?? 0)} min a batch of ${kit.batchSize} at the line's ${lineRate} USD/h`);
@@ -259,8 +295,16 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
       }
       const busy = smt.reduce((t, x) => t + x.step.line.runCost, 0);
       const b = kit.run(PCBA_HELPER.balance, null, {
-        line_takt_s: seed(r4(takt), `${sides.map((s, i) => `${s} ${r2(takts[i] ?? 0)} s`).join(' + ')}; ${placersWhy}`),
-        line_usd_per_h: seed(lineRate, `the line: ${lineWhy} USD/h`), busy_cost_usd: seed(r4(busy), 'the five SMT lines\' run cost'),
+        line_takt_s: derivedSeed(r4(takt), `${sides.map((s, i) => `${s} ${r2(takts[i] ?? 0)} s`).join(' + ')}; ${placersWhy}`, 'The line\'s takt', [
+          inputStep('Slowest other machine a side', 's', r4(otherSec), 'the slowest of the printer, SPI, reflow and AOI lines, a side'),
+          ...sides.map((s, i) => inputStep(`Placement on the ${s}`, 's', r4(placeSec[i]!), `${bySide[s] ?? 0} parts at the placer's effective rate`)),
+          inputStep('Placers in series', null, placers, placersWhy, placersRange ? sourcedRef(placersRange, 'placers in series') : undefined),
+          resultStep('Line Takt', 's', r4(takt), 'each side: max({Slowest other machine a side}, {Placement} / {Placers in series}), summed'),
+        ]),
+        line_usd_per_h: lineRateSeed,
+        busy_cost_usd: derivedSeed(r4(busy), 'the five SMT lines\' run cost', 'The SMT lines\' run cost', [
+          ...smt.map((x) => inputStep(x.step.line.process, 'USD', r4(x.step.line.runCost), `the ${x.step.line.process} line's run cost`)), resultStep('Busy Cost', 'USD', r4(busy), 'summed'),
+        ]),
       });
       if ('run' in b && (b.run.value ?? 0) > 0) lines.push(kit.consumableLine('SMT Line Balance', PCBA_CLASS.place, b.run, `the line held ${r2(takt)} s a board for its slowest machine; ${placersWhy}`));
       smtLine = { placers, maxPlacers, taktSec: r2(takt) };
@@ -276,9 +320,12 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
     else if (!thickness || !density || !price) warnings.push('The solder paste is not priced: its sourced stencil thickness, density or price is missing.');
     else {
       const r = kit.run(PCBA_HELPER.paste, null, {
-        paste_area_mm2: seed(r2(area), `the paste openings on the ${sides.join(' and ')} (the board files' paste layers)`),
+        paste_area_mm2: derivedSeed(r2(area), `the paste openings on the ${sides.join(' and ')} (the board files' paste layers)`, 'Paste area', [
+          ...sides.map((x) => inputStep(`The ${x} side's paste openings`, 'mm²', part.pasteAreaBySideMm2?.[x] ?? 0, 'Measured from the board files: that side\'s paste layer')),
+          resultStep('Paste Area', 'mm²', r2(area), 'the populated sides\' paste openings, summed'),
+        ]),
         stencil_thickness_mm: sourced(thickness, 'stencil'), paste_g_per_cm3: sourced(density, 'paste density'),
-        paste_usd_per_g: { value: r4(price.usd / 1000), source: `${price.say} / 1000 g` },
+        paste_usd_per_g: { value: r4(price.usd / 1000), source: `${price.say} / 1000 g`, ref: price.ref(1 / 1000, 'per gram') },
       });
       if ('run' in r) lines.push(kit.consumableLine('Solder Paste', PCBA_CLASS.print, r.run, `${r2(r.run.outputs['Paste Mass'] ?? 0)} g at ${price.say}`));
     }
@@ -294,9 +341,17 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   if (thtParts > 0) {
     const rate = need('tht_insertion_parts_per_hr', 'THT insertion');
     lines.push(kit.step('THT Insertion', PCBA_CLASS.bench, (m) => (rate
-      ? kit.timed('THT Insertion', m, { tht_parts: seed(thtParts, `${thtParts} through-hole part(s) (${part.placementsSource ?? 'the Pick Place file'})`), insertion_parts_per_hr: sourced(rate, 'manual insertion') })
+      ? kit.timed('THT Insertion', m, {
+        tht_parts: derivedSeed(thtParts, `${thtParts} through-hole part(s) (${part.placementsSource ?? 'the Pick Place file'})`, 'Through-hole parts', [
+          ...part.thtParts.map((t) => inputStep(t.label, null, t.count, part.placementsSource ?? 'the Pick Place file')), resultStep('THT Parts', null, thtParts, 'summed'),
+        ]),
+        insertion_parts_per_hr: sourced(rate, 'manual insertion'),
+      })
       : kit.fail('no sourced insertion rate')), ['An assembly bench']).line);
-    const jointsSeed = seed(joints, `${joints} through-hole joint(s): ${part.thtParts.map((t) => `${t.count} x ${t.label} (${t.jointsPerPart} pins)`).join(', ')}`);
+    const jointsSeed = derivedSeed(joints, `${joints} through-hole joint(s): ${part.thtParts.map((t) => `${t.count} x ${t.label} (${t.jointsPerPart} pins)`).join(', ')}`, 'Through-hole joints', [
+      ...part.thtParts.map((t) => inputStep(`${t.label}: ${t.count} x ${t.jointsPerPart} pins`, null, t.count * t.jointsPerPart, part.placementsSource ?? 'the Pick Place file')),
+      resultStep('THT Joints', null, joints, 'each part\'s count x its pins, summed'),
+    ]);
     const wave = need('wave_conveyor_m_per_min', 'Wave soldering');
     const sel = need('selective_solder_s_per_joint', 'Selective soldering');
     const hand = need('hand_solder_s_per_joint', 'Hand soldering');
@@ -324,7 +379,10 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   // ── Test: in circuit (a fixture) or flying probe, the cheaper over the job ─────────────────────────────────────────────────────────
   let test: PcbAssembly['test'];
   {
-    const netsSeed = nets != null ? seed(nets, part.nets ? `${nets} nets with pins (${part.nets.source})` : `${nets} test points (${part.testPoints!.source})`) : null;
+    const netsFact = part.nets ?? part.testPoints;
+    const netsSeed: CalcSeed | null = nets != null && netsFact
+      ? { value: nets, source: part.nets ? `${nets} nets with pins (${part.nets.source})` : `${nets} test points (${part.testPoints!.source})`, ref: pcbFactRef(netsFact, part.nets ? 'Nets' : 'Test points') }
+      : null;
     const timesOf = (k500: string, k3000: string, what: string) => {
       const a = need(k500, what);
       const b = need(k3000, what);
@@ -342,7 +400,7 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
     let fixtureDetail = 'not priced: no nets or no sourced fixture price';
     if (nets != null && fixtureAt[0] && fixtureAt[1]) {
       const f = kit.run(PCBA_HELPER.fixture, null, {
-        nails: seed(nets, 'one nail per net'), ict_fixture_usd_at_1024_nails: sourced(fixtureAt[0], '1024 nails'), ict_fixture_usd_at_5120_nails: sourced(fixtureAt[1], '5120 nails'),
+        nails: derivedSeed(nets, 'one nail per net', 'Nails', [seedStep('Nets', null, netsSeed!), resultStep('Nails', null, nets, 'one nail per net')]), ict_fixture_usd_at_1024_nails: sourced(fixtureAt[0], '1024 nails'), ict_fixture_usd_at_5120_nails: sourced(fixtureAt[1], '5120 nails'),
       });
       if ('run' in f) { fixtureUsd = r2(f.run.value!); fixtureDetail = `${nets} nails, between ${saySourced(fixtureAt[0], 0)} (1024) and ${saySourced(fixtureAt[1], 0)} (5120 nails)`; }
     }
@@ -374,7 +432,10 @@ export function buildPcbAssembly(kit: PcbAssemblyKit, choice: PcbAssemblyChoice,
   if (perArray > 1) {
     const speed = need('depanel_router_mm_per_s', 'Depaneling');
     lines.push(kit.step('Depanel Router', PCBA_CLASS.depanel, (m) => (speed
-      ? kit.timed('Depanel Router', m, { route_length_mm: seed(r2(part.perimeterMm.value), `${r2(part.perimeterMm.value)} mm outline (${part.perimeterMm.source})`), depanel_mm_per_s: sourced(speed, 'router cutting speed') })
+      ? kit.timed('Depanel Router', m, {
+        route_length_mm: { value: r2(part.perimeterMm.value), source: `${r2(part.perimeterMm.value)} mm outline (${part.perimeterMm.source})`, ref: pcbFactRef(part.perimeterMm, 'Outline', 'mm') },
+        depanel_mm_per_s: sourced(speed, 'router cutting speed'),
+      })
       : kit.fail('no sourced cutting speed')), ['A depaneling router']).line);
     processes.push({ group: 'Depanel', steps: ['Depanel Router'], basis: 'auto' });
   }
@@ -396,11 +457,12 @@ function cheapestOf<K extends string>(options: readonly PcbAssemblyOption<K>[]):
 }
 
 /** A keyed price of the quote's region in USD: India's in rupees at the app's rate, the USA's in dollars; another location takes the USA's. */
-function priceOf(ref: SandReference, region: PcbAssemblyRegion, usdKey: string, inrKey: string): { usd: number; say: string } | null {
+function priceOf(ref: SandReference, region: PcbAssemblyRegion, usdKey: string, inrKey: string): { usd: number; say: string; ref: (scale: number, why: string) => SourceRef } | null {
   if (region.location === 'India' && region.inrPerUsd) {
     const v = assemblyCost(ref, inrKey, 'India');
-    if (v) return { usd: v.mid / region.inrPerUsd, say: `${saySourced(v, 0)} / ${r2(region.inrPerUsd)} INR per USD (India)` };
+    const rate = region.inrPerUsd;
+    if (v) return { usd: v.mid / rate, say: `${saySourced(v, 0)} / ${r2(rate)} INR per USD (India)`, ref: (scale, why) => sourcedRef(v, `${inrKey} in USD`, scale / rate, `${why}, at ${r2(rate)} INR per USD`) };
   }
   const v = assemblyCost(ref, usdKey, 'USA');
-  return v ? { usd: v.mid, say: `${saySourced(v, 2)} (USA${region.location !== 'USA' ? `: none sourced for ${region.location}` : ''})` } : null;
+  return v ? { usd: v.mid, say: `${saySourced(v, 2)} (USA${region.location !== 'USA' ? `: none sourced for ${region.location}` : ''})`, ref: (scale, why) => sourcedRef(v, usdKey, scale, why) } : null;
 }

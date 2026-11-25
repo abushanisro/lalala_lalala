@@ -17,10 +17,13 @@ const spec$ = (m: { specs: Readonly<Record<string, unknown>> }, k: string) => Nu
 const ctx: SandFinishContext = {
   ref, spec: loadSandCastingCalculatorSpec(), calculators: sandCastingCalculatorsByName(), material: iron,
   part: { netKg: 8, modulusMm: 10, dimsMm: [300, 200, 100], wallNominalMm: 12 },
-  cavities: 1, coresPerCasting: 0, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
+  cavities: 1, cavitiesRef: { kind: 'calculation', name: 'Cavities per mould', evidence: null, steps: [{ fieldName: 'Cavities', displayLabel: 'Cavities', kind: 'calculated', value: 1, formula: 'one cavity' }] }, coresPerCasting: 0, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
   surfaceAreaMm2: 250000,
-  gates: { ingateAreaMm2: 300, ingateWidthMm: 30, riserContactMm2: 900, riserDiameterMm: 45 },
-  partingLine: { value: 900, source: 'measured parting line' },
+  gates: {
+    ingateAreaMm2: 300, ingateWidthMm: 30, riserContactMm2: 900, riserDiameterMm: 45,
+    ingateAreaRef: { kind: 'calculation', name: 'Sand Casting - Gating system', evidence: null, steps: [] }, riserContactRef: { kind: 'calculation', name: 'Riser Contact', evidence: null, steps: [] },
+  },
+  partingLine: { value: 900, source: 'measured parting line', ref: { kind: 'cad', evidence: 'parting_perimeter' } },
   coreSandKgPerMould: 0, coresCount: 0,
 };
 

@@ -9,6 +9,7 @@
 // not fit, is not a route for it. Each step on the cheapest capable machine of the location. The molds are tooling, kept out of the piece cost.
 import type { ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import type { CadEvidenceKey } from '../shared/cad-evidence';
+import { batchSizeSeed, calculationRef, derivedSeed, inputStep, resultStep, runRef, seedStep, withSeedRef } from '../shared/calculators/seed-refs';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
 import type { CostContext } from '../casting/casting-finishing';
@@ -135,7 +136,13 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
     const value = num(name);
     return value == null ? null : { value, source: `Roto & Blow variable ${name}${ref.unit(name) ? ` (${ref.unit(name)})` : ''}`, ref: { kind: 'variable', domain: ROTO_BLOW_DOMAIN, name } };
   };
-  const cadSeed = (value: number, source: string, evidence?: CadEvidenceKey): CalcSeed => ({ value, source, ...(evidence ? { ref: { kind: 'cad' as const, evidence } } : {}) });
+  // A shell measurement with no face evidence kept (the inside volume, the parting line, the wall): the value with what it measures.
+  const shellSeed = (value: number, source: string, label: string, unit: string): CalcSeed => derivedSeed(value, source, label, [
+    inputStep(label, unit, value, `CAD: ${source} (cad-engine roto and blow shell measurements)`), resultStep(label, unit, value, 'as measured'),
+  ]);
+  const cadSeed = (value: number, source: string, evidence?: CadEvidenceKey): CalcSeed => (evidence
+    ? { value, source, ref: { kind: 'cad', evidence } }
+    : shellSeed(value, source, source.replace(/ \(.*\)$/, ''), (/\(([^)]*)\)$/.exec(source)?.[1]) ?? ''));
   const cad: Record<string, CalcSeed | undefined> = {
     part_volume: cadSeed(part.partVolumeMm3, "the solid's volume (mm³)", 'part_volume'),
     inside_volume: cadSeed(part.insideVolumeMm3, 'the air the shell closes in (mm³)'),
@@ -159,7 +166,7 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
     if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
     const providers: SeedProviders = {
       variable: (name) => variableSeed(name), cad: named(cad), engine: named(engine), lookup: named(lookups),
-      scenario: named({ batch_size: { value: scenario.batchSize, source: 'batch size' } }), material: materialProvider,
+      scenario: named({ batch_size: batchSizeSeed(scenario.batchSize) }), material: materialProvider,
       machine: (key) => {
         const value = machine ? machineValue(machine, key) : null;
         return value == null || !machine ? null : {
@@ -174,6 +181,12 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
     return result.value == null ? { reasons: result.missing } : { run: result };
   };
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
+  // A value that is a setting or a fact of the route, not read from a table: what it is and why.
+  const factSeed = (value: number, source: string, field: string, fact: string, why: string): CalcSeed =>
+    derivedSeed(value, source, field, [inputStep(fact, null, why, source), resultStep(field, null, value, why)]);
+  // The features an operation works on (featureOperations), each with what it measures.
+  const featureSteps = (ops: readonly FeatureOp[], measure: (f: FeatureOp) => number, unit: string) =>
+    ops.map((f) => inputStep(`${f.featureType} ${f.id}`, unit, r2(measure(f)), `CAD: ${f.reason} (${f.operation})`));
   const step = (process: string, machineClass: string, evaluate: (m: SandMachine) => StepOutcome, criteria: string[]): CostedStep =>
     selectAndCost({
       process, machineClass, machines: input.machinesByClass[machineClass] ?? [], evaluate, criteria,
@@ -196,7 +209,10 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
   const melt = material.melt;
   const meltSeed = (value: number | null, label: string): CalcSeed | undefined => (value == null || !(value > 0) ? undefined : seed(value, `${material.name}: ${label}`));
   const cooling = run(ROTO_BLOW_CALC.cooling, null, {
-    wall_mm: seed(2 * part.wallMm, `twice the ${r2(part.wallMm)} mm wall: the shell is cooled from the mold side only`),
+    wall_mm: derivedSeed(2 * part.wallMm, `twice the ${r2(part.wallMm)} mm wall: the shell is cooled from the mold side only`, 'Cooled wall', [
+      seedStep('Wall', 'mm', shellSeed(part.wallMm, "the shell's nominal wall (mm)", 'Wall', 'mm')),
+      resultStep('Cooled Wall', 'mm', 2 * part.wallMm, '2 * {Wall}: the shell is cooled from the mold side only'),
+    ]),
     thermal_conductivity: meltSeed(melt.conductivityWMC, 'thermal conductivity of melt (W/m·°C)'),
     melt_density: meltSeed(melt.densityKgM3, 'density of melt (kg/m³)'),
     specific_heat: meltSeed(melt.specificHeatJgC, 'specific heat of melt (J/g·°C)'),
@@ -205,7 +221,7 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
     eject_temperature: meltSeed(melt.ejectTempC, 'eject deflection temperature (°C)'),
   });
   const coolingSec = 'run' in cooling ? cooling.run.value! : null;
-  const coolingSeed = coolingSec != null ? seed(r2(coolingSec), `${ROTO_BLOW_CALC.cooling}: ${r2(coolingSec)} s`) : undefined;
+  const coolingSeed = coolingSec != null ? withSeedRef(seed(r2(coolingSec), `${ROTO_BLOW_CALC.cooling}: ${r2(coolingSec)} s`), runRef(ROTO_BLOW_CALC.cooling, 'run' in cooling ? cooling.run : null)) : undefined;
   const rules: FeatureRules = {
     minBlowHoleDiameter: num('minBlowHoleDiameter') ?? 0, maxBlowHoleDiameter: num('maxBlowHoleDiameter') ?? 0,
     maxBlowMoldSimpleHoleDepth: num('maxBlowMoldSimpleHoleDepth') ?? 0, maxCorableHoleDiameter: num('maxCorableHoleDiameter') ?? 0,
@@ -213,9 +229,13 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
   };
   const labels = scenario.labels ?? num('defaultNumLabels') ?? 0;
   const colorant = scenario.colored ? num('colorantCost') ?? 0 : 0;
-  const colorantSeed = seed(colorant, scenario.colored ? 'Roto & Blow variable colorantCost: the part is colored' : 'not colored (Cost Guide)');
-  const labelsSeed = seed(labels, scenario.labels != null ? `${labels} in-mold label(s) (Cost Guide)` : `${labels} (defaultNumLabels)`);
-  const insertsSeed = seed(scenario.inserts, `${scenario.inserts} insert(s) (Cost Guide)`);
+  const colorantSeed = scenario.colored
+    ? withSeedRef(seed(colorant, 'Roto & Blow variable colorantCost: the part is colored'), variableSeed('colorantCost')?.ref)
+    : factSeed(0, 'not colored (Cost Guide)', 'Colorant', 'Colored', 'no: the part is not colored (Cost Guide)');
+  const labelsSeed = scenario.labels != null
+    ? factSeed(labels, `${labels} in-mold label(s) (Cost Guide)`, 'Labels', 'In-mold labels', `${labels}, set in the Cost Guide`)
+    : withSeedRef(seed(labels, `${labels} (defaultNumLabels)`), variableSeed('defaultNumLabels')?.ref);
+  const insertsSeed = factSeed(scenario.inserts, `${scenario.inserts} insert(s) (Cost Guide)`, 'Inserts', 'Inserts', `${scenario.inserts}, set in the Cost Guide (none unless set)`);
   const toolLife = (() => {
     const row = ref.table('tblToolLife').find((r) => String(r['Material Type'] ?? '').toLowerCase() === (material.materialType ?? '').toLowerCase());
     const shots = Number(row?.['Num Shots Per Tool']);
@@ -270,7 +290,7 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
 
     if (r.key === 'blow') {
       const inflate = run(ROTO_BLOW_CALC.inflate, null, {});
-      const mat = run(ROTO_BLOW_CALC.blowMaterial, null, { wall_mm: seed(part.wallMm, 'the shell\'s nominal wall (mm)'), colorant_usd_per_kg: colorantSeed, labels: labelsSeed });
+      const mat = run(ROTO_BLOW_CALC.blowMaterial, null, { wall_mm: shellSeed(part.wallMm, 'the shell\'s nominal wall (mm)', 'Wall', 'mm'), colorant_usd_per_kg: colorantSeed, labels: labelsSeed });
       if ('run' in mat) materialRun = mat.run;
       const molding = step(r.process, r.machineClass, (m) => {
         if (coolingSec == null) return fail(...('reasons' in cooling ? cooling.reasons : []));
@@ -280,9 +300,11 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
         const cavities = cav.run.value!;
         if (!(cavities >= 1)) return fail(`the ${r2(lengthMm)} x ${r2(widthMm)} x ${r2(part.envelope.depthMm)} mm part with its envelope margin does not fit its ${machineValue(m, 'mold_length_mm')} x ${machineValue(m, 'mold_width_mm')} mm mold, ${machineValue(m, 'mold_depth_mm')} mm deep a half`);
         const out = timed(ROTO_BLOW_CALC.blow, m, {
-          inflate_time_s: seed(r2(inflate.run.value!), `${ROTO_BLOW_CALC.inflate}: ${r2(inflate.run.value!)} s`), cooling_time_s: coolingSeed,
-          vacuum_factor: labels > 0 ? { ...(variableSeed('blowMoldVacuumFactor') ?? seed(1, 'no vacuum factor')) } : seed(1, 'no in-mold labels: no vacuum'),
-          cavities: seed(cavities, `${cavities} cavities (${ROTO_BLOW_CALC.cavities})`),
+          inflate_time_s: withSeedRef(seed(r2(inflate.run.value!), `${ROTO_BLOW_CALC.inflate}: ${r2(inflate.run.value!)} s`), runRef(ROTO_BLOW_CALC.inflate, inflate.run)), cooling_time_s: coolingSeed,
+          vacuum_factor: labels > 0
+            ? variableSeed('blowMoldVacuumFactor') ?? factSeed(1, 'no vacuum factor', 'Vacuum Factor', 'blowMoldVacuumFactor', 'not set in the Roto & Blow variables: no vacuum factor')
+            : derivedSeed(1, 'no in-mold labels: no vacuum', 'Vacuum Factor: no in-mold labels', [seedStep('In-mold labels', null, labelsSeed), resultStep('Vacuum Factor', null, 1, 'no labels to hold: no vacuum')]),
+          cavities: withSeedRef(seed(cavities, `${cavities} cavities (${ROTO_BLOW_CALC.cavities})`), runRef(`${ROTO_BLOW_CALC.cavities} on ${m.name}`, cav.run)),
         });
         return out.ok ? { ...out, partsPerCycle: cavities * (machineValue(m, 'number_of_stations') ?? 1), cavities } as StepOutcome : out;
       }, ['The part fits its mold (envelope margin, depth of its halves)', 'Its head extrudes the parisons']);
@@ -297,25 +319,43 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
           const tw = machineValue(m, 'table_width_mm');
           if (tl != null && tw != null && (lengthMm > tl || widthMm > tw)) return fail(`the part is larger than its ${tl} x ${tw} mm table`);
           return timed(ROTO_BLOW_CALC.router, m, {
-            cut_length_mm: seed(r2(length), `${routed.length} routed edge(s): ${routed.map((f) => f.featureType).join(', ')} (mm)`), cuts: seed(routed.length, `${routed.length} cut(s)`),
-            part_diagonal_mm: seed(r2(diagonal), 'the part\'s diagonal (mm)'),
+            cut_length_mm: derivedSeed(r2(length), `${routed.length} routed edge(s): ${routed.map((f) => f.featureType).join(', ')} (mm)`, 'Cut length: the routed edges', [
+              ...featureSteps(routed, (f) => f.cutLengthMm ?? 0, 'mm'), resultStep('Cut Length', 'mm', r2(length), 'the sum of the routed edges'),
+            ]),
+            cuts: derivedSeed(routed.length, `${routed.length} cut(s)`, 'Cuts: the routed edges', [
+              ...featureSteps(routed, (f) => f.cutLengthMm ?? 0, 'mm'), resultStep('Cuts', null, routed.length, 'one cut a routed edge'),
+            ]),
+            part_diagonal_mm: derivedSeed(r2(diagonal), 'the part\'s diagonal (mm)', "The part's diagonal", [
+              inputStep('Length', 'mm', lengthMm, 'CAD: the envelope across the parting plane, long side'), inputStep('Width', 'mm', widthMm, 'CAD: the envelope across the parting plane, short side'),
+              inputStep('Depth', 'mm', part.envelope.depthMm, 'CAD: the envelope along the pull'), resultStep('Part Diagonal', 'mm', r2(diagonal), 'sqrt({Length}² + {Width}² + {Depth}²)'),
+            ]),
           }, handling);
         }, ['The part fits its table']));
       }
       if (sawn.length) {
         const area = sawn.reduce((s, f) => s + (f.sawAreaMm2 ?? 0), 0);
-        steps.push(step('Saw', ROTO_BLOW_CLASS.saw, (m) => timed(ROTO_BLOW_CALC.saw, m, { cut_area_mm2: seed(r2(area), `${sawn.length} neck moil(s): π x Ø x wall (mm²)`) }, { ...handling, ...sawRate }), ['Any saw']));
+        const areaSeed = derivedSeed(r2(area), `${sawn.length} neck moil(s): π x Ø x wall (mm²)`, 'Cut area: the neck moils', [
+          ...featureSteps(sawn, (f) => f.sawAreaMm2 ?? 0, 'mm²'), resultStep('Cut Area', 'mm²', r2(area), 'π x each neck\'s diameter x the wall, summed'),
+        ]);
+        steps.push(step('Saw', ROTO_BLOW_CLASS.saw, (m) => timed(ROTO_BLOW_CALC.saw, m, { cut_area_mm2: areaSeed }, { ...handling, ...sawRate }), ['Any saw']));
       }
     } else {
       const trimWaste = trimmed.reduce((s, f) => s + (f.wasteVolumeMm3 ?? 0), 0);
       const trimLength = trimmed.reduce((s, f) => s + (f.cutLengthMm ?? 0), 0);
       const mat = run(ROTO_BLOW_CALC.rotoMaterial, null, {
-        trim_waste_mm3: seed(r2(trimWaste), trimmed.length ? `${trimmed.length} cut-out plug(s) and their trim stock (mm³)` : 'no cut-outs'),
+        trim_waste_mm3: derivedSeed(r2(trimWaste), trimmed.length ? `${trimmed.length} cut-out plug(s) and their trim stock (mm³)` : 'no cut-outs', 'Trim waste: the cut-outs', [
+          ...(trimmed.length ? featureSteps(trimmed, (f) => f.wasteVolumeMm3 ?? 0, 'mm³') : [inputStep('Cut-outs', null, 0, 'CAD: no cut-out the route trims')]),
+          resultStep('Trim Waste', 'mm³', r2(trimWaste), 'each cut-out plug and its trim stock, summed'),
+        ]),
         colorant_usd_per_kg: colorantSeed, inserts: insertsSeed, labels: labelsSeed,
       });
       if ('run' in mat) materialRun = mat.run;
       const chargeKg = materialRun?.outputs['Material Mass'] ?? partKg;
-      const chargeSeed = seed(r3(chargeKg), `${r3(chargeKg)} kg: the material one part takes (${ROTO_BLOW_CALC.rotoMaterial})`);
+      const chargeSeed = withSeedRef(seed(r3(chargeKg), `${r3(chargeKg)} kg: the material one part takes (${ROTO_BLOW_CALC.rotoMaterial})`), runRef(ROTO_BLOW_CALC.rotoMaterial, materialRun)
+        ?? calculationRef('Charge: the part\'s own mass', [
+          seedStep('Part volume', 'mm³', cad.part_volume!), inputStep('Density', 'kg/m³', material.densityKgM3, `${material.name}: density (kg/m³)`, materialProvider('density_kg_m3')?.ref),
+          resultStep('Charge Mass', 'kg', r3(chargeKg), '{Part volume} * {Density} / 1e9 (the material calculator did not run)'),
+        ]));
       // grindProcessEnable: the pellets are ground to powder in the shop (memory: true); 'false' buys powder and skips the step.
       if ((ref.text('grindProcessEnable') ?? 'true').trim().toLowerCase() !== 'false') {
         steps.push(step('Grind', ROTO_BLOW_CLASS.grind, (m) => timed(ROTO_BLOW_CALC.grind, m, { charge_kg: chargeSeed }), ['Any grinder']));
@@ -356,10 +396,25 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
         }
         const load = loadOf(molds);
         if ('reasons' in load) return fail(...load.reasons);
+        const moldsSource = `${molds} mold(s) on the arm: ${molds < slots ? `the number that costs least per part (machine time and molds over the job), of the ${slots} it takes` : `all ${slots} it takes (${ROTO_BLOW_CALC.moldsPerArm}${slots < arm.run.value! ? ', capped by the batch' : ''})`}`;
         const out = timed(ROTO_BLOW_CALC.roto, m, {
-          oven_time_s: seed(r2(oven), scenario.ovenTimeS != null ? `${r2(oven)} s (Cost Guide)` : `${r2(oven)} s: the cooling time (no oven temperature in the reference)`),
-          cooling_time_s: coolingSeed, load_time_s: seed(r2(load.run.value!), `${ROTO_BLOW_CALC.loadUnload}: ${r2(load.run.value!)} s`),
-          molds_per_arm: seed(molds, `${molds} mold(s) on the arm: ${molds < slots ? `the number that costs least per part (machine time and molds over the job), of the ${slots} it takes` : `all ${slots} it takes (${ROTO_BLOW_CALC.moldsPerArm}${slots < arm.run.value! ? ', capped by the batch' : ''})`}`),
+          oven_time_s: scenario.ovenTimeS != null
+            ? factSeed(r2(oven), `${r2(oven)} s (Cost Guide)`, 'Oven Time', 'Oven time', `${r2(oven)} s, set in the Cost Guide`)
+            : derivedSeed(r2(oven), `${r2(oven)} s: the cooling time (no oven temperature in the reference)`, 'Oven time: the cooling time', [
+              seedStep('Cooling time', 's', coolingSeed!), resultStep('Oven Time', 's', r2(oven), 'the cooling time: the reference gives no oven temperature to time the heating by'),
+            ]),
+          cooling_time_s: coolingSeed,
+          load_time_s: withSeedRef(seed(r2(load.run.value!), `${ROTO_BLOW_CALC.loadUnload}: ${r2(load.run.value!)} s`), runRef(`${ROTO_BLOW_CALC.loadUnload} on ${m.name}`, load.run)),
+          molds_per_arm: derivedSeed(molds, moldsSource, 'Molds per arm', [
+            inputStep('Molds the arm takes', null, arm.run.value!, `${ROTO_BLOW_CALC.moldsPerArm} on ${m.name}`, runRef(`${ROTO_BLOW_CALC.moldsPerArm} on ${m.name}`, arm.run)),
+            seedStep('Batch', null, batchSizeSeed(scenario.batchSize)),
+            resultStep('Slots', null, slots, 'min({Molds the arm takes}, {Batch})'),
+            ...(parts && moldUsd != null ? [
+              inputStep('Parts over the job', null, parts, 'the annual volume x the production life (the molds are spread over them)', { kind: 'costingInput', field: 'annualVolume' }),
+              inputStep('One mold', 'USD', r2(moldUsd), ROTO_BLOW_CALC.rotoMold, runRef(ROTO_BLOW_CALC.rotoMold, 'run' in oneMold ? oneMold.run : null)),
+            ] : []),
+            resultStep('Molds per Arm', null, molds, parts && moldUsd != null ? 'the number of molds, up to the slots, whose machine time and molds over the job cost least per part' : 'every slot'),
+          ]),
         });
         return out.ok ? { ...out, partsPerCycle: molds } as StepOutcome : out;
       }, ['The mold swings within its cylinder', 'The charges are within its weight capacity']);

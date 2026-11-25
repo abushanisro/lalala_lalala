@@ -14,9 +14,10 @@ import { gap, type CostContext } from '../casting/casting-finishing';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { sumRuns } from '../machining/process/machining-trace';
 import { cell, fail, routeKit, type KitRow, type RouteKit } from '../shared/calculators/route-kit';
+import { derivedSeed, inputStep, resultStep } from '../shared/calculators/seed-refs';
 import { cutCodeFamilyOf } from '../shared/core/cut-code';
 
-import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import type { AssemblyComponent } from '../assembly/assembly-joints';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { CostedStep, StepOutcome } from '../casting/sand/sand-steps';
@@ -184,21 +185,28 @@ function timeableOf(kind: WeldProcess, w: PartAssemblyWeld, thicknessMm: number 
 }
 
 /** The load time of `parts` from a by-weight table (each part's band times its quantity), with its basis; or what it lacks. */
-function loadTimeOf(ref: SandReference, table: string, parts: readonly Loaded[]): { sec: number; basis: string } | { missing: string } {
+function loadTimeOf(ref: SandReference, table: string, parts: readonly Loaded[]): { sec: number; basis: string; seed: CalcSeed } | { missing: string } {
   const unweighed: string[] = [];
   const unbanded: string[] = [];
   const banded: string[] = [];
+  const steps: CalculationTraceStep[] = [];
   let sec = 0;
   for (const p of parts) {
     if (p.massKg == null) { unweighed.push(p.name); continue; }
-    const each = cell(weightRow(ref, table, p.massKg), 'Load Time (s)');
+    const row = weightRow(ref, table, p.massKg);
+    const each = cell(row, 'Load Time (s)');
     if (each == null) { unbanded.push(`${p.name} (${p.massKg} kg)`); continue; }
     sec += each * p.quantity;
     banded.push(`${p.name} ${p.massKg} kg, ${each} s${p.quantity > 1 ? ` x ${p.quantity}` : ''}`);
+    // Each part's band of the table (the row its weight falls in), and how many of it are loaded.
+    steps.push(inputStep(`${p.name}: load time`, 's', each, `${table}: the band of ${p.massKg} kg`,
+      { kind: 'lookup', domain: PART_ASSEMBLY_DOMAIN, table, column: 'Load Time (s)', row: { 'Weight (kg)': row!['Weight (kg)'] as string | number } }));
+    if (p.quantity > 1) steps.push(inputStep(`${p.name}: quantity`, null, p.quantity, 'BOM: its quantity under the weldment'));
   }
   if (unweighed.length) return { missing: `the load time of ${unweighed.join(', ')}: no weight (set it in the BOM, or the part's material and model)` };
   if (unbanded.length) return { missing: `the load time: ${table} has no band for ${unbanded.join(', ')}` };
-  return { sec, basis: `${table}: ${banded.join('; ')}` };
+  const basis = `${table}: ${banded.join('; ')}`;
+  return { sec, basis, seed: derivedSeed(sec, basis, `Load time: ${table}`, [...steps, resultStep('Load Time', 's', sec, 'the sum of each part\'s load time times its quantity')]) };
 }
 
 export function buildPartAssemblyRoutes(input: PartAssemblyRouteInput): { routes: PartAssemblyRoute[]; gaps: PartAssemblyRouteGap[]; missing: string[] } {
@@ -230,6 +238,22 @@ function buildRoute(inp: PartAssemblyRouteInput, route: (typeof PART_ASSEMBLY_RO
     warnings.push(...s.warnings);
     lines.push({ ...s.line, featureBreakdown: ops });
   };
+  // A value read from a weld of the weld table: the weld's row (its operation and measures, and the plate it joins), step by step.
+  const weldSeed = (w: PartAssemblyWeld, value: number, source: string, field: string, unit: string | null): CalcSeed => {
+    const t = thicknessOf(w);
+    const measures: Array<[string, string | null, number | null]> = [
+      ['Welds', null, w.count], ['Length per weld', 'mm', w.lengthMm], ['Leg or plug size', 'mm', w.sizeMm], ['Cross-section set', 'mm²', w.areaMm2], ['Penetration set', 'mm', w.depthMm],
+    ];
+    return derivedSeed(value, source, `${w.label}: ${field.toLowerCase()}`, [
+      inputStep('Weld', null, `${w.process}: ${w.operation} (${w.feature})`, `${w.label}: the weld table in the Cost Guide`),
+      ...measures.filter(([, , v]) => v != null).map(([label, u, v]) => inputStep(label, u, v!, `${w.label}: set in the weld table`)),
+      ...(t != null ? [inputStep('Plate thickness', 'mm', t, w.thicknessMm != null ? `${w.label}: set in the weld table` : inp.thickness.source)] : []),
+      resultStep(field, unit, value, source),
+    ]);
+  };
+  // A value that is a fact of the step, not read from a table: what it is and why.
+  const factSeed = (value: number, source: string, field: string, fact: string): CalcSeed =>
+    derivedSeed(value, source, field, [inputStep(fact, null, source, source), resultStep(field, null, value, source)]);
   const machineSeed = (m: SandMachine, column: string, label: string): CalcSeed | undefined => {
     const value = machineValue(m, column);
     return value == null ? undefined : {
@@ -257,7 +281,7 @@ function buildRoute(inp: PartAssemblyRouteInput, route: (typeof PART_ASSEMBLY_RO
 
     // An arc or spot welding step's load and unload, by weight, given to its first weld's run; a weight or band that is missing is a gap line.
     const tables = HANDLING_TABLES[process];
-    let load: CalcSeed = seed(0, 'nothing loaded by this step');
+    let load: CalcSeed = factSeed(0, 'nothing loaded by this step', 'Load Time', 'Loaded');
     let unload: { field: string; seed: CalcSeed } | null = null;
     if (tables) {
       const parts: Loaded[] = loadedBefore
@@ -265,46 +289,46 @@ function buildRoute(inp: PartAssemblyRouteInput, route: (typeof PART_ASSEMBLY_RO
         : inp.components.map((c) => ({ name: c.name, massKg: c.massKg, quantity: c.quantity }));
       const l = loadTimeOf(ref, tables.load, parts);
       if ('missing' in l) gapLine(process, l.missing, []);
-      load = 'missing' in l ? seed(0, 'not known: named on its own line') : seed(l.sec, l.basis);
+      load = 'missing' in l ? factSeed(0, `not known: named on its own line (${l.missing})`, 'Load Time', 'Load') : l.seed;
       const mass = inp.weldment.massKg;
       const u = mass == null ? undefined : lookupSeed(tables.unload, weightRow(ref, tables.unload, mass), 'Allowance (s)', ['Weight (kg)']);
       if (mass == null) gapLine(process, 'the unload time of the weldment: a component has no weight', []);
       else if (!u) gapLine(process, `the unload time: ${tables.unload} has no band for the ${r3(mass)} kg weldment`, []);
       unload = {
         field: `${tables.unload}.Allowance (s)`,
-        seed: u && mass != null ? { ...u, source: `${u.source}, for the ${r3(mass)} kg weldment` } : seed(0, 'not known: named on its own line'),
+        seed: u && mass != null ? { ...u, source: `${u.source}, for the ${r3(mass)} kg weldment` } : factSeed(0, 'not known: named on its own line', 'Unload Time', 'Unload'),
       };
       loadedBefore = true;
     }
 
     /** A weld's calculator inputs on machine `m`: its measures, and the step's load and unload when it is the step's first weld. */
     const inputsOf = (t: Timeable, m: SandMachine, first: boolean): CalcInputs => {
-      const loadOnce = first ? load : seed(0, 'loaded with the first weld of this step');
-      const unloadOnce = unload ? { [unload.field]: first ? unload.seed : seed(0, 'unloaded after the last weld of this step') } : {};
+      const loadOnce = first ? load : factSeed(0, 'loaded with the first weld of this step', 'Load Time', 'Loaded');
+      const unloadOnce = unload ? { [unload.field]: first ? unload.seed : factSeed(0, 'unloaded after the last weld of this step', 'Unload Time', 'Unloaded') } : {};
       switch (t.kind) {
         case 'MIG Welding': {
           const metal = weldMetal(t.w, t.thicknessMm, machineValue(m, 'tack_length_mm'));
           if ('missing' in metal) return { reasons: [`${t.w.label}: ${metal.missing}`] };
           return {
             engine: {
-              weld_length_mm: seed(metal.lengthMm, metal.lengthBasis), weld_area_mm2: seed(metal.areaMm2, metal.areaBasis),
-              weld_count: seed(metal.welds, `${metal.welds} weld(s), one arc each`),
-              tacked: seed(metal.tacked ? 1 : 0, metal.tacked ? 'a seam, tacked before it is welded' : 'a plug or a tack weld: not tacked'),
+              weld_length_mm: weldSeed(t.w, metal.lengthMm, metal.lengthBasis, 'Weld Length', 'mm'), weld_area_mm2: weldSeed(t.w, metal.areaMm2, metal.areaBasis, 'Weld Metal Area', 'mm²'),
+              weld_count: weldSeed(t.w, metal.welds, `${metal.welds} weld(s), one arc each`, 'Welds', null),
+              tacked: weldSeed(t.w, metal.tacked ? 1 : 0, metal.tacked ? 'a seam, tacked before it is welded' : 'a plug or a tack weld: not tacked', 'Tacked', null),
               load_time_s: loadOnce,
             },
             lookups: unloadOnce,
           };
         }
         case 'Spot Welding':
-          return { engine: { spot_count: seed(t.spots, t.basis), load_time_s: loadOnce }, lookups: unloadOnce };
+          return { engine: { spot_count: weldSeed(t.w, t.spots, t.basis, 'Spots', null), load_time_s: loadOnce }, lookups: unloadOnce };
         case 'Laser Seam Welding': {
           const power = machineValue(m, 'power_w');
           if (power == null) return { reasons: [`machine ${m.name}: no laser power (power_w)`] };
           const row = laserRow(ref, t.family, power, t.depthMm);
           if (!row) return { reasons: [`${t.w.label}: ${LASER_TABLE} has no ${power} W row for family ${t.family} at ${t.depthMm} mm`] };
-          const once = (column: string) => (first ? machineSeed(m, column, 'once per weldment') : seed(0, 'loaded, unloaded and indexed with the first seam'));
+          const once = (column: string) => (first ? machineSeed(m, column, 'once per weldment') : factSeed(0, 'loaded, unloaded and indexed with the first seam', column, 'Handled'));
           return {
-            engine: { weld_length_mm: seed(t.seamMm, t.basis), load_time_s: once('load_time_s'), unload_time_s: once('unload_time_s'), index_time_s: once('index_time_s') },
+            engine: { weld_length_mm: weldSeed(t.w, t.seamMm, t.basis, 'Weld Length', 'mm'), load_time_s: once('load_time_s'), unload_time_s: once('unload_time_s'), index_time_s: once('index_time_s') },
             lookups: { [`${LASER_TABLE}.Travel Speed`]: lookupSeed(LASER_TABLE, row, 'Travel Speed', ['Material Cut Code Family', 'Power', 'Weld Depth']) },
           };
         }
@@ -373,8 +397,8 @@ function buildRoute(inp: PartAssemblyRouteInput, route: (typeof PART_ASSEMBLY_RO
           const edges = bevelledEdges(b.w.operation);
           const cuts = b.count * edges;
           const r = run(calcOf('Bevel Cutting'), m, {
-            bevel_length_mm: seed(b.lengthMm * cuts, `${b.count} x ${b.lengthMm} mm bevelled${edges > 1 ? `, ${edges} edges each (${b.w.operation})` : ''}`),
-            bevel_count: seed(cuts, `${cuts} bevelled edge(s), one pierce each`),
+            bevel_length_mm: weldSeed(b.w, b.lengthMm * cuts, `${b.count} x ${b.lengthMm} mm bevelled${edges > 1 ? `, ${edges} edges each (${b.w.operation})` : ''}`, 'Bevel Length', 'mm'),
+            bevel_count: weldSeed(b.w, cuts, `${cuts} bevelled edge(s), one pierce each${edges > 1 ? ` (${edges} edges a weld, ${b.w.operation})` : ''}`, 'Bevels', null),
           }, {
             [`${BEVEL_TABLE}.Cut Speed (mm / min)`]: lookupSeed(BEVEL_TABLE, row, 'Cut Speed (mm / min)', ['Depth of Cut (mm)']),
             [`${BEVEL_TABLE}.Pierce Time (s)`]: lookupSeed(BEVEL_TABLE, row, 'Pierce Time (s)', ['Depth of Cut (mm)']),
@@ -393,7 +417,10 @@ function buildRoute(inp: PartAssemblyRouteInput, route: (typeof PART_ASSEMBLY_RO
     if (!flagged.length) continue;
     const length = flagged.reduce((s, x) => s + x.lengthMm * x.count, 0);
     const s = step(f.process, (m) => kit.timed(f.process, m, {
-      [f.field]: seed(length, `${flagged.map((x) => `${x.w.label} ${x.count} x ${x.lengthMm} mm`).join(', ')} ${f.what}`),
+      [f.field]: derivedSeed(length, `${flagged.map((x) => `${x.w.label} ${x.count} x ${x.lengthMm} mm`).join(', ')} ${f.what}`, `${f.process}: the welds flagged in the weld table`, [
+        ...flagged.map((x) => inputStep(x.w.label, 'mm', x.lengthMm * x.count, `${x.w.label}: ${x.count} x ${x.lengthMm} mm, ${f.what} (flagged in the weld table in the Cost Guide)`)),
+        resultStep('Length', 'mm', length, 'the sum of the flagged welds\' lengths'),
+      ]),
     }), [f.criteria]);
     add(s, flagged.map((x) => ({ ...weldOp(x.w), name: `${x.w.label}: ${f.what}` })));
   }

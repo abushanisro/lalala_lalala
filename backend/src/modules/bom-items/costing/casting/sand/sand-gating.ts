@@ -4,12 +4,13 @@
 // gating weight settles. Ported from the retired petrus-demo prototype (its design records, D-numbers, are archived outside the repo) (D146), with the solidification shrinkage read from the data.
 //
 // Nothing is substituted: a selector that finds no row, or a missing input, returns what is missing and no design.
-import type { ReferenceCalcRun, ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
-import type { SandGatingLayout } from '../../../dto/cost-breakdown.dto';
+import type { CalcSeed, ReferenceCalcRun, ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
+import type { SandGatingLayout, SourceRef } from '../../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, resultStep } from '../casting-source-refs';
 import { runReferenceCalculator } from '../../shared/calculators/reference-calculator';
 import type { DomainCalculatorSpec } from '../../shared/calculators/domain-calculator-spec';
-import { seedsFor, valuesProvider, variableProvider } from './sand-seeds';
-import type { SandReference } from './sand-reference';
+import { SAND_DOMAIN, seedsFor, valuesProvider, variableProvider } from './sand-seeds';
+import { stagedLookupKey, type SandReference } from './sand-reference';
 import { copperAlloyPouringCoefficient, POURS_AS } from './sand-pouring-research';
 
 const LB_PER_KG = 1 / 0.45359237;
@@ -48,12 +49,15 @@ export function selectGatingRatio(ref: SandReference): { ratio: GatingRatio | nu
  * by material type: 8 gray iron, 9 ductile iron, 30 aluminum, 33 copper alloys, ...). null when the material has no cut code or its
  * family has no row.
  */
-export function solidificationShrinkage(ref: SandReference, cutCode: number | null): { pct: number; source: string } | null {
+export function solidificationShrinkage(ref: SandReference, cutCode: number | null): { pct: number; source: string; ref: SourceRef } | null {
   if (cutCode == null || !Number.isFinite(cutCode)) return null;
   const family = Math.floor(cutCode);
   const row = ref.table('tblSolidificationShrinkage').find((r) => num(r['Material Family']) === family);
   const pct = row ? num(row['Contraction Volume']) : null;
-  return pct == null ? null : { pct, source: `tblSolidificationShrinkage, material family ${family} (cut code ${cutCode})` };
+  return pct == null ? null : {
+    pct, source: `tblSolidificationShrinkage, material family ${family} (cut code ${cutCode})`,
+    ref: { kind: 'lookup', domain: SAND_DOMAIN, table: stagedLookupKey('tblSolidificationShrinkage'), column: 'Contraction Volume', row: { 'Material Family': family } },
+  };
 }
 
 /** The pouring coefficient of the material's tblPouringCoefficients rows: by the pounds poured per mould or by the section in inches. */
@@ -89,11 +93,15 @@ export function pouringCoefficient(
 /** What the route has decided that the design needs, each with where it came from. */
 export interface GatingMould {
   cavities: number;
+  /** How the cavities were decided (cavitiesPerMould): the eye of the gating calculator's Cavities. */
+  cavitiesRef?: SourceRef;
   ingates: number;
-  partLengthMm: { value: number; source: string };
-  copeHeightMm: { value: number; source: string };
+  /** How the ingates were counted (part length over ingateGap): the eye of Ingates and of the risers (one per ingate). */
+  ingatesRef?: SourceRef;
+  partLengthMm: CalcSeed;
+  copeHeightMm: CalcSeed;
   /** The casting's height above the parting plane. */
-  abovePartingMm: { value: number; source: string };
+  abovePartingMm: CalcSeed;
 }
 
 export interface GatingInput {
@@ -103,6 +111,8 @@ export interface GatingInput {
   modulusMm: number;
   densityKgM3: number;
   materialName: string;
+  /** The material record the density is read from (raw_materials.density_kg_m3), for its eye. */
+  materialRef?: SourceRef;
   materialType: string | null;
   cutCode: number | null;
   /** The part's nominal wall, mm, which the section-based pouring coefficients are read by. */
@@ -170,13 +180,14 @@ export function designGating(input: GatingInput): { system: GatingSystem | null;
   const gatingSpec = input.spec.calculators.find((c) => c.name === GATING_CALCULATOR);
   if (!risersSpec || !gatingSpec) return fail('the sand risers and gating calculators are not in the calculator spec');
 
-  const material = valuesProvider({ density_kg_m3: { value: input.densityKgM3, source: `${input.materialName}: density (kg/m³)` } });
+  const material = valuesProvider({ density_kg_m3: { value: input.densityKgM3, source: `${input.materialName}: density (kg/m³)`, ...(input.materialRef ? { ref: input.materialRef } : {}) } });
+  const withRef = (seed: CalcSeed, ref: SourceRef | undefined): CalcSeed => (ref ? { ...seed, ref } : seed);
   const risersSeeds = seedsFor(risersSpec, {
     cad: valuesProvider({ modulus_mm: { value: input.modulusMm, source: 'casting modulus: volume / surface (mm)' }, volume_mm3: { value: input.volumeMm3, source: 'part volume (mm³)' } }),
     material,
     engine: valuesProvider({
-      risers: { value: mould.ingates, source: 'one per ingate' },
-      shrinkage_pct: { value: shrinkage.pct, source: shrinkage.source },
+      risers: withRef({ value: mould.ingates, source: 'one per ingate' }, mould.ingatesRef),
+      shrinkage_pct: { value: shrinkage.pct, source: shrinkage.source, ref: shrinkage.ref },
     }),
   });
   if (risersSeeds.missing.length) return fail(...risersSeeds.missing);
@@ -199,12 +210,22 @@ export function designGating(input: GatingInput): { system: GatingSystem | null;
         return null;
       },
       engine: valuesProvider({
-        poured_per_mould_kg: { value: perMould, source: 'net, risers and gating x cavities' },
-        cavities: { value: mould.cavities, source: 'layout, flask and sand borders' },
+        poured_per_mould_kg: {
+          value: perMould, source: 'net, risers and gating x cavities',
+          // The metal of one mould: what each casting takes (the part, its risers and its gating so far) times the cavities.
+          ref: calculationRef('Poured per Mould', [
+            inputStep('Net weight', 'kg', input.netKg, 'Part volume x the material density'),
+            inputStep('Risers', 'kg', risersKg, RISERS_CALCULATOR, { kind: 'calculation', name: RISERS_CALCULATOR, evidence: null, steps: risers.trace }),
+            inputStep('Gating', 'kg', gatingKg, i === 0 ? 'None yet: the first pass of the gating design' : 'The gating of the previous pass of the design (it settles)'),
+            inputStep('Cavities', null, mould.cavities, 'Cavities per mould', mould.cavitiesRef),
+            resultStep('Poured per Mould', 'kg', perMould, '({Net weight} + {Risers} + {Gating}) x {Cavities}'),
+          ]),
+        },
+        cavities: withRef({ value: mould.cavities, source: 'layout, flask and sand borders' }, mould.cavitiesRef),
         cope_height_mm: mould.copeHeightMm,
         above_parting_mm: mould.abovePartingMm,
         part_length_mm: mould.partLengthMm,
-        ingates: { value: mould.ingates, source: 'part length / variable ingateGap, rounded up' },
+        ingates: withRef({ value: mould.ingates, source: 'part length / variable ingateGap, rounded up' }, mould.ingatesRef),
       }),
     });
     if (seeded.missing.length) return fail(...seeded.missing);
