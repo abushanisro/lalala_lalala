@@ -4569,6 +4569,134 @@
           "unit": "s",
           "formula": "{Holes} * {Time per Hole}"
         }
+      ],
+      "supersededBy": 1152
+    },
+    {
+      "name": "Machining - Center Drilling",
+      "operation": "Center Drilling",
+      "machineClasses": "lathes+mills",
+      "migration": 1152,
+      "description": "Spotting each hole before it is drilled, timed as the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx) times a drill (its Drilling sheet): n = 1000 v / (pi D) at the hole's diameter, capped at the machine's spindle limit; the spot is cut to the hole's diameter, which a 90 degree spot drill reaches at half that diameter deep; time = (spot depth + 10 mm) / (feed x n), rounded up to whole seconds a hole. The speed and feed are the workbook's drilling ones for the material and diameter (tblDrillReamData). Was a flat 5 s a hole (user decision 2026-11-25: every machining step on the workbook's method).",
+      "fields": [
+        {
+          "name": "Hole Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Holes",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "FeedMmPerRev",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Hole Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Drilling sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Spot Depth",
+          "unit": "mm",
+          "formula": "{Hole Diameter} / 2",
+          "note": "A 90 degree spot drill cuts a cone as wide as it is twice deep: spotting to the hole's diameter is half that diameter deep."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Hole Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Spot Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Hole",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Holes} * {Time per Hole}"
+        }
       ]
     },
     {
@@ -4605,6 +4733,130 @@
           "name": "Cycle Time",
           "unit": "s",
           "formula": "{Edge Length} / {Edge Speed} + {Unsized Edges} * {Time per Unsized Edge}"
+        }
+      ],
+      "supersededBy": 1152
+    },
+    {
+      "name": "Machining - Chamfering",
+      "operation": "Chamfering",
+      "machineClasses": "lathes+mills",
+      "migration": 1152,
+      "description": "Chamfering edges, timed as the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx) times an end mill (its End Milling sheet): one pass along each edge, n = 1000 v / (pi D) at the cutter's diameter capped at the machine's spindle limit, time = (edge length + 10 mm + D / 2) / (feed per tooth x teeth x n), rounded up to whole seconds an edge. The speed and feed per tooth are the workbook's milling ones for the material (tblMillingConditions); the cutter is the material's end mill (tblMillingFinishing). An edge's length is the CAD's: pi x its diameter for a round edge, else the edge face's longest extent (its length on a straight edge; a curved one reads shorter). Was the edge length at the tblChamfering edge speed, and a set 5 s for an edge with no CAD size (user decision 2026-11-25).",
+      "fields": [
+        {
+          "name": "Edge Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Edges",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "engine"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Min",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMinMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Max",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMaxMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges ('60 - 120' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), End Milling sheet: the length of cut plus 10 mm for the cutter's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Feed per Tooth",
+          "unit": "mm/tooth",
+          "formula": "{Feed per Tooth Min} + {Range Position} * ({Feed per Tooth Max} - {Feed per Tooth Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Edge Length} + {Approach Length} + {Cutter Diameter} / 2) / ({Feed per Tooth} * {Teeth} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Edge",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Edges} * {Time per Edge}"
         }
       ]
     },
@@ -4643,6 +4895,130 @@
           "unit": "s",
           "formula": "{Edge Length} / {Edge Speed} + {Unsized Edges} * {Time per Unsized Edge}"
         }
+      ],
+      "supersededBy": 1152
+    },
+    {
+      "name": "Machining - Filleting",
+      "operation": "Filleting",
+      "machineClasses": "lathes+mills",
+      "migration": 1152,
+      "description": "Rounding edges with a corner rounding cutter, timed as the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx) times an end mill (its End Milling sheet): one pass along each edge, n = 1000 v / (pi D) at the cutter's diameter capped at the machine's spindle limit, time = (edge length + 10 mm + D / 2) / (feed per tooth x teeth x n), rounded up to whole seconds an edge. The speed and feed per tooth are the workbook's milling ones for the material (tblMillingConditions); the cutter is the material's end mill (tblMillingFinishing). An edge's length is the CAD's: pi x its diameter for a round edge, else the edge face's longest extent (its length on a straight edge; a curved one reads shorter). Was the edge length at the tblCornerRoundingMill edge speed, and a set 8 s for an edge with no CAD size (user decision 2026-11-25).",
+      "fields": [
+        {
+          "name": "Edge Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Edges",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "engine"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Min",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMinMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Max",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMaxMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges ('60 - 120' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), End Milling sheet: the length of cut plus 10 mm for the cutter's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Feed per Tooth",
+          "unit": "mm/tooth",
+          "formula": "{Feed per Tooth Min} + {Range Position} * ({Feed per Tooth Max} - {Feed per Tooth Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Edge Length} + {Approach Length} + {Cutter Diameter} / 2) / ({Feed per Tooth} * {Teeth} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Edge",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Edges} * {Time per Edge}"
+        }
       ]
     },
     {
@@ -4651,6 +5027,15 @@
       "machineClasses": "lathes+mills",
       "migration": 1031,
       "description": "Milling grooves: the groove length at the tblCornerRoundingMill edge speed for the material, by the filleting model.",
+      "sameFieldsAs": "Machining - Filleting",
+      "supersededBy": 1152
+    },
+    {
+      "name": "Machining - Groove Milling",
+      "operation": "Groove Milling",
+      "machineClasses": "lathes+mills",
+      "migration": 1152,
+      "description": "Milling a groove along its length, one pass, as the Filleting calculator times an edge (the workbook's End Milling sheet).",
       "sameFieldsAs": "Machining - Filleting"
     },
     {
@@ -5044,6 +5429,139 @@
           "unit": "s",
           "source": "default",
           "default": 6
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Holes} * {Time per Hole}"
+        }
+      ],
+      "supersededBy": 1152
+    },
+    {
+      "name": "Machining - Countersinking",
+      "operation": "Countersinking",
+      "machineClasses": "lathes+mills",
+      "migration": 1152,
+      "description": "Countersinking each hole after it is drilled, timed as the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx) times a drill (its Drilling sheet): n = 1000 v / (pi D) at the countersink's diameter, capped at the machine's spindle limit; a 90 degree countersink cuts (countersink diameter - hole diameter) / 2 deep; time = (that depth + 10 mm) / (feed x n), rounded up to whole seconds a hole, at the workbook's drilling speed and feed for the material and diameter (tblDrillReamData). Was a flat 6 s a hole (user decision 2026-11-25).",
+      "fields": [
+        {
+          "name": "Countersink Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Hole Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Holes",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Countersink Diameter"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Countersink Diameter"
+          }
+        },
+        {
+          "name": "Feed",
+          "unit": "mm/rev",
+          "source": "lookup",
+          "table": "tblDrillReamData",
+          "column": "FeedMmPerRev",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "DrillReamMaterial"
+          },
+          "where": {
+            "Operation": "Drilling"
+          },
+          "range": {
+            "min": "DiameterMinMm",
+            "max": "DiameterMaxMm",
+            "input": "Countersink Diameter"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Drilling sheet: the length of cut plus 10 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Countersink Depth",
+          "unit": "mm",
+          "formula": "max(0, ({Countersink Diameter} - {Hole Diameter}) / 2)",
+          "note": "A 90 degree countersink is as deep as half the difference of its diameter and the hole's."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Countersink Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Countersink Depth} + {Approach Length}) / ({Feed} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Hole",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
         },
         {
           "name": "Cycle Time",

@@ -203,9 +203,8 @@ describe('buildOperationSequence', () => {
   });
 
   it('generates real, distinct Filleting/Groove Milling ops for fillet and groove features (Phase 0 coverage fix; Phase 4b real-name split)', () => {
-    // 13.7 mm/s: an edge speed, as tblCornerRoundingMill gives one for the material.
-    const filletOps = buildOperationSequence([toroidFeature('fillet', 2, 30)], { matClass: 'aluminum', machinabilityFactor: 1.0, roundingLinearSpeedMmPerSec: 13.7 });
-    const grooveOps = buildOperationSequence([toroidFeature('groove', 1, 18)], { matClass: 'aluminum', machinabilityFactor: 1.0, roundingLinearSpeedMmPerSec: 13.7 });
+    const filletOps = buildOperationSequence([toroidFeature('fillet', 2, 30)], { matClass: 'aluminum', machinabilityFactor: 1.0 });
+    const grooveOps = buildOperationSequence([toroidFeature('groove', 1, 18)], { matClass: 'aluminum', machinabilityFactor: 1.0 });
 
     // fillet and groove used to share one invented "Corner Round" name;
     // the real catalog treats them as two different real operations
@@ -265,7 +264,10 @@ describe('buildOperationSequence', () => {
     const spotDrill = ops.find((o) => o.name === 'Center Drilling' && o.cadFeatureType === 'MultiStepHole')!;
     const drill = ops.find((o) => o.name === 'Drilling' && o.cadFeatureType === 'MultiStepHole')!;
     expect(spotDrill).toBeDefined();
-    expect(spotDrill.timeSec).toBe(5); // one real spot-drill per hole assembly, not per step
+    // One spot per hole assembly, at its entry step (Ø16), on the workbook's Drilling sheet (1152): mild steel 17 m/min, 0.33 mm/rev at
+    // Ø16 = 338.2 rpm; (16 / 2 + 10) / (0.33 x 338.2) min = 9.68 s -> 10 s.
+    expect(spotDrill.diameterMm).toBe(16);
+    expect(spotDrill.timeSec).toBe(10);
     expect(drill).toBeDefined();
     expect(drill.timeSec).toBeGreaterThan(0);
 
@@ -474,74 +476,106 @@ describe('Counterbore — Step Drilling on the workbook', () => {
   });
 });
 
-const CHAMFER_LINEAR_SPEED = 10.7; // real tblChamfering value, material_cut_code "1.0"
 
-describe('Chamfer — real tblChamfering physics vs the previous flat fallback', () => {
-  it('a sized chamfer with no edge speed for the material is a named gap, not a flat time', () => {
-    const ops = buildOperationSequence([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 10, occurrences: [{}] }], { matClass: 'aluminum' });
-    const chamfer = ops.find((o) => o.name === 'Chamfering')!;
-    expect(chamfer.timeSec).toBe(0);
-    expect(chamfer.missing).toContain('Edge Speed');
-  });
+// The edges, spots and countersinks on the workbook (migration 1152), worked out by hand on aluminium: the workbook's milling row
+// ALUMINUM ALLOY CAST AND WROUGHT is 300-600 m/min and 0.1-0.2 mm/tooth (450 and 0.15 at the middle); its drilling rows 75-110 m/min
+// (92.5) with a feed per diameter band. The material's end mill here is 10 mm, 3 teeth, on a 10 000 rpm test mill.
+const ALU_END_MILL = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
+const TEST_MILL = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
+const onMill = (features: object[]) => timeOperations(buildOperationSequence(features, {
+  matClass: 'aluminum', machinabilityFactor: 1.0, calculators: specAsCalculators(), workbook: workbookFixture(), finishing: ALU_END_MILL,
+}), specAsCalculators(), TEST_MILL);
+// One pass of the end mill along an edge: 450 000 / (pi x 10) = 14 324 rpm, held to the mill's 10 000; feed 0.15 x 3 x 10 000 = 4500 mm/min.
+const edgeSec = (lengthMm: number) => Math.ceil(((lengthMm + 10 + 5) / 4500) * 60);
 
-  it('a chamfer with no CAD size takes the calculator\'s time per unsized edge (5 s), and needs no edge speed', () => {
-    const ops = buildOperationSequence([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 0, occurrences: [{}, {}] }], { matClass: 'aluminum' });
-    const chamfer = ops.find((o) => o.name === 'Chamfering')!;
-    expect(chamfer.timeSec).toBeCloseTo(10, 3);
+describe('chamfers, fillets and grooves: one pass of the end mill along each edge (the workbook\'s End Milling sheet, 1152)', () => {
+  it('a round chamfer of Ø10: pi x 10 = 31.4 mm + 10 + 5 at 4500 mm/min = 0.62 s, 1 s an edge', () => {
+    const chamfer = onMill([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 10, occurrences: [{}, {}] }]).find((o) => o.name === 'Chamfering')!;
     expect(chamfer.missing).toBeUndefined();
+    expect(chamfer.timeSec).toBe(2 * edgeSec(Math.PI * 10));
+    expect(chamfer.trace!.find((t) => t.fieldName === 'Spindle Speed')!.value).toBe(10000);
+    expect(chamfer.trace!.find((t) => t.fieldName === 'Cutting Speed')!.value).toBe(450);
+    expect(chamfer.trace!.find((t) => t.fieldName === 'Feed per Tooth')!.value).toBe(0.15);
   });
 
-  it('uses real diameter-derived edge length / real linear speed when provided', () => {
-    const ops = buildOperationSequence(
-      [{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 10, occurrences: [{}] }],
-      { matClass: 'aluminum', machinabilityFactor: 1.0, chamferLinearSpeedMmPerSec: CHAMFER_LINEAR_SPEED },
-    );
-    const chamfer = ops.find((o) => o.name === 'Chamfering')!;
-    // edgeLength = pi*10 = 31.4mm; time = 31.4 / 10.7 = 2.94s
-    expect(chamfer.timeSec).toBeCloseTo(Math.PI * 10 / CHAMFER_LINEAR_SPEED, 2);
-    expect(chamfer.timeSec).not.toBeCloseTo(5, 1);
+  it('a straight edge is as long as its face\'s longest extent: edges of one length are one run, another length another', () => {
+    const fillet = onMill([{ feature_type: 'Edge', variant: 'round', diameter_mm: 0, occurrences: [
+      { radius_mm: 4, extents_mm: [27, 1.633, 0.075] }, { radius_mm: 4, extents_mm: [27, 1.633, 0.075] }, { radius_mm: 2, extents_mm: [30, 2.828, 0.573] },
+    ] }]).find((o) => o.name === 'Filleting')!;
+    expect(fillet.missing).toBeUndefined();
+    expect(fillet.timeSec).toBe(2 * edgeSec(27) + edgeSec(30));
+    expect(fillet.plan!.map((p) => [p.label, p.seeds['Edge Length']!.value, p.seeds['Edges']!.value])).toEqual([['Edge 27 mm', 27, 2], ['Edge 30 mm', 30, 1]]);
   });
 
-  it('also applies real chamfer physics inside the tapped_hole sequence, not just standalone chamfer features', () => {
-    const withoutReal = buildOperationSequence([tappedHoleFeature(1, 6, 'M6')], { matClass: 'aluminum' });
-    const withReal = buildOperationSequence(
-      [tappedHoleFeature(1, 6, 'M6')], { matClass: 'aluminum', machinabilityFactor: 1.0, chamferLinearSpeedMmPerSec: CHAMFER_LINEAR_SPEED },
-    );
-    const flatChamfer = withoutReal.find((o) => o.name === 'Chamfering')!.timeSec;
-    const realChamfer = withReal.find((o) => o.name === 'Chamfering')!.timeSec;
-    expect(realChamfer).not.toBeCloseTo(flatChamfer, 3);
+  it('a chamfer with no CAD size and no extent is named, never a set time', () => {
+    const chamfer = onMill([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 0, occurrences: [{}, {}] }]).find((o) => o.name === 'Chamfering')!;
+    expect(chamfer.timeSec).toBe(0);
+    expect(chamfer.missing).toContain('the CAD length of 2 edges');
+  });
+
+  it('a groove is milled as an edge is rounded: Ø18 is pi x 18 = 56.5 mm, 1 s', () => {
+    const groove = onMill([toroidFeature('groove', 1, 18)]).find((o) => o.name === 'Groove Milling')!;
+    expect(groove.timeSec).toBe(edgeSec(Math.PI * 18));
+    expect(groove.calculator?.id).toBe('Machining - Groove Milling');
+  });
+
+  it('without the material\'s end mill the edge is a named gap', () => {
+    const ops = buildOperationSequence([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 10, occurrences: [{}] }], {
+      matClass: 'aluminum', calculators: specAsCalculators(), workbook: workbookFixture(), finishing: null,
+    });
+    expect(ops.find((o) => o.name === 'Chamfering')!.missing).toMatch(/end mill/);
+  });
+
+  it('the chamfer of a tapped hole is timed the same way', () => {
+    const chamfer = onMill([tappedHoleFeature(1, 6, 'M6')]).find((o) => o.name === 'Chamfering')!;
+    expect(chamfer.timeSec).toBe(edgeSec(Math.PI * 6));
   });
 });
 
-const ROUNDING_LINEAR_SPEED = 5.4; // real tblCornerRoundingMill value, material_cut_code "1.0"
+describe('spotting and countersinking on the workbook\'s Drilling sheet (1152)', () => {
+  const drillRow = (diameter: number) => (workbookFixture().tables.tblDrillReamData as Array<Record<string, string>>)
+    .find((r) => r.WorkMaterial === 'ALUMINUM ALLOY CAST AND WROUGHT' && r.Operation === 'Drilling' && Number(r.DiameterMinMm) <= diameter && diameter <= Number(r.DiameterMaxMm))!;
+  const holeSec = (depth: number, diameter: number) => {
+    const n = Math.min(10000, (92.5 * 1000) / (Math.PI * diameter));
+    return Math.ceil(((depth + 10) / (Number(drillRow(diameter).FeedMmPerRev) * n)) * 60);
+  };
 
-describe('Corner Rounding (Filleting/Groove Milling) — real tblCornerRoundingMill physics vs the previous flat fallback (Phase 1, 2026-09-19)', () => {
-  it('a sized fillet with no edge speed for the material is a named gap, not a flat time', () => {
-    const ops = buildOperationSequence([toroidFeature('fillet', 1, 30)], { matClass: 'aluminum' });
-    const fillet = ops.find((o) => o.name === 'Filleting')!;
-    expect(fillet.timeSec).toBe(0);
-    expect(fillet.missing).toContain('Edge Speed');
+  it('a Ø6 hole is spotted to its diameter: 3 mm deep + 10 mm at the Ø6 drilling feed, whole seconds a hole', () => {
+    const spot = onMill([{ feature_type: 'SimpleHole', variant: 'through', diameter_mm: 6, occurrences: [{ depth_mm: 20 }, { depth_mm: 20 }] }]).find((o) => o.name === 'Center Drilling')!;
+    expect(spot.missing).toBeUndefined();
+    expect(spot.trace!.find((t) => t.fieldName === 'Spot Depth')!.value).toBe(3);
+    expect(spot.timeSec).toBe(2 * holeSec(3, 6));
+    expect(spot.timeSec).not.toBe(2 * 5);
   });
 
-  it('uses real diameter-derived edge length / real linear speed when provided', () => {
-    const ops = buildOperationSequence(
-      [toroidFeature('fillet', 1, 30)],
-      { matClass: 'aluminum', machinabilityFactor: 1.0, roundingLinearSpeedMmPerSec: ROUNDING_LINEAR_SPEED },
-    );
-    const fillet = ops.find((o) => o.name === 'Filleting')!;
-    // edgeLength = pi*30 = 94.2mm; time = 94.2 / 5.4 = 17.45s
-    expect(fillet.timeSec).toBeCloseTo(Math.PI * 30 / ROUNDING_LINEAR_SPEED, 2);
-    expect(fillet.timeSec).not.toBeCloseTo(8, 1);
+  it('a Ø14 countersink over its 0.6 x 14 = 8.4 mm hole: (14 - 8.4) / 2 = 2.8 mm deep at the Ø14 drilling speed and feed', () => {
+    const csk = onMill([{ feature_type: 'Edge', variant: 'countersink', diameter_mm: 14, occurrences: [{ depth_mm: 6 }] }]).find((o) => o.name === 'Countersinking')!;
+    expect(csk.missing).toBeUndefined();
+    expect(csk.trace!.find((t) => t.fieldName === 'Countersink Depth')!.value).toBeCloseTo(2.8, 9);
+    expect(csk.timeSec).toBe(holeSec(2.8, 14));
   });
 
-  it('applies the same real physics to Groove Milling — fillet and groove share one real rate table', () => {
-    const ops = buildOperationSequence(
-      [toroidFeature('groove', 1, 18)],
-      { matClass: 'aluminum', machinabilityFactor: 1.0, roundingLinearSpeedMmPerSec: ROUNDING_LINEAR_SPEED },
-    );
-    const groove = ops.find((o) => o.name === 'Groove Milling')!;
-    expect(groove.timeSec).toBeCloseTo(Math.PI * 18 / ROUNDING_LINEAR_SPEED, 2);
-    expect(groove.timeSec).not.toBeCloseTo(8, 1);
+  it('a countersink on a recognised hole is cut over that hole\'s diameter, and the hole is not drilled again', () => {
+    // CARRIAGE MOUNT: Ø4.0 countersinks on its four Ø2.2 holes: (4 - 2.2) / 2 = 0.9 mm deep, the CAD's own countersink depth.
+    const XY: Array<[number, number]> = [[7.95, -2.75], [-7.95, -2.75], [7.95, 2.75], [-7.95, 2.75]];
+    const ops = onMill([
+      { feature_type: 'SimpleHole', variant: 'through', diameter_mm: 2.2, occurrences: XY.map(([x, y]) => ({ centroid: [x, y, 9.35], tool_axis: [0, 0, -1], depth_mm: 2.116 })) },
+      { feature_type: 'Edge', variant: 'countersink', diameter_mm: 4, occurrences: XY.map(([x, y]) => ({ centroid: [x, y, 10.55], depth_mm: 0.9 })) },
+    ]);
+    const csk = ops.filter((o) => o.name === 'Countersinking');
+    expect(csk.map((o) => o.count)).toEqual([4]);
+    expect(csk[0]!.missing).toBeUndefined();
+    expect(csk[0]!.trace!.find((t) => t.fieldName === 'Hole Diameter')).toMatchObject({ value: 2.2, source: 'CAD: the hole the countersink sits on, Ø2.2 mm' });
+    expect(csk[0]!.trace!.find((t) => t.fieldName === 'Countersink Depth')!.value).toBeCloseTo(0.9, 9);
+    expect(csk[0]!.timeSec).toBe(4 * holeSec(0.9, 4));
+    expect(ops.filter((o) => o.cadFeatureType === 'Edge' && (o.name === 'Drilling' || o.name === 'Center Drilling'))).toEqual([]);
+  });
+
+  it('a stepped hole is spotted at its entry step', () => {
+    const spot = onMill([{ feature_type: 'MultiStepHole', variant: 'stepped', diameter_mm: 0, occurrences: [{ steps: [{ diameter_mm: 8, depth_mm: 4 }, { diameter_mm: 5, depth_mm: 10 }] }] }])
+      .find((o) => o.name === 'Center Drilling')!;
+    expect(spot.diameterMm).toBe(8);
+    expect(spot.timeSec).toBe(holeSec(4, 8));
   });
 });
 
@@ -571,8 +605,10 @@ describe('buildOperationSequence — SimpleHole cross / pcd_pattern', () => {
     const three = buildOperationSequence(pattern(3), { matClass: 'aluminum' });
     const spot6 = six.find((o) => o.name === 'Center Drilling')!;
     const spot3 = three.find((o) => o.name === 'Center Drilling')!;
-    expect(spot6.timeSec).toBe(6 * 5);
-    expect(spot3.timeSec).toBe(3 * 5);
+    // Each hole spotted on the workbook's Drilling sheet (1152): aluminium 92.5 m/min, 0.13 mm/rev at Ø6 = 4907 rpm; (3 + 10) / (0.13 x
+    // 4907) min = 1.22 s -> 2 s a hole.
+    expect(spot6.timeSec).toBe(6 * 2);
+    expect(spot3.timeSec).toBe(3 * 2);
     expect(six.find((o) => o.name === 'Drilling')!.timeSec)
       .toBeCloseTo(2 * three.find((o) => o.name === 'Drilling')!.timeSec, 6);
   });
@@ -657,7 +693,9 @@ describe('every milling operation is timed by its stored calculator', () => {
     const facing = ops.find((o) => o.name === 'Facing')!;
     expect(facing).toMatchObject({ timeSec: 102, count: 2 });
     expect(facing.trace!.find((st) => st.fieldName === 'Face Length')!.source).toBe('Stock: a 100 x 60 x 25 mm test block');
-    expect(ops.find((o) => o.name === 'Center Drilling')!.timeSec).toBe(10);
+    // Two Ø6 holes spotted on the workbook's Drilling sheet (1152): mild steel 17 m/min, 0.1 mm/rev = 901.9 rpm; (3 + 10) / (0.1 x 901.9) min
+    // = 8.65 s -> 9 s a hole.
+    expect(ops.find((o) => o.name === 'Center Drilling')!.timeSec).toBe(18);
   });
 
   it('with no calculators an operation is a named gap, never a number', () => {
@@ -685,10 +723,12 @@ describe('the removal rate is data (tblMillingRemovalRate), not a table in the c
     expect(bulk.trace!.find((st) => st.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
   });
 
-  it('countersinking reads its time per hole from its calculator (6 s)', () => {
+  it('countersinking is the workbook\'s Drilling sheet at the countersink\'s diameter (1152), not a set 6 s a hole', () => {
+    // Ø8 over its 4.8 mm hole: (8 - 4.8) / 2 = 1.6 mm deep; mild steel 17 m/min, 0.23 mm/rev at Ø8 = 676.4 rpm; (1.6 + 10) / (0.23 x 676.4)
+    // min = 4.47 s -> 5 s a hole, 10 s for the two.
     const csk = [{ feature_type: 'Edge', variant: 'countersink', diameter_mm: 8, occurrences: [{ depth_mm: 4 }, { depth_mm: 4 }] }];
     const op = buildOperationSequence(csk, { matClass: 'mild_steel', machinabilityFactor: 1.0, materialGrade: 'AISI 1018', workbook: workbookFixture() }).find((o) => o.name === 'Countersinking')!;
-    expect(op.timeSec).toBe(12);
+    expect(op.timeSec).toBe(10);
   });
 });
 

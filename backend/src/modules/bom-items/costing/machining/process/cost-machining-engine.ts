@@ -15,7 +15,7 @@ import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
 import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 import type { MachiningCapabilityRules } from '../capability-rules';
-import { lookupSeed, variableSeed } from '../calculators/machining-source-refs';
+import { variableSeed } from '../calculators/machining-source-refs';
 import type { StockFacing } from '../../stock/stock-facing';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
@@ -433,6 +433,9 @@ export interface MillingMoves {
   rapidTransferDistanceFactor: number | null;
 }
 
+/** The operations one tool makes at every size (their runs time each hole at its own diameter). */
+const ONE_TOOL_OPERATIONS: ReadonlySet<string> = new Set(['Center Drilling', 'Countersinking']);
+
 // The cutter size an operation's calculator run states, by the field each calculator names it.
 const CUTTER_FIELDS = ['Cutter Diameter', 'Tool Diameter', 'Hole Diameter', 'Step Diameter', 'Thread Diameter', 'Keyway Width', 'Initial Diameter', 'Final Diameter'];
 
@@ -442,6 +445,8 @@ const CUTTER_FIELDS = ['Cutter Diameter', 'Tool Diameter', 'Hole Diameter', 'Ste
  * every edge. An operation with no calculator run is told apart by its feature's diameter, the only size it carries.
  */
 function cuttersOf(o: NonNullable<MachiningCostInput['featureOps']>[number]): string[] {
+  // A spot drill and a 90 degree countersink are one tool for every hole: their runs state the hole's size for the speed, not a tool's.
+  if (ONE_TOOL_OPERATIONS.has(o.name)) return [`${o.name}|`];
   if (!o.plan?.length) return [`${o.name}|${o.diameterMm ?? ''}`];
   return o.plan.map((p) => {
     const field = CUTTER_FIELDS.find((f) => p.seeds[f] != null);

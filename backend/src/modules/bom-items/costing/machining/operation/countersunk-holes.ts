@@ -12,31 +12,48 @@
 export const ON_AXIS_MM = 0.1;
 
 type Vec = readonly [number, number, number];
-interface Occurrence { centroid?: unknown; tool_axis?: unknown }
-interface Feature { feature_type?: unknown; occurrences?: unknown }
+interface Occurrence { centroid?: unknown; tool_axis?: unknown; steps?: unknown }
+interface Feature { feature_type?: unknown; diameter_mm?: unknown; occurrences?: unknown }
 
 const vec = (v: unknown): Vec | null =>
   Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n)) ? (v as unknown as Vec) : null;
 
-/** The hole occurrences of the part (SimpleHole and MultiStepHole), each a centre and, where the CAD states one, its axis. */
-export function holeAxes(features: readonly Feature[]): Array<{ centre: Vec; axis: Vec | null }> {
+/** A recognised hole: its centre, its axis where the CAD states one, and its diameter at the mouth where the CAD gives one. */
+export interface HoleAxis { centre: Vec; axis: Vec | null; diameterMm: number | null }
+
+const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+
+/**
+ * The hole occurrences of the part (SimpleHole and MultiStepHole). The diameter is a SimpleHole's own, a MultiStepHole's first step's (its
+ * entry, as the spotting takes it).
+ */
+export function holeAxes(features: readonly Feature[]): HoleAxis[] {
   return features
     .filter((f) => f.feature_type === 'SimpleHole' || f.feature_type === 'MultiStepHole')
-    .flatMap((f) => (Array.isArray(f.occurrences) ? (f.occurrences as Occurrence[]) : []))
-    .flatMap((o) => {
-      const centre = vec(o.centroid);
-      return centre ? [{ centre, axis: vec(o.tool_axis) }] : [];
-    });
+    .flatMap((f) =>
+      (Array.isArray(f.occurrences) ? (f.occurrences as Occurrence[]) : []).flatMap((o) => {
+        const centre = vec(o.centroid);
+        if (!centre) return [];
+        const entry = Array.isArray(o.steps) ? (o.steps[0] as { diameter_mm?: unknown } | undefined)?.diameter_mm : undefined;
+        const diameterMm = f.feature_type === 'MultiStepHole' ? positive(entry) : positive(f.diameter_mm);
+        return [{ centre, axis: vec(o.tool_axis), diameterMm }];
+      }),
+    );
 }
 
 /**
  * The countersink's centre lies on one of the holes' axes. A hole with no stated axis is taken along the direction the two centres differ
  * in most (holes are drilled along a part axis), so the other two coordinates must agree.
  */
-export function sitsOnHole(countersink: Occurrence, holes: ReadonlyArray<{ centre: Vec; axis: Vec | null }>): boolean {
+export function sitsOnHole(countersink: Occurrence, holes: readonly HoleAxis[]): boolean {
+  return holeUnder(countersink, holes) !== null;
+}
+
+/** The recognised hole the countersink sits on (see sitsOnHole), or null. */
+export function holeUnder(countersink: Occurrence, holes: readonly HoleAxis[]): HoleAxis | null {
   const c = vec(countersink.centroid);
-  if (!c) return false;
-  return holes.some(({ centre, axis }) => {
+  if (!c) return null;
+  return holes.find(({ centre, axis }) => {
     const d: Vec = [c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]];
     if (axis) {
       const n = Math.hypot(...axis);
@@ -47,5 +64,5 @@ export function sitsOnHole(countersink: Occurrence, holes: ReadonlyArray<{ centr
     }
     const sorted = d.map(Math.abs).sort((x, y) => x - y);
     return sorted[0]! <= ON_AXIS_MM && sorted[1]! <= ON_AXIS_MM;
-  });
+  }) ?? null;
 }
