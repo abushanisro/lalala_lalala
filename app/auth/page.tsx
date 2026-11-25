@@ -204,7 +204,7 @@ export default function AuthPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-black/45">
-            <span>© {new Date().getFullYear()} Emithran Technologies Pvt. Ltd.</span>
+            <span>© {new Date().getFullYear()} Emithran</span>
             <span className="text-black/20">·</span>
             <a href={marketingUrl('/terms')} className="hover:text-[#0b7f70] transition-colors">Terms of Use</a>
             <span className="text-black/20">·</span>
