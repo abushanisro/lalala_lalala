@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CalculationTraceStep } from '@/lib/api/hooks/useBOMItems';
-import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, smTablePanel, variablePanel, type SourceRef } from '@/lib/calculators/input-source';
+import {
+  calculationPanel, calculatorFieldPanel, costingInputPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, NOT_YET_SOURCED, opensTable, showsFeatures,
+  smTablePanel, variablePanel, type SourceRef,
+} from '@/lib/calculators/input-source';
 import { isMatchedLookupRow } from '@/lib/calculators/lookup-row-match';
+import { loadSourcePanel } from '@/lib/calculators/source-panel';
 
 describe('opensTable / evidenceOfRef', () => {
   it('opens a record, table or calculation; a CAD measurement shows its faces instead', () => {
@@ -131,5 +135,76 @@ describe('lookupPanel on camelCased rows', () => {
       45,
     );
     expect(p.matchedRowKeys).toEqual({ cutting_speed: 45 });
+  });
+});
+
+describe('calculatorFieldPanel', () => {
+  // Machining - Rough Turning's defaults: two with the workbook sheet they come from, one not yet sourced.
+  const ref: Extract<SourceRef, { kind: 'calculatorField' }> = {
+    kind: 'calculatorField', calculator: 'Machining - Rough Turning', field: 'Approach Length',
+    defaults: [
+      { field: 'Rough Depth of Cut', value: 2, unit: 'mm', source: 'the Machining calculator workbook, Turning sheet: depth of cut t = 2 mm' },
+      { field: 'Approach Length', value: 10, unit: 'mm', source: 'the Machining calculator workbook, Turning sheet: the length of cut plus 10 mm' },
+      { field: 'Range Position', value: 0.5, unit: null, source: null },
+    ],
+  };
+
+  it('lists the calculator\'s input defaults with where each comes from, the field\'s row outlined and the default last', () => {
+    const p = calculatorFieldPanel(ref);
+    expect(p.tableName).toBe('Machining - Rough Turning: input defaults');
+    expect(p.column_definitions.map((c) => c.label)).toEqual(['Field', 'Unit', 'Source', 'Default']);
+    expect(p.rows).toHaveLength(3);
+    expect(p.matchedRowKeys).toEqual({ field: 'Approach Length' });
+    expect(p.rows.filter((r) => isMatchedLookupRow(r, p.matchedRowKeys))).toEqual([
+      { field: 'Approach Length', unit: 'mm', source: 'the Machining calculator workbook, Turning sheet: the length of cut plus 10 mm', value: 10 },
+    ]);
+  });
+
+  it('says "not yet sourced" for a default with no stated source, never inventing one', () => {
+    expect(calculatorFieldPanel(ref).rows.find((r) => r.field === 'Range Position')?.source).toBe(NOT_YET_SOURCED);
+  });
+
+  it('outlines nothing when the field is not among the defaults', () => {
+    expect(calculatorFieldPanel({ ...ref, field: 'Turned Diameter' }).matchedRowKeys).toBeNull();
+  });
+});
+
+describe('costingInputPanel', () => {
+  const resolved = {
+    batchSize: 100, location: 'USA', annualVolume: 1200, productionLifeYears: 5,
+    provenance: { batchSize: 'derived', location: 'request', annualVolume: 'item_column', productionLifeYears: 'default' },
+  };
+
+  it('lists the part\'s costing inputs with where each came from, the ref\'s outlined', () => {
+    const p = costingInputPanel({ kind: 'costingInput', field: 'batchSize' }, resolved, 100);
+    expect(p.rows.map((r) => [r.input, r.source, r.value])).toEqual([
+      ['Batch size', "Worked out from the part's annual volume", 100],
+      ['Annual volume', 'Set on the part', 1200],
+      ['Production life (years)', 'The default', 5],
+      ['Location', 'Chosen for this costing', 'USA'],
+    ]);
+    expect(p.rows.filter((r) => isMatchedLookupRow(r, p.matchedRowKeys)).map((r) => r.input)).toEqual(['Batch size']);
+  });
+
+  it('without the resolved inputs, the one input with the value in use', () => {
+    expect(costingInputPanel({ kind: 'costingInput', field: 'batchSize' }, null, 50).rows).toEqual([{ input: 'Batch size', source: '—', value: 50 }]);
+  });
+});
+
+describe('the new kinds open a table; CAD refs still light the model', () => {
+  it('a calculatorField and a costingInput ref open their table; faces and features show on the model', () => {
+    expect(opensTable({ kind: 'calculatorField', calculator: 'c', field: 'f', defaults: [] })).toBe(true);
+    expect(opensTable({ kind: 'costingInput', field: 'batchSize' })).toBe(true);
+    expect(opensTable({ kind: 'faces', label: 'x', faceIds: [1] })).toBe(false);
+    expect(showsFeatures({ kind: 'features', label: 'x', features: [{ featureId: 'a' }] })).toBe(true);
+  });
+
+  it('loadSourcePanel builds the calculatorField, costingInput and calculation panels with no request, and none for a CAD ref', async () => {
+    await expect(loadSourcePanel({ kind: 'calculatorField', calculator: 'c', field: 'f', defaults: [{ field: 'f', value: 1, unit: null, source: null }] }, 1))
+      .resolves.toMatchObject({ matchedRowKeys: { field: 'f' } });
+    await expect(loadSourcePanel({ kind: 'costingInput', field: 'location' }, 'USA')).resolves.toMatchObject({ rows: [{ input: 'Location', value: 'USA' }] });
+    await expect(loadSourcePanel({ kind: 'calculation', name: 'n', evidence: null, steps: [] }, 1)).resolves.toMatchObject({ tableName: 'n' });
+    await expect(loadSourcePanel({ kind: 'faces', label: 'x', faceIds: [1] }, 1)).resolves.toBeNull();
+    await expect(loadSourcePanel(undefined, 1)).resolves.toBeNull();
   });
 });

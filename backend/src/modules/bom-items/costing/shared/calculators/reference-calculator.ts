@@ -3,7 +3,7 @@ import {
   normalizeFieldName,
   type CalculatorFieldRow,
 } from '../../../../calculators/calculator-formula-evaluator';
-import type { CalculationTraceStep, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CalculatorFieldDefault, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 
 /**
  * Reference-data calculators (Machining, Die Casting, ...) are computed BY the
@@ -26,6 +26,11 @@ export interface ReferenceCalculatorField {
   data_source?: string | null;
   source_table?: string | null;
   source_field?: string | null;
+  /**
+   * Where the field's default value comes from (a workbook sheet, a published source), named: the calculator spec's `note` for the field,
+   * laid over the database row by whoever loads the calculator (the database has no column for it). Null or absent: not yet sourced.
+   */
+  note?: string | null;
 }
 
 export interface ReferenceCalculatorDef {
@@ -110,6 +115,46 @@ export const CYCLE_TIME_FIELD = 'Cycle Time';
 
 const hasValue = (v: unknown) => v !== undefined && v !== null && v !== '';
 
+/** The step source of a field that takes its calculator's default: where that value comes from, or that it is not yet sourced. */
+export function calculatorDefaultSource(calculator: string, note: string | null | undefined): string {
+  return note?.trim() ? note.trim() : `${calculator}'s own value for this field — not yet sourced`;
+}
+
+const defaultsCache = new WeakMap<object, CalculatorFieldDefault[]>();
+
+/** A calculator's input fields that have a default value, each with that value, its unit and where it comes from (calculatorField's table). */
+export function calculatorFieldDefaults(def: Pick<ReferenceCalculatorDef, 'fields'>): CalculatorFieldDefault[] {
+  const cached = defaultsCache.get(def.fields);
+  if (cached) return cached;
+  const rows = [...def.fields]
+    .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
+    .filter((f) => f.field_type !== 'calculated' && hasValue(f.default_value))
+    .map((f) => ({
+      field: f.field_name,
+      value: Number.isFinite(Number(f.default_value)) ? Number(f.default_value) : String(f.default_value),
+      unit: f.unit ?? null,
+      source: f.note?.trim() ? f.note.trim() : null,
+    }));
+  defaultsCache.set(def.fields, rows);
+  return rows;
+}
+
+/** The ref of a value that is the calculator's own default for the field: its table of defaults, that field's row outlined. */
+export function calculatorFieldRef(def: Pick<ReferenceCalculatorDef, 'name' | 'fields'>, field: string): SourceRef {
+  return { kind: 'calculatorField', calculator: def.name, field, defaults: calculatorFieldDefaults(def) };
+}
+
+/**
+ * A field's default as a seed, for an engine that states the default itself (a turning calculator's approach allowance): its value, where it
+ * comes from, and the calculator's table of defaults to open. Null when the calculator has no such field or it has no numeric default.
+ */
+export function calculatorDefaultSeed(calculators: ReferenceCalculators | null | undefined, operation: string, field: string): CalcSeed | null {
+  const def = calculators?.[operation];
+  const f = def?.fields.find((x) => x.field_name === field && x.field_type !== 'calculated');
+  if (!def || !f || !hasValue(f.default_value) || !Number.isFinite(Number(f.default_value))) return null;
+  return { value: Number(f.default_value), source: calculatorDefaultSource(def.name, f.note), ref: calculatorFieldRef(def, field) };
+}
+
 export function runReferenceCalculator(
   calculators: ReferenceCalculators | null | undefined,
   operation: string,
@@ -150,10 +195,12 @@ export function runReferenceCalculator(
       });
     } else if (hasValue(f.default_value) && Number.isFinite(Number(f.default_value))) {
       scope[f.field_name] = Number(f.default_value);
+      // The calculator's own value: where it comes from (the spec's note), and its table of defaults for the eye.
       inputs.push({
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'input',
         value: Number(f.default_value), unit: f.unit ?? null,
-        source: `Assumption: ${def.name} default value (database) — no reference source`,
+        source: calculatorDefaultSource(def.name, f.note),
+        ref: calculatorFieldRef(def, f.field_name),
       });
     } else {
       missingInputs.push(f.field_name);

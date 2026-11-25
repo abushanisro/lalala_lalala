@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 
+import { useSourceRefEye } from '@/components/costing/SourceRefEye';
 import { Pencil } from '@/components/ui/icons';
 import type { CalculationTraceStep } from '@/lib/api/hooks/useBOMItems';
 import { useClearCalculatorFieldOverride, useSetCalculatorFieldOverride } from '@/lib/api/hooks/useCalculatorFieldOverrides';
@@ -26,6 +27,8 @@ function Field({ step, bomItemId, calculator }: { step: CalculationTraceStep; bo
     ? `Engineer's value for this part: ${step.override.reason}`
     : step.kind === 'calculated' ? `${step.fieldName} = ${step.formula ?? ''}` : step.source ?? '';
   const close = () => { setEditing(false); setValue(shown); setReason(''); };
+  // An input's eye: where its value was read (its SourceRef), opened under it.
+  const eye = useSourceRefEye(step);
 
   return (
     <div className="space-y-1 border-b border-border/30 pb-2 last:border-0">
@@ -33,6 +36,7 @@ function Field({ step, bomItemId, calculator }: { step: CalculationTraceStep; bo
         <span className="text-sm font-medium">{label(step)}</span>
         <span className="flex shrink-0 items-center gap-1.5">
           <span className={`text-sm font-semibold tabular-nums ${step.override ? 'text-amber-600 dark:text-amber-500' : ''}`}>{shown}</span>
+          {step.kind === 'input' && eye.button}
           {calculator && !editing && (
             <button type="button" className="text-muted-foreground hover:text-foreground" aria-label={`Edit ${step.fieldName} for this part`} title="Set this part's own value" onClick={() => { setEditing(true); }}>
               <Pencil className="h-3.5 w-3.5" />
@@ -41,6 +45,7 @@ function Field({ step, bomItemId, calculator }: { step: CalculationTraceStep; bo
         </span>
       </div>
       <p className={`text-xs leading-snug text-muted-foreground ${step.kind === 'calculated' && !step.override ? 'font-mono' : ''}`}>Why: {why}</p>
+      {step.kind === 'input' && eye.panel}
       {step.override && (
         <p className="text-xs text-amber-600 dark:text-amber-500">
           The calculator gives {formatFieldValue(step.override.original)}{step.unit ? ` ${step.unit}` : ''}.{' '}

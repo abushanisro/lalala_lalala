@@ -294,7 +294,9 @@ describe('sheet-metal calculator inputs carry where they were read (SourceRef)',
     expect(refOf(run.trace, 'Visual Pass Base')).toEqual(row('visual_base'));
     expect(refOf(run.trace, 'Hole Check Time')).toEqual(row('hole'));
     expect(refOf(run.trace, 'Dimension Check Time')).toEqual(row('dimension'));
-    expect(refOf(run.trace, 'Bend Check Time')).toBeUndefined();
+    // A feature not checked (no bends): its time is 0 for that reason, shown as such, not a table row.
+    expect(refOf(run.trace, 'Bend Check Time')).toMatchObject({ kind: 'calculation', name: 'Bend Check Time: nothing to check' });
+    // Without the plan's input the sample counts name no source; with it, each is the sampling calculation.
     expect(refOf(run.trace, 'Holes to Inspect')).toBeUndefined();
   });
 

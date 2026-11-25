@@ -37,7 +37,7 @@ import { machineListRateUsd, resolveMhrUsdRate, type MachineListRow } from '@/li
 import { formulaNumbers, lineWorkingOf, traceOfCalculator, workingOf } from '@/lib/calculators/calculation-working';
 import { calculationOfRecord, NO_CALCULATION, runOfCalculator, type LineCalculation } from '@/lib/calculators/calculator-run';
 import type { EngineCalculatorSeed } from '@/lib/calculators/engine-calculator-seeds';
-import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
+import { calculationPanel, calculatorFieldPanel, costingInputPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type ResolvedCostingInputsLike, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
 import { columnValue, isMatchedLookupRow } from '@/lib/calculators/lookup-row-match';
 import { engineLineForEdit } from '@/lib/calculators/engine-line-for-edit';
 import { allReadFrom, CLEARED_PROVENANCE, isCleared, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
@@ -2479,6 +2479,9 @@ export function ProcessCostDialog({
         else if (ref.kind === 'material') panel = recordPanel(await processesApi.getRecordSourceTable('material', ref.materialId, ref.column));
         else if (ref.kind === 'calculation') panel = calculationPanel(ref);
         else if (ref.kind === 'smTable') panel = smTablePanel(ref, await fetchSheetMetalTable(processesApi, ref.table), current);
+        // The calculator's own value: its table of input defaults with where each comes from; a costing input: the part's costing inputs.
+        else if (ref.kind === 'calculatorField') panel = calculatorFieldPanel(ref);
+        else if (ref.kind === 'costingInput') panel = costingInputPanel(ref, (bomItemData as { resolvedCostingInputs?: ResolvedCostingInputsLike } | undefined)?.resolvedCostingInputs, current);
         else return;
         setLookupTableData({ fieldName: field.fieldName, fieldLabel: field.displayLabel || field.fieldName, tableId: null, pickMachine, ...panel });
         setShowLookupTable(true);

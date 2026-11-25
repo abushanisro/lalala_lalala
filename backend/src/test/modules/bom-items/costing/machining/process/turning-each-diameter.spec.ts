@@ -152,7 +152,7 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Spindle Speed')).toMatchObject({ value: 4000, unit: 'rpm' });
     // The workbook's 10 mm approach is an input of each run, stated as the allowance it is.
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Approach Length')).toMatchObject({
-      kind: 'input', value: 10, unit: 'mm', source: expect.stringMatching(/^Assumption: .*length of cut \+ 10 mm/),
+      kind: 'input', value: 10, unit: 'mm', source: expect.stringMatching(/Turning sheet: the length of cut plus 10 mm/), ref: { kind: 'calculatorField', calculator: 'Machining - Rough Turning', field: 'Approach Length' },
     });
     expect(trace.find((s) => s.fieldName === 'Rough Turning cycle time')).toMatchObject({ kind: 'calculated', value: 5, unit: 's' });
     // Reopened, the calculator fills from the first Ring, whose inputs open that Ring's faces on the model.

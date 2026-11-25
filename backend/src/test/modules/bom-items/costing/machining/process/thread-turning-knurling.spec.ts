@@ -107,7 +107,10 @@ describe('an M12 x 1.75 external thread on the Ø12 x 18.329 journal', () => {
     expect(steps.find((s) => s.fieldName === 'Pitch')).toMatchObject({ value: 1.75, source: 'Drawing: pitch of the M12 x 1.75 callout' });
     expect(steps.find((s) => s.fieldName === 'Threads')).toMatchObject({ value: 1, source: 'Drawing: one M12 thread on this turned diameter' });
     expect(steps.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ value: 4000 });
-    expect(steps.find((s) => s.fieldName === 'Approach Length')).toMatchObject({ value: 4, source: expect.stringMatching(/^Assumption: /) });
+    // The calculator's own value, with where it comes from (the workbook's Threading sheet) and its table of defaults to open.
+    expect(steps.find((s) => s.fieldName === 'Approach Length')).toMatchObject({
+      value: 4, source: expect.stringMatching(/Threading sheet: the length of cut plus 4 mm/), ref: { kind: 'calculatorField', field: 'Approach Length' },
+    });
   });
 
   it('an external thread by its class with no Ring: 1.5 x its nominal diameter long, stated as the assumption it is', () => {

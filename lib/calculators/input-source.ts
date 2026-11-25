@@ -18,7 +18,22 @@ export type SourceRef =
   | { kind: 'faces'; label: string; faceIds: number[] }
   | { kind: 'calculation'; name: string; evidence: string | null; steps: CalculationTraceStep[] }
   /** A sheet-metal reference table served by name (backend SheetMetalSourceTable): an sm_lookup_* table, inspection_operation_defaults, or a machine-library table. */
-  | { kind: 'smTable'; table: string; column: string; row: Record<string, string | number> | null };
+  | { kind: 'smTable'; table: string; column: string; row: Record<string, string | number> | null }
+  /** The calculator's own value for the field: its table of input defaults, each with where it comes from (null: not yet sourced). */
+  | { kind: 'calculatorField'; calculator: string; field: string; defaults: CalculatorFieldDefault[] }
+  /** One of the part's resolved costing inputs (the cost summary's resolvedInputs). */
+  | { kind: 'costingInput'; field: CostingInputField };
+
+/** The costing inputs every line of a part is costed at (backend CostingInputField). */
+export type CostingInputField = 'batchSize' | 'annualVolume' | 'productionLifeYears' | 'location';
+
+/** A calculator input field with a default value, and where that value comes from (backend CalculatorFieldDefault). */
+export interface CalculatorFieldDefault {
+  field: string;
+  value: number | string | null;
+  unit: string | null;
+  source: string | null;
+}
 
 /**
  * The machine-library tables of sm_reference_data, each served by its own endpoint (backend SHEET_METAL_LIBRARY_TABLES); every other
@@ -139,6 +154,64 @@ export function smTablePanel(
 /** A machine or material record among its peers (GET /processes/source-tables/...): the backend already outlines the record by id. */
 export function recordPanel(table: { tableName: string; columnDefinitions: SourcePanel['column_definitions']; rows: Record<string, unknown>[]; matchedRowKeys: Record<string, unknown> }): SourcePanel {
   return { tableName: table.tableName, column_definitions: table.columnDefinitions, rows: table.rows, matchedRowKeys: table.matchedRowKeys };
+}
+
+/** What the panel says of a default whose source is not stated yet. */
+export const NOT_YET_SOURCED = 'not yet sourced';
+
+/**
+ * A calculatorField ref as a table: the calculator's input defaults (Field, Unit, Source, Default), the field's row outlined, the default
+ * last (the panel's highlighted column). A default with no stated source reads "not yet sourced".
+ */
+export function calculatorFieldPanel(ref: Extract<SourceRef, { kind: 'calculatorField' }>): SourcePanel {
+  const listed = ref.defaults.some((d) => d.field === ref.field);
+  return {
+    tableName: `${ref.calculator}: input defaults`,
+    column_definitions: [{ name: 'field', label: 'Field' }, { name: 'unit', label: 'Unit' }, { name: 'source', label: 'Source' }, { name: 'value', label: 'Default' }],
+    rows: ref.defaults.map((d) => ({ field: d.field, unit: d.unit ?? null, source: d.source ?? NOT_YET_SOURCED, value: d.value })),
+    matchedRowKeys: listed ? { field: ref.field } : null,
+    note: listed ? `${ref.field} takes the calculator's own value.` : `${ref.field} is not among the calculator's defaults.`,
+  };
+}
+
+/** The part's resolved costing inputs, as the cost summary states them (resolvedInputs), each with where it came from. */
+export interface ResolvedCostingInputsLike {
+  batchSize: number;
+  location: string | null;
+  annualVolume: number | null;
+  productionLifeYears: number;
+  provenance?: Partial<Record<CostingInputField, string>>;
+}
+
+/** Where a resolved costing input came from (backend CostingInputSource), in words. */
+const COSTING_INPUT_FROM: Record<string, string> = {
+  request: 'Chosen for this costing', scenario_override: "The part's scenario", item_column: 'Set on the part',
+  derived: "Worked out from the part's annual volume", default: 'The default', absent: 'Not on file',
+};
+
+const COSTING_INPUT_LABEL: Record<CostingInputField, string> = {
+  batchSize: 'Batch size', annualVolume: 'Annual volume', productionLifeYears: 'Production life (years)', location: 'Location',
+};
+
+/**
+ * A costingInput ref as a table: the part's costing inputs (Input, From, Value), the ref's row outlined. Without the resolved inputs (a view
+ * that has none), the one input with the value in use.
+ */
+export function costingInputPanel(ref: Extract<SourceRef, { kind: 'costingInput' }>, resolved: ResolvedCostingInputsLike | null | undefined, value: unknown): SourcePanel {
+  const fields = Object.keys(COSTING_INPUT_LABEL) as CostingInputField[];
+  const rows = resolved
+    ? fields.map((f) => {
+      const from = resolved.provenance?.[f];
+      return { input: COSTING_INPUT_LABEL[f], source: from ? COSTING_INPUT_FROM[from] ?? from : '—', value: resolved[f] ?? null };
+    })
+    : [{ input: COSTING_INPUT_LABEL[ref.field], source: '—', value: value ?? null }];
+  return {
+    tableName: "The part's costing inputs",
+    column_definitions: [{ name: 'input', label: 'Input' }, { name: 'source', label: 'From' }, { name: 'value', label: 'Value' }],
+    rows,
+    matchedRowKeys: { input: COSTING_INPUT_LABEL[ref.field] },
+    note: 'Every line of the part is costed at these inputs; change them on the part (Batch size, Location) to recost.',
+  };
 }
 
 /** A calculation ref as a table: each step with where its value came from, the result outlined, values last. */

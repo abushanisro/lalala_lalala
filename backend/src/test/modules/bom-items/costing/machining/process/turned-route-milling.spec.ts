@@ -146,7 +146,8 @@ describe('a closed keyway on a turned shaft: milled on the lathe, as a line of t
 
   it('shows the depth of a pass as the engine\'s own value, not the reference data\'s', () => {
     expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Slotting Depth Ratio')).toMatchObject({
-      kind: 'input', value: 0.2, source: 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source',
+      kind: 'input', value: 0.2, source: expect.stringMatching(/^The engine's own value: the reference data has none\./),
+      ref: { kind: 'calculatorField', calculator: 'Machining - Obround Slot Milling', field: 'Slotting Depth Ratio' },
     });
   });
 

@@ -20,6 +20,7 @@ import { turnedGrooveGroups } from './costing/machining/operation/turned-grooves
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences } from './costing/machining/inspection-reference';
+import { calculationRef, inputStep, resultStep } from './costing/machining/calculators/machining-source-refs';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { drawingThreadsOf, holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
 import { knurlsOnRings, splitExternalThreads, type ExternalThread, type KnurlOp } from './costing/machining/external-threads';
@@ -77,7 +78,7 @@ import { SecondaryProcessService } from './services/secondary-process.service';
 import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
 import { detectDrawingCadMismatches, drawingStatedBendCount, drawingStatedThreadCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
-import { loadMachiningCalculatorSpec, machineSourcedFields } from './costing/machining/calculators/machining-calculator-spec';
+import { loadMachiningCalculatorSpec, machineSourcedFields, withSpecNotes } from './costing/machining/calculators/machining-calculator-spec';
 import { isWorkbookField, specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
 
 /** Lookup tables read by the generic spec resolver (specLookupSeeds), not by a resolver of their own. */
@@ -229,7 +230,7 @@ import { buildCastingCostSummary, castingProcessOfFamily } from './costing/casti
 import { FeatureToleranceService } from './services/feature-tolerance.service';
 import { priceSecondaryMachining } from './costing/shared/tolerance/secondary-machining-cost';
 import { selectCastingOperations, topLevelCatalogRows } from './costing/casting/casting-feature-operations';
-import { runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
+import { calculatorDefaultSource, calculatorFieldRef, runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
 import { castingSeed } from './costing/casting/casting-calculator-seeds';
 import { cleaningLine, meltingLine, partingLineGrindingLine, trimLine, visualInspectionLine } from './costing/casting/casting-finishing';
 import { computeDieTooling, type DieToolingResult } from './costing/casting/die-tooling';
@@ -419,6 +420,53 @@ import { NestingCostService } from './services/nesting-cost.service';
  * Costing of a BOM item: the cost summary, the route comparison, calculator inputs and nesting. Split from BOMItemsService, which keeps the item records;
  * this class is being taken apart into one service per concern.
  */
+/** A fixed allowance the engine adds (an unload, a clear), as the calculation the eye opens: its value and where it is stated. */
+function allowanceRef(label: string, sec: number, source: string): SourceRef {
+  return calculationRef(label, [inputStep(label, 's', sec, source), resultStep(label, 's', sec, 'A fixed allowance, once per operation')]);
+}
+
+/**
+ * Where each input of a tapping run was read: the tapped holes (or the drawing's callout when the CAD found none), the thread size the
+ * diameter is parsed from, the tapped depth (or the sheet it is taken through), the published surface speed of the material family, and
+ * the pitch (the holes', or ISO 261's coarse pitch of the diameter).
+ */
+function tappingSeedRefs(
+  t: { size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] },
+  tap: ReturnType<typeof resolveTapPhysicsInputs>,
+  sheetThicknessMm: number,
+  fallbackDepthMm: number,
+): Record<string, SourceRef> {
+  const holes = featuresRef(`${t.size} tapped holes`, t.occurrences) ?? calculationRef(`${t.size} thread callout`, [
+    inputStep('Thread size', null, t.size, 'The thread callout (drawing analysis, or the CAD thread recognition)'),
+    inputStep('Threads', null, t.count, 'The thread callout: threads of this size'),
+  ]);
+  const size = inputStep('Thread size', null, t.size, 'The thread callout of this size group', holes);
+  return {
+    'No of Uses': holes,
+    'Tap Diameter': calculationRef('Tap Diameter', [size, resultStep('Tap Diameter', 'mm', tap.diameterMm, tap.diameterIsAssumed ? 'No M-diameter in the size: the assumed tap diameter' : 'The M-diameter of the thread size')]),
+    Length: tap.depthIsAssumed
+      ? calculationRef('Tapped length (no tapped-hole depth)', [
+        inputStep('Sheet thickness', 'mm', sheetThicknessMm, sheetThicknessMm > 0 ? 'CAD: the sheet thickness the thread is tapped through' : 'No sheet thickness on the part: the 3 mm fallback'),
+        resultStep('Length', 'mm', fallbackDepthMm, 'The sheet thickness (3 mm when none)'),
+      ])
+      : holes,
+    'Cutting Speed': calculationRef(`Tapping surface speed, ${tap.materialFamily}`, [
+      inputStep('Material family', null, tap.materialFamily, 'The material grade\'s family (classifyMaterialFamily)'),
+      resultStep('Cutting Speed', 'm/min', tap.surfaceSpeedMMin, 'HSS (M2) tapping surface speed of the family: the midpoint of Viking/Norseman Drill & Tool tap feeds and speeds and the Slugger Tools tap speed chart (TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL)'),
+    ]),
+    'Feed per Rev': t.pitchMm != null
+      ? holes
+      : calculationRef('Thread pitch', [size, resultStep('Feed per Rev', 'mm', tap.pitchMm, tap.pitchIsAssumed ? 'Off the ISO 261 coarse series: the assumed pitch' : 'The ISO 261 coarse pitch of the nominal diameter')]),
+  };
+}
+
+/** Where a database calculator field's default comes from, when its row states it (input_config.source, else its help text); null: not yet sourced. */
+function fieldSourceNote(field: { input_config?: unknown }): string | null {
+  const config = (field.input_config ?? {}) as Record<string, unknown>;
+  const note = config.source ?? config.helpText;
+  return typeof note === 'string' && note.trim() ? note.trim() : null;
+}
+
 @Injectable()
 export class BomItemCostingService {
   private readonly logger = new Logger(BomItemCostingService.name);
@@ -4590,7 +4638,7 @@ export class BomItemCostingService {
             'Has Dimension Check': 'Real geometry — overall dimensions known',
             'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${smInspectionPlan.method} method`,
           },
-          seedRefs: inspectionSeedRefs(smInspectionPlan),
+          seedRefs: inspectionSeedRefs(smInspectionPlan, smInspectionInput),
         });
     const smInspectionLineResult = finalizeInspectionLine(smInspectionInput, smInspectionPlan, {
       cycleTimeSec: smInspectionCalc.outputs['Total Time'],
@@ -7281,7 +7329,7 @@ export class BomItemCostingService {
               'Has Dimension Check': 'Real geometry — overall dimensions known',
               'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${rcInspectionPlan.method} method`,
             },
-            seedRefs: inspectionSeedRefs(rcInspectionPlan),
+            seedRefs: inspectionSeedRefs(rcInspectionPlan, rcInspectionInput),
           });
       const rcInspectionResult = finalizeInspectionLine(rcInspectionInput, rcInspectionPlan, {
         cycleTimeSec: rcInspectionCalc.outputs['Total Time'],
@@ -8338,7 +8386,8 @@ export class BomItemCostingService {
       if (calc && !machiningCalculatorNames.has(calc.name)) continue;
       const fields = (catalog.fields as any[]).filter((f) => f.calculator_id === m.calculator_id);
       if (!calc || fields.length === 0) continue;
-      out[m.operation] = { calculatorId: calc.id, name: calc.name, version: calc.version ?? 1, fields };
+      // Each field with where its default comes from (the spec's note; the database has no column for it).
+      out[m.operation] = { calculatorId: calc.id, name: calc.name, version: calc.version ?? 1, fields: withSpecNotes(calc.name, fields) };
     }
     return out;
   }
@@ -8662,7 +8711,12 @@ export class BomItemCostingService {
     const missing = [...unresolved, ...(lookup?.missing ?? []).filter((m) => !Object.keys(inputs).some((f) => m.startsWith(`${f}`)))];
     for (const f of def.fields) {
       if (f.field_type === 'calculated' || f.field_name in inputs) continue;
-      if (f.default_value != null && f.default_value !== '') continue;
+      if (f.default_value != null && f.default_value !== '') {
+        // The dialog shows the calculator's own value: where it comes from, and the calculator's table of defaults for the eye.
+        provenance[f.field_name] = calculatorDefaultSource(def.name, f.note);
+        refs[f.field_name] = calculatorFieldRef(def, f.field_name);
+        continue;
+      }
       if (!missing.some((m) => m.includes(f.field_name))) missing.push(`${f.field_name}: not on this part (${f.data_source ?? 'input'}) — enter it`);
     }
     return { calculatorId, operation, materialClass: matClass, inputs, provenance, lookupMatches, refs, missing, machineFields };
@@ -9996,6 +10050,8 @@ export class BomItemCostingService {
       // (still shown as documentation even when physics-backed — see comment
       // above).
       const trace: CalculationTraceStep[] = [];
+      // The calculator with where each default comes from, for an input that takes its default.
+      const defaultDef = { name: String((calcRow as any)?.name ?? 'The calculator'), fields: (calcFields as any[]).map((cf) => ({ ...cf, note: fieldSourceNote(cf) })) };
       for (const f of calcFields as any[]) {
         const val = usesExactFieldNames ? scope[f.field_name] : scope[normalizeFieldName(f.field_name)];
         if (f.field_type !== 'calculated') {
@@ -10003,15 +10059,16 @@ export class BomItemCostingService {
           const hasDefault = f.default_value !== undefined && f.default_value !== null && f.default_value !== '';
           if (!hasSeed && !hasDefault) continue; // genuinely unset — omit, don't fabricate
           const evidence = cadEvidenceKey(f.field_name, seedProvenance[f.field_name]);
-          // Only a seeded value was read from a source; a calculator default has none to open.
-          const ref = hasSeed ? sourceRefOfSeed(seedRefs[f.field_name], evidence) : undefined;
+          // A seeded value opens where it was read; a calculator default opens the calculator's table of defaults, with where each comes from
+          // (calculator_fields.input_config's source note, when the row states one).
+          const ref = hasSeed ? sourceRefOfSeed(seedRefs[f.field_name], evidence) : calculatorFieldRef(defaultDef, f.field_name);
           trace.push({
             fieldName: f.field_name,
             displayLabel: f.display_label ?? f.field_name,
             kind: 'input',
             value: hasSeed ? (seedScope[f.field_name] as any) : (typeof val === 'number' || typeof val === 'string' ? val : (val ?? f.default_value)),
             unit: f.unit ?? null,
-            source: seedProvenance[f.field_name] ?? (hasSeed ? 'Provided value' : "Calculator's own default value"),
+            source: seedProvenance[f.field_name] ?? (hasSeed ? 'Provided value' : calculatorDefaultSource(defaultDef.name, fieldSourceNote(f))),
             ...(evidence ? { evidence } : {}),
             ...(ref ? { ref } : {}),
           });
@@ -10433,7 +10490,7 @@ export class BomItemCostingService {
    */
   private async resolveTappingCycleTimeSec(
     accessToken: string,
-    threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number }>,
+    threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] }>,
     sheetThicknessMm: number,
     materialGrade: string | null,
   ): Promise<{ cycleTimeSec: number | undefined; gap: PhysicsGap | null; calculatorId: string | null; calculatorVersion: number | null; confidence: ConfidenceLevel; resolutionStatus: ResolutionStatus; trace: CalculationTraceStep[] }> {
@@ -10485,6 +10542,7 @@ export class BomItemCostingService {
               : 'Standard ISO 261 coarse pitch for this nominal diameter (no real pitch extracted)',
           'No of Uses': 'CAD/drawing feature extraction — thread count for this size group',
         },
+        seedRefs: tappingSeedRefs(t, tapInputs, sheetThicknessMm, fallbackDepthMm),
       });
       calculatorId = tapCalc.calculatorId ?? calculatorId;
       calculatorVersion = tapCalc.calculatorVersion ?? calculatorVersion;
@@ -10514,7 +10572,10 @@ export class BomItemCostingService {
       confidence: anyResolved ? confidence : 'unsupported',
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each thread size's run, and the unload once per operation.
-      trace: anyResolved ? groupedRunsTrace('Tapping', groupTraces, { label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)' }, totalSec + TAP_UNLOAD_SEC) : [],
+      trace: anyResolved ? groupedRunsTrace('Tapping', groupTraces, {
+        label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)',
+        ref: allowanceRef('Unload Time', TAP_UNLOAD_SEC, 'TAP_UNLOAD_SEC: the final clear and unload of the tapping cycle, once per operation (default-rates.constants.ts)'),
+      }, totalSec + TAP_UNLOAD_SEC) : [],
     };
   }
 
@@ -11017,7 +11078,10 @@ export class BomItemCostingService {
       confidence: anyResolved ? confidence : 'unsupported',
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each hole diameter's run, and the unload once per operation.
-      trace: anyResolved ? groupedRunsTrace(config.operation, groupTraces, { label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)' }, totalSec + HOLE_OP_UNLOAD_SEC) : [],
+      trace: anyResolved ? groupedRunsTrace(config.operation, groupTraces, {
+        label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)',
+        ref: allowanceRef('Unload Time', HOLE_OP_UNLOAD_SEC, 'HOLE_OP_UNLOAD_SEC: the final clear and unload of the hole operation, once per operation (default-rates.constants.ts)'),
+      }, totalSec + HOLE_OP_UNLOAD_SEC) : [],
     };
   }
 }
