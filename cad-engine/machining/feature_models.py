@@ -55,15 +55,20 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     "MultiStepHole": frozenset({"counterbore", "stepped"}),
     # countersink: concave cone at the mouth of a bore (it touches the bore's
     # wall and is wider than it); chamfer: any other cone (a convex cone is the
-    # chamfer of the diameter it is cut on); round: convex toroidal blend.
+    # chamfer of the diameter it is cut on); round: a toroidal blend or a
+    # cylindrical arc, params.concave saying which side the material is on: a
+    # rounded edge (convex) or an inside fillet (concave; a toroidal one on the
+    # turning line all the way round is a turned shoulder fillet,
+    # turned_shoulder) -- see toroid_features.py.
     "Edge": frozenset({"countersink", "chamfer", "round"}),
-    # outer_diameter: external turned cylinder step; groove: concave annular
-    # (toroidal) recess on a turned part.
+    # outer_diameter: external turned cylinder step; groove: a round-bottomed
+    # groove (concave torus, profile >= 135 degrees) on the turning line all
+    # the way round a turned part (Plunging//Ring).
     "Ring": frozenset({"outer_diameter", "groove"}),
     # straight: elongated milled slot; radial: a slot on a turned part that runs
     # across the turning axis (milled into a turned diameter or a bore, or across
     # an end face or a shoulder);
-    # groove: concave toroidal recess on a milled part (Groove Milling//Slot).
+    # groove: any other round-bottomed toroidal groove (Groove Milling//Slot).
     "Slot": frozenset({"straight", "radial", "groove"}),
     "Keyway": frozenset({"default"}),
     "PocketV2": frozenset({"default"}),

@@ -114,6 +114,7 @@ from typing import Dict, List, Optional, Tuple
 # Metal's real `from machining.machining_feature_recognizer import
 # _TAP_DRILL_RANGES` / `MachiningFeature` / etc.), keeps working unchanged.
 from .feature_models import MachiningFeatureType, MachiningFeature, MachiningFeatureTree
+from .toroid_features import classify_toroid as _classify_toroid
 from shared.error_reporting import report_failure
 from shared.part_family import MILLED, TURNED_FAMILIES
 from shared.machining_geometry import (
@@ -585,20 +586,19 @@ class MachiningFeatureRecognizer:
         # ── Detect counterbores (coaxial cylinder pairs, a tapped bore included) ─
         features = _merge_counterbores(features, bore_id_to_cyl)
 
-        # ── Toroids → groove / fillet ─────────────────────────────────────────
+        # ── Toroids → groove / fillet / round ─────────────────────────────────
+        # A full-turn concave torus on the turning line is cut on the lathe: a
+        # groove profile is plunged ("Plunging//Ring"), a fillet profile is the
+        # shoulder fillet finish turning forms (turned_shoulder). Any other
+        # concave torus is milled; a convex one is a rounded edge
+        # ("Rounding//Edge"). Rules and thresholds: toroid_features.py.
         for tor_idx, tor in enumerate(toroids):
-            # Concave annular recess on a turned part is a plunged groove
-            # ("Plunging//Ring"); a convex blend is a rounded edge ("Rounding//Edge").
-            ftype, variant = ("Ring", "groove") if tor["is_concave"] else ("Edge", "round")
+            ftype, variant, params = _classify_toroid(tor, turned=True, turning_axis=main_axis, on_axis=on_axis)
             features.append(MachiningFeature(
                 id=f"{variant}_{tor_idx}",
                 type=ftype,
                 variant=variant,
-                params={
-                    "major_diameter_mm": round(tor["major_radius"] * 2.0, 3),
-                    "radius_mm": round(tor["minor_radius"], 3),
-                    "centroid": list(tor.get("centroid", (0.0, 0.0, 0.0))),
-                },
+                params=params,
                 confidence=0.80,
                 face_ids=tor.get("face_indices", []),
             ))
@@ -828,18 +828,17 @@ class MachiningFeatureRecognizer:
             ))
 
         for tor_idx, tor in enumerate(toroids):
-            # Concave toroidal recess on a milled part is a milled groove
-            # ("Groove Milling//Slot"); a convex blend is a rounded edge.
-            ftype, variant = ("Slot", "groove") if tor["is_concave"] else ("Edge", "round")
+            # A concave torus with a groove profile on a milled part is a milled
+            # groove ("Groove Milling//Slot"); one with a fillet profile is an
+            # inside fillet, a concave Edge:round cut by a ball-nose end mill
+            # along its path; a convex blend is a rounded edge. Rules and
+            # thresholds: toroid_features.py.
+            ftype, variant, params = _classify_toroid(tor)
             features.append(MachiningFeature(
                 id=f"{variant}_{tor_idx}",
                 type=ftype,
                 variant=variant,
-                params={
-                    "major_diameter_mm": round(tor["major_radius"] * 2.0, 3),
-                    "radius_mm": round(tor["minor_radius"], 3),
-                    "centroid": list(tor.get("centroid", (0.0, 0.0, 0.0))),
-                },
+                params=params,
                 confidence=0.80,
                 face_ids=tor.get("face_indices", []),
             ))
@@ -1038,56 +1037,40 @@ class MachiningFeatureRecognizer:
         return results
 
     def _collect_toroids(self, shape) -> List[Dict]:
-        """Real toroidal (GeomAbs_Torus) faces only — corner blends and
-        fillets swept along a curved edge. A fillet along a straight linear
+        """Real toroidal (GeomAbs_Torus) faces only — corner blends, fillets
+        and grooves swept along a curved edge, with r >= _MIN_FILLET_RADIUS_MM.
+        Each carries its sweep round the major circle, its profile (how much of
+        the cross-section circle it covers), the path a ball of radius r takes
+        along it, its axis and which side of the tube the material is on;
+        patches of one torus surface are merged into one toroid
+        (machining/toroid_features.py). A fillet along a straight linear
         edge is a cylindrical blend (GeomAbs_Cylinder), not a torus, and is
         NOT detected here; that is a separate, not-yet-built classification
         (tracked as a CurvedWall sub-case, see Phase 3 of the machining
         feature-extraction plan) — do not assume this covers all fillets."""
-        from OCC.Core.GeomAbs import GeomAbs_Torus  # type: ignore
-        from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
         from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-        from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_FORWARD  # type: ignore
-        from OCC.Core.GProp import GProp_GProps  # type: ignore
-        from OCC.Core.BRepGProp import brepgprop  # type: ignore
+        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+        from OCC.Core.TopoDS import topods  # type: ignore
+        from .toroid_features import torus_face_facts, merge_torus_patches
 
-        results = []
+        patches = []
         face_idx = 0
         exp = TopExp_Explorer(shape, TopAbs_FACE)
         while exp.More():
-            face = exp.Current()
-            surf = BRepAdaptor_Surface(face)
-            if surf.GetType() == GeomAbs_Torus:
-                tor = surf.Torus()
-                minor_r = tor.MinorRadius()
-                if minor_r >= _MIN_FILLET_RADIUS_MM:
-                    is_concave = face.Orientation() != TopAbs_FORWARD
-                    # Real face centroid (same GProp_GProps/brepgprop technique
-                    # shared/stable_face_id.py already uses) — fillet/groove
-                    # previously carried no centroid at all, so
-                    # build_machining_feature_graph_v2's `if centroid_abs is
-                    # None: continue` guard silently dropped every one of
-                    # them before this fix, real face_ids notwithstanding.
-                    props = GProp_GProps()
-                    brepgprop.SurfaceProperties(face, props)
-                    cg = props.CentreOfMass()
-                    results.append({
-                        "major_radius": tor.MajorRadius(),
-                        "minor_radius": minor_r,
-                        "is_concave": is_concave,
-                        "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
-                        "centroid": (round(cg.X(), 3), round(cg.Y(), 3), round(cg.Z(), 3)),
-                    })
+            # Every toroid carries a real face centroid: build_machining_feature_graph_v2
+            # drops a feature with none (`if centroid_abs is None: continue`).
+            facts = torus_face_facts(topods.Face(exp.Current()), face_idx)  # face_idx: the OCC face ordinal, matching face_map in memory_optimizer
+            if facts is not None and facts["minor_radius"] >= _MIN_FILLET_RADIUS_MM:
+                patches.append(facts)
             face_idx += 1  # increment for EVERY face, not just toroids
             exp.Next()
-
-        if len(results) > 500:
+        if len(patches) > 500:
             logger.warning(
-                f"[cnc_recognizer] {len(results)} torus faces after radius filter — "
+                f"[cnc_recognizer] {len(patches)} torus faces after radius filter — "
                 f"likely STEP quality issue; suppressing all fillet/groove features"
             )
             return []
-        return results
+        return merge_torus_patches(patches)
 
     def _collect_prismatic_pockets(
         self,
@@ -1733,6 +1716,12 @@ _SHAPE: Dict[Tuple[str, str], str] = {
     ("AxiGroove", "default"): _TOOTHED,
     ("Flat", "default"): _FLAT,
 }
+# A toroid's measured facts (toroid_features.py): its sweep round its axis, the profile of its cross-section, the path a
+# ball of its radius takes along it, a groove's depth and width, which side of it the material is on, its axis, and
+# whether it is a shoulder fillet the finish turning forms. A cylindrical arc (Edge:round) states its sweep and side too.
+_TOROID_FIELDS = (
+    "sweep_deg", "profile_deg", "path_length_mm", "depth_mm", "width_mm", "concave", "axis", "turned_shoulder",
+)
 _TOOTH_FIELDS = ("tooth_count", "tip_diameter_mm", "root_diameter_mm", "face_width_mm")
 _KEYWAY_DIM_FIELDS = ("length_mm", "width_mm", "depth_mm")
 _FLAT_FIELDS = ("length_mm", "width_mm", "depth_mm", "diameter_mm", "area_mm2", "walled_fraction")
@@ -1837,10 +1826,12 @@ def build_machining_feature_graph_v2(
             })
 
         elif shape == _TOROID:
-            # material_removed_mm3 stays a disclosed 0.0: a toroidal blend's
-            # removed volume depends on its arc sweep, which is not extracted.
+            # material_removed_mm3 stays a disclosed 0.0: the volume a blend or
+            # groove takes off is not measured. Its sweep, profile and path are
+            # (toroid_features.py), carried when the feature states them.
             buckets[(ftype, variant, round(p.get("major_diameter_mm", 0.0) or 0.0, 1))].append({
                 **base, "radius_mm": p.get("radius_mm"), "material_removed_mm3": 0.0,
+                **{fld: p[fld] for fld in _TOROID_FIELDS if p.get(fld) is not None},
             })
 
         elif shape == _VOLUMETRIC:
@@ -1933,6 +1924,9 @@ def build_machining_feature_graph_v2(
                     occ_entry["bore_spec"] = occ["bore_spec"]
             elif shape == _TOROID:
                 occ_entry["radius_mm"] = occ["radius_mm"]
+                for fld in _TOROID_FIELDS:
+                    if fld in occ:
+                        occ_entry[fld] = occ[fld]
             elif shape == _PATTERN:
                 occ_entry["depth_mm"] = round(depth, 3)
                 occ_entry["hole_count"] = occ["hole_count"]
