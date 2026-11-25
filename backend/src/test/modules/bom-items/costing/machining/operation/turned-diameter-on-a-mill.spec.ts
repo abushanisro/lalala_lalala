@@ -14,7 +14,7 @@
 //
 // The fixture is the real "Lead Screw side shaft" as its stored analysis stated it on 2026-11-23 (its cross holes and its shoulder
 // chamfer then recognised as two cross holes and a countersink), from the 5/8" round bar the stock model chooses in the USA: piece pi/4 x 15.875^2 x 33.588 = 6648.16 mm^3, part 2646.02 mm^3. Bulk Milling of aluminium at
-// 60 000 mm^3/min is Removed Volume x 1.3 / 1000 seconds (the stored calculator). Every expected number is worked out by hand.
+// 60 000 mm^3/min is Removed Volume x 1.15 / 1000 seconds (the stored calculator, Roughing Share 0.9 since 1158). Every expected number is worked out by hand.
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence, type MillingFinishingRow, type OperationLine } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
@@ -74,11 +74,11 @@ describe('the shaft on a mill', () => {
     expect(around.inconsistent).toBe(false);
   });
 
-  it('that stock is milled by one Bulk Milling: 2102.06 x 1.3 / 1000 = 2.7327 s', () => {
+  it('that stock is milled by one Bulk Milling: 2102.06 x 1.15 / 1000 = 2.4174 s', () => {
     const bulk = named(ops, 'Bulk Milling');
     expect(bulk).toHaveLength(1);
     expect(bulk[0]).toMatchObject({ source: 'fixed' });
-    expect(bulk[0]!.timeSec).toBeCloseTo(2.7327, 4);
+    expect(bulk[0]!.timeSec).toBeCloseTo(2.4174, 4);
     expect(bulk[0]!.trace!.find((s) => s.fieldName === 'Removed Volume')).toMatchObject({
       value: expect.closeTo(2102.06, 6),
       source: 'Stock around the part: the piece 6648.16 mm^3 less the part 2646.02 mm^3 and the 1900.08 mm^3 its features remove',

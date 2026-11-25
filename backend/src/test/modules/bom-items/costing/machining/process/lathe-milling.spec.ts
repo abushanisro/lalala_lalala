@@ -5,7 +5,7 @@
 //   Obround Slot Milling (a keyway, cut by an end mill of its width in passes between its two end centres):
 //     Spindle Speed = min(10 000, Cutting Speed * 1000 / (pi * Keyway Width))                                   [rpm]
 //     Feed Rate     = Spindle Speed * Teeth * Feed per Tooth per Diameter * Keyway Width                        [mm/min]
-//     Passes        = ceil(Keyway Depth / (0.2 * Keyway Width))
+//     Passes        = ceil(Keyway Depth / (1 * Keyway Width))
 //     Path per Pass = max(Keyway Length - Keyway Width, 0) + Keyway Depth / Passes                              [mm]
 //     Cycle Time    = Keyways * Passes * Path per Pass / Feed Rate * 60                                         [s]
 //   Slot Milling  (the workbook's Slot Milling sheet: a slot cut by an end mill of its width)
@@ -14,7 +14,7 @@
 //   Rough Milling (the workbook's End Milling sheet: a flat roughed by the end mill)
 //     Cycle Time    = Cuts * ceil((Cut Length + 10 + D / 2) / (Feed per Tooth * Teeth * n) * Width Passes * Depth Passes * 60)  [s]
 //
-// with the fixture's aluminium: the workbook's 300 - 600 m/min and 0.1 - 0.2 mm/tooth (their middles, 450 and 0.15), and the end mill of
+// with the fixture's aluminium: the workbook's 300 - 600 m/min and 0.1 - 0.2 mm/tooth (at Range Position 0.3, 390 and 0.13), and the end mill of
 // the tblMillingFinishing row (10 mm, 3 teeth; a keyway's run at 183 m/min with a feed per tooth of 0.008 of its diameter), on a live tool
 // that turns at most 10 000 rpm.
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
@@ -31,11 +31,11 @@ const CALCS = specAsCalculators();
 const REMOVAL_RATE = 60000;
 const FINISHING = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
 // The shaft's keyway, 9.971 x 4 x 2.951 mm: 183 000 / (pi x 4) = 14 563 rpm, held to 10 000; feed 10 000 x 3 x 0.008 x 4 = 960 mm/min;
-// ceil(2.951 / 0.8) = 4 passes of 5.971 + 2.951 / 4 = 6.70875 mm; 4 x 6.70875 / 960 x 60 = 1.6772 s.
-const KEYWAY_SEC = 1.6772;
-// The wider keyway, 20 x 5 x 3 mm: 11 650 rpm, held to 10 000; feed 10 000 x 3 x 0.008 x 5 = 1200 mm/min; ceil(3 / 1) = 3 passes of
-// 15 + 1 = 16 mm; 3 x 16 / 1200 x 60 = 2.4 s.
-const KEYWAY_2_SEC = 2.4;
+// ceil(2.951 / 4) = 1 pass of 5.971 + 2.951 = 8.922 mm; 8.922 / 960 x 60 = 0.5576 s.
+const KEYWAY_SEC = 0.5576;
+// The wider keyway, 20 x 5 x 3 mm: 11 650 rpm, held to 10 000; feed 10 000 x 3 x 0.008 x 5 = 1200 mm/min; ceil(3 / 5) = 1 pass of
+// 15 + 3 = 18 mm; 18 / 1200 x 60 = 0.9 s.
+const KEYWAY_2_SEC = 0.9;
 
 // Lead Screw side shaft: the closed keyway on its turned diameter, as feature_graph_v2 stores it.
 const KEYWAY = {
@@ -47,16 +47,16 @@ const KEYWAY = {
 };
 // A wider keyway elsewhere on a shaft: another group of the same type.
 const KEYWAY_2 = { id: 'Keyway-default_c2', feature_type: 'Keyway', variant: 'default', occurrences: [{ material_removed_mm3: 300, depth_mm: 3, length_mm: 20, width_mm: 5 }] };
-// Two radial slots, 6 x 3 x 2 mm: their floor's box and measured depth. Each is cut by a 3 mm end mill (the slot's width): 450 m/min holds
-// the live tool's 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; a pass as deep as the cutter is wide (3 mm, migration 1157), so the 2 mm is
-// one pass of 6 + 10 + 3 = 19 mm: 19 / 4500 = 0.00422 min = 0.25 s -> 1 s a slot (plunging, 4 plunges of 12 mm, is no quicker), 2 s for the two.
+// Two radial slots, 6 x 3 x 2 mm: their floor's box and measured depth. Each is cut by a 3 mm end mill (the slot's width): 390 m/min holds
+// the live tool's 10 000 rpm; 0.13 x 3 x 10 000 = 3900 mm/min; a pass as deep as the cutter is wide (3 mm, migration 1157), so the 2 mm is
+// one pass of 6 + 10 + 3 = 19 mm: 19 / 3900 = 0.00487 min = 0.29 s -> 1 s a slot (plunging, 3 plunges of 12 mm, is no quicker), 2 s for the two.
 const SLOTS = {
   id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial',
   occurrences: [{ extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }, { extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }],
 };
 const SLOTS_SEC = 2;
 // Two wrench flats on a Ø16, each 20 mm long, 10.583 mm across and 2 mm deep: the 10 mm end mill, one width pass (ceil((10.583 - 5) / 8)),
-// one depth pass; (20 + 10 + 5) / 4500 = 0.00778 min = 0.47 s -> 1 s a flat, 2 s for the two.
+// one depth pass; (20 + 10 + 5) / 3900 = 0.00897 min = 0.54 s -> 1 s a flat, 2 s for the two.
 const FLAT = { material_removed_mm3: 290.12, length_mm: 20, width_mm: 10.583, depth_mm: 2, diameter_mm: 16 };
 const FLATS = { id: 'Flat-default_c2', feature_type: 'Flat', variant: 'default', occurrences: [FLAT, { ...FLAT }] };
 const FLATS_SEC = 2;
@@ -126,7 +126,7 @@ describe('latheMillingLines: one lathe line per operation', () => {
     expect(step('Keyway Length')).toMatchObject({ kind: 'input', value: 9.971 });
     expect(step('Keyway Width')).toMatchObject({ kind: 'input', value: 4 });
     expect(step('Keyway Depth')).toMatchObject({ kind: 'input', value: 2.951 });
-    expect(step('Passes')).toMatchObject({ kind: 'calculated', value: 4 });
+    expect(step('Passes')).toMatchObject({ kind: 'calculated', value: 1 });
     expect(step('Cycle Time')).toMatchObject({ kind: 'calculated', value: KEYWAY_SEC });
     const row = { table: 'tblMillingFinishing', row: { MaterialClass: 'aluminum' } };
     expect(line.run.lookups).toEqual({ 'Teeth': row, 'Cutting Speed': row, 'Feed per Tooth per Diameter': row });
@@ -165,7 +165,7 @@ describe('latheMillingLines: one lathe line per operation', () => {
     expect([...new Set(line.run.trace.map((s) => s.group).filter(Boolean))]).toEqual(['Keyway 1', 'Keyway 2']);
     expect(line.run.trace.find((s) => s.fieldName === 'Keyway 1 · Keyway Width')).toMatchObject({ value: 4 });
     expect(line.run.trace.find((s) => s.fieldName === 'Keyway 2 · Keyway Width')).toMatchObject({ value: 5 });
-    expect(line.run.trace.at(-1)).toMatchObject({ fieldName: 'Obround Slot Milling cycle time', kind: 'calculated', value: 4.0772, unit: 's' });
+    expect(line.run.trace.at(-1)).toMatchObject({ fieldName: 'Obround Slot Milling cycle time', kind: 'calculated', value: 1.4576, unit: 's' });
     expect(line.rows).toEqual([
       { name: 'Obround Slot Milling // Keyway 1', timeSec: expect.closeTo(KEYWAY_SEC, 4), featureType: 'Keyway', count: 1, featureIds: ['Keyway-default_c1'] },
       { name: 'Obround Slot Milling // Keyway 2', timeSec: expect.closeTo(KEYWAY_2_SEC, 6), featureType: 'Keyway', count: 1, featureIds: ['Keyway-default_c2'] },
@@ -176,9 +176,9 @@ describe('latheMillingLines: one lathe line per operation', () => {
     const pair = { ...KEYWAY, occurrences: [KEYWAY.occurrences[0], { ...KEYWAY.occurrences[0], face_ids: [31, 32, 33, 34, 35] }] };
     const [line, ...rest] = milling([pair]);
     expect(rest).toEqual([]);
-    expect(line.run.sec).toBeCloseTo(2 * 1.6771875, 6);
+    expect(line.run.sec).toBeCloseTo(2 * 0.557625, 6);
     expect(line.run.trace.find((s) => s.fieldName === 'Keyways')).toMatchObject({ kind: 'input', value: 2 });
-    expect(line.rows).toEqual([{ name: 'Obround Slot Milling // Keyway ×2', timeSec: expect.closeTo(2 * 1.6771875, 6), featureType: 'Keyway', count: 2, featureIds: ['Keyway-default_c1'] }]);
+    expect(line.rows).toEqual([{ name: 'Obround Slot Milling // Keyway ×2', timeSec: expect.closeTo(2 * 0.557625, 6), featureType: 'Keyway', count: 2, featureIds: ['Keyway-default_c1'] }]);
   });
 
   it('an operation the sequencer could not time is a line with no time that names what it lacks, and no row', () => {

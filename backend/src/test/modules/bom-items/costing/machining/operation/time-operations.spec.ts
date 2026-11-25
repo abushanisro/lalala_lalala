@@ -12,10 +12,11 @@ import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const seed = (value: number): CalcSeed => ({ value, source: 'test' });
-// A 9.971 x 4 x 2.951 mm keyway in aluminium (the tblMillingFinishing row): 4 passes of 6.70875 mm; on a 10 000 rpm machine the feed is
-// 10 000 x 3 x 0.008 x 4 = 960 mm/min and the cut 4 x 6.70875 / 960 x 60 = 1.6772 s. Its spindle limit is the machine's (migration 1150).
+// A 9.971 x 4 x 2.951 mm keyway in aluminium (the tblMillingFinishing row): 1 pass of 8.922 mm (a pass as deep as the cutter is wide,
+// migration 1158); on a 10 000 rpm machine the feed is 10 000 x 3 x 0.008 x 4 = 960 mm/min and the cut 8.922 / 960 x 60 = 0.5576 s. Its
+// spindle limit is the machine's (migration 1150).
 const KEYWAY: OperationLine = {
-  name: 'Obround Slot Milling', timeSec: 1.6772, source: 'feature', cadFeatureType: 'Keyway',
+  name: 'Obround Slot Milling', timeSec: 0.5576, source: 'feature', cadFeatureType: 'Keyway',
   plan: [{
     operation: 'Obround Slot Milling',
     seeds: {
@@ -33,28 +34,28 @@ describe('timeOperations', () => {
     expect(timed!.missing).toBe('Obround Slot Milling: Max Spindle Speed');
   });
 
-  it('on a 10 000 rpm machine: 960 mm/min, 1.6772 s', () => {
+  it('on a 10 000 rpm machine: 960 mm/min, 0.5576 s', () => {
     const [timed] = timeOperations([KEYWAY], CALCS, machine(10000));
-    expect(timed!.timeSec).toBeCloseTo(1.6772, 3);
+    expect(timed!.timeSec).toBeCloseTo(0.5576, 3);
     expect(timed!.calculator?.id).toBe('Machining - Obround Slot Milling');
   });
 
   it('above 10 000 rpm the cutter is no longer held at 10 000: on a 20 000 rpm machine it turns at its cutting speed, 14 563 rpm', () => {
-    // 183 000 / (pi x 4) = 14 563.4 rpm, under the machine's 20 000: feed 14 563.4 x 3 x 0.008 x 4 = 1398.1 mm/min; 4 x 6.70875 / 1398.1 x 60.
+    // 183 000 / (pi x 4) = 14 563.4 rpm, under the machine's 20 000: feed 14 563.4 x 3 x 0.008 x 4 = 1398.1 mm/min; 8.922 / 1398.1 x 60.
     const [timed] = timeOperations([KEYWAY], CALCS, machine(20000));
     expect(timed!.trace!.find((s) => s.fieldName === 'Spindle Speed')!.value).toBeCloseTo(183000 / (Math.PI * 4), 1);
-    expect(timed!.timeSec).toBeCloseTo((4 * 6.70875 / ((183000 / (Math.PI * 4)) * 0.096)) * 60, 3);
+    expect(timed!.timeSec).toBeCloseTo((8.922 / ((183000 / (Math.PI * 4)) * 0.096)) * 60, 3);
   });
 
-  it('on a machine, its spindle limit caps the cut: 6000 rpm feeds 576 mm/min, 2.7953 s', () => {
+  it('on a machine, its spindle limit caps the cut: 6000 rpm feeds 576 mm/min, 0.9294 s', () => {
     const [timed] = timeOperations([KEYWAY], CALCS, machine(6000));
-    expect(timed!.timeSec).toBeCloseTo((4 * 6.70875 / 576) * 60, 4);
+    expect(timed!.timeSec).toBeCloseTo((8.922 / 576) * 60, 4);
     expect(timed!.trace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 6000 });
   });
 
   it('keeps the drawing\'s factor on a re-timed operation (a fine surface finish: x 1.3)', () => {
     const [timed] = timeOperations([{ ...KEYWAY, timeSec: KEYWAY.timeSec * 1.3, timeFactor: 1.3 }], CALCS, machine(6000));
-    expect(timed!.timeSec).toBeCloseTo((4 * 6.70875 / 576) * 60 * 1.3, 4);
+    expect(timed!.timeSec).toBeCloseTo((8.922 / 576) * 60 * 1.3, 4);
   });
 
   it('a stepped hole is one run per step, each under its step\'s name, then their sum', () => {
@@ -93,10 +94,10 @@ describe('each mill route times the part\'s operations on its own spindle', () =
   const millMinutes = (rpm: number) =>
     computeMillingCostSummary(input(rpm), '3_axis_mill' as MachineClassId).processLines.find((l) => l.process === '3 Axis Mill')!.cycleTimeMin;
 
-  it('the machine\'s limit replaces the calculator\'s 10 000 rpm default: 6000 rpm is 2.7953 s, 12 000 rpm 1.3977 s, plus the mill line\'s moves', () => {
-    // 6000 rpm: 4 x 6.70875 / (6000 x 0.096 = 576 mm/min) x 60 = 2.7953 s.  12 000 rpm: 4 x 6.70875 / 1152 x 60 = 1.3977 s.
-    // The mill line adds its moves (Machining - Milling): one 5 s tool change and one rapid move of 0.5 x 100 mm at 30 000 mm/min (0.1 s).
-    expect(millMinutes(6000) * 60).toBeCloseTo(((4 * 6.70875) / 576) * 60 + 5.1, 1);
-    expect(millMinutes(12000) * 60).toBeCloseTo(((4 * 6.70875) / 1152) * 60 + 5.1, 1);
+  it('the machine\'s limit replaces the calculator\'s 10 000 rpm default: 6000 rpm is 0.9294 s, 12 000 rpm 0.4647 s, plus the mill line\'s moves', () => {
+    // 6000 rpm: 8.922 / (6000 x 0.096 = 576 mm/min) x 60 = 0.9294 s.  12 000 rpm: 8.922 / 1152 x 60 = 0.4647 s.
+    // The mill line adds its moves (Machining - Milling): one 4.2 s tool change and one rapid move of 0.5 x 100 mm at 30 000 mm/min (0.1 s).
+    expect(millMinutes(6000) * 60).toBeCloseTo((8.922 / 576) * 60 + 4.3, 1);
+    expect(millMinutes(12000) * 60).toBeCloseTo((8.922 / 1152) * 60 + 4.3, 1);
   });
 });

@@ -135,6 +135,12 @@ ALTER TABLE public.process_taxonomy ADD COLUMN machining_route_role varchar(30);
 INSERT INTO public.calculators (id, name, is_global) VALUES
   ('edccd27a-c91c-479d-a440-d00053249a3a', 'Sheet Metal - Counterboring', true), ('0f7d6451-3937-472d-9a4c-3f8f3ebf59d8', 'Sheet Metal - Countersinking', true),
   ('72f84130-a741-425f-8fa9-9b027541801c', 'Sheet Metal - PEM Insertion', true), ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Machining - Tapping', true);
+-- a field's input settings (migration 100) and update stamp as the real database has them, and the tapping calculator's tool fields (migrations
+-- 052-055): migration 1159 gives the tap its price and life from the machining workbook, with their source in input_config
+ALTER TABLE public.calculator_fields ADD COLUMN input_config jsonb DEFAULT '{}'::jsonb, ADD COLUMN updated_at timestamptz DEFAULT now();
+INSERT INTO public.calculator_fields (calculator_id, field_name, display_label, field_type, unit, default_value, display_order) VALUES
+  ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Tool Cost', 'Tool Cost ($)', 'number', '$', '0', 6),
+  ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Tool Life', 'Tool Life (Parts)', 'number', 'Parts', '0', 7);
 -- the materials table as the real database has it (migration 352 adds cut_code): migration 978 writes the cut code of the plastics onto it
 CREATE TABLE public.raw_materials (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name varchar(255) NOT NULL, cut_code decimal(10,2));
 -- the material columns as the real database has them (migration 069 on): migrations 1090 and 1092 fill the bar and tube materials' strengths and specific heat

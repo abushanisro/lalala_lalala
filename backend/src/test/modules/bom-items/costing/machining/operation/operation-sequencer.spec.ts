@@ -279,10 +279,10 @@ describe('buildOperationSequence', () => {
     const spotDrill = ops.find((o) => o.name === 'Center Drilling' && o.cadFeatureType === 'MultiStepHole')!;
     const drill = ops.find((o) => o.name === 'Drilling' && o.cadFeatureType === 'MultiStepHole')!;
     expect(spotDrill).toBeDefined();
-    // One spot per hole assembly, at its entry step (Ø16), on the workbook's Drilling sheet (1152): mild steel 17 m/min, 0.33 mm/rev at
-    // Ø16 = 338.2 rpm; (16 / 2 + 10) / (0.33 x 338.2) min = 9.68 s -> 10 s.
+    // One spot per hole assembly, at its entry step (Ø16), on the workbook's Drilling sheet (1152): mild steel 13.8 m/min (9-25 at the
+    // Range Position 0.3), 0.33 mm/rev at Ø16 = 274.5 rpm; (16 / 2 + 10) / (0.33 x 274.5) min = 11.92 s -> 12 s.
     expect(spotDrill.diameterMm).toBe(16);
-    expect(spotDrill.timeSec).toBe(10);
+    expect(spotDrill.timeSec).toBe(12);
     expect(drill).toBeDefined();
     expect(drill.timeSec).toBeGreaterThan(0);
 
@@ -323,15 +323,16 @@ describe('buildOperationSequence', () => {
   });
 
   it('a pocket roughs faster in aluminium than in mild steel: the workbook\'s milling conditions for each material', () => {
-    // A 40 x 25 x 10 pocket: 3 width passes (ceil((25 - 5) / 8)), 5 depth passes (ceil(10 / 2)). Mild steel: 90 m/min, 0.115 mm/tooth,
-    // 4 teeth on the 10 mm cutter: n = 2864.79 rpm; (40 + 10 + 5) / (0.115 x 4 x 2864.79) x 15 = 0.62605 min -> 38 s. Aluminium:
-    // 450 m/min holds the test machine's 10 000 rpm, 0.15 mm/tooth, 3 teeth: 55 / 4500 x 15 = 0.18333 min -> 11 s. The machinability
+    // A 40 x 25 x 10 pocket: 3 width passes (ceil((25 - 5) / 8)), 5 depth passes (ceil(10 / 2)). Mild steel at the Range Position 0.3:
+    // 78 m/min, 0.101 mm/tooth, 4 teeth on the 10 mm cutter: n = 2482.82 rpm; (40 + 10 + 5) / (0.101 x 4 x 2482.82) x 15 = 0.82248 min
+    // -> 50 s. Aluminium: 390 m/min holds the test machine's 10 000 rpm, 0.13 mm/tooth, 3 teeth: 55 / 3900 x 15 = 0.21154 min -> 13 s.
+    // The machinability
     // factor no longer scales it: the workbook's speeds are the material's own.
     const features = [pocketFeature(1, 10_000)];
     const mild = buildOperationSequence(features, { matClass: 'mild_steel' }).find((o) => o.name === 'Rough Milling')!;
     const alu = buildOperationSequence(features, { matClass: 'aluminum' }).find((o) => o.name === 'Rough Milling')!;
-    expect(mild.timeSec).toBe(38);
-    expect(alu.timeSec).toBe(11);
+    expect(mild.timeSec).toBe(50);
+    expect(alu.timeSec).toBe(13);
   });
 
   it('ops are sorted in canonical manufacturing order', () => {
@@ -466,8 +467,9 @@ const COUNTERBORE_TABLE = [
 
 // A counterbore is the catalog's Step Drilling, timed as the machining workbook's Step Drilling sheet times it (calculator of
 // migration 1139; it replaces a tblCounterboring time and 8 s a hole when that had no row). Ø10 x 5 mm on the 10 000 rpm test machine:
-//   aluminium  92.5 m/min (75-110), 0.2 mm/rev (the 10-13 mm band): n = 2944.4 rpm; (5 + 10) / (0.2 x 2944.4) = 1.53 s -> 2 s
-//   stainless  17.5 m/min (12-23), 0.15 mm/rev:                       n = 557.0 rpm;  (5 + 10) / (0.15 x 557.0) = 10.77 s -> 11 s
+//   aluminium  85.5 m/min (75-110 at the Range Position 0.3), 0.2 mm/rev (the 10-13 mm band): n = 2721.5 rpm; (5 + 10) / (0.2 x 2721.5)
+//              = 1.65 s -> 2 s
+//   stainless  15.3 m/min (12-23), 0.15 mm/rev: n = 487.0 rpm; (5 + 10) / (0.15 x 487.0) = 12.32 s -> 13 s
 describe('Counterbore — Step Drilling on the workbook', () => {
   const step = (matClass: 'aluminum' | 'stainless', workbook = workbookFixture()) =>
     buildOperationSequence([counterboreFeature(1, 10)], { matClass, workbook }).find((o) => o.name === 'Step Drilling')!;
@@ -487,30 +489,30 @@ describe('Counterbore — Step Drilling on the workbook', () => {
   });
 
   it('is material-aware: stainless counterbores slower than aluminium', () => {
-    expect(step('stainless').timeSec).toBe(11);
+    expect(step('stainless').timeSec).toBe(13);
   });
 });
 
 
 // The edges, spots and countersinks on the workbook (migration 1152), worked out by hand on aluminium: the workbook's milling row
-// ALUMINUM ALLOY CAST AND WROUGHT is 300-600 m/min and 0.1-0.2 mm/tooth (450 and 0.15 at the middle); its drilling rows 75-110 m/min
-// (92.5) with a feed per diameter band. The material's end mill here is 10 mm, 3 teeth, on a 10 000 rpm test mill.
+// ALUMINUM ALLOY CAST AND WROUGHT is 300-600 m/min and 0.1-0.2 mm/tooth (390 and 0.13 at the Range Position 0.3); its drilling rows
+// 75-110 m/min (85.5) with a feed per diameter band. The material's end mill here is 10 mm, 3 teeth, on a 10 000 rpm test mill.
 const ALU_END_MILL = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
 const TEST_MILL = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
 const onMill = (features: object[]) => timeOperations(buildOperationSequence(features, {
   matClass: 'aluminum', machinabilityFactor: 1.0, calculators: specAsCalculators(), workbook: workbookFixture(), finishing: ALU_END_MILL,
 }), specAsCalculators(), TEST_MILL);
-// One pass of the end mill along an edge: 450 000 / (pi x 10) = 14 324 rpm, held to the mill's 10 000; feed 0.15 x 3 x 10 000 = 4500 mm/min.
-const edgeSec = (lengthMm: number) => Math.ceil(((lengthMm + 10 + 5) / 4500) * 60);
+// One pass of the end mill along an edge: 390 000 / (pi x 10) = 12 414 rpm, held to the mill's 10 000; feed 0.13 x 3 x 10 000 = 3900 mm/min.
+const edgeSec = (lengthMm: number) => Math.ceil(((lengthMm + 10 + 5) / 3900) * 60);
 
 describe('chamfers, fillets and grooves: one pass of the end mill along each edge (the workbook\'s End Milling sheet, 1152)', () => {
-  it('a round chamfer of Ø10: pi x 10 = 31.4 mm + 10 + 5 at 4500 mm/min = 0.62 s, 1 s an edge', () => {
+  it('a round chamfer of Ø10: pi x 10 = 31.4 mm + 10 + 5 at 3900 mm/min = 0.71 s, 1 s an edge', () => {
     const chamfer = onMill([{ feature_type: 'Edge', variant: 'chamfer', diameter_mm: 10, occurrences: [{}, {}] }]).find((o) => o.name === 'Chamfering')!;
     expect(chamfer.missing).toBeUndefined();
     expect(chamfer.timeSec).toBe(2 * edgeSec(Math.PI * 10));
     expect(chamfer.trace!.find((t) => t.fieldName === 'Spindle Speed')!.value).toBe(10000);
-    expect(chamfer.trace!.find((t) => t.fieldName === 'Cutting Speed')!.value).toBe(450);
-    expect(chamfer.trace!.find((t) => t.fieldName === 'Feed per Tooth')!.value).toBe(0.15);
+    expect(chamfer.trace!.find((t) => t.fieldName === 'Cutting Speed')!.value).toBe(390);
+    expect(chamfer.trace!.find((t) => t.fieldName === 'Feed per Tooth')!.value).toBe(0.13);
   });
 
   it('a straight edge is as long as its face\'s longest extent: edges of one length are one run, another length another', () => {
@@ -648,7 +650,7 @@ describe('spotting and countersinking on the workbook\'s Drilling sheet (1152)',
   const drillRow = (diameter: number) => (workbookFixture().tables.tblDrillReamData as Array<Record<string, string>>)
     .find((r) => r.WorkMaterial === 'ALUMINUM ALLOY CAST AND WROUGHT' && r.Operation === 'Drilling' && Number(r.DiameterMinMm) <= diameter && diameter <= Number(r.DiameterMaxMm))!;
   const holeSec = (depth: number, diameter: number) => {
-    const n = Math.min(10000, (92.5 * 1000) / (Math.PI * diameter));
+    const n = Math.min(10000, (85.5 * 1000) / (Math.PI * diameter));
     return Math.ceil(((depth + 10) / (Number(drillRow(diameter).FeedMmPerRev) * n)) * 60);
   };
 
@@ -717,8 +719,8 @@ describe('buildOperationSequence — SimpleHole cross / pcd_pattern', () => {
     const three = buildOperationSequence(pattern(3), { matClass: 'aluminum' });
     const spot6 = six.find((o) => o.name === 'Center Drilling')!;
     const spot3 = three.find((o) => o.name === 'Center Drilling')!;
-    // Each hole spotted on the workbook's Drilling sheet (1152): aluminium 92.5 m/min, 0.13 mm/rev at Ø6 = 4907 rpm; (3 + 10) / (0.13 x
-    // 4907) min = 1.22 s -> 2 s a hole.
+    // Each hole spotted on the workbook's Drilling sheet (1152): aluminium 85.5 m/min, 0.13 mm/rev at Ø6 = 4536 rpm; (3 + 10) / (0.13 x
+    // 4536) min = 1.32 s -> 2 s a hole.
     expect(spot6.timeSec).toBe(6 * 2);
     expect(spot3.timeSec).toBe(3 * 2);
     expect(six.find((o) => o.name === 'Drilling')!.timeSec)
@@ -774,14 +776,14 @@ describe('every milling operation is timed by its stored calculator', () => {
   }];
 
   it('rough milling: the workbook\'s End Milling sheet over the pocket\'s length, width and depth, one run for the two', () => {
-    // Mild steel: 90 m/min and 0.115 mm/tooth (the middle of the workbook's 60 - 120 and 0.08 - 0.15), the 10 mm 4-tooth end mill:
-    // n = 90000 / (pi x 10) = 2864.79 rpm; width passes ceil((25 - 5) / 8) = 3, depth passes ceil(10 / 2) = 5;
-    // (40 + 10 + 5) / (0.115 x 4 x 2864.79) x 3 x 5 = 0.62605 min = 37.56 s -> 38 s a pocket, 76 s for the two.
+    // Mild steel: 78 m/min and 0.101 mm/tooth (the workbook's 60 - 120 and 0.08 - 0.15 at the Range Position 0.3), the 10 mm 4-tooth
+    // end mill: n = 78000 / (pi x 10) = 2482.82 rpm; width passes ceil((25 - 5) / 8) = 3, depth passes ceil(10 / 2) = 5;
+    // (40 + 10 + 5) / (0.101 x 4 x 2482.82) x 3 x 5 = 0.82248 min = 49.35 s -> 50 s a pocket, 100 s for the two.
     const rough = buildOperationSequence(sized, { matClass: 'mild_steel' }).filter((o) => o.name === 'Rough Milling');
     expect(rough).toHaveLength(1);
-    expect(rough[0]!).toMatchObject({ timeSec: 76, count: 2 });
+    expect(rough[0]!).toMatchObject({ timeSec: 100, count: 2 });
     const step = (name: string) => rough[0]!.trace!.find((st) => st.fieldName === name)?.value;
-    expect([step('Width Passes'), step('Depth Passes'), step('Time per Cut')]).toEqual([3, 5, 38]);
+    expect([step('Width Passes'), step('Depth Passes'), step('Time per Cut')]).toEqual([3, 5, 50]);
     expect(rough[0]!.calculator?.lookups['Speed Min']?.table).toBe('tblMillingConditions');
   });
 
@@ -798,16 +800,17 @@ describe('every milling operation is timed by its stored calculator', () => {
   });
 
   it('facing: the workbook\'s Face Milling sheet over the stock model\'s faces, not a fixed time', () => {
-    // Mild steel, the sheet's 60 mm 6-tooth face mill: n = 90000 / (pi x 60) = 477.46 rpm; width passes max(1, ceil((60 - 30) / 58)) = 1,
-    // depth passes ceil(2.5 / 2) = 2; (100 + 10 + 30) / (0.115 x 6 x 477.46) x 1 x 2 = 0.84990 min = 50.99 s -> 51 s a face, 102 s for the two.
+    // Mild steel, the sheet's 60 mm 6-tooth face mill: n = 78000 / (pi x 60) = 413.80 rpm; width passes max(1, ceil((60 - 30) / 58)) = 1,
+    // depth passes ceil(2.5 / 2) = 2; (100 + 10 + 30) / (0.101 x 6 x 413.80) x 1 x 2 = 1.11659 min = 67.00 s -> 67 s a face, 134 s for
+    // the two.
     const hole = [{ feature_type: 'SimpleHole', variant: 'through', diameter_mm: 6, occurrences: [{ depth_mm: 10 }, { depth_mm: 10 }] }];
     const ops = buildOperationSequence(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, materialGrade: 'AISI 1018', facing: FACING });
     const facing = ops.find((o) => o.name === 'Facing')!;
-    expect(facing).toMatchObject({ timeSec: 102, count: 2 });
+    expect(facing).toMatchObject({ timeSec: 134, count: 2 });
     expect(facing.trace!.find((st) => st.fieldName === 'Face Length')!.source).toBe('Stock: a 100 x 60 x 25 mm test block');
-    // Two Ø6 holes spotted on the workbook's Drilling sheet (1152): mild steel 17 m/min, 0.1 mm/rev = 901.9 rpm; (3 + 10) / (0.1 x 901.9) min
-    // = 8.65 s -> 9 s a hole.
-    expect(ops.find((o) => o.name === 'Center Drilling')!.timeSec).toBe(18);
+    // Two Ø6 holes spotted on the workbook's Drilling sheet (1152): mild steel 13.8 m/min, 0.1 mm/rev = 732.1 rpm; (3 + 10) / (0.1 x 732.1)
+    // min = 10.65 s -> 11 s a hole.
+    expect(ops.find((o) => o.name === 'Center Drilling')!.timeSec).toBe(22);
   });
 
   it('with no calculators an operation is a named gap, never a number', () => {
@@ -831,16 +834,17 @@ describe('the removal rate is data (tblMillingRemovalRate), not a table in the c
 
   it('the rate it is given is the one it uses, and the trace names the table', () => {
     const bulk = buildWith(hole, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: specAsCalculators(), removalRateMm3PerMin: 24000, stockAround }).find((o) => o.name === 'Bulk Milling')!;
-    expect(bulk.timeSec).toBeCloseTo((12000 * 0.8 / 24000 + 12000 * 0.2 / (24000 * 0.4)) * 60, 6);
+    // Roughing Share 0.9 (Otsuka et al. 1997, migration 1158), the rest at 0.4 of the rate: (0.45 + 0.125) min = 34.5 s.
+    expect(bulk.timeSec).toBeCloseTo((12000 * 0.9 / 24000 + 12000 * 0.1 / (24000 * 0.4)) * 60, 6);
     expect(bulk.trace!.find((st) => st.fieldName === 'Material Removal Rate')!.source).toContain('tblMillingRemovalRate');
   });
 
   it('countersinking is the workbook\'s Drilling sheet at the countersink\'s diameter (1152), not a set 6 s a hole', () => {
-    // Ø8 over its 4.8 mm hole: (8 - 4.8) / 2 = 1.6 mm deep; mild steel 17 m/min, 0.23 mm/rev at Ø8 = 676.4 rpm; (1.6 + 10) / (0.23 x 676.4)
-    // min = 4.47 s -> 5 s a hole, 10 s for the two.
+    // Ø8 over its 4.8 mm hole: (8 - 4.8) / 2 = 1.6 mm deep; mild steel 13.8 m/min, 0.23 mm/rev at Ø8 = 549.1 rpm; (1.6 + 10) / (0.23 x
+    // 549.1) min = 5.51 s -> 6 s a hole, 12 s for the two.
     const csk = [{ feature_type: 'Edge', variant: 'countersink', diameter_mm: 8, occurrences: [{ depth_mm: 4 }, { depth_mm: 4 }] }];
     const op = buildOperationSequence(csk, { matClass: 'mild_steel', machinabilityFactor: 1.0, materialGrade: 'AISI 1018', workbook: workbookFixture() }).find((o) => o.name === 'Countersinking')!;
-    expect(op.timeSec).toBe(10);
+    expect(op.timeSec).toBe(12);
   });
 });
 
@@ -851,9 +855,10 @@ describe('finishing is a tool path at the cutter feed (tblMillingFinishing), not
   const pockets = (...occurrences: object[]) => [{ feature_type: 'PocketV2', variant: 'default', occurrences }];
   const finishOf = (features: object[]) => buildOperationSequence(features, { matClass: 'mild_steel' }).filter((o) => o.name === 'Fine Finish Milling');
 
-  it('a pocket wider than the cutter: floor at half-diameter stepover, walls one diameter per step-down, a lead-in and lead-out', () => {
+  // Floor stepover 0.95 x D (Autodesk Fusion's face default), wall step-down 1.5 x D (the Corrax side milling ap), migration 1158.
+  it('a pocket wider than the cutter: floor at a 0.95-diameter stepover, walls 1.5 diameters per step-down, a lead-in and lead-out', () => {
     const [finish] = finishOf(pockets(pocketOf(60, 40, 12)));
-    const path = (60 * 40) / (10 * 0.5) + (2 * (60 + 40) * 12) / (10 * 1) + 1 * 2 * 10;
+    const path = (60 * 40) / (10 * 0.95) + (2 * (60 + 40) * 12) / (10 * 1.5) + 1 * 2 * 10;
     expect(finish!.timeSec).toBeCloseTo(path / feed * 60, 6);
     expect(finish!.trace!.map((st) => st.fieldName)).toEqual(expect.arrayContaining(['Floor Area', 'Wall Area', 'Tool Diameter', 'Spindle Speed', 'Feed Rate', 'Path Length']));
   });
@@ -863,7 +868,7 @@ describe('finishing is a tool path at the cutter feed (tblMillingFinishing), not
     expect(finish.map((o) => o.count)).toEqual([1, 2]);
     // Ø4: 76 m/min is 6048 rpm, feed 4 x 0.008 x 4 mm per rev; floor only (the cutter fills the width).
     const narrowFeed = (76 * 1000 / (Math.PI * 4)) * 4 * 0.008 * 4;
-    expect(finish[1]!.timeSec).toBeCloseTo(((30 * 4 + 20 * 4) / (4 * 0.5) + 2 * 2 * 4) / narrowFeed * 60, 6);
+    expect(finish[1]!.timeSec).toBeCloseTo(((30 * 4 + 20 * 4) / (4 * 0.95) + 2 * 2 * 4) / narrowFeed * 60, 6);
   });
 
   it('an open step narrower than the cutter is finished with the standard cutter: its floor, and its one wall at the measured depth', () => {
@@ -871,21 +876,22 @@ describe('finishing is a tool path at the cutter feed (tblMillingFinishing), not
     const step = { extents_mm: [45, 6, 0], material_removed_mm3: 1, depth_mm: 4, walled_fraction: 45 / 102, width_confined: false };
     const finish = finishOf(pockets(step));
     expect(finish).toHaveLength(1);
-    const path = (45 * 6) / (10 * 0.5) + (45 * 4) / (10 * 1) + 1 * 2 * 10;
+    const path = (45 * 6) / (10 * 0.95) + (45 * 4) / (10 * 1.5) + 1 * 2 * 10;
     expect(finish[0]!.timeSec).toBeCloseTo(path / feed * 60, 6);
   });
 
   it('a small cutter is held to the spindle speed limit, so it feeds slower', () => {
     const [finish] = finishOf(pockets(pocketOf(20, 1, 1)));
     // Ø1 would need 24192 rpm; the calculator's limit is 10000.
-    expect(finish!.timeSec).toBeCloseTo(((20 * 1) / (1 * 0.5) + 2 * 1) / (10000 * 4 * 0.008 * 1) * 60, 6);
+    expect(finish!.timeSec).toBeCloseTo(((20 * 1) / (1 * 0.95) + 2 * 1) / (10000 * 4 * 0.008 * 1) * 60, 6);
   });
 
   it('a free-form surface is stepped over at the scallop height, a wall by the cutter side: the surface takes longer per area', () => {
     const region = (type: string) => [{ feature_type: type, variant: 'default', occurrences: [{ area_mm2: 500 }] }];
     const timeOf = (type: string) => buildOperationSequence(region(type), { matClass: 'mild_steel' }).find((o) => o.name === 'Contouring')!.timeSec;
-    expect(timeOf('CurvedSurface')).toBeCloseTo((500 / Math.sqrt(4 * 10 * 0.01) + 2 * 10) / feed * 60, 6);
-    expect(timeOf('CurvedWall')).toBeCloseTo((500 / 10 + 2 * 10) / feed * 60, 6);
+    // Scallop height 0.0125 mm (Ra 3.2 um), wall step-down 1.5 x D (migration 1158).
+    expect(timeOf('CurvedSurface')).toBeCloseTo((500 / Math.sqrt(4 * 10 * 0.0125) + 2 * 10) / feed * 60, 6);
+    expect(timeOf('CurvedWall')).toBeCloseTo((500 / (10 * 1.5) + 2 * 10) / feed * 60, 6);
   });
 
   it('with no finishing row the pass is a named gap', () => {
@@ -913,8 +919,8 @@ describe('a flat milled on a turned diameter: Rough Milling // Flat', () => {
   });
 
   it('is roughed as the workbook\'s End Milling sheet times it, over each flat\'s CAD length, width and depth', () => {
-    // Aluminium: 450 m/min on the 10 mm 3-tooth end mill holds the test machine's 10 000 rpm, 0.15 mm/tooth; one width pass
-    // (ceil((10.583 - 5) / 8)), one depth pass (ceil(2 / 2)); (20 + 10 + 5) / (0.15 x 3 x 10000) = 0.00778 min = 0.47 s -> 1 s a flat.
+    // Aluminium: 390 m/min on the 10 mm 3-tooth end mill holds the test machine's 10 000 rpm, 0.13 mm/tooth; one width pass
+    // (ceil((10.583 - 5) / 8)), one depth pass (ceil(2 / 2)); (20 + 10 + 5) / (0.13 x 3 x 10000) = 0.00897 min = 0.54 s -> 1 s a flat.
     const [op] = flatOps([FLATS]);
     expect(op.timeSec).toBe(2);
     expect(op.calculator?.id).toBe('Machining - Rough Milling');

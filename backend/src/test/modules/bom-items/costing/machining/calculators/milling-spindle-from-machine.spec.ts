@@ -22,13 +22,13 @@ const cutter = (cuttingSpeed: number): Record<string, CalcSeed> => ({
 
 // Each calculator on one face or keyway of a 10 mm cutter, and the path its formulas give it (mm).
 const CASES: Array<{ operation: string; seeds: Record<string, CalcSeed>; pathMm: number; passes?: number }> = [
-  // 1000 mm2 of floor at a 0.5 stepover = 200 mm, plus 2 x 10 mm of lead.
-  { operation: 'Fine Finish Milling', seeds: { 'Floor Area': seed(1000), 'Wall Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 220 },
-  // 1000 mm2 of wall at one diameter a step = 100 mm, plus 20 mm of lead.
-  { operation: 'Contouring', seeds: { 'Wall Area': seed(1000), 'Surface Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 120 },
-  { operation: 'Perimeter Milling', seeds: { 'Wall Area': seed(1000), 'Surface Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 120 },
-  // A 40 x 10 x 3.9 mm keyway: 2 passes (3.9 / (0.2 x 10)), each 30 + 1.95 mm; the cutter is the keyway's width.
-  { operation: 'Obround Slot Milling', seeds: { 'Keyway Length': seed(40), 'Keyway Width': seed(10), 'Keyway Depth': seed(3.9), 'Keyways': seed(1) }, pathMm: 31.95, passes: 2 },
+  // 1000 mm2 of floor at a 0.95 stepover = 105.26 mm, plus 2 x 10 mm of lead.
+  { operation: 'Fine Finish Milling', seeds: { 'Floor Area': seed(1000), 'Wall Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 1000 / 9.5 + 20 },
+  // 1000 mm2 of wall at 1.5 diameters a step = 66.67 mm, plus 20 mm of lead.
+  { operation: 'Contouring', seeds: { 'Wall Area': seed(1000), 'Surface Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 1000 / 15 + 20 },
+  { operation: 'Perimeter Milling', seeds: { 'Wall Area': seed(1000), 'Surface Area': seed(0), 'Faces': seed(1), 'Tool Diameter': seed(10) }, pathMm: 1000 / 15 + 20 },
+  // A 40 x 10 x 13.9 mm keyway: 2 passes (13.9 / (1 x 10)), each 30 + 6.95 mm; the cutter is the keyway's width.
+  { operation: 'Obround Slot Milling', seeds: { 'Keyway Length': seed(40), 'Keyway Width': seed(10), 'Keyway Depth': seed(13.9), 'Keyways': seed(1) }, pathMm: 36.95, passes: 2 },
 ];
 
 const run = (c: (typeof CASES)[number], cuttingSpeed: number, rpm: number) =>

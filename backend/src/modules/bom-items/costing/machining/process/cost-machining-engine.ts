@@ -2759,10 +2759,19 @@ export function computeTurningCostSummary(
         inputStep('Knurl', null, k.label, 'The drawing\'s knurl callout (drawing analysis)'),
         ...(k.diameterMm != null ? [inputStep('Knurl Diameter', 'mm', k.diameterMm, k.diameterSource)] : []),
         ...(k.lengthMm != null ? [inputStep('Knurl Length', 'mm', k.lengthMm, k.lengthSource)] : []),
+        ...(k.tpi != null && k.pitchMm == null ? [inputStep('TPI', null, k.tpi, k.tpiSource)] : []),
       ]);
+      // The knurl's pitch, the run's feed: the callout's TPI, or its pitch in mm as 25.4 / pitch. None stated: the calculator's own TPI.
+      const tpiRef = k.pitchMm != null
+        ? calculationRef('Knurl TPI', [
+          inputStep('Knurl pitch', 'mm', k.pitchMm, `Drawing: the knurl callout's pitch (${k.label})`, callout),
+          resultStep('TPI', null, 25.4 / k.pitchMm, '25.4 / Knurl pitch'),
+        ])
+        : callout;
       const seeds: Record<string, CalcSeed> = {
         ...(k.diameterMm != null ? { 'Knurl Diameter': { value: k.diameterMm, source: k.diameterSource, ref: ref.ref ?? callout } } : {}),
         ...(k.lengthMm != null ? { 'Knurl Length': { value: k.lengthMm, source: k.lengthSource, ref: ref.ref ?? callout } } : {}),
+        ...(k.tpi != null ? { TPI: { value: k.tpi, source: k.tpiSource, ref: tpiRef } } : {}),
       };
       return { label: k.label, ring: k.ring, count: 1, run: withNamedGaps('Knurling', workbookRun('Knurling', seeds), k.missing) };
     }));

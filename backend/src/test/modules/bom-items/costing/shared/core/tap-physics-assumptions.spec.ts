@@ -34,10 +34,23 @@ describe('tap physics reports which of its inputs were assumed', () => {
   });
 
   it('flags a nominal that is not in the coarse series', () => {
-    // M13 is not an ISO 261 coarse-series diameter.
+    // M13 is not an ISO 261 coarse-series diameter: the assumed tap's pitch, M4's ISO 262 coarse 0.7 (it was 1.0, no M4 thread).
     const r = resolveTapPhysicsInputs('M13', null, 5, 5, 'SECC');
     expect(r.pitchIsAssumed).toBe(true);
-    expect(r.pitchMm).toBe(1.0);
+    expect(r.pitchMm).toBe(0.7);
+  });
+
+  it('taps a hole with no measured depth in solid stock for its thread engagement: 1 x D in steel, 2 x D in aluminium (Nord-Lock)', () => {
+    expect(resolveTapPhysicsInputs('M6', null, null, null, 'SECC')).toMatchObject({ depthMm: 6, depthIsAssumed: true });
+    expect(resolveTapPhysicsInputs('M6', null, null, null, 'AL6061')).toMatchObject({ depthMm: 12, depthIsAssumed: true });
+    // A sheet tapped through: its thickness, as before.
+    expect(resolveTapPhysicsInputs('M6', null, null, 2, 'AL6061')).toMatchObject({ depthMm: 2, depthIsAssumed: true });
+  });
+
+  it('taps at the workbook\'s HSS tapping speeds (Tapping sheet D39, D47, D51: the middle of each range)', () => {
+    expect(resolveTapPhysicsInputs('M6', null, 5, 5, 'SECC').surfaceSpeedMMin).toBe(11.5);
+    expect(resolveTapPhysicsInputs('M6', null, 5, 5, 'SS304').surfaceSpeedMMin).toBe(8.5);
+    expect(resolveTapPhysicsInputs('M6', null, 5, 5, 'AL6061').surfaceSpeedMMin).toBe(16);
   });
 
   it('never flags a pitch the drawing actually stated', () => {
