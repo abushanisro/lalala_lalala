@@ -69,8 +69,27 @@ def test_toroidal_features_bucket_by_major_diameter(ftype, variant):
     assert (entry["feature_type"], entry["variant"]) == (ftype, variant)
     assert entry["diameter_mm"] == pytest.approx(30.0)
     assert entry["occurrences"][0]["radius_mm"] == pytest.approx(3.0)
-    # No fabricated removed volume -- the arc sweep is not extracted.
+    # No fabricated removed volume -- the volume a blend or groove takes off is not measured.
     assert entry["occurrences"][0]["material_removed_mm3"] == 0.0
+    # A feature that states no sweep / profile / path (an analysis from before geo_v89) gets none invented.
+    assert not {"sweep_deg", "profile_deg", "path_length_mm", "depth_mm", "width_mm", "concave"} & set(entry["occurrences"][0])
+
+
+def test_toroidal_occurrences_carry_the_measured_sweep_profile_and_path():
+    fillet = {"centroid": (5.0, 5.0, 0.0), "major_diameter_mm": 36.0, "radius_mm": 2.0, "sweep_deg": 14.0, "profile_deg": 90.0,
+              "path_length_mm": 4.398, "concave": True, "axis": [1.0, 0.0, 0.0]}
+    groove = {"centroid": (0.0, 0.0, 20.0), "major_diameter_mm": 20.0, "radius_mm": 2.0, "sweep_deg": 360.0, "profile_deg": 180.0,
+              "path_length_mm": 62.832, "depth_mm": 2.0, "width_mm": 4.0, "concave": True, "axis": [0.0, 0.0, 1.0]}
+    shoulder = {**fillet, "major_diameter_mm": 20.0, "sweep_deg": 360.0, "path_length_mm": 62.832, "turned_shoulder": True}
+    graph = _graph(_feat("Edge", "round", fillet), _feat("Ring", "groove", groove), _feat("Edge", "round", shoulder))
+    by = {(e["feature_type"], e["diameter_mm"]): e["occurrences"][0] for e in graph["features"]}
+    occ = by[("Edge", 36.0)]
+    assert {k: occ[k] for k in ("radius_mm", "sweep_deg", "profile_deg", "path_length_mm", "concave", "axis")} == {
+        "radius_mm": 2.0, "sweep_deg": 14.0, "profile_deg": 90.0, "path_length_mm": 4.398, "concave": True, "axis": [1.0, 0.0, 0.0]}
+    assert "depth_mm" not in occ and "turned_shoulder" not in occ  # a fillet states no groove section
+    assert (by[("Ring", 20.0)]["depth_mm"], by[("Ring", 20.0)]["width_mm"]) == (2.0, 4.0)
+    assert by[("Edge", 20.0)]["turned_shoulder"] is True
+    assert all(o["material_removed_mm3"] == 0.0 for o in by.values())
 
 
 # ── SimpleHole / pcd_pattern ─────────────────────────────────────────────────
