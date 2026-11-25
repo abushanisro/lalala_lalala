@@ -3,7 +3,7 @@ import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from 
 import { cylindersToTurn, ringLabel, type TurnedCylinder, type TurnedRing } from './turned-diameters';
 import type { ExternalThread, KnurlOp } from '../external-threads';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
-import { findRouteDataGaps, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
+import { findRouteDataGaps, persistableCycleSec, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
 import { isRealHeatTreatmentCallout } from '../operation/wire-edm-routing';
 import {
@@ -1530,9 +1530,9 @@ function makeLine(
     machineCostPerPart: runCost,
     laborCostPerPart: runLabour,
     operators: rate.operators ?? null,
-    // Four decimals (0.006 s): two decimals of a minute is 0.6 s, which turned
-    // a real 2.63 s drilling cycle into a displayed 2.4 s.
-    cycleTimeMin: Math.round(cycleTimeMin * 10000) / 10000,
+    // The cycle at the precision it is stored at (process_cost_records.cycle_time, seconds to four decimals): four decimals of a minute
+    // (0.006 s) turned a 0.0024 s a part XRF lot check (60 s over a 25 000 batch) into 0, a line "with no cycle time" saved as not costed.
+    cycleTimeMin: persistableCycleSec(cycleTimeMin) / 60,
     hourlyRate: rate.rate,
     rateSource: rate.source,
     machineClass: rate.machineClass,
