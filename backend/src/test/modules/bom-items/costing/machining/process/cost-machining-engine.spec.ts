@@ -450,6 +450,23 @@ describe('machining inputs light exactly the features they counted', () => {
     expect(tap.featureBreakdown).toBeUndefined();
   });
 
+  it('the Tapping line carries its taps\' wear: one tap for each thread size (migration 1157)', () => {
+    // Rs 498.4 a tap (the middle of the Rs 36.02 - 960.85 the workbook pictures a tap at) over 300 parts = Rs 1.6613 a part and size.
+    const TAP_USD = 498.4 / 300 / TEST_INR_PER_USD;
+    const tapLine = (threads: Array<{ size: string; count: number; depthMm: number }>) =>
+      computeMillingCostSummary(milledInput({ threads, workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill')).processLines.find((l) => l.process === 'Tapping')!;
+    const one = tapLine([{ size: 'M4', count: 3, depthMm: 8 }]);
+    expect(one.otherCostPerPart).toBeCloseTo(TAP_USD, 9);
+    // Three threads of one size wear one tap; two sizes wear two.
+    const two = tapLine([{ size: 'M2', count: 4, depthMm: 5 }, { size: 'M3', count: 4, depthMm: 6 }]);
+    expect(two.otherCostPerPart).toBeCloseTo(2 * TAP_USD, 9);
+    // The wear is on the line's run and total cost, beside its machine time.
+    const noTool = one.runCost - TAP_USD;
+    expect(noTool).toBeGreaterThan(0);
+    expect(one.totalCost).toBeCloseTo(one.setupCost + noTool + TAP_USD, 9);
+    expect(one.physicsGap).toBeUndefined();
+  });
+
   it('the sharp-edge length opens the faces meeting at those edges, and the Deburring line lists them', () => {
     const r = computeMillingCostSummary(milledInput({ sharpEdgeLengthMm: 1442.7, sharpEdgeFaceIds: [3, 5, 8], deburrLinearSpeedMmPerSec: 20 }), mc('3_axis_mill'));
     const deburr = r.processLines.find((l) => l.process === 'Deburring')!;

@@ -79,6 +79,8 @@ describe('an M12 x 1.75 external thread on the Ø12 x 18.329 journal', () => {
     expect(lineOf(result.processLines, 'Tapping')).toBeUndefined();
     // Before: the same callout tapped as a hole, at the tapping calculator's engagement depth.
     expect(lineOf(cost(shaft({ threads: DRAWN_M12 })).processLines, 'Tapping')).toBeDefined();
+    // A tapped hole on the lathe carries its tap's wear (migration 1157): Rs 498.4 over 300 parts.
+    expect(lineOf(cost(shaft({ threads: DRAWN_M12 })).processLines, 'Tapping')!.otherCostPerPart).toBeCloseTo(498.4 / 300 / TEST_INR_PER_USD, 8);
   });
 
   it('timed as the Threading sheet times it, with the thread turning tool\'s wear', () => {
