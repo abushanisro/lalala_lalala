@@ -43,6 +43,9 @@ const RING_LENGTH_SOURCE = 'CAD: length of that turned diameter along the turnin
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const cylinderLabel = (kind: string, diameterMm: number, lengthMm: number) => `${kind} Ø${r2(diameterMm)} x ${r2(lengthMm)} mm`;
 
+/** A Ring as its lines name it: "Ring Ø12 x 18.33 mm". */
+export const ringLabel = (ring: Pick<TurnedRing, 'diameterMm' | 'lengthMm'>) => cylinderLabel('Ring', ring.diameterMm, ring.lengthMm);
+
 /** The part's turned outer diameters, from its analysis (feature_graph.machining_features.features), in the analysis's order. */
 export function turnedRings(features: unknown): TurnedRing[] {
   return (Array.isArray(features) ? features : [])

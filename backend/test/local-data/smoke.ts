@@ -46,6 +46,12 @@ async function main(): Promise<void> {
     const groups = await (await api('/process_material_groups?process_group=eq.Multi-Spindle%20Machining&select=material_group&order=material_group', minter.forService())).json() as { material_group: string }[];
     must(JSON.stringify(groups.map((g) => g.material_group)) === JSON.stringify(['Ferrous & Non-Ferrous', 'Machining']), `groups ${JSON.stringify(groups)}`);
   });
+  await check('migration 1153 put Knurling//Ring beside Thread Turning//Ring on each of the six lathes', async () => {
+    const rows = await (await api('/process_taxonomy_operations?operation_category=eq.Knurling&select=raw_compound_string,feature_type&order=raw_compound_string', minter.forService())).json() as { raw_compound_string: string; feature_type: string }[];
+    const expected = ['2 Axis Bar Feed Lathe with Sub Spindle', '2 Axis Lathe', '3 Axis Bar Feed Lathe with Sub Spindle', '3 Axis Lathe', 'MillTurn', 'Simultaneous Turning']
+      .map((lathe) => `${lathe}:Knurling//Ring`);
+    must(JSON.stringify(rows.map((r) => r.raw_compound_string)) === JSON.stringify(expected) && rows.every((r) => r.feature_type === 'Ring'), `rows ${JSON.stringify(rows)}`);
+  });
   await check('migration 1099 gave the 9 Part Assembly rows their machine classes, and 1100 bound each one to its calculator', async () => {
     const rows = await (await api('/process_calculator_mappings?process_group=eq.Part%20Assembly&select=operation,machine_class,calculator_name,is_active&order=operation', minter.forService())).json() as { operation: string; machine_class: string | null; calculator_name: string | null; is_active: boolean }[];
     const bad = rows.filter((r) => !r.machine_class || !r.is_active || !r.calculator_name?.startsWith('Part Assembly - '));

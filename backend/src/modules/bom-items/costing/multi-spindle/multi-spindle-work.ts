@@ -14,9 +14,13 @@
 import type { Slide, StationOp } from './multi-spindle-stations';
 import type { PhysicsGap, ProcessLineCost } from '../../dto/cost-breakdown.dto';
 
-/** The turning engine's lines that run in the multi-spindle's cycle, by the slide that does them. */
+/**
+ * The turning engine's lines that run in the multi-spindle's cycle, by the slide that does them. An external thread is chased and a knurl
+ * rolled from a cross (OD) slide, as the diameter they are on is turned.
+ */
 export const IN_CYCLE_SLIDE: Readonly<Record<string, Slide>> = {
   'Rough Turning': 'od', 'Finish Turning': 'od', Parting: 'od', Reaming: 'end', 'Rotary Broaching': 'end',
+  'Thread Turning': 'od', Knurling: 'od',
 };
 
 /**

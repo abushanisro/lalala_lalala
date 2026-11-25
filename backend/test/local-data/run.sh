@@ -231,6 +231,23 @@ INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 11
 ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COLUMN max_length_mm numeric(10,2);
 -- the taxonomy columns as the real database has them (migration 609): migration 1094 adds the Multi-Spindle Machining > Simultaneous Turning row
 ALTER TABLE public.process_taxonomy ADD COLUMN default_machine_name varchar(200), ADD COLUMN notes text;
+-- the operation catalog as the real database has it (migration 609, with its tenant column), and the six lathes' Thread Turning//Ring rows
+-- (migration 754): migration 1153 adds Knurling//Ring beside each and fails if one is missing
+CREATE TABLE public.process_taxonomy_operations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), canonical_process_id uuid NOT NULL REFERENCES public.process_taxonomy(id) ON DELETE CASCADE,
+  operation_category varchar(150), feature_type varchar(100), raw_compound_string text NOT NULL, notes text, created_at timestamptz DEFAULT now(),
+  organization_id uuid, CONSTRAINT unique_process_taxonomy_operation UNIQUE (canonical_process_id, raw_compound_string)
+);
+WITH lathe AS (
+  INSERT INTO public.process_taxonomy (process_group, process_name, machine_class, roadmap_status) VALUES
+    ('Machining', '2 Axis Lathe', '2_axis_lathe', 'production'), ('Machining', '3 Axis Lathe', '3_axis_lathe', 'production'),
+    ('Machining', '2 Axis Bar Feed Lathe with Sub Spindle', '2_axis_bar_feed_lathe_with_sub_spindle', 'production'),
+    ('Machining', '3 Axis Bar Feed Lathe with Sub Spindle', '3_axis_bar_feed_lathe_with_sub_spindle', 'production'),
+    ('Machining', 'MillTurn', 'machining_millturn', 'thin'), ('Machining', 'Simultaneous Turning', 'simultaneous_turning', 'thin')
+  RETURNING id, process_name
+)
+INSERT INTO public.process_taxonomy_operations (canonical_process_id, operation_category, feature_type, raw_compound_string)
+SELECT id, 'Thread Turning', 'Ring', process_name || ':Thread Turning//Ring' FROM lathe;
 -- the Stock Machining catalog rows migration 790 seeds (no machine class): migration 1114 classes both and fails if one stays without
 INSERT INTO public.process_taxonomy (process_group, process_name, roadmap_status) VALUES ('Stock Machining', 'Band Saw', 'not_modeled'), ('Stock Machining', 'Material Stock', 'non_mfg');
 -- the machine table's currency, catalog and capacity columns and its rate sources as the real database has them (migrations 322, 330, 542 and

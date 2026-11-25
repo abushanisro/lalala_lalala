@@ -581,60 +581,134 @@ def _extract_dimensions(flat: str) -> dict[str, float]:
     return {"L": 0, "W": 0, "H": 0}
 
 
+# A thread's tolerance class after its size (ISO 965-1: "6g", "6H", "4h6h"): internal threads take the capitals G and H, external ones the
+# small letters e, f, g and h. A class must end the token ("4X" before another callout is not one).
+_THREAD_CLASS = r"(?:\s*[-–]?\s*(\d[a-hA-H](?:\d[a-hA-H])?)(?![A-Za-z0-9]))?"
+# A stated length after the callout: "M12x1.75-6g x 15 LG", "M6 x 10 DEEP".
+_THREAD_LENGTH = r"(?:\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(?:MM\s*)?(?:LG|LONG|DP|DEEP)\b)?"
+# What the callout's own words say: an external or an internal (tapped) thread.
+_EXTERNAL_WORD = re.compile(r"\bEXT(?:ERNAL)?\b", re.I)
+_INTERNAL_WORD = re.compile(r"\b(?:INT(?:ERNAL)?|TAP(?:PED)?)\b", re.I)
+_WORD_BEFORE = re.compile(r"\b(EXT(?:ERNAL)?|INT(?:ERNAL)?)\.?\s*(?:THREAD|THD)?\s*[:\-]?\s*$", re.I)
+# The start of the next callout, where the text that belongs to this one ends.
+_NEXT_CALLOUT = re.compile(r"\n|\bM\d|#\d|\d/\d|\d+\s*[xX×]\s*M\d", re.I)
+
+
+def _thread_kind_of_class(cls: str, callout: str) -> str | None:
+    """
+    The kind of thread an ISO 965-1 tolerance class names. Small letters are external (6g, 4h6h), capitals internal (6H, 7G); e and f are
+    external only. A callout written all in capitals ("M10X1.5-6G") says nothing by the letter's case: there only E or F decides.
+    """
+    letter = cls[1]
+    if letter.islower() or letter in "EF":
+        return "external"
+    return "internal" if any(ch.islower() for ch in callout) else None
+
+
+def _thread_kind_of_words(flat: str, start: int, end: int) -> str | None:
+    """EXT / EXTERNAL or INT / INTERNAL / TAP / TAPPED in the callout's own text (after it, up to the next callout) or just before it."""
+    after = flat[end:end + 30]
+    stop = _NEXT_CALLOUT.search(after)
+    if stop:
+        after = after[:stop.start()]
+    if _EXTERNAL_WORD.search(after):
+        return "external"
+    if _INTERNAL_WORD.search(after):
+        return "internal"
+    before = flat[max(0, start - 25):start].rsplit("\n", 1)[-1]
+    w = _WORD_BEFORE.search(before)
+    if w:
+        return "external" if w.group(1).upper().startswith("EXT") else "internal"
+    return None
+
+
 def _extract_threads(flat: str) -> list[dict]:
     """
     Detect both metric (M4×0.7) and imperial UNC/UNF (3/8-16, #8-32) thread callouts.
-    Format on drawings: [count ×] <size> [Tapped Thru / Tapped Blind / UNC/UNF]
-    De-duplication key is the full size string so M4 and 3/8-16 are independent.
+    Format on drawings: [count ×] <size> [× pitch] [-class] [× length LG] [Tapped Thru / Tapped Blind / UNC/UNF[-2A]]
+    Each callout keeps what it states of the thread's kind: its tolerance class (ISO 965-1 6g / 6H, UN 2A / 2B) or its words (EXTERNAL,
+    TAPPED); null when it states neither. De-duplication key is the size and that kind, so an M10 6g and an M10 6H are two threads.
     """
     results: list[dict] = []
-    seen: dict[str, dict] = {}
 
-    def stated_again(size_str: str, count_s: str | None) -> bool:
-        """A size already read: its callout is kept, except that a count a later callout states ("4 × M3") replaces the default 1 of
-        an earlier callout that named the size alone ("M3")."""
-        prior = seen.get(size_str)
+    def prior_of(size_str: str, kind: str | None) -> dict | None:
+        """The entry a callout repeats: the same size and kind, else (either side naming no kind) the same size."""
+        same = [e for e in results if e["size"] == size_str]
+        if kind is None:
+            return same[0] if same else None
+        exact = next((e for e in same if e["threadKind"] == kind), None)
+        return exact or next((e for e in same if e["threadKind"] is None), None)
+
+    def stated_again(size_str: str, count_s: str | None, kind: str | None, cls: str | None, length: float | None,
+                     pitch: float | None = None) -> bool:
+        """A size already read: its callout is kept, except that what a later callout states and the earlier one did not (a count "4 × M3"
+        over the default 1 of a bare "M3", the thread's kind and class, its length, its pitch) is taken from the later one."""
+        prior = prior_of(size_str, kind)
         if prior is None:
             return False
         if count_s is not None and not prior["countStated"]:
             prior["count"] = int(count_s)
             prior["countStated"] = True
+        if kind is not None and prior["threadKind"] is None:
+            prior["threadKind"] = kind
+        if cls is not None and prior["toleranceClass"] is None:
+            prior["toleranceClass"] = cls
+        if length is not None and prior["lengthMm"] is None:
+            prior["lengthMm"] = length
+        if pitch is not None and prior.get("pitchStated") is False:
+            prior["pitch"] = pitch
+            prior["pitchStated"] = True
         return True
 
-    # ── Metric: 2 × M4 × 0.7, M6x1.0, M10 ──────────────────────────────────
+    # ── Metric: 2 × M4 × 0.7, M6x1.0, M10, M12x1.75-6g x 15 LG ─────────────
+    # A pitch is a number after the size that is not the length the callout states ("M6 X 10 DEEP" is 10 deep, not a 10 mm pitch).
     for m in re.finditer(
-        r"(?:(\d+)\s*[xX×]\s*)?M(\d+(?:\.\d+)?)(?:\s*[xX×]\s*(\d+(?:\.\d+)?))?",
+        r"(?:(\d+)\s*[xX×]\s*)?M(\d+(?:\.\d+)?)"
+        r"(?:\s*[xX×]\s*(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:MM\s*)?(?:LG|LONG|DP|DEEP)\b))?"
+        + _THREAD_CLASS + _THREAD_LENGTH,
         flat, re.I,
     ):
         size_str = f"M{m.group(2)}"
-        if stated_again(size_str, m.group(1)):
+        cls = m.group(4)
+        kind = _thread_kind_of_class(cls, m.group(0)) if cls else None
+        if kind is None:
+            kind = _thread_kind_of_words(flat, m.start(), m.end())
+        length = float(m.group(5)) if m.group(5) else None
+        pitch_stated = float(m.group(3)) if m.group(3) else None
+        if stated_again(size_str, m.group(1), kind, cls, length, pitch_stated):
             continue
         try:
             count = int(m.group(1)) if m.group(1) else 1
-            pitch = float(m.group(3)) if m.group(3) else _default_pitch(float(m.group(2)))
+            pitch = pitch_stated if pitch_stated is not None else _default_pitch(float(m.group(2)))
             entry = {
                 "size": size_str, "pitch": pitch, "count": count,
                 # A callout that names the size alone ("M3") states no count: 1 is a default, not the drawing's word.
                 "countStated": m.group(1) is not None,
+                # Likewise a pitch: with none written, the pitch above is the analyser's coarse-series default.
+                "pitchStated": pitch_stated is not None,
+                "toleranceClass": cls,
+                "threadKind": kind,
+                "lengthMm": length,
                 "standard": "metric",
                 "extractionConfidence": 0.85,
                 "extractionSource": "drawing_text",
             }
-            seen[size_str] = entry
             results.append(entry)
         except (ValueError, TypeError):
             pass
 
-    # ── Imperial UNC/UNF: 1 × 3/8-16, #8-32, 1/4-20 ────────────────────────
-    # Pattern: optional [count ×] then  (#N  or  N/D)  then  -TPI
+    # ── Imperial UNC/UNF: 1 × 3/8-16, #8-32, 1/4-20 UNC-2A ─────────────────
+    # Pattern: optional [count ×] then  (#N  or  N/D)  then  -TPI  then the optional series and class (2A external, 2B internal).
     # TPI guard (4–80) avoids false positives from page numbers or dates.
     for m in re.finditer(
-        r"(?:(\d+)\s*[xX×]\s*)?(?:#(\d{1,2})|(\d{1,2})/(\d{1,2}))-(\d{1,3})\b",
+        r"(?:(\d+)\s*[xX×]\s*)?(?:#(\d{1,2})|(\d{1,2})/(\d{1,2}))-(\d{1,3})\b"
+        r"(?:\s*(?:UNC|UNF|UNEF|UNS|UN)\b)?(?:\s*-\s*([123][AB])\b)?" + _THREAD_LENGTH,
         flat, re.I,
     ):
         count_s, num_dia, fn, fd, tpi_s = (
             m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
         )
+        cls = m.group(6).upper() if m.group(6) else None
         try:
             tpi = int(tpi_s)
             if not (4 <= tpi <= 80):
@@ -646,7 +720,9 @@ def _extract_threads(flat: str) -> list[dict]:
                 if int(fd) not in (2, 4, 8, 16, 32, 64):
                     continue
                 size_str = f"{fn}/{fd}-{tpi}"
-            if stated_again(size_str, count_s):
+            kind = ("external" if cls.endswith("A") else "internal") if cls else _thread_kind_of_words(flat, m.start(), m.end())
+            length = float(m.group(7)) if m.group(7) else None
+            if stated_again(size_str, count_s, kind, cls, length):
                 continue
             count = int(count_s) if count_s else 1
             entry = {
@@ -654,14 +730,100 @@ def _extract_threads(flat: str) -> list[dict]:
                 "tpi": tpi,
                 "count": count,
                 "countStated": count_s is not None,
+                "toleranceClass": cls,
+                "threadKind": kind,
+                "lengthMm": length,
                 "standard": "imperial",
                 "extractionConfidence": 0.85,
                 "extractionSource": "drawing_text",
             }
-            seen[size_str] = entry
             results.append(entry)
         except (ValueError, TypeError):
             pass
+
+    return results
+
+
+# ─── Knurls ───────────────────────────────────────────────────────────────────
+# A knurl callout: "MEDIUM DIAMOND KNURL", "STRAIGHT KNURL 30 TPI", "DIAMOND KNURL 0.8 P", or a DIN 82 code ("RGE 1.0 DIN 82": the form
+# letters, then the pitch in mm). DIN 82 forms: RAA straight, RBL / RBR left / right diagonal, RGE / RGV diamond (raised / sunk points),
+# RKE / RKV crossed (raised / sunk points).
+_KNURL_WORD = re.compile(
+    r"(?:\b(FINE|MEDIUM|COARSE)\s+)?(?:\b(DIAMOND|STRAIGHT|DIAGONAL|CROSS(?:ED)?)\s+)?KNURL(?:ED|ING)?\b", re.I)
+_KNURL_DIN = re.compile(r"\bR(AA|BL|BR|GE|GV|KE|KV)\s*(\d+(?:[.,]\d+)?)(?![\d.,])", re.I)
+_DIN_82 = re.compile(r"\bDIN\s*82\b", re.I)
+_DIN_PATTERN = {"AA": "straight", "BL": "diagonal", "BR": "diagonal", "GE": "diamond", "GV": "diamond", "KE": "crossed", "KV": "crossed"}
+_KNURL_PITCH = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:MM\s*)?P(?:ITCH)?\b", re.I)
+_KNURL_TPI = re.compile(r"(?<![\d.])(\d{1,3})\s*T\.?P\.?I\b", re.I)
+_KNURL_DIAMETER = re.compile(r"[Ø⌀]\s*(\d+(?:\.\d+)?)")
+_KNURL_LENGTH = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:MM\s*)?(?:LG|LONG|LENGTH)\b", re.I)
+
+
+def _same_line(flat: str, start: int, end: int, reach: int = 40) -> tuple[str, str]:
+    """The text on the callout's own line just before and just after it (up to `reach` characters each way)."""
+    before = flat[max(0, start - reach):start].rsplit("\n", 1)[-1]
+    after = flat[end:end + reach].split("\n", 1)[0]
+    return before, after
+
+
+def _knurl_details(text: str) -> dict:
+    """What a knurl callout's text states: its pitch (mm), threads per inch, diameter and length; null for what it does not."""
+    pitch = _KNURL_PITCH.search(text)
+    tpi = _KNURL_TPI.search(text)
+    dia = _KNURL_DIAMETER.search(text)
+    length = _KNURL_LENGTH.search(text)
+    return {
+        "pitchMm": float(pitch.group(1)) if pitch else None,
+        "tpi": int(tpi.group(1)) if tpi else None,
+        "diameterMm": float(dia.group(1)) if dia else None,
+        "lengthMm": float(length.group(1)) if length else None,
+    }
+
+
+def _extract_knurls(flat: str) -> list[dict]:
+    """
+    Knurl callouts, each with what its text states: the pattern (diamond, straight, diagonal, crossed), the grade (fine, medium, coarse),
+    the pitch in mm or in threads per inch, the diameter knurled (Ø20) and its length (10 LG). A value the callout does not state is null;
+    nothing is filled in. A DIN 82 code counts on its own only beside "DIN 82" (or within a knurl callout), so a stray "RGE 1" is not one.
+    """
+    results: list[dict] = []
+    seen: set[tuple] = set()
+    used_din: set[int] = set()
+
+    def add(entry: dict) -> None:
+        key = (entry["pattern"], entry["grade"], entry["pitchMm"], entry["tpi"], entry["diameterMm"], entry["lengthMm"])
+        if key not in seen:
+            seen.add(key)
+            results.append(entry)
+
+    for m in _KNURL_WORD.finditer(flat):
+        before, after = _same_line(flat, m.start(), m.end())
+        found = _knurl_details(before + " " + after)
+        pattern = m.group(2).lower() if m.group(2) else None
+        if pattern == "cross":
+            pattern = "crossed"
+        din = next(_KNURL_DIN.finditer(flat, max(0, m.start() - 40), min(len(flat), m.end() + 40)), None)
+        if din is not None:
+            used_din.add(din.start())
+            pattern = pattern or _DIN_PATTERN[din.group(1).upper()]
+            found["pitchMm"] = float(din.group(2).replace(",", "."))
+        add({
+            "pattern": pattern, "grade": m.group(1).lower() if m.group(1) else None, **found,
+            "text": " ".join((before[-20:] + m.group(0) + after).split())[:120], "extractionSource": "drawing_text",
+        })
+
+    for d in _KNURL_DIN.finditer(flat):
+        if d.start() in used_din:
+            continue
+        before, after = _same_line(flat, d.start(), d.end())
+        if not _DIN_82.search(after[:20]) and not _DIN_82.search(before[-20:]):
+            continue
+        found = _knurl_details(before + " " + after)
+        found["pitchMm"] = float(d.group(2).replace(",", "."))
+        add({
+            "pattern": _DIN_PATTERN[d.group(1).upper()], "grade": None, **found,
+            "text": " ".join((d.group(0) + after[:20]).split())[:120], "extractionSource": "drawing_text",
+        })
 
     return results
 
@@ -720,7 +882,7 @@ _FALLBACK: dict[str, Any] = {
     "heat_treatment": "None", "coating": "None", "chemical_milling": "None",
     "gear_quality": "None", "gear_shaving": "None", "gear_shaping": "None", "polygon_callout": "None",
     "complexity": "medium",
-    "threads": [], "gdt_callouts": [], "clearanceHoles": [],
+    "threads": [], "knurls": [], "gdt_callouts": [], "clearanceHoles": [],
     "general_tolerances": "",
     "machining_allowance": None,
     "drawing_revision": "", "drawing_number": "",
@@ -802,6 +964,7 @@ async def analyze_drawing(body: AnalyzeDrawingRequest) -> dict[str, Any]:
         "coating":                     coating,
         "complexity":                  "medium",
         "threads":                     _extract_threads(flat),
+        "knurls":                      _extract_knurls(flat),
         "gdt_callouts":                [],
         "clearanceHoles":              [],
         "general_tolerances":          _extract_general_tolerance(tb, flat),
@@ -815,9 +978,9 @@ async def analyze_drawing(body: AnalyzeDrawingRequest) -> dict[str, Any]:
 
     logger.info(
         "Drawing parsed: no=%s rev=%s material=%s(%.2f) thk=%.1f tol=%.3f "
-        "ra=%.1f coating=%s threads=%d tb_keys=%s",
+        "ra=%.1f coating=%s threads=%d knurls=%d tb_keys=%s",
         drawing_no, revision, material, mat_conf,
         sheet_thick, tolerance, surface_ra, coating,
-        len(result["threads"]), list(tb.keys()),
+        len(result["threads"]), len(result["knurls"]), list(tb.keys()),
     )
     return result

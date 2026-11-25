@@ -20,7 +20,8 @@ import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/proc
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences } from './costing/machining/inspection-reference';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
-import { holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
+import { drawingThreadsOf, holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
+import { knurlsOnRings, splitExternalThreads, type ExternalThread, type KnurlOp } from './costing/machining/external-threads';
 import {
   ASSEMBLY_FAMILY, CASTING_PROCESS_GROUP, HYDROFORMING_PROCESS_GROUP, PART_ASSEMBLY_FAMILY, PCB_FAMILY, INSERT_MOLDING_PROCESS_GROUP, MULTI_SHOT_PROCESS_GROUP,
   MULTI_SPINDLE_PROCESS_GROUP, ROLL_FORMING_PROCESS_GROUP, STOCK_MACHINING_PROCESS_GROUP, familiesOfProcessGroup,
@@ -2339,12 +2340,8 @@ export class BomItemCostingService {
         ? cncFeatureSummary.drilledHoles
         : (summary.holeCount ?? item.holeCount ?? 0)
     ) as number;
-    // Drawing analysis returns threads as [{ spec, count }] or [{ size, count }] — normalise to { size, count }
-    const drawingThreads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
-      size: String(t.size ?? t.spec ?? '').trim(),
-      count: Number(t.count) || 1,
-      ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
-    })) as Array<{ size: string; count: number; pitchMm?: number }>;
+    // Drawing analysis returns threads as [{ spec, count }] or [{ size, count }]: normalised to { size, count, pitchMm } (drawingThreadsOf).
+    const drawingThreads = drawingThreadsOf(item.drawingIntelligence);
     // The threads every non-machining family taps (sheet metal after its holes are cut): the drawing's merged with the CAD's own tapped
     // holes (resolveThreads), so a part with no drawing callout is still tapped where its model is. A machining family merges them where
     // its engine input is built (resolveThreads), from its machining features.
@@ -2579,7 +2576,9 @@ export class BomItemCostingService {
         materialCostPerKg,
         materialDensityKgM3,
         materialSource,
-        threads: this.resolveThreads(threads, fg),
+        // A turned part's external threads are turned and its knurls rolled on its Rings, its other threads tapped
+        // (resolveTurnedThreading, the route comparison's too); a milled part taps every thread.
+        ...(isTurnedFamily(family) ? this.resolveTurnedThreading(item, fg) : { threads: this.resolveThreads(threads, fg) }),
         tightestToleranceMm: ((item as any).tightestToleranceMm ?? null) as number | null,
         gdtFeatureCount: resolveGdtCallouts(fg, item.drawingIntelligence).length,
         batchSize,
@@ -6255,11 +6254,8 @@ export class BomItemCostingService {
     // deliberately excluded upstream, so this is evidence, never a guess.
     const rcRolledFormCount = Number((fg?.summary as any)?.rolledFormCount ?? 0) || 0;
     const flatPatternAreaMm2 = geo?.flatPatternAreaMm2 ?? measuredFlatAreaMm2;
-    const drawingThreads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
-      size: String(t.size ?? t.spec ?? '').trim(),
-      count: Number(t.count) || 1,
-      ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
-    })) as Array<{ size: string; count: number; pitchMm?: number }>;
+    // Drawing analysis returns threads as [{ spec, count }] or [{ size, count }]: normalised to { size, count, pitchMm } (drawingThreadsOf).
+    const drawingThreads = drawingThreadsOf(item.drawingIntelligence);
     // The threads every non-machining family taps (sheet metal after its holes are cut): the drawing's merged with the CAD's own tapped
     // holes (resolveThreads), so a part with no drawing callout is still tapped where its model is. A machining family merges them where
     // its engine input is built (resolveThreads), from its machining features.
@@ -8044,9 +8040,7 @@ export class BomItemCostingService {
         pierceCount:  (summary.pierceCount ?? item.pierceCount ?? 0) as number,
         bendCount:    (summary.bendCount   ?? item.bendCount   ?? 0) as number,
         holeCount:    (summary.holeCount   ?? item.holeCount   ?? 0) as number,
-        threads: this.resolveThreads(((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
-          size: String(t.size ?? t.spec ?? '').trim(), count: Number(t.count) || 1, ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
-        })), item.featureGraph ?? null),
+        threads: this.resolveThreads(drawingThreadsOf(item.drawingIntelligence), item.featureGraph ?? null),
         grade, materialCostPerKg, materialDensityKgM3, materialSource, batchSize, location, mhrRates,
       });
       if (smAlt) candidates.push(smAlt);
@@ -8529,8 +8523,13 @@ export class BomItemCostingService {
       set('Faces', face?.count, `${note} — faces of this size`);
     }
     if (operation === 'Tapping') {
-      const drawingThreads = ((item as any).drawingIntelligence?.threads ?? []) as Array<{ size: string; count: number; pitchMm?: number }>;
-      const t = this.resolveThreads(drawingThreads, fg)[0];
+      const drawingThreads = drawingThreadsOf((item as any).drawingIntelligence);
+      // A turned part taps only the threads it does not turn on a diameter (resolveTurnedThreading), as its cost summary does.
+      const { family } = this.resolveEffectiveFamily({
+        item, fg, grade: (item as any).materialGrade ?? (item as any).material ?? null,
+        sheetThicknessMm: resolveEffectiveSheetThicknessMm(item.scenarioOverrides, fg?.summary?.sheetThicknessMm, item.sheetThicknessMm ?? 0),
+      });
+      const t = (isTurnedFamily(family) ? this.resolveTurnedThreading(item, fg).threads : this.resolveThreads(drawingThreads, fg))[0];
       const d = t ? Number(/^M\s*(\d+(?:\.\d+)?)/i.exec(t.size)?.[1]) : NaN;
       const note = `${drawingThreads.length > 0 ? 'Drawing' : 'CAD'}: first thread group${t ? ` (${t.size})` : ''}`;
       // The tapped holes, when the threads came from the CAD (a drawing's threads name no holes).
@@ -8843,17 +8842,39 @@ export class BomItemCostingService {
     drawingThreads: Array<{ size: string; count: number; pitchMm?: number }>,
     fg: any,
   ): ThreadEntry[] {
-    // The tapped holes of the CAD engine's machining features (threaded holes, tapped cross holes and tapped bolt circles), with their real
-    // depth and through flag, the holes to light, and how many are off the turning centreline (tapped with a live tool); a part with no
-    // machining features (a casting, a forging, a sheet-metal part) has its own analysis' tapped holes (feature_graph_v2, tappedHolesOfGraph).
     // Merged by size with the drawing's threads (feature-holes.ts mergeThreads): the CAD's holes for a size it tapped, the drawing's pitch
     // and its sizes the CAD did not find.
+    return mergeThreads(drawingThreads, this.cadTappedThreads(fg));
+  }
+
+  /**
+   * The tapped holes of the CAD engine's machining features (threaded holes, tapped cross holes and tapped bolt circles), with their real
+   * depth and through flag, the holes to light, and how many are off the turning centreline (tapped with a live tool); a part with no
+   * machining features (a casting, a forging, a sheet-metal part) has its own analysis' tapped holes (feature_graph_v2, tappedHolesOfGraph).
+   */
+  private cadTappedThreads(fg: any): ThreadEntry[] {
     const machiningFeatures = fg?.machining_features?.features;
     const byFace = occurrenceByFace(fg?.feature_graph_v2?.features);
-    const tapped = Array.isArray(machiningFeatures)
+    return Array.isArray(machiningFeatures)
       ? tappedHolesOfFeatures(machiningFeatures, (faceIds) => occurrencesOfFaces(faceIds, byFace))
       : tappedHolesOfGraph(fg?.feature_graph_v2?.features);
-    return mergeThreads(drawingThreads, tapped);
+  }
+
+  /**
+   * A turned part's threads and knurls as a lathe makes them (external-threads.ts): the drawing's external threads, each turned on its Ring
+   * (Thread Turning), its knurls, each rolled on its Ring (Knurling), and the rest of its threads tapped as every machined part's are
+   * (resolveThreads, merged with the CAD's tapped holes). The cost summary, the route comparison and the multi-spindle all read this one, so
+   * each prices the same lines.
+   */
+  private resolveTurnedThreading(item: any, fg: any): { threads: ThreadEntry[]; externalThreads: ExternalThread[]; knurls: KnurlOp[] } {
+    const rings = turnedRings(fg?.machining_features?.features);
+    const { external, internal } = splitExternalThreads(drawingThreadsOf(item?.drawingIntelligence), rings, this.cadTappedThreads(fg));
+    const knurls = (item?.drawingIntelligence as { knurls?: unknown } | null | undefined)?.knurls;
+    return {
+      threads: this.resolveThreads(internal, fg),
+      externalThreads: external,
+      knurls: knurlsOnRings(Array.isArray(knurls) ? knurls : [], rings),
+    };
   }
 
 
@@ -9612,11 +9633,6 @@ export class BomItemCostingService {
     const holeCount = turnedCncSummary !== null
       ? turnedCncSummary.drilledHoles
       : (summary.holeCount ?? item.holeCount ?? 0) as number;
-    const drawingThreads = ((item.drawingIntelligence as any)?.threads ?? []).map((t: any) => ({
-      size: String(t.size ?? t.spec ?? '').trim(),
-      count: Number(t.count) || 1,
-      ...(Number(t.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
-    })) as Array<{ size: string; count: number; pitchMm?: number }>;
     const maxLength = ((item as any).maxLength ?? 0) as number;
     const maxWidth  = ((item as any).maxWidth  ?? 0) as number;
     const maxHeight = ((item as any).maxHeight ?? 0) as number;
@@ -9635,7 +9651,8 @@ export class BomItemCostingService {
       materialCostPerKg,
       materialDensityKgM3,
       materialSource,
-      threads: this.resolveThreads(drawingThreads, fg),
+      // The cost summary's threads and knurls (resolveTurnedThreading): must match line for line.
+      ...this.resolveTurnedThreading(item, fg),
       tightestToleranceMm:  ((item as any).tightestToleranceMm ?? null) as number | null,
       gdtFeatureCount:      resolveGdtCallouts(fg, item.drawingIntelligence).length,
       batchSize,
