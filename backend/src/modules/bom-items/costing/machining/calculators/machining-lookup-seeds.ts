@@ -1,5 +1,6 @@
 import type { MachiningWorkbookInput, MaterialClass } from '../process/cost-machining-engine';
 import { resolvePartoffParams } from '../lookup/partoff-table';
+import { resolveGroovingParams } from '../lookup/grooving-table';
 import { rowInBand, WORKBOOK_TABLES } from '../lookup/workbook-cutting-data';
 import {
   MACHINING_MATERIAL,
@@ -32,6 +33,8 @@ export interface MachiningLookupContext {
   gunDrillTable?: any[] | null;
   deepBoreMaterials?: any[] | null;
   partoffTable?: any[] | null;
+  /** tblGrooving rows (migration 746): the grooving inserts Plunging reads. */
+  groovingTable?: any[] | null;
   workholderTable?: any[] | null;
   grindingParams?: {
     workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number;
@@ -144,6 +147,40 @@ export function partingLookupSeeds(ctx: MachiningLookupContext, keys: Record<str
   out.seeds = {
     'Cutting Speed': lookupSeed(p.cuttingSpeedMPerMin, src, match, 'CuttingSpeedMPerMin'),
     'Feed': lookupSeed(p.feedMmPerRev, src, match, 'FeedMm'),
+  };
+  return out;
+}
+
+/**
+ * Plunging a turned groove (tblGrooving, grooving-table.ts): the insert is as wide as the groove (at most the table's widest), its speed
+ * and feed the material's rows, the feed read between the two insert widths the table gives. Chosen by the groove's width and depth.
+ */
+export function groovingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
+  const out: LookupSeeds = { seeds: {}, missing: [] };
+  const width = keys['Groove Width'];
+  const depth = keys['Groove Depth'];
+  if (!positive(width) || !positive(depth)) {
+    out.missing.push('Plunging: Groove Width and Groove Depth (the grooving insert is chosen by them)');
+    return out;
+  }
+  const p = resolveGroovingParams(ctx.groovingTable, width, depth, ctx.matClass);
+  if (!p) {
+    out.missing.push(ctx.groovingTable
+      ? `tblGrooving insert for ${ctx.matClass} reaching ${Math.round(depth * 1000) / 1000} mm deep`
+      : 'tblGrooving (machining_reference_data) could not be read');
+    return out;
+  }
+  const match = { table: 'tblGrooving', row: { 'Material Cut Code Name': p.materialCutCode, 'Length (mm)': p.rowWidthsMm[0]! } };
+  const src = `tblGrooving: material code ${p.materialCutCode} (${p.hardnessHb} HB)`;
+  out.seeds = {
+    'Insert Width': {
+      value: p.insertWidthMm,
+      source: p.insertWidthMm < width
+        ? `tblGrooving: the widest insert, ${p.insertWidthMm} mm (the groove is ${width} mm wide: it takes several plunges)`
+        : `CAD: the groove's width, ${width} mm: an insert as wide as the groove`,
+    },
+    'Cutting Speed': lookupSeed(p.cuttingSpeedMPerMin, src, match, 'Cutting Speed (m / min)'),
+    'Feed': lookupSeed(p.feedMmPerRev, `${src}, ${p.feedBasis}`, match, 'Feed (mm / rev)'),
   };
   return out;
 }
@@ -670,6 +707,7 @@ export function machiningLookupSeeds(
     case 'Gun Drilling': return gunDrillingLookupSeeds(ctx, keys);
     case 'Deep Bore Machine': return deepBoreLookupSeeds(ctx, keys);
     case 'Parting': return partingLookupSeeds(ctx, keys);
+    case 'Plunging': return groovingLookupSeeds(ctx, keys);
     case 'Cylindrical Grinding': return grindingLookupSeeds(ctx);
     case 'Internal Grinding': return grindingLookupSeeds(ctx, undefined, 'tblInternalGrinding');
     case 'Jig Grind': return grindingLookupSeeds(ctx, 'jig_grind', 'tblInternalGrinding');

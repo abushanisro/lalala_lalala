@@ -318,6 +318,12 @@ export class MachiningLookupService {
     return this.loadTable('tblVirtualPartoffInsertCutData');
   }
 
+  // ── Grooving (tblGrooving, 182 real rows, migration 746). Returned whole; the insert is chosen per groove in the pure engine
+  // (resolveGroovingParams), as the part-off insert is.
+  async getGroovingTable(): Promise<any[] | null> {
+    return this.loadTable('tblGrooving');
+  }
+
   // ── Counterboring (tblCounterboring_lookup_table.json, 364 real rows) ────
   async getCounterboreParams(diameterMm: number, materialClass: MaterialClass): Promise<CounterboreParams> {
     const noData: CounterboreParams = { cuttingSpeedMPerMin: 0, feedMmPerRev: 0, depthMaxMm: null, dataFound: false };

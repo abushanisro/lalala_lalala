@@ -36,6 +36,14 @@ function parseCsv(text: string): Array<Record<string, string>> {
 const read = (file: string) => parseCsv(readFileSync(join(LOOKUP_DIR, file), 'utf-8'));
 const num = (v: string | undefined) => (v === undefined || v === '' ? undefined : Number(v));
 
+/** tblGrooving rows (tblGrooving.csv, staged by migration 746 with its own column names and numbers). */
+export function realGroovingTable(): any[] {
+  return read('tblGrooving.csv').map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
+    const n = num(v);
+    return [k, n !== undefined && Number.isFinite(n) ? n : v];
+  })));
+}
+
 /** tblVirtualPartoffInsertCutData rows (tblParting.csv — the part-off insert cut data). */
 export function realPartoffTable(): any[] {
   return read('tblParting.csv').map((r) => ({

@@ -52,6 +52,17 @@ async function main(): Promise<void> {
       .map((lathe) => `${lathe}:Knurling//Ring`);
     must(JSON.stringify(rows.map((r) => r.raw_compound_string)) === JSON.stringify(expected) && rows.every((r) => r.feature_type === 'Ring'), `rows ${JSON.stringify(rows)}`);
   });
+  await check('migration 1156 put Concave Fillet Milling//Edge beside Rounding//Edge on each of the three mills', async () => {
+    const rows = await (await api('/process_taxonomy_operations?operation_category=eq.Concave%20Fillet%20Milling&select=raw_compound_string,feature_type&order=raw_compound_string', minter.forService())).json() as { raw_compound_string: string; feature_type: string }[];
+    const expected = ['3 Axis Mill', '4 Axis Mill', '5 Axis Mill'].map((mill) => `${mill}:Concave Fillet Milling//Edge`);
+    must(JSON.stringify(rows.map((r) => r.raw_compound_string)) === JSON.stringify(expected) && rows.every((r) => r.feature_type === 'Edge'), `rows ${JSON.stringify(rows)}`);
+  });
+  await check('migration 1154 staged the ball nose data and 1155 bound Concave Fillet Milling to the mills and Plunging to the six lathes', async () => {
+    const table = await (await api('/machining_reference_data?key=eq.tblBallNoseCutData&select=value', minter.forService())).json() as { value: string }[];
+    const maps = await (await api('/process_calculator_mappings?calculator_name=in.(%22Machining%20-%20Concave%20Fillet%20Milling%22,%22Machining%20-%20Plunging%22)&is_active=eq.true&select=operation', minter.forService())).json() as { operation: string }[];
+    const count = (op: string) => maps.filter((m) => m.operation === op).length;
+    must(table.length === 1 && table[0]!.value === '68' && count('Concave Fillet Milling') === 3 && count('Plunging') === 6, `table ${JSON.stringify(table)} mappings ${JSON.stringify(maps)}`);
+  });
   await check('migration 1099 gave the 9 Part Assembly rows their machine classes, and 1100 bound each one to its calculator', async () => {
     const rows = await (await api('/process_calculator_mappings?process_group=eq.Part%20Assembly&select=operation,machine_class,calculator_name,is_active&order=operation', minter.forService())).json() as { operation: string; machine_class: string | null; calculator_name: string | null; is_active: boolean }[];
     const bad = rows.filter((r) => !r.machine_class || !r.is_active || !r.calculator_name?.startsWith('Part Assembly - '));

@@ -120,19 +120,28 @@ function multiStepHoleFeature(steps: Array<{ diameter_mm: number; depth_mm: numb
   };
 }
 
-// Real cad-engine shape: build_machining_feature_graph_v2 buckets toroidal
-// features (Edge/round = convex blend, Slot/groove = concave recess) by major_diameter_mm (entry.diameter_mm), material_removed_mm3
-// honestly 0.0 (never extracted for toroidal blends) — see that function's
-// own doc comment.
-function toroidFeature(kind: 'fillet' | 'groove', count = 1, majorDiamMm = 30): object {
-  const [featureType, variant] = kind === 'fillet' ? ['Edge', 'round'] : ['Slot', 'groove'];
+// Real cad-engine shape: build_machining_feature_graph_v2 buckets toroidal features by major_diameter_mm (entry.diameter_mm),
+// material_removed_mm3 honestly 0.0 (never extracted for toroidal blends). Since geo_v89 (toroid_features.py) each occurrence states its
+// sweep, profile, the arc its tube's centre follows (path_length_mm = major radius x sweep) and whether it is concave: a convex blend is a
+// "round" (Edge:round, concave false), an inside fillet a concave Edge:round, a round-bottomed recess a groove (Slot:groove, with its
+// depth and chord width). `legacy` is an analysis from before geo_v89: none of those, only the radius.
+function toroidFeature(kind: 'round' | 'fillet' | 'groove', count = 1, majorDiamMm = 30, opts: { sweepDeg?: number; legacy?: boolean; radiusMm?: number } = {}): object {
+  const [featureType, variant] = kind === 'groove' ? ['Slot', 'groove'] : ['Edge', 'round'];
+  const sweepDeg = opts.sweepDeg ?? 90;
+  const radiusMm = opts.radiusMm ?? 4;
+  const profileDeg = kind === 'groove' ? 180 : 90;
   return {
     feature_type: featureType,
     variant,
     diameter_mm: majorDiamMm,
     occurrences: Array.from({ length: count }, () => ({
-      radius_mm: 4,
+      radius_mm: radiusMm,
       material_removed_mm3: 0,
+      ...(opts.legacy ? {} : {
+        sweep_deg: sweepDeg, profile_deg: profileDeg, path_length_mm: Math.round((majorDiamMm / 2) * (sweepDeg * Math.PI / 180) * 1000) / 1000,
+        concave: kind !== 'round',
+        ...(kind === 'groove' ? { depth_mm: radiusMm, width_mm: 2 * radiusMm } : {}),
+      }),
     })),
   };
 }
@@ -202,19 +211,25 @@ describe('buildOperationSequence', () => {
     expect(rough.diameterMm).toBeUndefined();
   });
 
-  it('generates real, distinct Filleting/Groove Milling ops for fillet and groove features (Phase 0 coverage fix; Phase 4b real-name split)', () => {
+  it('generates real, distinct Filleting / Concave Fillet Milling / Groove Milling ops for rounds, inside fillets and grooves', () => {
+    const roundOps = buildOperationSequence([toroidFeature('round', 2, 30)], { matClass: 'aluminum', machinabilityFactor: 1.0 });
     const filletOps = buildOperationSequence([toroidFeature('fillet', 2, 30)], { matClass: 'aluminum', machinabilityFactor: 1.0 });
     const grooveOps = buildOperationSequence([toroidFeature('groove', 1, 18)], { matClass: 'aluminum', machinabilityFactor: 1.0 });
 
-    // fillet and groove used to share one invented "Corner Round" name;
-    // the real catalog treats them as two different real operations
-    // (Filleting = edge rounding, Groove Milling = material removal) — the
-    // split proves this file no longer conflates them.
-    const filletRound = filletOps.find((o) => o.name === 'Filleting')!;
+    // A convex round is rounded with the end mill (Filleting); an inside fillet is finished by a ball nose of its radius (Concave Fillet
+    // Milling); a groove is milled by a ball nose (Groove Milling). Each its own operation, never one invented "Corner Round".
+    const filletRound = roundOps.find((o) => o.name === 'Filleting')!;
     expect(filletRound).toBeDefined();
     expect(filletRound.cadFeatureType).toBe('Edge');
     expect(filletRound.diameterMm).toBe(30);
     expect(filletRound.timeSec).toBeGreaterThan(0);
+    expect(roundOps.some((o) => o.name === 'Concave Fillet Milling')).toBe(false);
+
+    const inside = filletOps.find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(inside.cadFeatureType).toBe('Edge');
+    expect(inside.count).toBe(2);
+    expect(inside.timeSec).toBeGreaterThan(0);
+    expect(filletOps.some((o) => o.name === 'Filleting')).toBe(false);
 
     const grooveRound = grooveOps.find((o) => o.name === 'Groove Milling')!;
     expect(grooveRound).toBeDefined();
@@ -513,10 +528,20 @@ describe('chamfers, fillets and grooves: one pass of the end mill along each edg
     expect(chamfer.missing).toContain('the CAD length of 2 edges');
   });
 
-  it('a groove is milled as an edge is rounded: Ø18 is pi x 18 = 56.5 mm, 1 s', () => {
-    const groove = onMill([toroidFeature('groove', 1, 18)]).find((o) => o.name === 'Groove Milling')!;
-    expect(groove.timeSec).toBe(edgeSec(Math.PI * 18));
-    expect(groove.calculator?.id).toBe('Machining - Groove Milling');
+  it('a convex round is rounded along its measured arc (path_length_mm), not pi x its major diameter', () => {
+    // Ø30, a quarter turn: 15 x pi / 2 = 23.562 mm (pi x 30 = 94.2 mm was the old length).
+    const round = onMill([toroidFeature('round', 2, 30)]).find((o) => o.name === 'Filleting')!;
+    expect(round.missing).toBeUndefined();
+    expect(round.timeSec).toBe(2 * edgeSec(23.562));
+    expect(round.trace!.find((t) => t.fieldName === 'Edge Length')!.source).toMatch(/path_length_mm/);
+  });
+
+  it('a round analysed before the arc was measured is cut along the whole circle, and the step says to re-analyse', () => {
+    const round = onMill([toroidFeature('round', 1, 30, { legacy: true })]).find((o) => o.name === 'Filleting')!;
+    expect(round.timeSec).toBe(edgeSec(Math.PI * 30));
+    const length = round.trace!.find((t) => t.fieldName === 'Edge Length')!;
+    expect(length.value).toBeCloseTo(Math.PI * 30, 2);
+    expect(length.source).toMatch(/whole circle.*re-analyse/);
   });
 
   it('without the material\'s end mill the edge is a named gap', () => {
@@ -529,6 +554,93 @@ describe('chamfers, fillets and grooves: one pass of the end mill along each edg
   it('the chamfer of a tapped hole is timed the same way', () => {
     const chamfer = onMill([tappedHoleFeature(1, 6, 'M6')]).find((o) => o.name === 'Chamfering')!;
     expect(chamfer.timeSec).toBe(edgeSec(Math.PI * 6));
+  });
+});
+
+// Inside fillets and grooves on Haas's ball nose data (tblBallNoseCutData, migrations 1154-1155): a ball of the feature's radius along its
+// path. Aluminium, R4 = a Ø8 ball: Haas HSAM1 2 flute, Ø8 row 216 m/min, 0.093 mm/tooth; n = 216 000 / (pi x 8) = 8594.4 rpm (under the
+// test mill's 10 000); vf = 0.093 x 2 x 8594.4 = 1598.6 mm/min.
+const ballSec = (pathMm: number, ballMm = 8, row = { vc: 216, fz: 0.093, teeth: 2, d: 8 }) => {
+  const n = Math.min(10000, (row.vc * 1000) / (Math.PI * ballMm));
+  const fz = row.fz * Math.min(1, ballMm / row.d);
+  return Math.ceil(((pathMm + 10 + ballMm / 2) / (fz * row.teeth * n)) * 60);
+};
+
+describe('inside fillets and grooves: a ball nose end mill of their radius along their arc (Haas data, 1154-1155)', () => {
+  it('an inside fillet of R4 on a Ø30 quarter arc: 23.562 mm at 1598.6 mm/min -> 2 s a fillet, the Ø8 row of the table', () => {
+    const fillet = onMill([toroidFeature('fillet', 3, 30)]).find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(fillet.missing).toBeUndefined();
+    expect(fillet.calculator?.id).toBe('Machining - Concave Fillet Milling');
+    expect(fillet.timeSec).toBe(3 * ballSec(23.562));
+    expect(ballSec(23.562)).toBe(2);
+    const step = (name: string) => fillet.trace!.find((t) => t.fieldName === name)!;
+    expect(step('Cutter Diameter').value).toBe(8);
+    expect(step('Cutting Speed').value).toBe(216);
+    expect(step('Teeth').value).toBe(2);
+    expect(step('Feed per Tooth').value).toBe(0.093);
+    expect(step('Path Length').source).toMatch(/path_length_mm/);
+    expect(fillet.toolCostInr).toBeCloseTo(1.3375, 9);
+  });
+
+  it('the arc, not the circle: the CANNULA HOLDER\'s fillets were 7.5 x too long at pi x D', () => {
+    const arc = onMill([toroidFeature('fillet', 1, 30, { sweepDeg: 48 })]).find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(arc.plan![0]!.seeds['Path Length']!.value).toBeCloseTo(12.566, 3);
+    expect(arc.timeSec).toBeLessThan(ballSec(Math.PI * 30));
+  });
+
+  it('a groove is milled by the ball nose along its path; one analysed before geo_v89 along the whole circle, said so', () => {
+    const groove = onMill([toroidFeature('groove', 1, 18, { sweepDeg: 180 })]).find((o) => o.name === 'Groove Milling')!;
+    expect(groove.calculator?.id).toBe('Machining - Groove Milling');
+    expect(groove.timeSec).toBe(ballSec(9 * Math.PI));
+    const legacy = onMill([toroidFeature('groove', 1, 18, { legacy: true })]).find((o) => o.name === 'Groove Milling')!;
+    expect(legacy.timeSec).toBe(ballSec(Math.round(Math.PI * 18 * 1000) / 1000));
+    expect(legacy.trace!.find((t) => t.fieldName === 'Path Length')!.source).toMatch(/re-analyse/);
+  });
+
+  it('mild steel Ø4 ball (R2) along 12.12 mm: Haas 1/8 in row, 0.0254 mm/tooth x 4 teeth at the 10 000 rpm cap -> 2 s', () => {
+    const ops = timeOperations(buildOperationSequence([{ feature_type: 'Edge', variant: 'round', diameter_mm: 20, occurrences: [
+      { radius_mm: 2, sweep_deg: 69.4, profile_deg: 90, path_length_mm: 12.12, concave: true },
+    ] }], { matClass: 'mild_steel', calculators: specAsCalculators(), workbook: workbookFixture(), finishing: null }), specAsCalculators(), TEST_MILL);
+    const fillet = ops.find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(fillet.missing).toBeUndefined();
+    expect(fillet.trace!.find((t) => t.fieldName === 'Table Cutter Diameter')!.value).toBe(3.175);
+    expect(fillet.timeSec).toBe(ballSec(12.12, 4, { vc: 161.544, fz: 0.0254, teeth: 4, d: 3.175 }));
+    expect(fillet.timeSec).toBe(2);
+  });
+
+  it('a ball smaller than Haas\'s smallest is fed at the smallest row\'s chip load per diameter (steel 0.008 x D)', () => {
+    const ops = timeOperations(buildOperationSequence([toroidFeature('fillet', 1, 20, { radiusMm: 1 })], {
+      matClass: 'mild_steel', calculators: specAsCalculators(), workbook: workbookFixture(), finishing: null,
+    }), specAsCalculators(), TEST_MILL);
+    const fillet = ops.find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(fillet.trace!.find((t) => t.fieldName === 'Feed per Tooth')!.value).toBeCloseTo(0.016, 4);
+  });
+
+  it('a fillet with no radius, a ball larger than Haas publishes, or a material with no ball nose row is a named gap', () => {
+    const noRadius = onMill([{ feature_type: 'Edge', variant: 'round', diameter_mm: 30, occurrences: [{ concave: true, path_length_mm: 10, profile_deg: 90 }] }])
+      .find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(noRadius.timeSec).toBe(0);
+    expect(noRadius.missing).toMatch(/the CAD radius of 1 fillet/);
+    const huge = onMill([toroidFeature('fillet', 1, 200, { radiusMm: 20 })]).find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(huge.timeSec).toBe(0);
+    expect(huge.missing).toMatch(/tblBallNoseCutData .* has no DiameterMinMm-DiameterMaxMm band for Cutter Diameter 40/);
+    const noTable = timeOperations(buildOperationSequence([toroidFeature('groove', 1, 18)], {
+      matClass: 'aluminum', calculators: specAsCalculators(), workbook: workbookFixture({ tables: { ...workbookFixture().tables, tblBallNoseCutData: [] } }), finishing: null,
+    }), specAsCalculators(), TEST_MILL).find((o) => o.name === 'Groove Milling')!;
+    expect(noTable.timeSec).toBe(0);
+    expect(noTable.missing).toMatch(/tblBallNoseCutData/);
+  });
+
+  it('a concave cylindrical arc (no major diameter, no arc) keeps the edge model; a turned-shoulder fillet is still milled on a mill', () => {
+    const arc = onMill([{ feature_type: 'Edge', variant: 'round', diameter_mm: 0, occurrences: [
+      { radius_mm: 3, sweep_deg: 90, concave: true, extents_mm: [25, 4.2, 0.9] },
+    ] }]);
+    expect(arc.map((o) => o.name)).toContain('Filleting');
+    expect(arc.map((o) => o.name)).not.toContain('Concave Fillet Milling');
+    const shoulder = onMill([{ feature_type: 'Edge', variant: 'round', diameter_mm: 30, occurrences: [
+      { radius_mm: 2, sweep_deg: 360, profile_deg: 90, path_length_mm: 94.248, concave: true, turned_shoulder: true },
+    ] }]).find((o) => o.name === 'Concave Fillet Milling')!;
+    expect(shoulder.timeSec).toBeGreaterThan(0);
   });
 });
 

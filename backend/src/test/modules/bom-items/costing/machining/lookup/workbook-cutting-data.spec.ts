@@ -42,9 +42,10 @@ describe('the machining workbook cutting data (migration 1137)', () => {
     expect(readFileSync(file, 'utf8')).toBe(committed);
   });
 
-  it('stages every table the resolvers read, each as one lookup_table row', () => {
-    const sql = readFileSync(file, 'utf8');
+  it('stages every table the resolvers read, each as one lookup_table row (the ball nose table in its own migration, 1154)', () => {
+    const sql = readFileSync(file, 'utf8') + readFileSync(join(MIGRATIONS, '1154_machining_ball_nose_cut_data.sql'), 'utf8');
     for (const key of WORKBOOK_TABLES) expect(sql).toContain(`'lookup_table', 'USA', '2026-03', '${key}',`);
+    expect(readFileSync(file, 'utf8')).not.toContain('tblBallNoseCutData');
   });
 
   it('keeps the workbook sizes: 11 turning groups x 2 tools x 4 depth bands, 27 materials x 2 operations x 9 hole bands', () => {
@@ -52,6 +53,37 @@ describe('the machining workbook cutting data (migration 1137)', () => {
     expect(drillReam).toHaveLength(486);
     expect(milling).toHaveLength(27);
     expect(boring).toHaveLength(12);
+  });
+});
+
+describe('the ball nose end mill data (migration 1154, memory/machining/workbook/tblBallNoseCutData.csv)', () => {
+  const file = join(MIGRATIONS, '1154_machining_ball_nose_cut_data.sql');
+  const rows = table<Record<string, any>>('tblBallNoseCutData');
+
+  it('is what the generator writes from the same folder as 1137, which it leaves unchanged', () => {
+    const committed = readFileSync(file, 'utf8');
+    const first = readFileSync(join(MIGRATIONS, '1137_machining_workbook_cutting_data.sql'), 'utf8');
+    execFileSync('node', [join(BACKEND, 'scripts/generate-machining-workbook-reference-migration.js')], { stdio: 'ignore' });
+    expect(readFileSync(file, 'utf8')).toBe(committed);
+    expect(readFileSync(join(MIGRATIONS, '1137_machining_workbook_cutting_data.sql'), 'utf8')).toBe(first);
+  });
+
+  it('holds a row per published Haas diameter for every material the workbook mills, each with its URL', () => {
+    const byMaterial = new Map<string, number>();
+    for (const r of rows) byMaterial.set(r.MillingMaterial, (byMaterial.get(r.MillingMaterial) ?? 0) + 1);
+    expect(new Set(byMaterial.keys())).toEqual(new Set(groups.map((g) => g.MillingMaterial)));
+    expect(rows).toHaveLength(68);
+    for (const r of rows) expect(r.Source).toMatch(/^https:\/\/(www\.)?haascnc\.com\//);
+  });
+
+  it('converts the inch tables exactly: mild steel 530 SFM, .0010 in a tooth at 1/8 in; aluminium as published in mm', () => {
+    const steel = rows.filter((r) => r.MillingMaterial === 'STEEL-LOW & MEDIUM STRENGTH WROUGHT');
+    expect(steel[0]).toMatchObject({ Teeth: 4, ToolDiameterMm: 3.175, DiameterMinMm: 0, DiameterMaxMm: 4.7615, SpeedMPerMin: 161.544, FeedPerToothMm: 0.0254 });
+    expect(steel[2]).toMatchObject({ ToolDiameterMm: 5.159375, FeedPerToothMm: 0.03048 });
+    expect(steel[steel.length - 1]).toMatchObject({ ToolDiameterMm: 25.4, DiameterMaxMm: 25.4, FeedPerToothMm: 0.09906 });
+    const alu = rows.filter((r) => r.MillingMaterial === 'ALUMINUM ALLOY CAST AND WROUGHT');
+    expect(alu.map((r) => [r.ToolDiameterMm, r.SpeedMPerMin, r.FeedPerToothMm])).toContainEqual([6, 211, 0.062]);
+    expect(alu[0]).toMatchObject({ Teeth: 2, DiameterMinMm: 0, DiameterMaxMm: 3.999 });
   });
 });
 

@@ -13,6 +13,8 @@ import type { MaterialClass } from '../process/cost-machining-engine';
 export const WORKBOOK_TABLES = [
   'tblTurningConditions', 'tblDrillReamData', 'tblHssHoleSpeeds', 'tblBoringFeed', 'tblMillingConditions',
   'tblCorraxCutData', 'tblCuttingToolCost', 'tblThermalCutFeed', 'tblSawCutRate', 'tblCuttingMaterialGroup',
+  // Staged by migration 1154 (the same generator): Haas Tooling's ball nose end mill data, for the fillets and grooves a ball nose finishes.
+  'tblBallNoseCutData',
 ] as const;
 export type WorkbookTable = (typeof WORKBOOK_TABLES)[number];
 

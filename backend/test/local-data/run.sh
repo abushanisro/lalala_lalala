@@ -248,6 +248,15 @@ WITH lathe AS (
 )
 INSERT INTO public.process_taxonomy_operations (canonical_process_id, operation_category, feature_type, raw_compound_string)
 SELECT id, 'Thread Turning', 'Ring', process_name || ':Thread Turning//Ring' FROM lathe;
+-- the three mills and their Edge Rounding rows (migration 754): migration 1156 adds Concave Fillet Milling//Edge beside each and fails if one is missing
+WITH mill AS (
+  INSERT INTO public.process_taxonomy (process_group, process_name, machine_class, roadmap_status) VALUES
+    ('Machining', '3 Axis Mill', '3_axis_mill', 'production'), ('Machining', '4 Axis Mill', '4_axis_mill', 'production'),
+    ('Machining', '5 Axis Mill', '5_axis_mill', 'production')
+  RETURNING id, process_name
+)
+INSERT INTO public.process_taxonomy_operations (canonical_process_id, operation_category, feature_type, raw_compound_string)
+SELECT id, 'Rounding', 'Edge', process_name || ':Rounding//SimpleHole:Rounding//Edge' FROM mill;
 -- the Stock Machining catalog rows migration 790 seeds (no machine class): migration 1114 classes both and fails if one stays without
 INSERT INTO public.process_taxonomy (process_group, process_name, roadmap_status) VALUES ('Stock Machining', 'Band Saw', 'not_modeled'), ('Stock Machining', 'Material Stock', 'non_mfg');
 -- the machine table's currency, catalog and capacity columns and its rate sources as the real database has them (migrations 322, 330, 542 and
