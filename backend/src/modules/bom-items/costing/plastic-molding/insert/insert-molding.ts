@@ -16,7 +16,10 @@ import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type Refe
 import { noCostFeatureLine } from '../../shared/core/engine-kernel';
 import { INSERT_MOLDING_PROCESS_GROUP } from '../../shared/core/part-family-process-group';
 
-import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { ShotCycleRefs } from '../process/cost-injection-molding-engine';
+import type { MachineRecord } from '../calculators/plastic-input-sources';
+import { calc, inputStep, resultStep } from '../calculators/plastic-cycle-time-seeds';
 import type { AssemblyComponent } from '../../assembly/assembly-joints';
 import type { CostContext } from '../../casting/casting-finishing';
 import type { SandReference } from '../../casting/sand/sand-reference';
@@ -171,7 +174,11 @@ export function insertLoading(input: {
       if (route.loading !== 'manual' && payload < heaviest) return { ok: false, reasons: [`its ${payload} kg payload does not carry the ${heaviest} kg insert`] };
       const { seeds, missing } = seedsFor(calc, {
         variable,
-        engine: (key) => (key.startsWith('load_time_s') ? loadSeed : key.startsWith('manual') ? { value: route.loading === 'manual' ? 1 : 0, source: route.loading === 'manual' ? 'a manual load' : `a ${route.loading} robot` } : null),
+        engine: (key) => (key.startsWith('load_time_s') ? loadSeed : key.startsWith('manual') ? {
+          value: route.loading === 'manual' ? 1 : 0, source: route.loading === 'manual' ? 'a manual load' : `a ${route.loading} robot`,
+          // How the loader loads: its HR Rates record's loading spec.
+          ref: { kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column: 'loading' },
+        } : null),
       });
       if (missing.length) return { ok: false, reasons: missing.map((x) => `${kind.calculator}: ${x}`) };
       const run = runReferenceCalculator(input.calculators, kind.calculator, seeds, calc.output ?? 'Cycle Time');
@@ -185,7 +192,8 @@ export function insertLoading(input: {
 
 /**
  * The shot of an insert press: the injection cycle and the shot's insert loading (the part's load times the cavities), overlapped on a
- * table press. What the injection engine's shotCycle hook returns.
+ * table press. What the injection engine's shotCycle hook returns. Each input opens where it came from: the injection cycle's calculation,
+ * the loading's calculation times the cavities, and the press's HR Rates record at its table configuration.
  */
 export function shotCycle(input: {
   calculators: Readonly<Record<string, ReferenceCalculatorDef>>;
@@ -193,18 +201,42 @@ export function shotCycle(input: {
   loadSecPerPart: number;
   tablePress: boolean;
   pressName: string | null;
-}): (moldingCycleSec: number, cavities: number) => { sec: number; trace: CalculationTraceStep[]; run: ReferenceCalcRun } | null {
-  return (moldingCycleSec, cavities) => {
-    const calc = input.spec.calculators.find((c) => c.name === SHOT_CYCLE_CALC);
-    if (!calc) return null;
+  /** The loader's run that timed the loading per part (its calculation), for the load's eye; absent when not given. */
+  loadRef?: SourceRef | null;
+  /** The press's HR Rates record (its table_configuration spec), for the table's eye; absent when not known. */
+  pressRecord?: MachineRecord | null;
+  /** The press's table configuration as its record states it (Rotary, Shuttle, No table); absent when it names none. */
+  tableConfiguration?: string | null;
+}): (moldingCycleSec: number, cavities: number, refs?: ShotCycleRefs) => { sec: number; trace: CalculationTraceStep[]; run: ReferenceCalcRun } | null {
+  return (moldingCycleSec, cavities, refs) => {
+    const shotCalc = input.spec.calculators.find((c) => c.name === SHOT_CYCLE_CALC);
+    if (!shotCalc) return null;
+    const load = r2(input.loadSecPerPart * cavities);
+    const press = input.pressName ?? 'the press';
+    const tableRef: SourceRef = input.pressRecord
+      ? { kind: 'machine', machineId: input.pressRecord.id, machineName: input.pressRecord.name, machineClass: input.pressRecord.machineClass, location: input.pressRecord.location, column: 'table_configuration' }
+      : calc('Table Press', [
+        inputStep('Table configuration', null, input.tableConfiguration ?? 'none named', `${press}: its HR Rates record's table_configuration`),
+        resultStep('Table Press', null, input.tablePress ? 1 : 0, '1 for a rotary or shuttle table (it loads while it molds), else 0'),
+      ]);
     const values: Record<string, CalcSeed> = {
-      molding_cycle_s: { value: moldingCycleSec, source: 'the injection cycle of the shot (Injection Molding - Cycle Time)' },
-      insert_load_s: { value: r2(input.loadSecPerPart * cavities), source: `the insert loading of the part x ${cavities} cavit${cavities === 1 ? 'y' : 'ies'}` },
-      table_press: { value: input.tablePress ? 1 : 0, source: input.tablePress ? `${input.pressName ?? 'the press'} has a rotary or shuttle table: it loads while it molds` : `${input.pressName ?? 'the press'} has no table: it loads with the mold open` },
+      molding_cycle_s: { value: moldingCycleSec, source: 'the injection cycle of the shot (Injection Molding - Cycle Time)', ...(refs ? { ref: refs.molding } : {}) },
+      insert_load_s: {
+        value: load, source: `the insert loading of the part x ${cavities} cavit${cavities === 1 ? 'y' : 'ies'}`,
+        ref: calc('Load Time: the insert loading of the shot', [
+          inputStep('Insert loading per part', 's', input.loadSecPerPart, 'Insert Pick and Place: the loader\'s time per part', input.loadRef ?? undefined),
+          inputStep('Cavities per Mold', null, cavities, 'The costed cavity count', refs?.cavities),
+          resultStep('Load Time', 's', load, '{Insert loading per part} * {Cavities per Mold}'),
+        ]),
+      },
+      table_press: {
+        value: input.tablePress ? 1 : 0, source: input.tablePress ? `${press} has a rotary or shuttle table: it loads while it molds` : `${press} has no table: it loads with the mold open`,
+        ref: tableRef,
+      },
     };
-    const { seeds, missing } = seedsFor(calc, { engine: (key) => values[key.split(' (')[0].trim()] ?? null });
+    const { seeds, missing } = seedsFor(shotCalc, { engine: (key) => values[key.split(' (')[0].trim()] ?? null });
     if (missing.length) return null;
-    const run = runReferenceCalculator(input.calculators, SHOT_CYCLE_CALC, seeds, calc.output ?? 'Shot Cycle');
+    const run = runReferenceCalculator(input.calculators, SHOT_CYCLE_CALC, seeds, shotCalc.output ?? 'Shot Cycle');
     return run.value == null ? null : { sec: run.value, trace: run.trace, run };
   };
 }
@@ -235,7 +267,8 @@ export function priceInsertRoutes(input: {
   loaders: readonly SandMachine[];
   batchSize: number;
   costContext: CostContext;
-  press: { name: string | null; tablePress: boolean };
+  /** The insert press: its name, whether it has a table, and its HR Rates record and table configuration when known (the table input's eye). */
+  press: { name: string | null; tablePress: boolean; record?: MachineRecord | null; tableConfiguration?: string | null };
   /** USD -> the factory currency the engine's lines are in (the loader is priced in USD, as HR Rates are). */
   toLocal: (line: ProcessLineCost) => ProcessLineCost;
   runEngine: (shot: ReturnType<typeof shotCycle> | null) => CostSummaryDto;
@@ -245,9 +278,14 @@ export function priceInsertRoutes(input: {
     const loading = insertLoading({ ...input, route });
     // What the engine's shot hook computed, kept for the panel (the shot and the molding cycle under it).
     const seen: { moldingCycleSec: number | null; shotSec: number | null } = { moldingCycleSec: null, shotSec: null };
-    const hook = loading.secPerPart != null ? shotCycle({ ...input, loadSecPerPart: loading.secPerPart, tablePress: input.press.tablePress, pressName: input.press.name }) : null;
-    const recorded = hook ? (mold: number, cavities: number) => {
-      const out = hook(mold, cavities);
+    const loadTrace = loading.step.line.calculationTrace ?? [];
+    const hook = loading.secPerPart != null ? shotCycle({
+      ...input, loadSecPerPart: loading.secPerPart, tablePress: input.press.tablePress, pressName: input.press.name,
+      loadRef: loadTrace.length > 0 ? { kind: 'calculation', name: `${INSERT_LOADING_STEP.process}: ${loading.step.machine?.name ?? route.label}`, evidence: null, steps: loadTrace } : null,
+      pressRecord: input.press.record ?? null, tableConfiguration: input.press.tableConfiguration ?? null,
+    }) : null;
+    const recorded = hook ? (mold: number, cavities: number, refs?: ShotCycleRefs) => {
+      const out = hook(mold, cavities, refs);
       seen.moldingCycleSec = mold;
       seen.shotSec = out?.sec ?? null;
       return out;

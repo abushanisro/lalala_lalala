@@ -39,9 +39,9 @@ export interface CalculatorFieldDefault {
  * The machine-library tables of sm_reference_data, each served by its own endpoint (backend SHEET_METAL_LIBRARY_TABLES); every other
  * smTable is served by GET /processes/sm-lookup-tables/by-name/:table.
  */
-export type SheetMetalLibraryTable = 'turret_machines' | 'waterjet_machines' | 'deslag_allowance' | 'stroke_rate_factor';
+export type SheetMetalLibraryTable = 'turret_machines' | 'waterjet_machines' | 'deslag_allowance' | 'stroke_rate_factor' | 'press_brake_machines';
 export const isSheetMetalLibraryTable = (table: string): table is SheetMetalLibraryTable =>
-  table === 'turret_machines' || table === 'waterjet_machines' || table === 'deslag_allowance' || table === 'stroke_rate_factor';
+  table === 'turret_machines' || table === 'waterjet_machines' || table === 'deslag_allowance' || table === 'stroke_rate_factor' || table === 'press_brake_machines';
 
 /** The dialog's reference-table panel (ProcessCostDialog lookupTableData). The last column is the one the value is in. */
 export interface SourcePanel {

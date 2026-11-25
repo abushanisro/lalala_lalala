@@ -1914,8 +1914,8 @@ export class SheetMetalLookupService {
   async getPemMatches(
     holeDiametersMm: number[],
     sheetThicknessMm: number,
-  ): Promise<Map<number, { partSpec: string; insertionCycleSec: number } | null>> {
-    const result = new Map<number, { partSpec: string; insertionCycleSec: number } | null>();
+  ): Promise<Map<number, { partSpec: string; insertionCycleSec: number; row: { hole_diameter_mm: number; sheet_thickness_mm: number; pem_part_spec: string } } | null>> {
+    const result = new Map<number, { partSpec: string; insertionCycleSec: number; row: { hole_diameter_mm: number; sheet_thickness_mm: number; pem_part_spec: string } } | null>();
     if (holeDiametersMm.length === 0) return result;
 
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
@@ -1935,7 +1935,11 @@ export class SheetMetalLookupService {
         Math.abs(Number(r.sheet_thickness_mm) - sheetThicknessMm) <= THICK_TOL_MM,
       );
       result.set(d, match
-        ? { partSpec: match.pem_part_spec, insertionCycleSec: Number(match.insertion_cycle_sec) || 0 }
+        ? {
+          partSpec: match.pem_part_spec, insertionCycleSec: Number(match.insertion_cycle_sec) || 0,
+          // The row it was read from (its keys), for the calculator input's eye.
+          row: { hole_diameter_mm: Number(match.hole_diameter_mm), sheet_thickness_mm: Number(match.sheet_thickness_mm), pem_part_spec: match.pem_part_spec },
+        }
         : null);
     }
     return result;

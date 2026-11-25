@@ -14,7 +14,8 @@ import {
   type MachiningCostInput,
 } from '../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
 import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
-import type { CalculationTraceStep, ProcessLineCost, SourceRef } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import type { ProcessLineCost, SourceRef } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { inputsWithoutRef as withoutRef, refsOpeningNothing as emptyRefs, runsAsLines, sourceGaps } from '../source-ref-guard';
 import { stockReference } from '../../../../../modules/bom-items/costing/stock/stock-reference';
 import { selectStock, type StockPart } from '../../../../../modules/bom-items/costing/stock/stock-selection';
 import { stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
@@ -132,43 +133,6 @@ const stockChoice = { selection: { saw: { chosen: BAR }, parting: { chosen: BAR 
 const EXTERNAL = splitExternalThreads([{ size: 'M12', count: 1, pitchMm: 1.75 }], [{ id: 'od_1', diameterMm: 12, lengthMm: 18, faceIds: [17] }], []).external;
 
 const SHARED = new Set(['Inspection', 'Deburring', 'Tapping']);
-/** Every input step of these lines that carries no ref: "process | field | source". */
-function withoutRef(lines: readonly ProcessLineCost[]): string[] {
-  const out: string[] = [];
-  for (const l of lines) {
-    for (const s of (l.calculationTrace ?? []) as CalculationTraceStep[]) {
-      if (s.kind !== 'input' || s.ref) continue;
-      out.push(`${l.process} | ${s.fieldName} | ${s.source ?? ''}`);
-    }
-  }
-  return [...new Set(out)];
-}
-
-/**
- * Every ref that opens nothing (no eye may open an empty panel): a features or faces ref with none to light, a calculation with no step, a
- * calculator's defaults table without the field, a lookup with no table or column. Each step of a calculation is checked the same way.
- */
-function emptyRefs(lines: readonly ProcessLineCost[]): string[] {
-  const out: string[] = [];
-  const check = (where: string, ref: SourceRef): void => {
-    const bad = (why: string) => out.push(`${where}: ${ref.kind} ${why}`);
-    if (ref.kind === 'features' && ref.features.length === 0) bad('lights no feature');
-    if (ref.kind === 'faces' && ref.faceIds.length === 0) bad('lights no face');
-    if (ref.kind === 'calculation') {
-      if (ref.steps.length === 0) bad('has no step');
-      for (const st of ref.steps) if (st.ref) check(`${where} > ${st.fieldName}`, st.ref);
-    }
-    if (ref.kind === 'calculatorField' && !ref.defaults.some((d) => d.field === ref.field)) bad(`does not list ${ref.field}`);
-    if ((ref.kind === 'lookup' || ref.kind === 'smTable') && (!ref.table || !ref.column)) bad('names no table or column');
-    if (ref.kind === 'machine' && (!ref.machineId || !ref.column)) bad('names no machine record or column');
-    if (ref.kind === 'variable' && (!ref.domain || !ref.name)) bad('names no variable');
-  };
-  for (const l of lines) {
-    for (const st of (l.calculationTrace ?? []) as CalculationTraceStep[]) if (st.kind === 'input' && st.ref) check(`${l.process} | ${st.fieldName}`, st.ref);
-  }
-  return [...new Set(out)];
-}
-
 describe('every machining calculator input says where its value came from', () => {
   const routes: Array<[string, ProcessLineCost[]]> = [
     ['3-axis mill, every feature', computeMillingCostSummary(milled(), '3_axis_mill' as MachineClassId).processLines],
@@ -194,6 +158,37 @@ describe('every machining calculator input says where its value came from', () =
   it('covers the shared lines', () => {
     const processes = new Set(routes.flatMap(([, lines]) => lines.map((l) => l.process)));
     for (const p of SHARED) expect(processes.has(p)).toBe(true);
+  });
+});
+
+// The stock model's own runs, as the cost summary shows them under calculatorRuns ("Stock Machining stock size", "Stock Machining stock",
+// "Stock Machining scrap credit"): a bar sawn and parted off with the scrap credit on, a hex bar, and a plate for a block, the material's
+// Raw Materials record known or not.
+describe('every input of the stock model\'s runs says where its value came from', () => {
+  const BLOCK: StockPart = { source: 'bounding box', family: 'milled', lengthMm: 100, roundOdMm: 128, widthMm: 80, heightMm: 20, hexAcrossFlatsMm: null, boreMm: null, volumeMm3: 120000 };
+  const HEX: StockPart = { ...SHAFT_PART, hexAcrossFlatsMm: 12 };
+  const record = { id: 'raw-6061', name: 'Aluminum, ANSI 6061', densityColumn: 'density_kg_m3' };
+  const quote = (part: StockPart, form: Parameters<typeof selectStock>[3], cutOff: 'saw' | 'parting', priceColumn: string, withRecord: boolean) => {
+    const option = selectStock(part, STOCK, { ...SETTINGS, cutOff }, form).chosen!;
+    expect(option).toBeTruthy();
+    return buildStockMachiningQuote({
+      ref: STOCK_REF, stock: STOCK, calculators: stockMachiningCalculatorsByName(), saws: bandSaws('USA'), part, option,
+      material: { ...stockMaterial('Aluminum, ANSI 6061', priceColumn), ...(withRecord ? { record } : {}) }, cutOff, sawCosted: cutOff === 'saw',
+      remnant: { mm: 152.4, source: 'Stock Machining variable stockBarEndRemnant for USA (mm)' }, scrapCredit: true,
+      scrapRecovery: { percent: 100, source: 'No scrap recovery staged for USA: the whole scrap weight is credited' }, batchSize: 25, costContext: ZERO, endFaceIds: [3, 9],
+    }).material;
+  };
+  const cases: [string, ReturnType<typeof quote>][] = [
+    ['a round bar sawn, its record known', quote(SHAFT_PART, 'round_bar', 'saw', 'Round Bar Unit Cost (USD / kg)', true)],
+    ['a round bar parted off, no record matched', quote(SHAFT_PART, 'round_bar', 'parting', 'Round Bar Unit Cost (USD / kg)', false)],
+    ['a hex bar', quote(HEX, 'hex_bar', 'saw', 'Hex Bar Unit Cost (USD / kg)', true)],
+    ['a plate for a block', quote(BLOCK, 'plate', 'saw', 'Rectangular Bar Unit Cost (USD / kg)', true)],
+  ];
+  it.each(cases)('%s', (_name, m) => {
+    expect(m.run).not.toBeNull();
+    expect(m.sizeRun).not.toBeNull();
+    expect(sourceGaps(runsAsLines({ 'Stock Machining stock size': m.sizeRun, 'Stock Machining stock': m.run, 'Stock Machining scrap credit': m.creditRun })))
+      .toEqual({ withoutRef: [], openingNothing: [] });
   });
 });
 

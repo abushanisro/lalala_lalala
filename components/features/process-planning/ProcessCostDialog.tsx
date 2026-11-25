@@ -98,6 +98,7 @@ function fetchSheetMetalTable(api: typeof import('@/lib/api/processes').processe
     case 'waterjet_machines': return api.getWaterjetMachinesTable();
     case 'deslag_allowance': return api.getDeslagAllowanceTable();
     case 'stroke_rate_factor': return api.getStrokeRateFactorTable();
+    case 'press_brake_machines': return api.getPressBrakeMachinesTable();
   }
 }
 

@@ -20,7 +20,7 @@ const col = (k: string) => iron.columns[k]!;
 const ctx: SandRouteContext = {
   ref, spec, calculators, material: iron,
   part: { netKg: 8, modulusMm: 10, dimsMm: [300, 200, 100], wallNominalMm: 12 },
-  cavities: 1, coresPerCasting: 0, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
+  cavities: 1, cavitiesRef: { kind: 'calculation', name: 'Cavities per mould', evidence: null, steps: [{ fieldName: 'Cavities', displayLabel: 'Cavities', kind: 'calculated', value: 1, formula: 'one cavity' }] }, coresPerCasting: 0, poured: { perCastingKg: 11, perMouldKg: 11 }, energyPricePerKwh: null, hotBox: HOT_BOX, batchSize: 250,
 };
 
 const horizontal = sandMachines('machines_horizontal_automatic.csv', 'sand_casting_horizontal_automatic');
@@ -33,7 +33,7 @@ describe('cavitiesPerMould', () => {
   const line = horizontal[0]!;
   it('an automatic line takes the most cavities of a layout that fits the flask inside its sand borders', () => {
     const r = cavitiesPerMould(ref, line, [100, 80, 60], 1, null);
-    expect(r).toEqual({ cavities: expect.any(Number) });
+    expect(r).toEqual({ cavities: expect.any(Number), ref: expect.objectContaining({ kind: 'calculation', name: 'Cavities per mould' }) });
     const n = (r as { cavities: number }).cavities;
     expect(n).toBeGreaterThan(1);
     // one more would not fit: the layouts above n are all too big for the usable flask
@@ -47,12 +47,17 @@ describe('cavitiesPerMould', () => {
   });
 
   it('manual moulding is one casting per mould unless the user asks for more', () => {
-    expect(cavitiesPerMould(ref, manualStd[0]!, [100, 80, 40], 1, null)).toEqual({ cavities: 1 });
+    expect(cavitiesPerMould(ref, manualStd[0]!, [100, 80, 40], 1, null)).toMatchObject({ cavities: 1 });
   });
 
   it('a casting heavier than largePartThreshold takes one cavity, whatever the layout', () => {
     const heavy = ref.number('largePartThreshold')! + 1;
-    expect(cavitiesPerMould(ref, line, [100, 80, 60], heavy, null)).toEqual({ cavities: 1 });
+    const one = cavitiesPerMould(ref, line, [100, 80, 60], heavy, null);
+    expect(one).toMatchObject({ cavities: 1 });
+    // Its eye opens how: the layoutNumCav row and the large-part limit it was held to.
+    const steps = (one as { ref: { steps: Array<{ fieldName: string; ref?: unknown }> } }).ref.steps;
+    expect(steps.find((s) => s.fieldName === 'largePartThreshold')?.ref).toEqual({ kind: 'variable', domain: 'sand_casting', name: 'largePartThreshold' });
+    expect(steps.find((s) => s.fieldName === 'Layout')?.ref).toMatchObject({ kind: 'lookup', domain: 'sand_casting', table: 'lookupTables_Component_layoutNumCav', column: 'Number of Cavities' });
     expect(cavitiesPerMould(ref, line, [100, 80, 60], heavy, 2)).toEqual({ reasons: [expect.stringContaining('2 cavities do not fit')] });
   });
 });

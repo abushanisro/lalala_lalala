@@ -9,7 +9,8 @@ import { SandMachineService } from '../sand/sand-machine.service';
 import type { SandReference } from '../sand/sand-reference';
 import type { SandMaterial } from '../sand/sand-steps';
 import { loadInvestmentCastingCalculatorSpec } from './calculators/investment-casting-calculator-spec';
-import { INVESTMENT_PROCESS_GROUP, INVESTMENT_ROUTE_CLASSES } from './investment-reference';
+import { INVESTMENT_DOMAIN, INVESTMENT_PROCESS_GROUP, INVESTMENT_ROUTE_CLASSES } from './investment-reference';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
 import { InvestmentReferenceService } from './investment-reference.service';
 import { buildInvestmentRoute, type InvestmentPart, type InvestmentRoute } from './investment-route';
 
@@ -67,15 +68,22 @@ export function investmentPart(m: InvestmentCostRequest['measurements']): { part
  * The alloy's price for the location in USD per kg: India's from the staged India price list of the investment casting alloys, else the USA
  * price, said to be that when the location is not the USA.
  */
-export function alloyPrice(ref: SandReference, material: SandMaterial, location: string): { usdPerKg: number | null; source: string; warning: string | null } {
+export function alloyPrice(ref: SandReference, material: SandMaterial, location: string): { usdPerKg: number | null; source: string; warning: string | null; ref: SourceRef } {
   const usa = material.columns['cost_usa'] ?? null;
-  if (location === 'USA') return { usdPerKg: usa, source: 'cost_usa (USA price)', warning: null };
+  // Where each price is read: the alloy's Raw Materials record (cost_usa), or its row of the India price list.
+  const usaRef: SourceRef = { kind: 'material', materialId: material.id, materialName: material.name, column: 'cost_usa' };
+  if (location === 'USA') return { usdPerKg: usa, source: 'cost_usa (USA price)', warning: null, ref: usaRef };
   if (location === 'India') {
     const row = ref.table('raw_material_cost_master').find((r) => String(r['Material Name']).toLowerCase() === material.name.toLowerCase());
     const india = positive(row?.['Unit Cost (USD/kg)']);
-    if (india != null) return { usdPerKg: india, source: 'India price (raw_material_cost_master)', warning: null };
+    if (india != null) {
+      return {
+        usdPerKg: india, source: 'India price (raw_material_cost_master)', warning: null,
+        ref: { kind: 'lookup', domain: INVESTMENT_DOMAIN, table: 'raw_material_cost_master', column: 'Unit Cost (USD/kg)', row: { 'Material Name': String(row!['Material Name']) } },
+      };
+    }
   }
-  return { usdPerKg: usa, source: 'cost_usa (USA price)', warning: `${material.name} has no ${location} price in the investment casting data: the metal is priced at its USA price.` };
+  return { usdPerKg: usa, source: 'cost_usa (USA price)', warning: `${material.name} has no ${location} price in the investment casting data: the metal is priced at its USA price.`, ref: usaRef };
 }
 
 /** One route in the location's currency (it is built in USD, the units of HR Rates and the reference data). The wax pattern die stays in USD, as every tool investment of a summary is. */
@@ -150,10 +158,10 @@ export class InvestmentCostService {
     const lifetime = req.annualVolume != null && req.productionLifeYears != null && req.annualVolume > 0 && req.productionLifeYears > 0 ? req.annualVolume * req.productionLifeYears : null;
     const { route, missing } = buildInvestmentRoute({
       ref: reference, spec, calculators, part, machinesByClass: machines, costContext: req.costContext,
-      material: { ...alloy, columns: { ...alloy.columns, price_usd_per_kg: price.usdPerKg } }, priceSource: price.source,
+      material: { ...alloy, columns: { ...alloy.columns, price_usd_per_kg: price.usdPerKg } }, priceSource: price.source, priceRef: price.ref,
       scenario: {
         batchSize: req.batchSize, cavities: cavities != null && Number.isInteger(cavities) && cavities > 0 ? cavities : null,
-        energyPricePerKwh: energy?.usdPerKwh ?? null, energyPriceSource: energy?.source ?? null, lifetimeVolume: lifetime,
+        energyPricePerKwh: energy?.usdPerKwh ?? null, energyPriceSource: energy?.source ?? null, energyPriceRef: energy?.ref ?? null, lifetimeVolume: lifetime,
       },
     });
     if (!route) return none(...missing);

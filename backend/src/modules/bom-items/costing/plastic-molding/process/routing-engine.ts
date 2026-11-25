@@ -60,6 +60,8 @@ export interface InjectionMoldingSignals {
   partingComplexity: number | null; // 0–1; flash risk proxy
   /** The measured parting line length (mm, CAD PartingLine feature): what deflashing trims; null when not measured. */
   partingLineLengthMm?: number | null;
+  /** The PartingLine feature it was measured on (plastic feature graph id): what the deflashing input's eye lights. */
+  partingLineFeatureId?: string | null;
   // Phase 5+ signals — set manually via BOM annotation until CAD detection exists.
   unscrewingCoreCount: number | null; // helical blind holes requiring in-cycle core rotation
   overmoldSubstrate: string | null;   // substrate material grade (triggers overmold path)

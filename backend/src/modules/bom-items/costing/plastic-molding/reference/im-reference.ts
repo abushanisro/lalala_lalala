@@ -4,6 +4,8 @@
 import { readFileSync } from 'fs';
 import { Logger } from '@nestjs/common';
 import { join } from 'path';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
+import { referencePackageRef, type PlasticReferencePackageFile } from '../../shared/served-reference-tables';
 
 /** RFC 4180: quoted fields, "" for a quote inside one. */
 export function parseCsv(text: string): string[][] {
@@ -49,14 +51,18 @@ export function readReferenceCsv(file: string): Array<Record<string, string>> {
   return body.filter((r) => r.some((c) => c !== '')).map((r) => Object.fromEntries(header!.map((h, i) => [h, r[i] ?? ''])));
 }
 
-/** A value of the reference package with its unit, confidence and source, for a calculator input. */
-export interface ReferenceValue { value: number; unit: string; confidence: string; source: string }
+/**
+ * A value of the reference package with its unit, confidence and source, for a calculator input, and the row it was read from (its file
+ * served as a lookup: the eye opens it with the row outlined).
+ */
+export interface ReferenceValue { value: number; unit: string; confidence: string; source: string; ref: SourceRef }
 
-function referenceValue(rows: ReadonlyArray<Record<string, string>>, match: (r: Record<string, string>) => boolean, file: string): ReferenceValue | null {
-  const r = rows.find(match);
+/** The row matching `keys` (each column/value), its `value` column as a ReferenceValue; null when the file has no such row or no number in it. */
+function referenceValue(rows: ReadonlyArray<Record<string, string>>, keys: Record<string, string>, file: PlasticReferencePackageFile): ReferenceValue | null {
+  const r = rows.find((x) => Object.entries(keys).every(([k, v]) => x[k] === v));
   const value = r ? Number(r['value']) : NaN;
   if (!r || r['value'] === '' || !Number.isFinite(value)) return null;
-  return { value, unit: r['unit'] ?? '', confidence: r['confidence'] ?? '', source: `reference/${file}: ${r['source_name']}` };
+  return { value, unit: r['unit'] ?? '', confidence: r['confidence'] ?? '', source: `reference/${file}: ${r['source_name']}`, ref: referencePackageRef(file, 'value', keys) };
 }
 
 /** The weight check (quality-inspection-reference.csv) and the equipment economics its scale rate is derived with (equipment-economics-reference.csv). */
@@ -64,8 +70,8 @@ export function weightCheckReference(
   quality: ReadonlyArray<Record<string, string>> = readReferenceCsv('quality-inspection-reference.csv'),
   economics: ReadonlyArray<Record<string, string>> = readReferenceCsv('equipment-economics-reference.csv'),
 ) {
-  const q = (p: string) => referenceValue(quality, (r) => r['operation'] === 'weight_check' && r['parameter'] === p, 'quality-inspection-reference.csv');
-  const e = (p: string) => referenceValue(economics, (r) => r['parameter'] === p, 'equipment-economics-reference.csv');
+  const q = (p: string) => referenceValue(quality, { operation: 'weight_check', parameter: p }, 'quality-inspection-reference.csv');
+  const e = (p: string) => referenceValue(economics, { parameter: p }, 'equipment-economics-reference.csv');
   return {
     timePerCheckS: q('time_per_check'), samplingInterval: q('sampling_interval'), scalePriceUsd: q('scale_price'),
     lifeYr: e('life'), maintenancePct: e('annual_maintenance_factor'), installationPct: e('installation_factor'), salvagePct: e('salvage_factor'),
@@ -79,8 +85,8 @@ export function insertPullTestReference(
   quality: ReadonlyArray<Record<string, string>> = readReferenceCsv('quality-inspection-reference.csv'),
   economics: ReadonlyArray<Record<string, string>> = readReferenceCsv('equipment-economics-reference.csv'),
 ) {
-  const q = (p: string) => referenceValue(quality, (r) => r['operation'] === 'insert_pull_test' && r['parameter'] === p, 'quality-inspection-reference.csv');
-  const e = (p: string) => referenceValue(economics, (r) => r['parameter'] === p, 'equipment-economics-reference.csv');
+  const q = (p: string) => referenceValue(quality, { operation: 'insert_pull_test', parameter: p }, 'quality-inspection-reference.csv');
+  const e = (p: string) => referenceValue(economics, { parameter: p }, 'equipment-economics-reference.csv');
   return {
     sampleHandlingS: q('sample_handling_time'), insertSeatS: q('insert_seat_time'), pullDisplacementMm: q('pull_displacement'),
     pullSpeedMmPerMin: q('pull_speed'), approachReturnS: q('approach_return_time'), recordS: q('record_time'), testerPriceUsd: q('tester_price'),
@@ -90,8 +96,15 @@ export function insertPullTestReference(
 }
 export type InsertPullTestReference = ReturnType<typeof insertPullTestReference>;
 
-export interface DryingCondition { material: string; grade: string; tempC: string; timeH: string; confidence: string; source: string }
+/** A resin's drying row (material-drying-reference.csv), with the row's key for the eye: its material and grade. */
+export interface DryingCondition { material: string; grade: string; tempC: string; timeH: string; confidence: string; source: string; row: { material: string; material_grade: string } }
+/** A dryer model's row (dryer-models-reference.csv), keyed by its model. */
 export interface DryerModel { model: string; throughputKgH: number; ratedKw: number | null; priceUsd: number | null; priceBasis: string; confidence: string; source: string }
+
+/** The drying row's cell a value was read from (drying_temp_c_max, drying_time_h_max). */
+export const dryingRef = (c: DryingCondition, column: string): SourceRef => referencePackageRef('material-drying-reference.csv', column, c.row);
+/** A dryer model's cell a value was read from (nylon_throughput_kg_h, rated_kw, price_usd). */
+export const dryerRef = (d: DryerModel, column: string): SourceRef => referencePackageRef('dryer-models-reference.csv', column, { model: d.model });
 
 /**
  * The drying row of a resin grade (material-drying-reference.csv), matched on the polymer and the glass fill: "Nylon, Type 11 40% Glass" is PA11 GF.
@@ -115,6 +128,7 @@ export function dryingConditionFor(grade: string | null, rows: ReadonlyArray<Rec
   return {
     material: key, grade: r['material_grade']!, tempC: range(r['drying_temp_c_min']!, r['drying_temp_c_max']!), timeH: range(r['drying_time_h_min']!, r['drying_time_h_max']!),
     confidence: r['confidence']!, source: `reference/material-drying-reference.csv: ${r['source_name']}`,
+    row: { material: key, material_grade: r['material_grade']! },
   };
 }
 
@@ -129,7 +143,7 @@ export function dryerModels(rows: ReadonlyArray<Record<string, string>> = readRe
 
 /** The equipment economics (equipment-economics-reference.csv) for a machine-hour rate by the migration 580 pattern. */
 export function equipmentEconomics(rows: ReadonlyArray<Record<string, string>> = readReferenceCsv('equipment-economics-reference.csv')) {
-  const e = (p: string) => referenceValue(rows, (r) => r['parameter'] === p, 'equipment-economics-reference.csv');
+  const e = (p: string) => referenceValue(rows, { parameter: p }, 'equipment-economics-reference.csv');
   return {
     lifeYr: e('life'), maintenancePct: e('annual_maintenance_factor'), installationPct: e('installation_factor'), salvagePct: e('salvage_factor'),
     uptimePct: e('uptime'), utilization: e('utilization'), scheduledHours: e('scheduled_hours'),
@@ -139,12 +153,14 @@ export function equipmentEconomics(rows: ReadonlyArray<Record<string, string>> =
 /** The edge-gate width constant n of a material type (gate-sizing-reference.csv), with the row it came from; the "*" row for a type Pye does not list. */
 export function gateWidthConstant(
   materialType: string | null | undefined, rows: ReadonlyArray<Record<string, string>> = readReferenceCsv('gate-sizing-reference.csv'),
-): { n: number; family: string; confidence: string; source: string } | null {
+): { n: number; family: string; confidence: string; source: string; ref: SourceRef } | null {
   const type = (materialType ?? '').trim().toLowerCase();
   const listed = (r: Record<string, string>) => (r['material_types'] ?? '').split(';').map((t) => t.trim().toLowerCase());
   const row = (type ? rows.find((r) => listed(r).includes(type)) : undefined) ?? rows.find((r) => listed(r).includes('*'));
   const n = Number(row?.['n']);
-  return row && Number.isFinite(n) && n > 0 ? { n, family: row['material_family']!, confidence: row['confidence']!, source: row['source_name']! } : null;
+  return row && Number.isFinite(n) && n > 0
+    ? { n, family: row['material_family']!, confidence: row['confidence']!, source: row['source_name']!, ref: referencePackageRef('gate-sizing-reference.csv', 'n', { material_family: row['material_family']! }) }
+    : null;
 }
 
 export interface SteelTreatment {

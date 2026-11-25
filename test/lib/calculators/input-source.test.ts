@@ -123,6 +123,7 @@ describe('smTablePanel', () => {
   it('opens a table, and names which tables have their own endpoint', () => {
     expect(opensTable(ref(null))).toBe(true);
     expect(isSheetMetalLibraryTable('stroke_rate_factor')).toBe(true);
+    expect(isSheetMetalLibraryTable('press_brake_machines')).toBe(true);
     expect(isSheetMetalLibraryTable('sm_lookup_laser_cut')).toBe(false);
   });
 });

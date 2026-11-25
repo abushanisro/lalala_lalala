@@ -14,6 +14,7 @@ import { gap, type CostContext } from '../casting/casting-finishing';
 import { lineToLocal } from '../casting/sand/sand-cost';
 import { seedsFor, type SeedProvider } from '../casting/sand/sand-seeds';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { derivedSeed, inputStep, resultStep } from '../shared/calculators/seed-refs';
 
 import type { SelectedBar } from './multi-spindle-stock';
 import type { ProcessLineCost } from '../../dto/cost-breakdown.dto';
@@ -82,21 +83,39 @@ export function barStock(input: {
   const calc = input.spec.calculators.find((c) => c.name === MULTI_SPINDLE_CALC.stock);
   if (!calc) return { run: null, missing: `${MULTI_SPINDLE_CALC.stock} is not in the calculator spec` };
   const { bar, material } = input;
+  // The Multi-Spindle reference (memory/Multi-Spindle Maching) is the staged domain multi_spindle: its variables and tables open there.
+  const DOMAIN = 'multi_spindle';
+  const fact = (value: number, source: string, label: string, unit: string | null, why: string): CalcSeed =>
+    derivedSeed(value, source, label, [inputStep(label, unit, value, source), resultStep(label, unit, value, why)]);
+  const materialRef = (column: string) => (material.id ? { kind: 'material' as const, materialId: material.id, materialName: material.name, column } : undefined);
   const engine: Record<string, CalcSeed | null> = {
-    part_length_mm: { value: input.part.lengthMm, source: 'CAD: the part\'s length along its turning axis' },
-    bar_section_area_mm2: { value: bar.sectionAreaMm2, source: `${bar.sizeLabel}: its cross-section` },
-    bar_remnant_mm: { value: BAR_REMNANT_MM, source: BAR_REMNANT_SOURCE },
-    price_per_kg: material.pricePerKgUsd != null ? { value: material.pricePerKgUsd, source: material.priceSource } : null,
+    part_length_mm: fact(input.part.lengthMm, 'CAD: the part\'s length along its turning axis', 'Part Length', 'mm', 'as measured'),
+    bar_section_area_mm2: derivedSeed(bar.sectionAreaMm2, `${bar.sizeLabel}: its cross-section`, 'Bar section', [
+      inputStep('Bar size', 'mm', bar.sizeMm, bar.snapped ? `tblPreferredSizes: ${bar.sizeLabel}, the first preferred size at least the ${round(bar.requiredMm, 3)} mm needed` : 'the size needed (not snapped)',
+        bar.snapped ? { kind: 'lookup', domain: DOMAIN, table: 'tblPreferredSizes', column: 'sizeMm', row: { sizeMm: bar.sizeMm } } : undefined),
+      inputStep('Form', null, bar.form, 'the bar the part is turned from'),
+      resultStep('Bar Section Area', 'mm²', bar.sectionAreaMm2, bar.form === 'hex' ? '√3/2 x {Bar size}²' : bar.form === 'square' ? '{Bar size}²' : 'π/4 x {Bar size}²'),
+    ]),
+    bar_remnant_mm: fact(BAR_REMNANT_MM, BAR_REMNANT_SOURCE, 'Bar Remnant', 'mm', 'the bar end the feeder cannot use'),
+    price_per_kg: material.pricePerKgUsd != null ? derivedSeed(material.pricePerKgUsd, material.priceSource, 'Bar price', [
+      inputStep('Material', null, material.name, material.priceSource, materialRef('name')), resultStep('Price per kg', 'USD/kg', material.pricePerKgUsd, 'the bar\'s price at the location'),
+    ]) : null,
   };
   const variable: SeedProvider = (name) => {
     const value = input.ref.number(name);
-    return value == null ? null : { value, source: `Multi-Spindle variable ${name}${input.ref.unit(name) ? ` (${input.ref.unit(name)})` : ''}` };
+    return value == null ? null : { value, source: `Multi-Spindle variable ${name}${input.ref.unit(name) ? ` (${input.ref.unit(name)})` : ''}`, ref: { kind: 'variable', domain: DOMAIN, name } };
   };
+  // The tblPartingRingWidth row the parting width was read from: the first whose diameter covers the bar's corners, else the last.
+  const rings = input.ref.table('tblPartingRingWidth').map((r) => Number(r['diameterMm'])).filter(Number.isFinite).sort((a, b) => a - b);
+  const ringRow = rings.find((d) => d >= bar.circumscribedMm - 1e-9) ?? rings.at(-1);
   const { seeds, missing } = seedsFor(calc, {
     engine: (source) => engine[keyName(source)] ?? null,
     variable,
     lookup: (source) => (source === 'tblPartingRingWidth.ringWidthMm'
-      ? { value: bar.partingWidthMm, source: `tblPartingRingWidth: the parting tool for a bar up to Ø${round(bar.circumscribedMm, 1)} mm across its corners` }
+      ? {
+        value: bar.partingWidthMm, source: `tblPartingRingWidth: the parting tool for a bar up to Ø${round(bar.circumscribedMm, 1)} mm across its corners`,
+        ...(ringRow != null ? { ref: { kind: 'lookup' as const, domain: DOMAIN, table: 'tblPartingRingWidth', column: 'ringWidthMm', row: { diameterMm: ringRow } } } : {}),
+      }
       : null),
     material: (column) => (column === 'density_kg_m3' && material.densityKgM3 != null
       ? {

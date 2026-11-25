@@ -99,6 +99,34 @@ export function strokeRateFactorTable(rows: ReadonlyArray<{ raw: Raw }>): Refere
   };
 }
 
+/**
+ * Every press brake of the machine library ('Bend Press Brake:<name>', the rows that carry a bend cycle time) with its bend cycle time, the
+ * Time Per Stroke the Press Brake calculator takes for that machine (SheetMetalLookupService.getBendCycleTimeForMachine), and its force.
+ */
+export function pressBrakeMachinesTable(machineRows: ReadonlyArray<{ key: string; raw: Raw }>): ReferenceTablePayload {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const byMachine = new Map<string, { machine_name: string; press_force_kn: number | null; max_bend_length_mm: number | null; bend_cycle_time_s: number | null }>();
+  for (const r of machineRows) {
+    if (num(r.raw?.bend_cycle_time_s) == null) continue;
+    const name = String(r.raw?.name ?? r.key.replace(/^[^:]*:/, ''));
+    if (byMachine.has(name)) continue;
+    byMachine.set(name, {
+      machine_name: name, press_force_kn: num(r.raw?.press_force_kn), max_bend_length_mm: num(r.raw?.max_bend_length_mm), bend_cycle_time_s: num(r.raw?.bend_cycle_time_s),
+    });
+  }
+  return {
+    id: 'machine_library:press_brake_machines',
+    tableName: 'Press brakes — bend cycle time (time per stroke)',
+    columnDefinitions: [
+      { name: 'machine_name', label: 'Machine' },
+      { name: 'press_force_kn', label: 'Press Force', unit: 'kN' },
+      { name: 'max_bend_length_mm', label: 'Max Bend Length', unit: 'mm' },
+      { name: 'bend_cycle_time_s', label: 'Bend Cycle Time', unit: 's' },
+    ],
+    rows: [...byMachine.values()].sort((a, b) => a.machine_name.localeCompare(b.machine_name)),
+  };
+}
+
 /** Every waterjet machine of the machine library with the values the waterjet calculator reads. */
 export function waterjetMachinesTable(machineRows: ReadonlyArray<{ key: string; raw: Raw }>): ReferenceTablePayload {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);

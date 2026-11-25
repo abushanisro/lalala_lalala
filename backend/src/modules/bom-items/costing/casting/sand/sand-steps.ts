@@ -4,7 +4,7 @@
 // with the shared casting line builder. Ported from the retired petrus-demo prototype (its design records, D-numbers, are archived outside the repo) (D122, D128-D130).
 //
 // Nothing is substituted: a missing input, an unstaged table or a machine without a rate is named in the reasons.
-import type { MachineChoiceDto, SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, MachineChoiceDto, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
@@ -12,8 +12,9 @@ import { gap, line, roundLineCost, roundSec, type CostContext } from '../casting
 import { machineChoice, roundPerPart, type ChoiceEval } from '../machine-choice';
 import { asFinishingMachine, machineValue, type SandMachine } from './sand-machines';
 import { pouringCoefficient } from './sand-gating';
-import type { SandReference } from './sand-reference';
-import { seedsFor, valuesProvider, variableProvider, type SeedProvider, type SeedProviders } from './sand-seeds';
+import { stagedLookupKey, type SandReference } from './sand-reference';
+import { SAND_DOMAIN, sandVariableSeed, seedsFor, valuesProvider, variableProvider, type SeedProvider, type SeedProviders } from './sand-seeds';
+import { calculatedSeed, calculationRef, energySeed, inputStep, resultStep, seedStep } from '../casting-source-refs';
 
 export const SAND_PROCESS_GROUP = 'Sand Casting';
 export const MOULDING_LINE = 'Sand Casting - Moulding (automatic line)';
@@ -60,14 +61,20 @@ export interface SandRouteContext {
   part: SandPart;
   /** Cavities per mould (decided by cavitiesPerMould for the chosen moulding machine). */
   cavities: number;
+  /** How the cavity count was decided (cavitiesPerMould), for the eye of every Cavities input. */
+  cavitiesRef: SourceRef;
   /** Cores in each casting; a mould has `cavities` times this many. */
   coresPerCasting: number;
+  /** How the cores of a casting were counted (the measured cores less those left solid); absent before the cores are known. */
+  coresRef?: SourceRef;
   /** Metal poured: the casting with its risers and gating (kg), per casting and per mould, and the calculation behind it once it is run. */
   poured: { perCastingKg: number; perMouldKg: number; ref?: SourceRef };
   /** USD per kWh: the Cost Guide's, else the location's sourced electricity price; null when neither exists (energy not charged). */
   energyPricePerKwh: number | null;
   /** Where the energy price comes from, for the trace. */
   energyPriceSource?: string | null;
+  /** The record it was read from (the location's electricity price row, or the Cost Guide entry), for the trace's eye. */
+  energyPriceRef?: SourceRef | null;
   hotBox: HotBoxSettings;
   /** The batch size of the scenario (the preparation of a coating or an oven is shared by it). */
   batchSize: number;
@@ -126,7 +133,13 @@ export function runStep(
   return run.value == null ? { reasons: run.missing } : { run };
 }
 
-const cavitiesSource = (ctx: SandRouteContext) => ({ value: ctx.cavities, source: 'cavities that fit the flask (layoutNumCav, sand borders)' });
+export const cavitiesSource = (ctx: SandRouteContext): CalcSeed => ({ value: ctx.cavities, source: 'cavities that fit the flask (layoutNumCav, sand borders)', ref: ctx.cavitiesRef });
+
+/** The cores in a casting, as counted (the measured cores less those left solid). */
+export const coresSeed = (ctx: SandRouteContext, source: string): CalcSeed => ({
+  value: ctx.coresPerCasting, source,
+  ref: ctx.coresRef ?? calculationRef('Cores', [resultStep('Cores', null, ctx.coresPerCasting, 'No core measured')]),
+});
 
 /**
  * Cavities per mould: the chosen number; or on moulding lines the most of a layout in layoutNumCav that fits inside the flask's sand
@@ -139,7 +152,7 @@ export function cavitiesPerMould(
   [l, w, h]: readonly [number, number, number],
   netKg: number,
   chosen: number | null,
-): { cavities: number } | { reasons: string[] } {
+): { cavities: number; ref: SourceRef } | { reasons: string[] } {
   const miss = ref.absent({ numbers: ['largePartThreshold'], tables: ['layoutNumCav'] });
   const [fl, fw, fh] = [machineValue(mould, 'flask_length_mm'), machineValue(mould, 'flask_width_mm'), machineValue(mould, 'flask_height_mm')];
   if (fl == null || fw == null || fh == null) miss.push(`machine ${mould.name}: flask length, width and height`);
@@ -151,15 +164,51 @@ export function cavitiesPerMould(
   const [ul, uw] = [fl! - 2 * edge, fw! - 2 * edge];
   const row = (n: number, side: number) => n * side + (n - 1) * between;
   const fits = (nl: number, nw: number) => (row(nl, l) <= ul && row(nw, w) <= uw) || (row(nl, l) <= uw && row(nw, w) <= ul);
-  const large = netKg > ref.number('largePartThreshold')!;
+  const threshold = ref.number('largePartThreshold')!;
+  const large = netKg > threshold;
   const layouts = ref.table('layoutNumCav').map((r) => [Number(r['Cavities Length Wise']), Number(r['Cavities Width Wise']), Number(r['Number of Cavities'])] as const);
   const possible = (n: number) => (n === 1 || !large) && layouts.some(([nl, nw, k]) => k === n && fits(nl, nw));
   const doesNotFit = `part ${l.toFixed(0)} x ${w.toFixed(0)} mm does not fit the flask ${fl!.toFixed(0)} x ${fw!.toFixed(0)} mm`;
-  if (chosen != null) return possible(chosen) ? { cavities: chosen } : { reasons: [`${chosen} cavities do not fit the flask ${fl!.toFixed(0)} x ${fw!.toFixed(0)} mm`] };
-  const isLine = (machineValue(mould, 'mold_rate_no_core_cycles_per_hr') ?? 0) > 0;
-  if (!isLine) return possible(1) ? { cavities: 1 } : { reasons: [doesNotFit] };
+  // How the count was decided, for the eye of every Cavities input: the part, the layoutNumCav row that fits the moulding machine's flask
+  // with its sand borders, and the large-part limit. The flask is named by no machine (the moulding line shows which and checks the fit), so
+  // the steps after moulding stay shared by the moulding machines that give the same count the same way.
+  const fitSteps = (n: number): CalculationTraceStep[] => {
+    const layout = layouts.find(([nl, nw, k]) => k === n && fits(nl, nw));
+    return [
+      inputStep('Part length', 'mm', l, 'CAD: the part across the draw direction, its longer side'),
+      inputStep('Part width', 'mm', w, 'CAD: the part across the draw direction, its shorter side'),
+      inputStep('Flask', null, 'holds the layout',
+        "The moulding machine's flask less its sand borders (flask_length_mm, flask_width_mm, sand_border_flask_edge_mm, sand_border_between_impressions_mm): the moulding line's machine"),
+      ...(layout ? [inputStep('Layout', null, `${layout[0]} × ${layout[1]}`, `layoutNumCav: ${layout[2]} cavit${layout[2] === 1 ? 'y' : 'ies'}`, {
+        kind: 'lookup', domain: SAND_DOMAIN, table: stagedLookupKey('layoutNumCav'), column: 'Number of Cavities',
+        row: { 'Cavities Length Wise': layout[0], 'Cavities Width Wise': layout[1], 'Number of Cavities': layout[2] },
+      } as SourceRef)] : []),
+      ...(n > 1 || large ? [
+        inputStep('Part weight', 'kg', netKg, 'Part volume x the material density'),
+        inputStep('largePartThreshold', 'kg', threshold, 'Sand casting variable largePartThreshold', { kind: 'variable', domain: SAND_DOMAIN, name: 'largePartThreshold' }),
+      ] : []),
+    ];
+  };
+  const decided = (n: number, first: CalculationTraceStep[], why: string) => ({
+    cavities: n, ref: calculationRef('Cavities per mould', [...first, ...fitSteps(n), resultStep('Cavities', null, n, why)]),
+  });
+  if (chosen != null) {
+    return possible(chosen)
+      ? decided(chosen, [inputStep('Cavities set in the Cost Guide', null, chosen, "The part's Cost Guide (cavityCount)")], 'The Cost Guide count, its layout fitting the flask with its sand borders')
+      : { reasons: [`${chosen} cavities do not fit the flask ${fl!.toFixed(0)} x ${fw!.toFixed(0)} mm`] };
+  }
+  const lineRate = machineValue(mould, 'mold_rate_no_core_cycles_per_hr') ?? 0;
+  const isLine = lineRate > 0;
+  if (!isLine) {
+    return possible(1)
+      ? decided(1, [inputStep('Moulding', null, 'manual flask', "The moulding machine has no automatic line rate (mold_rate_no_core_cycles_per_hr): a manual flask")],
+        'One cavity on manual moulding, unless the Cost Guide asks for more')
+      : { reasons: [doesNotFit] };
+  }
   const most = Math.max(0, ...layouts.map(([, , k]) => k).filter(possible));
-  return most > 0 ? { cavities: most } : { reasons: [doesNotFit] };
+  return most > 0
+    ? decided(most, [], large ? 'One cavity: the part is heavier than largePartThreshold' : 'The most cavities of a layoutNumCav layout that fits the flask with its sand borders')
+    : { reasons: [doesNotFit] };
 }
 
 const isPit = (m: SandMachine) => m.machineClass === 'sand_casting_manual_pit_moldmaking';
@@ -169,7 +218,11 @@ export function mouldStep(ctx: SandRouteContext, mould: SandMachine): StepOutcom
   if ((machineValue(mould, 'mold_rate_no_core_cycles_per_hr') ?? 0) > 0) {
     const r = runStep(ctx, MOULDING_LINE, mould, {
       cavities: cavitiesSource(ctx),
-      cores_per_mould: { value: ctx.coresPerCasting * ctx.cavities, source: 'cores per casting x cavities' },
+      cores_per_mould: calculatedSeed(ctx.coresPerCasting * ctx.cavities, 'cores per casting x cavities', 'Cores per Mould', [
+        seedStep('Cores per casting', null, coresSeed(ctx, 'the sand cores of one casting')),
+        seedStep('Cavities', null, cavitiesSource(ctx)),
+        resultStep('Cores per Mould', null, ctx.coresPerCasting * ctx.cavities, '{Cores per casting} x {Cavities}'),
+      ]),
     });
     return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
   }
@@ -179,7 +232,7 @@ export function mouldStep(ctx: SandRouteContext, mould: SandMachine): StepOutcom
   const r = runStep(ctx, MOULDING_MANUAL, mould, {
     cavities: cavitiesSource(ctx),
     poured_per_mould_kg: pouredSeed(ctx, 'mould'),
-    sand_cure_min: { value: cureMin, source: `Sand casting variable ${cure}` },
+    sand_cure_min: sandVariableSeed(ctx.ref, cure, cureMin),
   });
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
 }
@@ -208,7 +261,7 @@ export function meltStep(ctx: SandRouteContext, furnace: SandMachine): StepOutco
   const r = runStep(
     ctx, MELTING, furnace,
     { poured_kg: pouredSeed(ctx, 'casting') },
-    { scenario: valuesProvider({ energy_price: { value: priced ? ctx.energyPricePerKwh! : 0, source: priced ? ctx.energyPriceSource ?? 'energy price (USD/kWh)' : 'no energy price: none set in the Cost Guide and none for the location' } }) },
+    { scenario: valuesProvider({ energy_price: energySeed(ctx) }) },
   );
   if (!('run' in r)) return fail(...r.reasons);
   const energy = r.run.outputs['Energy Cost'];
@@ -241,7 +294,7 @@ export function coolStep(ctx: SandRouteContext, machine: SandMachine, pit: boole
   if (exponent == null) return fail(`sand variable ${name}`);
   const r = runStep(ctx, COOLING, machine, {
     cavities: cavitiesSource(ctx),
-    modulus_exponent: { value: exponent, source: `Sand casting variable ${name}` },
+    modulus_exponent: sandVariableSeed(ctx.ref, name, exponent),
   });
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
 }

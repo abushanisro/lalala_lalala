@@ -11,6 +11,7 @@
 // and resolved against the machine's per-material columns by the selector.
 
 import { recommendedBendTonnage, estimateBurlTonnage, estimateTurretPunchTonnage } from '../../core/default-rates.constants';
+import type { SourceRef } from '../../../../dto/cost-breakdown.dto';
 
 // ── Material factor tables ────────────────────────────────────────────────────
 // Baseline MRR (cm³/min) at 100% rigidity — used to size VMC spindle demand
@@ -325,7 +326,8 @@ export interface DeburrRequirement {
   kind: 'deburr';
   burrEdgeLengthMm: number;
   deslagSecPerMmByMachine: Record<string, number>;   // lower-cased machine name -> s/mm
-  manualDeburr: { secPerMm: number; source: string } | null;
+  /** Manual Deburr's time per mm, with where it came from (`ref`: the calculation from the tblDeburring row and the pass count). */
+  manualDeburr: { secPerMm: number; source: string; ref?: SourceRef } | null;
 }
 
 export const DEBURR_MACHINE_CLASSES = ['deburring', 'manual_deburr'] as const;

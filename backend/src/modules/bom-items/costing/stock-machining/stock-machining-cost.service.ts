@@ -4,7 +4,7 @@ import { loadStockMachiningCalculatorSpec } from './calculators/stock-machining-
 import { PERIMETER_MILLING, perimeterCutOperation, perimeterCutterMissing, type PerimeterCutter } from './perimeter-cut';
 import { plateCutRequests, plateCutStocks, type PlateCutPrice, type PlateCutRequest } from './plate-cutting';
 import {
-  buildStockMachiningQuote, STOCK_MACHINING_CLASS, STOCK_MACHINING_PROCESS_GROUP, type StockCutOff, type StockMachiningQuote,
+  buildStockMachiningQuote, STOCK_MACHINING_CLASS, STOCK_MACHINING_PROCESS_GROUP, type StockCutOff, type StockMachiningQuote, type StockMaterialRecord,
 } from './stock-machining-route';
 import { DatabaseService } from '../../../../common/database/database.service';
 import { escapeLikePattern, quoteFilterValue } from '../../../../common/db/postgrest-filter';
@@ -126,6 +126,8 @@ export interface StockMachiningMaterialInput {
   pricePerKgUsd: Partial<Record<StockPriceForm, number>>;
   /** The material a form's price is borrowed from, where the location prices not this one in that form (stock-price closestStockPrice). */
   priceBorrowedFrom?: Partial<Record<StockPriceForm, string>>;
+  /** The Raw Materials record the density was read from; null when none matched. */
+  record?: StockMaterialRecord | null;
 }
 
 export interface StockOptionCost {
@@ -250,7 +252,7 @@ export function priceStockMachining(input: {
     return buildStockMachiningQuote({
       ref: choice.ref, stock: choice.stock, calculators: input.calculators, saws: input.saws, part: choice.part, option, cutOff, sawCosted: input.sawCosted,
       material: {
-        name: material.name, cutCode: material.cutCode, densityKgM3: material.densityKgM3, scrapCostPercent: material.scrapCostPercent,
+        name: material.name, cutCode: material.cutCode, densityKgM3: material.densityKgM3, scrapCostPercent: material.scrapCostPercent, record: material.record ?? null,
         pricePerKgUsd: priceForm ? material.pricePerKgUsd[priceForm] ?? null : null,
         priceSource: priceForm && material.priceBorrowedFrom?.[priceForm]
           ? `${material.name}: no ${STOCK_FORM_LABEL[priceForm]} price at ${input.location}, so that of ${material.priceBorrowedFrom[priceForm]}, its closest material priced there`
@@ -411,7 +413,11 @@ export interface StockMachiningCostRequest {
   /** Whether the band saw is costed: the Stock Machining Process's quote has it, no other machined part's does. */
   sawCosted: boolean;
   /** The material the quote prices: the names it goes by (Raw Materials name and grade), its density and each stock form's price (USD/kg). */
-  material: { name: string; grade: string | null; densityKgM3: number | null; pricePerKgUsd: Partial<Record<StockPriceForm, number>>; priceBorrowedFrom?: Partial<Record<StockPriceForm, string>> };
+  material: {
+    name: string; grade: string | null; densityKgM3: number | null; pricePerKgUsd: Partial<Record<StockPriceForm, number>>; priceBorrowedFrom?: Partial<Record<StockPriceForm, string>>;
+    /** The Raw Materials record the density was read from; null when none matched. */
+    record?: StockMaterialRecord | null;
+  };
   batchSize: number;
   /** USD -> the location's currency. */
   usdToLocal: number;
@@ -517,7 +523,7 @@ export class StockMachiningCostService {
     const roughing = req.roughing ? { cutter: req.roughing.cutter, cuts: cuts.length ? await req.roughing.priceCuts(cuts) : [] } : null;
     const stock = priceStockMachining({
       choice, calculators, sawCosted: req.sawCosted, saws, location: req.location, batchSize: req.batchSize, usdToLocal: req.usdToLocal, costContext: req.costContext,
-      material: { name: req.material.name, densityKgM3: req.material.densityKgM3, pricePerKgUsd: req.material.pricePerKgUsd, priceBorrowedFrom: req.material.priceBorrowedFrom, ...facts },
+      material: { name: req.material.name, densityKgM3: req.material.densityKgM3, pricePerKgUsd: req.material.pricePerKgUsd, priceBorrowedFrom: req.material.priceBorrowedFrom, record: req.material.record ?? null, ...facts },
       roughing,
     });
     return { stock, material: facts, missing: [], warnings };

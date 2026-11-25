@@ -173,6 +173,7 @@ org:viewer      GET /api/v1/processes/calculator-mappings  ProcessesController.g
 org:viewer      GET /api/v1/processes/calculator-mappings/:id  ProcessesController.getProcessCalculatorMapping
 org:viewer      GET /api/v1/processes/deslag-allowance-table  ProcessesController.getDeslagAllowanceTable
 org:viewer      GET /api/v1/processes/machining-lookup-tables/by-name/:table  ProcessesController.getMachiningLookupTableByName
+org:viewer      GET /api/v1/processes/press-brake-machines-table  ProcessesController.getPressBrakeMachinesTable
 org:viewer      GET /api/v1/processes/reference-domains  ProcessesController.getReferenceDomains
 org:viewer      GET /api/v1/processes/reference-lookup  ProcessesController.getReferenceLookup
 org:viewer      GET /api/v1/processes/reference-tables/:tableId  ProcessesController.getReferenceTable

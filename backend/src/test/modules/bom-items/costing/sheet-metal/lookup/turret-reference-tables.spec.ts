@@ -1,5 +1,5 @@
 import {
-  pressForceKnOf, pressForceTonnes, strokeRateFactorTable, turretMachinesTable, turretNibbleMmPerMin, waterjetMachinesTable,
+  pressBrakeMachinesTable, pressForceKnOf, pressForceTonnes, strokeRateFactorTable, turretMachinesTable, turretNibbleMmPerMin, waterjetMachinesTable,
 } from '../../../../../../modules/bom-items/costing/sheet-metal/lookup/turret-reference-tables';
 
 // Amada EM-3510 ZRB as staged (machine library nibble data, Countries punchRate, library press force 300 kN).
@@ -66,5 +66,22 @@ describe('waterjet machines table', () => {
     ]);
     expect(table.rows).toHaveLength(1);
     expect(table.rows[0]).toMatchObject({ machine_name: 'OMAX 55100', nozzle_delay_s: 3.2, pressure_n_mm2: 413.69 });
+  });
+});
+
+describe('press brake machines table', () => {
+  it('lists each press brake that carries a bend cycle time once, with its force (the Press Brake calculator\'s time per stroke for it)', () => {
+    const table = pressBrakeMachinesTable([
+      { key: 'Bend Press Brake:Default Bend Brake', raw: { name: 'Default Bend Brake', press_force_kn: 74.5, bend_cycle_time_s: 3.5, max_bend_length_mm: 1250 } },
+      { key: 'Bend Press Brake:Default Bend Brake', raw: { name: 'Default Bend Brake', bend_cycle_time_s: 3.5 } },
+      { key: 'Bend Brake:Default Bend Brake', raw: { name: 'Default Bend Brake', direct: 10 } },
+      { key: 'Bend Press Brake:11010 (Heller-hydraulic)', raw: { name: '11010 (Heller-hydraulic)', press_force_kn: 1096, bend_cycle_time_s: 3.5 } },
+    ]);
+    expect(table.id).toBe('machine_library:press_brake_machines');
+    expect(table.columnDefinitions.at(-1)).toMatchObject({ name: 'bend_cycle_time_s', unit: 's' });
+    expect(table.rows).toEqual([
+      { machine_name: '11010 (Heller-hydraulic)', press_force_kn: 1096, max_bend_length_mm: null, bend_cycle_time_s: 3.5 },
+      { machine_name: 'Default Bend Brake', press_force_kn: 74.5, max_bend_length_mm: 1250, bend_cycle_time_s: 3.5 },
+    ]);
   });
 });

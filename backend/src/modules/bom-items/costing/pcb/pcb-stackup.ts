@@ -35,7 +35,8 @@ export interface PcbStackup {
   laminated: boolean;
 }
 
-const OZ_COLUMN: Readonly<Record<number, string>> = {
+/** The tblDielectricThickness column of each outer copper weight (oz/ft²). */
+export const DIELECTRIC_COLUMN: Readonly<Record<number, string>> = {
   0.5: 'Dielectric Thickness For Copper Weight0_5oz (mm)', 1: 'Dielectric Thickness For Copper Weight1_0oz (mm)',
   1.5: 'Dielectric Thickness For Copper Weight1_5oz (mm)', 2: 'Dielectric Thickness For Copper Weight2_0oz (mm)',
 };
@@ -73,7 +74,7 @@ export function pcbStackup(ref: SandReference, layers: number, thicknessMm: numb
     .map((r) => ({ r, t: n(r['Total Board Thickness (mm)'])! }))
     .filter((x) => x.t != null)
     .sort((a, b) => Math.abs(a.t - thicknessMm) - Math.abs(b.t - thicknessMm) || b.t - a.t)[0];
-  const column = OZ_COLUMN[outerOz];
+  const column = DIELECTRIC_COLUMN[outerOz];
   const coreDielectricMm = dielectric && column ? n(dielectric.r[column]) : null;
   const copperMm = (2 * outerOz + Math.max(0, layers - 2) * (innerOz ?? outerOz)) * COPPER_MM_PER_OZ;
   const cores = doubleCores + singleCores;

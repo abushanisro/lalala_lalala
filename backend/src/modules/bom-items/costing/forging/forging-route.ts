@@ -11,9 +11,10 @@
 // calculators, the machines and the part's measurements (cad-engine forging/feature_extractor.py). Every number is computed by a calculator
 // of calculators/forging-calculators.json. Nothing is substituted: what the data or the measurements lack is named, and a step no machine
 // can do is a named gap line, which makes its route incomplete.
-import type { ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { calculationRef, inputStep, resultStep, runRef, withSeedRef } from '../shared/calculators/seed-refs';
 import { gap, type CostContext } from '../casting/casting-finishing';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
@@ -22,6 +23,22 @@ import { selectAndCost, type CostedStep, type SandMaterial, type StepOutcome } f
 import { cutCodeFamilyOf } from '../shared/core/cut-code';
 
 export const FORGING_DOMAIN = 'forging';
+/** The Digital Factory tool shop the dies are machined at (digital_factory_settings_usa, staged with the injection molding reference: die-tooling.ts). */
+const TOOL_SHOP_DOMAIN = 'injection_molding';
+const TOOL_SHOP_NAME = 'Default';
+
+// ── Where a seed was read, for the calculator dialog's eye (SourceRef) ──────────────────────────────────────────────────────────────────
+const calculation = (name: string, steps: CalculationTraceStep[]): SourceRef => calculationRef(name, steps);
+export const forgingVariableRef = (name: string): SourceRef => ({ kind: 'variable', domain: FORGING_DOMAIN, name });
+/**
+ * A value set in the Cost Guide over the engine's own: the setting, beside what the engine would have used (with its own ref), so the eye
+ * opens both.
+ */
+const costGuideRef = (what: string, unit: string | null, value: number, engine: { value: number; source: string; ref?: SourceRef } | null): SourceRef => calculation(`${what}: set in the Cost Guide`, [
+  inputStep(`${what} (Cost Guide)`, unit, value, `The part's Cost Guide: ${what.toLowerCase()} set by the engineer over the engine's`),
+  ...(engine ? [inputStep(`${what} the engine would use`, unit, engine.value, engine.source, engine.ref)] : []),
+  resultStep(what, unit, value, `{${what} (Cost Guide)}`),
+]);
 export const FORGING_PROCESS_GROUP = 'Forging';
 
 /** The HR Rates machine classes of the routes' steps (migration 823). */
@@ -213,7 +230,11 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
     const providers: SeedProviders = {
       variable, cad: valuesProvider({ ...cad, ...cadOverrides }), engine: valuesProvider(engine), lookup: valuesProvider(lookups),
-      scenario: valuesProvider({ lifetime_volume: scenario.lifetimeVolume != null ? { value: scenario.lifetimeVolume, source: 'annual volume x production life' } : undefined }),
+      // The parts the dies are spread over: the part's costing inputs (its annual volume over its production life).
+      scenario: valuesProvider({ lifetime_volume: scenario.lifetimeVolume != null ? { value: scenario.lifetimeVolume, source: 'annual volume x production life', ref: calculation('Lifetime volume', [
+        inputStep('Annual volume x production life', null, scenario.lifetimeVolume, "The part's costing inputs: its annual volume over its production life (years)", { kind: 'costingInput', field: 'annualVolume' }),
+        resultStep('Lifetime Volume', null, scenario.lifetimeVolume, '{Annual volume x production life}'),
+      ]) } : undefined }),
       material: (key) => {
         const value = material.columns[key];
         return value == null ? null : { value, source: `${material.name}: ${key}`, ref: { kind: 'material', materialId: material.id, materialName: material.name, column: key } };
@@ -291,17 +312,38 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     }
     if (bar == null) return { reasons: [`no round bar of roundBarSizes gives a mult between ${minRatio} and ${maxRatio} times its diameter long (minBilletRatio, maxBilletRatio)`] };
     const ratio = (4 * m.volumeMm3) / (Math.PI * bar ** 3);
+    // The bar the data picks: the thinnest of roundBarSizes whose mult is within the billet ratio range, as the calculation it is.
+    const metalRef = runRef('Mult volume', m.run);
+    const pickedRef = (b: number): SourceRef => calculation('Bar Diameter: the thinnest round bar that keeps the mult within the billet ratio range', [
+      inputStep('Mult volume', 'mm³', m.volumeMm3, "the metal forged, with its heating's scale loss", metalRef),
+      inputStep('Least billet ratio', null, minRatio!, 'Forging variable minBilletRatio', forgingVariableRef('minBilletRatio')),
+      inputStep('Greatest billet ratio', null, maxRatio!, 'Forging variable maxBilletRatio', forgingVariableRef('maxBilletRatio')),
+      inputStep('Round bar size', 'mm', b, 'forging_roundBarSizes: the thinnest size within the range',
+        { kind: 'lookup', domain: FORGING_DOMAIN, table: 'forging_roundBarSizes', column: 'Size (mm)', row: { 'Size (mm)': b } }),
+      resultStep('Bar Diameter', 'mm', b, 'the thinnest {Round bar size} with {Least billet ratio} <= 4 x {Mult volume} / (pi x size³) <= {Greatest billet ratio}'),
+    ]);
+    const dataBar = overrides.barDiameterMm != null
+      ? bars.find((d) => { const q = (4 * m.volumeMm3) / (Math.PI * d ** 3); return q <= maxRatio! && q >= minRatio!; })
+      : bar;
     const barSeed: CalcSeed = overrides.barDiameterMm != null
-      ? { value: bar, source: `round bar ${bar} mm, set in the Cost Guide` }
-      : { value: bar, source: `round bar ${bar} mm (roundBarSizes: the thinnest that keeps the mult within the billet ratio range)` };
+      ? { value: bar, source: `round bar ${bar} mm, set in the Cost Guide`, ref: costGuideRef('Bar Diameter', 'mm', bar, dataBar != null ? { value: dataBar, source: `round bar ${dataBar} mm (roundBarSizes)`, ref: pickedRef(dataBar) } : null) }
+      : { value: bar, source: `round bar ${bar} mm (roundBarSizes: the thinnest that keeps the mult within the billet ratio range)`, ref: pickedRef(bar) };
     const setNotes = [
       ...(overrides.barDiameterMm != null ? [`The bar is ${bar} mm as set in the Cost Guide${ratio > maxRatio! || ratio < minRatio! ? `: its mult is ${r2(ratio)} diameters long, outside the billet ratio range ${minRatio} to ${maxRatio} (minBilletRatio, maxBilletRatio)` : ''}.`] : []),
       ...(forced != null ? [`The mult is heated ${forced === 'induction' ? 'by induction' : 'in a gas furnace'}, as set in the Cost Guide.`] : []),
     ];
-    const stock = run(STOCK, null, { mult_volume_mm3: { value: m.volumeMm3, source: 'mult volume' }, bar_diameter_mm: barSeed }, 'Material Cost');
+    const stock = run(STOCK, null, { mult_volume_mm3: withSeedRef({ value: m.volumeMm3, source: 'mult volume' }, metalRef), bar_diameter_mm: barSeed }, 'Material Cost');
     if ('reasons' in stock) return stock;
     const multLength = stock.run.outputs['Mult Length']!;
+    // The mult length and the mults a bar gives: the Bar stock calculator's, its run the eye opens.
+    const stockRef = runRef(STOCK, stock.run);
+    const multLengthSeed: CalcSeed = withSeedRef({ value: multLength, source: 'mult length (Bar stock)' }, stockRef);
     const multKg = m.volumeMm3 * 1e-9 * density;
+    const multMassRef = calculation('Mult mass', [
+      inputStep('Mult volume', 'mm³', m.volumeMm3, "the metal forged, with its heating's scale loss", metalRef),
+      inputStep('Density', 'kg/m³', density, `${material.name}: density_kg_m3`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'density_kg_m3' }),
+      resultStep('Mult Mass', 'kg', multKg, '{Mult volume} x 1e-9 x {Density}'),
+    ]);
     const barKg = (Math.PI * bar ** 2 / 4) * (num('standardStockLength') ?? 0) * 1e-9 * density;
     const sawRow = family != null ? bandRow(sawRows.filter((r) => String(r['Material Cut Code Family']) === family), 'Material Width (mm)', bar) : undefined;
     const saw = step('Band Saw', FORGING_CLASS.bandSaw, (mc) => {
@@ -313,7 +355,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
       if (!unload || !load) return fail('forging lookup bandSawHandling (not staged)');
       return timed(CALC('Band saw'), mc, {
         bar_diameter_mm: barSeed, mult_unload_s: unload, bar_load_s: load,
-        mults_per_bar: { value: stock.run.outputs['Mults per Bar']!, source: 'mults a standard bar gives (Bar stock)' },
+        mults_per_bar: withSeedRef({ value: stock.run.outputs['Mults per Bar']!, source: 'mults a standard bar gives (Bar stock)' }, stockRef),
       }, { 'forging_bandSawCutting.Cutting Rate (mm^2 / min)': rowSeed('bandSawCutting', sawRow, 'Cutting Rate (mm^2 / min)', ['Material Cut Code Family', 'Material Width (mm)']) });
     }, ['It takes the bar diameter', "A cutting rate for the material's cut code family"]);
 
@@ -323,7 +365,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
         if (!coilRow) return fail(`inductionHeating has no row for material type ${material.materialType ?? '(none)'}`);
         const coil = machineValue(mc, 'maximum_coil_diameter_mm');
         if (coil != null && bar! > coil) return fail(`coil takes ${coil} mm, the bar is ${bar} mm`);
-        return timed(CALC('Induction heating'), mc, { bar_diameter_mm: barSeed, mult_length_mm: { value: multLength, source: 'mult length (Bar stock)' } },
+        return timed(CALC('Induction heating'), mc, { bar_diameter_mm: barSeed, mult_length_mm: multLengthSeed },
           { 'forging_inductionHeating.Heat Time Coefficient (s / mm^2)': rowSeed('inductionHeating', coilRow, 'Heat Time Coefficient (s / mm^2)', ['Material Type Name']) });
       }, ['The coil takes the bar diameter', 'A heat time coefficient for the material type'])
       : step('Preheat', FORGING_CLASS.furnace, (mc) => {
@@ -340,13 +382,25 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
         const pitch = bar! * (1 + spacing);
         const perLoad = Math.floor(ovenL / pitch) * Math.floor(ovenW / pitch);
         if (perLoad < 1) return fail(`the oven floor holds no ${bar} mm mult with its spacing`);
+        const machineRef = (column: string): SourceRef => ({ kind: 'machine', machineId: mc.id, machineName: mc.name, machineClass: mc.machineClass, location: mc.location, column });
         return timed(CALC('Furnace heating'), mc, {
-          mult_kg: { value: multKg, source: 'mult mass: mult volume x density' },
-          mults_per_load: { value: Math.min(perLoad, scenario.batchSize), source: `mults standing on the oven floor at ${r2(pitch)} mm pitch (ovenPartSpacingFactor), at most the batch` },
+          mult_kg: { value: multKg, source: 'mult mass: mult volume x density', ref: multMassRef },
+          mults_per_load: {
+            value: Math.min(perLoad, scenario.batchSize), source: `mults standing on the oven floor at ${r2(pitch)} mm pitch (ovenPartSpacingFactor), at most the batch`,
+            ref: calculation('Mults per Load: the mults the oven floor holds', [
+              inputStep('Oven length', 'mm', ovenL, `machine ${mc.name}: oven_length_mm`, machineRef('oven_length_mm')),
+              inputStep('Oven width', 'mm', ovenW, `machine ${mc.name}: oven_width_mm`, machineRef('oven_width_mm')),
+              inputStep('Bar diameter', 'mm', bar!, barSeed.source, barSeed.ref),
+              inputStep('Spacing factor', null, spacing, 'Forging variable ovenPartSpacingFactor', forgingVariableRef('ovenPartSpacingFactor')),
+              resultStep('Pitch', 'mm', pitch, '{Bar diameter} x (1 + {Spacing factor})'),
+              inputStep('Batch size', null, scenario.batchSize, "The part's batch", { kind: 'costingInput', field: 'batchSize' }),
+              resultStep('Mults per Load', null, Math.min(perLoad, scenario.batchSize), 'min(floor({Oven length} / {Pitch}) x floor({Oven width} / {Pitch}), {Batch size})'),
+            ]),
+          },
         });
       }, ['It reaches the forging temperature plus ovenTemperatureOffset', 'The oven takes the mult standing'], input.machinesByClass[FORGING_CLASS.furnace] ?? []);
     const notes = [...setNotes, ...(induction || forced != null ? [] : ['The mult is heated in a gas furnace (too thick or short for an induction coil): its time is the heat the load takes at the furnace\'s rated power, a lower bound, as the reference gives no furnace efficiency.'])];
-    return { bar, barSeed, multLength, multKg, induction, volumeMm3: m.volumeMm3, metalRun: m.run, stock, saw, heat, notes };
+    return { bar, barSeed, multLength, multLengthSeed, multKg, induction, volumeMm3: m.volumeMm3, metalRun: m.run, stock, saw, heat, notes };
   };
 
   const netKg = part.volumeMm3 * 1e-9 * density;
@@ -370,8 +424,12 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
       else if (input.toolShopMachiningUsdPerHr == null) warnings.push('The forging dies are not costed: the tool shop machining rate is not on file.');
       else {
         const t = run(DIES, null, {
-          forged_volume_mm3: { value: args.dies.forgedVolumeMm3, source: 'forged volume: the cavity of the finishing die (Forged volume)' },
-          tool_shop_machining_usd_per_hr: { value: input.toolShopMachiningUsdPerHr, source: 'tool shop machining rate (digital factory settings, USA)' },
+          forged_volume_mm3: withSeedRef({ value: args.dies.forgedVolumeMm3, source: 'forged volume: the cavity of the finishing die (Forged volume)' }, runRef(FORGED_VOLUME, args.mult.metalRun)),
+          // The Digital Factory tool shop's machining rate (digital_factory_settings_usa, staged with the injection molding reference).
+          tool_shop_machining_usd_per_hr: {
+            value: input.toolShopMachiningUsdPerHr, source: 'tool shop machining rate (digital factory settings, USA)',
+            ref: { kind: 'lookup', domain: TOOL_SHOP_DOMAIN, table: 'digital_factory_settings_usa', column: 'machiningRateUsdPerHr', row: { name: TOOL_SHOP_NAME } },
+          },
         }, 'Cost per Part');
         if ('run' in t) {
           const o = t.run.outputs;
@@ -400,29 +458,50 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
 
   // ── Closed die: the forged volume with its flash, the flash land, the trim; then one forming step per machine kind ──────────────────────
   const closedMult = multOf((scale) => {
-    const r = run(FORGED_VOLUME, null, { scale_loss_pct: { value: scale, source: `scale loss of the heating (${scale === scaleInduction ? 'scaleLossAllowancePercentageInductionHeating' : 'scaleLossAllowancePercentage'})` } }, 'Mult Volume',
+    const scaleName = scale === scaleInduction ? 'scaleLossAllowancePercentageInductionHeating' : 'scaleLossAllowancePercentage';
+    const r = run(FORGED_VOLUME, null, { scale_loss_pct: { value: scale, source: `scale loss of the heating (${scaleName})`, ref: forgingVariableRef(scaleName) } }, 'Mult Volume',
       { 'forging_partComplexityBasedData.Hot Forging - Flash Percentage Volume': flashLookup });
     return 'run' in r ? { volumeMm3: r.run.value!, run: r.run } : r;
   });
   if ('reasons' in closedMult) return none(...closedMult.reasons);
   const forgedVolume = closedMult.metalRun.outputs['Forged Volume']!;
   const forgedKg = forgedVolume * 1e-9 * density;
-  const flash = run(FLASH_LAND, null, { forged_kg: { value: forgedKg, source: 'forged mass: forged volume x density' } }, 'Flash Thickness');
+  const forgedVolumeRef = runRef(FORGED_VOLUME, closedMult.metalRun);
+  const flash = run(FLASH_LAND, null, {
+    forged_kg: {
+      value: forgedKg, source: 'forged mass: forged volume x density',
+      ref: calculation('Forged mass', [
+        inputStep('Forged volume', 'mm³', forgedVolume, 'the part with its flash (Forged volume)', forgedVolumeRef),
+        inputStep('Density', 'kg/m³', density, `${material.name}: density_kg_m3`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'density_kg_m3' }),
+        resultStep('Forged Mass', 'kg', forgedKg, '{Forged volume} x 1e-9 x {Density}'),
+      ]),
+    },
+  }, 'Flash Thickness');
   if ('reasons' in flash) return none(...flash.reasons);
   // Vieregge's flash land, unless the engineer set it (Cost Guide): the width spreads the press force, the thickness is what the trim shears.
   const flashThickness = overrides.flashThicknessMm ?? flash.run.value!;
   const flashWidth = overrides.flashWidthMm ?? flash.run.outputs['Flash Width']!;
   const flashSource = (what: 'thickness' | 'width') => ((what === 'thickness' ? overrides.flashThicknessMm : overrides.flashWidthMm) != null
     ? `flash land ${what}, set in the Cost Guide` : `flash land ${what} (Flash land)`);
+  // The flash land: the Flash land calculator's (Vieregge's rule), or the Cost Guide's beside it.
+  const flashLandRef = runRef(FLASH_LAND, flash.run);
+  const flashSeed = (what: 'thickness' | 'width'): CalcSeed => {
+    const set = what === 'thickness' ? overrides.flashThicknessMm : overrides.flashWidthMm;
+    const value = what === 'thickness' ? flashThickness : flashWidth;
+    const own = what === 'thickness' ? flash.run.value! : flash.run.outputs['Flash Width']!;
+    return set != null
+      ? { value, source: flashSource(what), ref: costGuideRef(`Flash ${what}`, 'mm', value, { value: own, source: `flash land ${what} (Flash land)`, ref: flashLandRef }) }
+      : withSeedRef({ value, source: flashSource(what) }, flashLandRef);
+  };
   const factorName = flashPct === 0 ? 'forgingPressureFactorNoFlash' : minComplex != null && complexity >= minComplex ? 'forgingPressureFactorComplex' : 'forgingPressureFactorFlash';
   const pressureFactor = num(factorName);
   if (pressureFactor == null) return none(`forging variable ${factorName}`);
   const pressForce = run(PRESS_FORCE, null, {
     pressure_factor: { value: pressureFactor, source: `Forging variable ${factorName} (complexity ${complexity})`, ref: { kind: 'variable', domain: FORGING_DOMAIN, name: factorName } },
-    flash_width_mm: { value: flashWidth, source: flashSource('width') },
+    flash_width_mm: flashSeed('width'),
   }, 'Required Force');
   if ('reasons' in pressForce) return none(...pressForce.reasons);
-  const trimForce = run(TRIM_FORCE, null, { flash_thickness_mm: { value: flashThickness, source: flashSource('thickness') } }, 'Required Force');
+  const trimForce = run(TRIM_FORCE, null, { flash_thickness_mm: flashSeed('thickness') }, 'Required Force');
   if ('reasons' in trimForce) return none(...trimForce.reasons);
   const pressKn = pressForce.run.value!;
   const trimKn = trimForce.run.value!;
@@ -430,9 +509,18 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
   const baseHits = num('baseNumberOfHits');
   const dataHits = baseHits == null ? 1 : Math.max(1, baseHits - (enabled('enableUpset') ? 0 : 1) - (enabled('enableBlock') ? 0 : 1));
   const hits = overrides.hits ?? dataHits;
+  // The enable flags are staged as text ('true'/'false'): each opens its variable.
+  const enabledSeed = (name: string): CalcSeed => ({ value: enabled(name) ? 1 : 0, source: `Forging variable ${name} (${enabled(name) ? 'true' : 'false'})`, ref: forgingVariableRef(name) });
+  const dataHitsSource = `baseNumberOfHits ${baseHits}, less the upset or blocking blow the plant disables (enableUpset, enableBlock)`;
+  const dataHitsRef = calculation('Hits: the blows the plant strikes', [
+    ...(baseHits != null ? [inputStep('Base number of hits', null, baseHits, 'Forging variable baseNumberOfHits', forgingVariableRef('baseNumberOfHits'))] : []),
+    inputStep('Upset enabled', null, enabled('enableUpset') ? 1 : 0, 'Forging variable enableUpset', forgingVariableRef('enableUpset')),
+    inputStep('Block enabled', null, enabled('enableBlock') ? 1 : 0, 'Forging variable enableBlock', forgingVariableRef('enableBlock')),
+    resultStep('Hits', null, dataHits, baseHits == null ? 'one blow: baseNumberOfHits is not staged' : 'max(1, {Base number of hits} - (1 - {Upset enabled}) - (1 - {Block enabled}))'),
+  ]);
   const hitsSeed: CalcSeed = overrides.hits != null
-    ? { value: hits, source: 'blows, set in the Cost Guide' }
-    : { value: hits, source: `baseNumberOfHits ${baseHits}, less the upset or blocking blow the plant disables (enableUpset, enableBlock)` };
+    ? { value: hits, source: 'blows, set in the Cost Guide', ref: costGuideRef('Hits', null, hits, { value: dataHits, source: dataHitsSource, ref: dataHitsRef }) }
+    : { value: hits, source: dataHitsSource, ref: dataHitsRef };
   const load = handling('materialHandling', forgedKg, 'Load Time (s)');
   const unload = handling('materialHandling', forgedKg, 'Unload Time (s)');
   const trim = step('Trim', FORGING_CLASS.trim, (m) => {
@@ -480,8 +568,15 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
   const strain = part.dieDepthMm != null && part.dieDepthMm > 0 ? Math.abs(Math.log(closedMult.multLength / part.dieDepthMm)) : null;
   const energy = strain != null
     ? run(HAMMER_ENERGY, null, {
-      forged_volume_mm3: { value: forgedVolume, source: 'forged volume (Forged volume)' },
-      upset_strain: { value: strain, source: `ln(mult length ${r2(closedMult.multLength)} mm / part depth ${part.dieDepthMm} mm)` },
+      forged_volume_mm3: withSeedRef({ value: forgedVolume, source: 'forged volume (Forged volume)' }, forgedVolumeRef),
+      upset_strain: {
+        value: strain, source: `ln(mult length ${r2(closedMult.multLength)} mm / part depth ${part.dieDepthMm} mm)`,
+        ref: calculation('Upset strain', [
+          inputStep('Mult length', 'mm', closedMult.multLength, 'mult length (Bar stock)', closedMult.multLengthSeed.ref),
+          inputStep('Part depth', 'mm', part.dieDepthMm!, "CAD: the part's extent along the die direction", { kind: 'cad', evidence: 'die_depth' }),
+          resultStep('Upset Strain', null, strain, '|ln({Mult length} / {Part depth})|'),
+        ]),
+      },
     }, 'Required Energy')
     : { reasons: ["the part's depth along the die direction is not measured"] };
   if ('run' in energy) {
@@ -496,8 +591,8 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
       }
       return timed(CALC('Hammer'), m, {
         hits: hitsSeed,
-        upset_enabled: { value: enabled('enableUpset') ? 1 : 0, source: 'enableUpset' },
-        block_enabled: { value: enabled('enableBlock') ? 1 : 0, source: 'enableBlock' },
+        upset_enabled: enabledSeed('enableUpset'),
+        block_enabled: enabledSeed('enableBlock'),
       });
     }, ['It delivers the blow energy', 'Its table takes the die block']);
     finish({
@@ -532,7 +627,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
   // ── Open die: a flashless shape upset between flat dies ────────────────────────────────────────────────────────────────────────────
   // The upset to `heightMm` over `areaMm2` (the part's own for open die; the preform's for a ring), with the tool changes of its operations.
   // The force depends on the press (its ram speed sets the strain rate), so the route reports the force on the press it was given.
-  const openDie = (key: 'open_die' | 'ring_rolling', mult: Exclude<ReturnType<typeof multOf>, { reasons: string[] }>, heightMm: number, areaMm2: number, toolChangeKeys: string[]) => {
+  const openDie = (key: 'open_die' | 'ring_rolling', mult: Exclude<ReturnType<typeof multOf>, { reasons: string[] }>, heightMm: number, areaMm2: number, toolChangeKeys: string[], heightRef: SourceRef | undefined) => {
     const forceOn = new Map<string, number>();
     const costed = step('Open Die Press', FORGING_CLASS.openDie, (m) => {
     const capacity = machineValue(m, 'press_force_kn');
@@ -546,10 +641,16 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     if (capacity < force.run.value!) return fail(`delivers ${Math.round(capacity)} kN, the upset needs ${Math.round(force.run.value!)} kN`);
     const toolChange = toolChangeKeys.reduce((s, k) => s + (machineValue(m, k) ?? 0), 0);
     const kg = mult.multKg;
+    const machineRef = (column: string): SourceRef => ({ kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
+    // One tool change opens the machine's record at it; several, their sum, each at the record's column.
+    const toolChangeRef: SourceRef = toolChangeKeys.length === 1 ? machineRef(toolChangeKeys[0]!) : calculation('Tool Change Time: the tool changes of the preform', [
+      ...toolChangeKeys.map((k) => inputStep(k, 's', machineValue(m, k) ?? 0, `machine ${m.name}: ${k}`, machineRef(k))),
+      resultStep('Tool Change Time', 's', toolChange, toolChangeKeys.map((k) => `{${k}}`).join(' + ')),
+    ]);
     return timed(CALC('Open die press'), m, {
-      mult_length_mm: { value: mult.multLength, source: 'mult length (Bar stock)' },
-      upset_height_mm: { value: heightMm, source: key === 'ring_rolling' ? 'preform height (Ring preform)' : "the part's depth along the die direction" },
-      tool_change_s: { value: toolChange, source: `machine ${m.name}: ${toolChangeKeys.join(' + ')}` },
+      mult_length_mm: mult.multLengthSeed,
+      upset_height_mm: withSeedRef({ value: heightMm, source: key === 'ring_rolling' ? 'preform height (Ring preform)' : "the part's depth along the die direction" }, heightRef),
+      tool_change_s: { value: toolChange, source: `machine ${m.name}: ${toolChangeKeys.join(' + ')}`, ref: toolChangeRef },
       load_s: handling('materialHandling', kg, 'Load Time (s)'), unload_s: handling('materialHandling', kg, 'Unload Time (s)'),
     });
   }, ['It delivers the upset force']);
@@ -558,7 +659,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
 
   // A flashless part's mult is the closed-die one (its forged volume carries no flash).
   if (flashPct === 0 && part.dieDepthMm != null) {
-    const upset = openDie('open_die', closedMult, part.dieDepthMm, part.projectedAreaMm2, ['upset_tool_change_time_s']);
+    const upset = openDie('open_die', closedMult, part.dieDepthMm, part.projectedAreaMm2, ['upset_tool_change_time_s'], { kind: 'cad', evidence: 'die_depth' });
     finish({
       key: 'open_die', mult: closedMult, forgedKg, steps: [closedMult.saw, closedMult.heat, upset.step], hits: 1,
       forming: { quantity: 'force_kn', value: upset.forceKn }, trimForceKn: null, flash: null, runs: { forgedVolume: closedMult.metalRun }, dies: null,
@@ -581,7 +682,8 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
         const ringKg = netKg;
         const velocityRow = bandRow(table('tblMandrelVelocity'), 'Ring Weight (kg)', ringKg);
         const preformOd = preform.run.outputs['Preform Outside Diameter']!;
-        const upset = openDie('ring_rolling', mult, preformHeight, (Math.PI * preformOd ** 2) / 4, ['upset_tool_change_time_s', 'punch_tool_change_time_s', 'pierce_tool_change_time_s']);
+        const preformRef = runRef(RING_PREFORM, preform.run);
+        const upset = openDie('ring_rolling', mult, preformHeight, (Math.PI * preformOd ** 2) / 4, ['upset_tool_change_time_s', 'punch_tool_change_time_s', 'pierce_tool_change_time_s'], preformRef);
         const rolling = step('Ring Rolling', FORGING_CLASS.ringRolling, (m) => {
           const [minOd, maxOd, maxH] = ['min_outside_diameter_mm', 'max_outside_diameter_mm', 'max_preform_height_mm'].map((k) => machineValue(m, k));
           if (minOd == null || maxOd == null || maxH == null) return fail(`machine ${m.name}: outside diameter range and preform height`);
@@ -589,8 +691,15 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
           if (preformHeight > maxH) return fail(`takes a preform up to ${maxH} mm high, the preform is ${Math.round(preformHeight)} mm`);
           if (!velocityRow) return fail('forging lookup tblMandrelVelocity (not staged)');
           return timed(CALC('Ring rolling'), m, {
-            preform_wall_mm: { value: preform.run.value!, source: 'preform wall (Ring preform)' },
-            ring_wall_mm: { value: (ring.outsideMm - ring.boreMm) / 2, source: `ring wall: (outside ${Math.round(ring.outsideMm)} - bore ${ring.boreMm} mm) / 2` },
+            preform_wall_mm: withSeedRef({ value: preform.run.value!, source: 'preform wall (Ring preform)' }, preformRef),
+            ring_wall_mm: {
+              value: (ring.outsideMm - ring.boreMm) / 2, source: `ring wall: (outside ${Math.round(ring.outsideMm)} - bore ${ring.boreMm} mm) / 2`,
+              ref: calculation('Ring wall', [
+                inputStep('Outside diameter', 'mm', ring.outsideMm, "CAD: the ring's plan extent along the parting plane", { kind: 'cad', evidence: 'plan_length' }),
+                inputStep('Bore', 'mm', ring.boreMm, 'CAD: the through bore along the die direction', { kind: 'cad', evidence: 'hole_diameters' }),
+                resultStep('Ring Wall', 'mm', (ring.outsideMm - ring.boreMm) / 2, '({Outside diameter} - {Bore}) / 2'),
+              ]),
+            },
             load_s: handling('materialHandling', ringKg, 'Load Time (s)'), unload_s: handling('materialHandling', ringKg, 'Unload Time (s)'),
           }, { 'forging_tblMandrelVelocity.Mandrel Velocity (mm / s)': rowSeed('tblMandrelVelocity', velocityRow, 'Mandrel Velocity (mm / s)', ['Ring Weight (kg)']) });
         }, ['It rolls the ring\'s outside diameter', 'It takes the preform height']);

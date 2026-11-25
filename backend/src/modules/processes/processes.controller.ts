@@ -42,6 +42,7 @@ import { AccessToken } from '../../common/decorators/access-token.decorator';
 import { OrganizationContextGuard } from '../../common/guards/organization-context.guard';
 import { CurrentOrganization } from '../../common/decorators/current-organization.decorator';
 import { REFERENCE_DOMAINS, isReferenceDomain, referenceDomainList } from './reference-domains';
+import { isServedTableDomain } from '../bom-items/costing/shared/served-reference-tables';
 import { AuditService } from '../../common/audit/audit.service';
 import { requireBulkDeleteConfirmation } from '../../common/http/bulk-delete';
 import { OrgRole } from '../../common/authz/authz-policy';
@@ -108,13 +109,14 @@ export class ProcessesController {
 
   @OrgRole('viewer')
   @Get('reference-lookup')
-  @ApiOperation({ summary: 'One staged reference lookup table (columns + rows) of a reference-data domain' })
+  @ApiOperation({ summary: 'One staged reference lookup table (columns + rows) of a reference-data domain, or a table served like one (the plastic reference package, a costing table)' })
   async getReferenceLookup(
     @Query('domain') domain: string,
     @Query('key') key: string,
     @AccessToken() token: string,
   ) {
-    if (!isReferenceDomain(domain)) {
+    // A reference domain, or a table served like one (the plastic reference package, a costing table): served-reference-tables.ts.
+    if (!isReferenceDomain(domain) && !isServedTableDomain(domain)) {
       throw new BadRequestException(`domain must be one of: ${Object.keys(REFERENCE_DOMAINS).join(', ')}`);
     }
     if (!key) throw new BadRequestException('key is required');
@@ -251,6 +253,14 @@ export class ProcessesController {
   @ApiResponse({ status: 200, description: 'Table retrieved successfully' })
   async getWaterjetMachinesTable() {
     return this.processesService.getWaterjetMachinesTable();
+  }
+
+  @OrgRole('viewer')
+  @Get('press-brake-machines-table')
+  @ApiOperation({ summary: 'Bend cycle time (time per stroke) and press force of every press brake in the machine library, shaped as a lookup table' })
+  @ApiResponse({ status: 200, description: 'Table retrieved successfully' })
+  async getPressBrakeMachinesTable(@AccessToken() token: string) {
+    return this.processesService.getPressBrakeMachinesTable(token);
   }
 
   @OrgRole('viewer')

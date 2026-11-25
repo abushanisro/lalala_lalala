@@ -16,7 +16,7 @@
 // LSR (thermoset) cures instead of cooling (Arrhenius, literature constants), no pack phase.
 
 import type { CycleModel } from '../plastic-reference';
-import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MachineRecord, MaterialRecord } from '../calculators/plastic-input-sources';
 
 export type GateType = 'edge' | 'fan' | 'sub' | 'hot_tip';
@@ -99,6 +99,8 @@ export interface CycleTimeInput {
   press: PressTiming | null;
   /** Melt volume of one full shot (all cavities + runner), mm³. */
   shotMeltVolumeMm3: number | null;
+  /** How the engine worked the shot melt volume out (part volume, runner, cavities, melt density), for that input's eye; absent when not given. */
+  shotMeltVolumeRef?: SourceRef | null;
   cavityCount: number;
   gatesPerCavity: number;
   /** The Raw Materials record the thermal properties were read from (the calculator dialog opens it); absent when not known. */

@@ -32,8 +32,13 @@ import type {
   ProcessLineCost,
   CavityOption,
   InjectionMoldingBreakdown,
+  SourceRef,
   ToolingCostDto,
 } from '../../../dto/cost-breakdown.dto';
+import { cavitiesRef, insertsRef, shotRefs, testedPartRef, type InsertBasis } from '../calculators/plastic-derived-refs';
+
+/** Where the shot hook's two inputs from the engine came from: the injection cycle's calculation and the cavity count's. */
+export interface ShotCycleRefs { molding: SourceRef; cavities: SourceRef }
 import type { IMProcessTree, MoldingSubtype } from './process-tree';
 import { isSiliconeGrade } from './process-tree';
 import type { InjectionMoldingSignals } from './routing-engine';
@@ -213,7 +218,7 @@ export interface InjectionMoldingCostInput {
   mhrRate: MHRRateInput;        // selected injection molding machine rate
   deburrRate: MHRRateInput;     // bench/secondary ops reuse the finishing rate
   /** The location's electricity price in USD (location_electricity_prices); null when it has none: the drying energy is then a named gap. */
-  electricity?: { usdPerKwh: number; source: string } | null;
+  electricity?: { usdPerKwh: number; source: string; ref?: SourceRef } | null;
   inspectionRate: MHRRateInput;
   // Routing signals beyond what the fields above cover. Optional so callers
   // without Phase-2 extraction keep working; when absent the router applies
@@ -252,7 +257,12 @@ export interface InjectionMoldingCostInput {
    * table, memory/Assembly plastic molding), and it is tried out `tryouts` times (defaultNumMultiShotTryOuts). Absent: an ordinary mold.
    */
   multiShotMold?: { surfaceAreaMm2: number; designHoursFactor: number; tryouts: number } | null;
-  shotCycle?: ((moldingCycleSec: number, cavities: number) => { sec: number; trace: CalculationTraceStep[] } | null) | null;
+  shotCycle?: ((moldingCycleSec: number, cavities: number, refs?: ShotCycleRefs) => { sec: number; trace: CalculationTraceStep[] } | null) | null;
+  /**
+   * The inserts the part's insert operations count (the BOM children, the Cost Guide's, or the CAD's insert candidates), each with where it is
+   * defined: the eye of the inserts per part. Absent: the CAD insert candidates (signals.insertCount).
+   */
+  inserts?: readonly InsertBasis[] | null;
   /** The part's own values for calculator fields (calculator_field_overrides, migration 1011), laid over the calculators for this calculation. */
   calculatorOverrides?: CalculatorFieldOverrides | null;
   goodPartYield?: number | null;
@@ -577,6 +587,15 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
   const { plasticRef, isLsr, projectedAreaMm2, callerGate, gate, clampPerCavity, netWeightKg, shotWeightKg, shotGppsGPerCavity } = b;
   const cavityCount = sizing.count;
   const cavityConstrainedBy = sizing.constrainedBy;
+  // Where the cavity count and the shot came from (the eyes of the inputs that take them): the calculations they are.
+  const cavityRef = cavitiesRef({
+    count: cavityCount, basis: cavityConstrainedBy, override: input.cavityCountOverride ?? null, defaultCount: plasticRef?.defaultNumCavities ?? null,
+    layouts: plasticRef?.cavityLayouts ?? [], annualVolume: input.annualVolume ?? null, productionLifeYears: input.productionLifeYears ?? null,
+  });
+  const shotSource = shotRefs({
+    volumeMm3: volume, densityKgM3: materialDensityKgM3, material: input.materialRecord ?? null, densityFromRecord: materialSource === 'db',
+    runner: b.runner, shotWeightKg, cavities: cavityCount, cavitiesRef: cavityRef, meltDensityKgM3: b.meltDensity,
+  });
 
   const warnings: string[] = [];
   // The routed operations this quote leaves out of the cost, by name: what a view says failed to cost (never found by reading the warnings' text).
@@ -616,6 +635,7 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
         model: plasticRef.cycleModel,
         press: input.pressTiming ?? null,
         shotMeltVolumeMm3: b.meltDensity && b.meltDensity > 0 ? (shotWeightKg * cavityCount / b.meltDensity) * 1e9 : null,
+        shotMeltVolumeRef: shotSource?.shotMeltVolume ?? null,
         cavityCount,
         // No per-part gate-count signal: the reference defaultNumberOfGatesPerCavity.
         gatesPerCavity: plasticRef.defaultGatesPerCavity,
@@ -696,6 +716,7 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
         slideStrokeBundleId: signals.maxSlideStrokeBundleId ?? null,
         rateMmPerS: plasticRef?.featureRules.slideCycleRateMmPerS ?? null,
         cavities: cavityCount,
+        cavitiesRef: cavityRef,
       }, withFieldOverrides(input.calculators, input.calculatorOverrides) ?? null);
       if (move.derivable) slideMove = { perPartSec: move.cycleSec, trace: grouped('Slide Movement', move.trace) };
       else notCosted(UNCOSTED_OPERATION_LABELS.side_action, `${UNCOSTED_OPERATION_LABELS.side_action} not costed: missing ${move.missing.join('; ')}.`);
@@ -720,7 +741,9 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
   };
   const processLabel = MOLDING_PROCESS_LABEL[mhrRate.machineClass] ?? 'Injection Molding';
   // An insert press's shot also loads the inserts (overlapped on a table press): its time is the shot's, its trace follows the cycle's.
-  const shot = cycle.derivable && input.shotCycle ? input.shotCycle(cycle.totalCycleSec, cavityCount) : null;
+  const shot = cycle.derivable && input.shotCycle
+    ? input.shotCycle(cycle.totalCycleSec, cavityCount, { molding: { kind: 'calculation', name: cycle.calculator.name, evidence: null, steps: cycle.trace }, cavities: cavityRef })
+    : null;
   const shotSec = shot?.sec ?? (cycle.derivable ? cycle.totalCycleSec : 0);
   // The press time per part: the shot over the cavities and the good-part yield, and the slides' movement in it.
   const inCycleMin = cycle.derivable ? (shotSec / cavityCount / perGood) / 60 + (slideMove?.perPartSec ?? 0) / 60 : 0;
@@ -782,6 +805,7 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
       pressTimePerPartSec: inCycleMin > 0 ? inCycleMin * 60 : null,
       // The press time per part is the molding cycle over the cavities and the good-part yield: its eye opens that cycle calculation, step by step.
       pressTimeRef: cycle.derivable ? { kind: 'calculation', name: cycle.calculator.name, evidence: null, steps: cycle.trace } : null,
+      resinPerPartRef: shotSource?.resinPerPart ?? null,
       dryers: dryerModels(), electricity: input.electricity ?? null, economics: equipmentEconomics(),
     }, withFieldOverrides(input.calculators, input.calculatorOverrides) ?? null);
     if (dry.derivable && dry.dryerHourlyUsd != null) {
@@ -802,6 +826,7 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
   if (routed.has('deflashing')) {
     const trim = runDeflashingTime({
       partingLineLengthMm: signals.partingLineLengthMm ?? null,
+      partingLineFeatureId: input.signals?.partingLineFeatureId ?? null,
       rateMmPerS: plasticRef?.featureRules.manualFlashTrimmingRateMmPerS ?? null,
     }, withFieldOverrides(input.calculators, input.calculatorOverrides) ?? null);
     if (trim.derivable) {
@@ -830,12 +855,15 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
   // Insert pull test (F-40): a destructive sample of each batch, each insert pulled to failure on a pull-test station by the press operator; the
   // sampled parts are scrapped, charged as the line's other cost at what they had cost by then (material and the lines so far, USD).
   if (routed.has('insert_inspection')) {
+    const testedPartUsd = r6((materialCost + processLines.reduce((s, l) => s + l.totalCost, 0)) / usdToLocal);
     const pull = runInsertPullTest({
       ref: insertPullTestReference(),
       insertsPerPart: signals.insertCount ?? null,
+      insertsRef: (signals.insertCount ?? 0) > 0 ? insertsRef(signals.insertCount!, input.inserts) : null,
       batchSize,
       aql: plasticRef?.aqlSamples ?? null,
-      testedPartUsd: r6((materialCost + processLines.reduce((s, l) => s + l.totalCost, 0)) / usdToLocal),
+      testedPartUsd,
+      testedPartRef: testedPartRef({ materialCost, lines: processLines, usdToLocal, usd: testedPartUsd }),
     }, withFieldOverrides(input.calculators, input.calculatorOverrides) ?? null);
     if (pull.derivable && pull.testerRateUsdPerHr != null && pull.scrapUsdPerPart != null && mhrRate.labourRate != null) {
       const tester: MHRRateInput = {
@@ -1028,6 +1056,13 @@ function computeAtCavities(input: InjectionMoldingCostInput, sizing: CavitySizin
       steelTreatment: treatment,
       runner: runnerSystemType,
       gatesPerCavity: plasticRef.defaultGatesPerCavity,
+      // Where the engine's own facts came from, for the inputs' eyes.
+      runnerBasis: isLsr ? 'lsr' : callerGate != null ? 'gate' : 'reference',
+      cavitiesRef: cavityRef,
+      bboxMm: (input.bboxMaxMm ?? 0) > 0 && (input.bboxMidMm ?? 0) > 0 && (input.bboxMinMm ?? 0) > 0 ? [input.bboxMaxMm!, input.bboxMidMm!, input.bboxMinMm!] : null,
+      projectedAreaSource: (input.signals?.projectedAreaMm2 ?? 0) > 0
+        ? 'CAD: the part\'s projected area along the pull'
+        : 'CAD: the bounding box\'s footprint (its two longest sides), no projected area measured',
     }, withFieldOverrides(input.calculators, input.calculatorOverrides));
     if (!tooling.derivable) {
       warnings.push(`Tooling not costed: missing ${tooling.missing.join('; ')}.`);

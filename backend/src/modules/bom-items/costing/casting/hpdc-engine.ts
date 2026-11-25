@@ -42,11 +42,12 @@
 // hours). Metal per shot (part + overflow) is reported here and priced in
 // casting-cost-summary.ts; the die is costed by die-tooling.ts.
 
-import type { CalculationTraceStep, CalculatorRunDto, FeatureOp, MachineChoiceDto, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CalculatorRunDto, FeatureOp, MachineChoiceDto, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, partLengthSeed, resultStep, wallSeed } from './casting-source-refs';
 import { eMithranTerms, type EMithranTermsArgs } from '../shared/core/engine-kernel';
 import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
 import type { CastingMaterial, CastingReference } from './casting-reference';
-import { castingSeed, runView, SeedSet } from './casting-calculator-seeds';
+import { castingSeed, DIE_CASTING_DOMAIN, runView, SeedSet } from './casting-calculator-seeds';
 import { machineChoice, type ChoiceEval } from './machine-choice';
 import { selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-machine';
 
@@ -77,10 +78,13 @@ export interface HpdcCavities {
   /** Every layoutNumCav cavity count. */
   layouts: number[];
   defaultCount: number;
+  /** How the count was decided (resolveHpdcCavities), for the eye of every later Cavities input (melting); absent when it was not. */
+  ref?: SourceRef;
 }
 
 type CavityResult =
-  | { ok: true; cavities: HpdcCavities; trace: string; note: string | null }
+  /** `ref`: how the count was decided, step by step (the Cost Guide entry or the default variable, the layoutNumCav row, the large-part check). */
+  | { ok: true; cavities: HpdcCavities; trace: string; note: string | null; ref: SourceRef }
   | { ok: false; cavities: HpdcCavities; reason: string };
 
 /** Cavities per die from the Cost Guide choice, memory's default and the large-part limit. */
@@ -107,6 +111,20 @@ export function resolveHpdcCavities(input: {
   const layoutOf = (n: number) => ref.cavityLayouts.find((l) => l.count === n);
   const layout = layoutOf(want);
   if (!layout) return fail(`${want} cavities has no die layout in layoutNumCav (${layouts.join(', ')}).`);
+  // How the count was decided, for the eye on every Cavities input: the count asked (the Cost Guide's, else the default variable), its die
+  // layout (the layoutNumCav row) and, for more than one, the large-part check.
+  const asked = input.requested != null
+    ? inputStep('Cavities set in the Cost Guide', null, want, "The part's Cost Guide (cavityCount)")
+    : inputStep(defaultName, null, defaultCount, `Die casting variable ${defaultName}`, { kind: 'variable', domain: DIE_CASTING_DOMAIN, name: defaultName });
+  const layoutStep = (l: { lengthWise: number; widthWise: number; count: number }) =>
+    inputStep('Die layout', null, `${l.lengthWise} × ${l.widthWise}`, `layoutNumCav: ${l.count} cavit${l.count === 1 ? 'y' : 'ies'}`,
+      { kind: 'lookup', domain: DIE_CASTING_DOMAIN, table: 'layoutNumCav', column: 'Number of Cavities', row: { 'Number of Cavities': l.count } });
+  const massSteps = input.partMassKg != null && want > 1
+    ? [
+      inputStep('Part mass', 'kg', input.partMassKg, 'Net Material Usage: part volume x alloy density'),
+      inputStep('largePartThreshold', 'kg', threshold, 'Die casting variable largePartThreshold', { kind: 'variable', domain: DIE_CASTING_DOMAIN, name: 'largePartThreshold' }),
+    ]
+    : [];
   if (want > 1) {
     if (input.partMassKg == null) return fail(`${want} cavities: part mass not known, so largePartThreshold (${threshold} kg) cannot be checked.`);
     if (input.partMassKg > threshold) {
@@ -117,6 +135,7 @@ export function resolveHpdcCavities(input: {
         cavities: { count: 1, lengthWise: one.lengthWise, widthWise: one.widthWise, constrainedBy: 'large_part', layouts, defaultCount },
         trace: `1 (part ${r2(input.partMassKg)} kg > largePartThreshold ${threshold} kg)`,
         note: `${want} cavities asked, but the part (${r2(input.partMassKg)} kg) is above largePartThreshold (${threshold} kg): costed with one cavity.`,
+        ref: calculationRef('Cavities per die', [asked, ...massSteps, layoutStep(one), resultStep('Cavities', null, 1, 'One cavity: the part is heavier than largePartThreshold')]),
       };
     }
   }
@@ -125,6 +144,10 @@ export function resolveHpdcCavities(input: {
     cavities: { count: want, lengthWise: layout.lengthWise, widthWise: layout.widthWise, constrainedBy, layouts, defaultCount },
     trace: `${want} (${layout.lengthWise} × ${layout.widthWise} layout, ${constrainedBy === 'user' ? 'Cost Guide' : defaultName})`,
     note: null,
+    ref: calculationRef('Cavities per die', [
+      asked, ...massSteps, layoutStep(layout),
+      resultStep('Cavities', null, want, `The count ${constrainedBy === 'user' ? 'set in the Cost Guide' : `of ${defaultName}`}, which has a die layout${want > 1 ? ' and a part no heavier than largePartThreshold' : ''}`),
+    ]),
   };
 }
 
@@ -152,16 +175,19 @@ export function hpdcCycleSeeds(input: {
   surfaceQualityIndex?: number;
   /** Cavities filled per shot (default 1). */
   cavities?: number;
+  /** How the cavity count was decided (resolveHpdcCavities ref); absent: one cavity, the seeding's own default. */
+  cavitiesRef?: SourceRef;
 }): CycleSeedResult {
   const { reference: ref, material: m, geometry: g } = input;
   const v = ref.variables;
   const n = input.cavities ?? 1;
   const s = new SeedSet();
   const pos = (x: number | null | undefined) => (x != null && x > 0 ? x : null);
-  s.put('Cavities', n, (x) => castingSeed.engine(x, `${x} cavit${x === 1 ? 'y' : 'ies'} per shot (die layout)`), 'cavities');
+  const cavitiesRef = input.cavitiesRef ?? calculationRef('Cavities per die', [resultStep('Cavities', null, n, 'One cavity: no die layout was decided for this seeding')]);
+  s.put('Cavities', n, (x) => castingSeed.engine(x, `${x} cavit${x === 1 ? 'y' : 'ies'} per shot (die layout)`, cavitiesRef), 'cavities');
   s.put('Projected Area', pos(g.projectedAreaMm2), (x) => castingSeed.cad(x, 'projected area on the parting plane (mm²)', 'projected_area'), 'measured projected area (re-run analysis as a casting process)');
-  s.put('Wall Nominal', pos(g.wallNominalMm), (x) => castingSeed.cad(x, 'nominal wall thickness (mm)'), 'measured nominal wall thickness');
-  s.put('Wall Max', pos(g.wallMaxMm), (x) => castingSeed.cad(x, 'thickest wall (mm)'), 'measured maximum wall thickness');
+  s.put('Wall Nominal', pos(g.wallNominalMm), (x) => wallSeed(x, 'nominal', 'CAD: nominal wall thickness (mm)'), 'measured nominal wall thickness');
+  s.put('Wall Max', pos(g.wallMaxMm), (x) => wallSeed(x, 'thickest', 'CAD: thickest wall (mm)'), 'measured maximum wall thickness');
   s.put('Injection Temp', m.injectionTempC, (x) => castingSeed.alloy(m, 'injection_temp', 'Injection Temp (C)', x), `${m.name}: Injection Temp`);
   s.put('Liquidus Temp', m.liquidusTempC, (x) => castingSeed.alloy(m, 'liquidus_temp', 'Liquidus Temp (C)', x), `${m.name}: Liquidus Temp`);
   s.put('Mold Temp', m.moldTempC, (x) => castingSeed.alloy(m, 'mold_temp', 'Mold Temp (C)', x), `${m.name}: Mold Temp`);
@@ -273,7 +299,7 @@ export function computeHpdc(input: {
   const vol = input.geometry.partVolumeMm3;
   const partMassKg = vol && vol > 0 && mat.densityKgM3 && mat.densityKgM3 > 0 ? (vol / 1e9) * mat.densityKgM3 : null;
   const cav = resolveHpdcCavities({ reference: ref, requested: input.cavityCountOverride ?? null, partMassKg });
-  cavities = cav.cavities;
+  cavities = cav.ok ? { ...cav.cavities, ref: cav.ref } : cav.cavities;
   if (!cav.ok) return gapLine(cav.reason);
   if (cav.note) warnings.push(cav.note);
   const n = cav.cavities.count;
@@ -282,7 +308,7 @@ export function computeHpdc(input: {
   // Clamp force (calculator Clamp Force).
   const area = input.geometry.projectedAreaMm2;
   const clampSeeds = new SeedSet()
-    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace), 'cavities')
+    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace, cav.ref), 'cavities')
     .put('Projected Area', area != null && area > 0 ? area : null, (x) => castingSeed.cad(x, 'projected area on the parting plane (mm²)', 'projected_area'), 'no measured projected area (re-run analysis as a casting process)')
     .put('Clamping Pressure', mat.clampingPressureMpa != null && mat.clampingPressureMpa > 0 ? mat.clampingPressureMpa : null,
       (x) => castingSeed.alloy(mat, 'clamping_pressure', 'Clamping Pressure (MPa)', x), `${mat.name} has no Clamping Pressure in materials_master`)
@@ -312,7 +338,7 @@ export function computeHpdc(input: {
     return gapLine(`No HPDC machine in HR Rates (${input.machines.length} checked) has ${r2(requiredClampKn)} kN clamp with tie bars clearing ${clear} and a rate on file.`);
   }
 
-  const cyc = hpdcCycleSeeds({ reference: ref, material: mat, geometry: input.geometry, surfaceQualityIndex: input.surfaceQualityIndex, cavities: n });
+  const cyc = hpdcCycleSeeds({ reference: ref, material: mat, geometry: input.geometry, surfaceQualityIndex: input.surfaceQualityIndex, cavities: n, cavitiesRef: cav.ref });
   if (!cyc.ok) return gapLine(`HPDC cycle time not derivable: missing ${cyc.missing.join('; ')}.`, selection.capable[0]);
 
   // Price every capable machine with its own dry cycle, the calculator per machine; keep the cheapest per part.
@@ -367,11 +393,11 @@ export function computeHpdc(input: {
   const ov = g.wallNominalMm != null ? overflowRow(ref, g.wallNominalMm, cyc.surfaceQualityIndex) : null;
   const shotSeeds = new SeedSet()
     .put('Part Volume', vol != null && vol > 0 ? vol : null, (x) => castingSeed.cad(x, 'part volume (mm³)', 'part_volume'), 'part volume')
-    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace), 'cavities')
+    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace, cav.ref), 'cavities')
     .put('Overflow Ratio', ov?.ratio, (x) => castingSeed.lookup('tblOverflowDim', ov!.column, x, { 'Wall Thickness (mm)': ov!.wallMm }),
       'a tblOverflowDim row (nominal wall below the first row, or not measured)')
-    .put('Wall Max', g.wallMaxMm != null && g.wallMaxMm > 0 ? g.wallMaxMm : null, (x) => castingSeed.cad(x, 'thickest wall (mm)'), 'thickest wall')
-    .put('Part Length', g.partLengthMm != null && g.partLengthMm > 0 ? g.partLengthMm : null, (x) => castingSeed.cad(x, 'longest part dimension (mm)'), 'part length')
+    .put('Wall Max', g.wallMaxMm != null && g.wallMaxMm > 0 ? g.wallMaxMm : null, (x) => wallSeed(x, 'thickest', 'CAD: thickest wall (mm)'), 'thickest wall')
+    .put('Part Length', g.partLengthMm != null && g.partLengthMm > 0 ? g.partLengthMm : null, (x) => partLengthSeed(x, 'CAD: longest part dimension (mm)'), 'part length')
     .put('Additional Runner Thickness', ref.variables.additionalRunnerThickness, (x) => castingSeed.variable('additionalRunnerThickness', x), 'variables additionalRunnerThickness')
     .put('Runner Aspect Ratio', ref.variables.runnerAspectRatio, (x) => castingSeed.variable('runnerAspectRatio', x), 'variables runnerAspectRatio')
     .put('Ingate Gap', ref.variables.ingateGap, (x) => castingSeed.variable('ingateGap', x), 'variables ingateGap');

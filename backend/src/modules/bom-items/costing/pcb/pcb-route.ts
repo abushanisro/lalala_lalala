@@ -19,9 +19,10 @@ import { seedsFor, type SeedProvider, type SeedProviders } from '../casting/sand
 import { selectAndCost, type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
 import { buildPcbAssembly, type PcbAssembly, type PcbAssemblyChoice, type PcbAssemblyRegion } from './pcb-assembly';
 import { nestPcb, type PcbNest } from './pcb-panel';
-import { holeTotals, PCB_FINISH_LABEL, type PcbFinish, type PcbPart } from './pcb-part';
-import { consumable, consumableForDiameter, fabYield, micronsOfPlating, processTime, saySourced, type SourcedValue } from './pcb-reference';
-import { pcbStackup, prepregPlies, type PcbStackup } from './pcb-stackup';
+import { holeTotals, pcbFactRef, PCB_FINISH_LABEL, type PcbFact, type PcbFinish, type PcbPart } from './pcb-part';
+import { consumable, consumableForDiameter, fabYield, micronsOfPlating, processTime, saySourced, sourcedRef, type SourcedValue } from './pcb-reference';
+import { derivedSeed, inputStep, resultStep, seedStep } from '../shared/calculators/seed-refs';
+import { DIELECTRIC_COLUMN, pcbStackup, prepregPlies, type PcbStackup } from './pcb-stackup';
 
 export const PCB_DOMAIN = 'pcb';
 export const PCB_PROCESS_GROUP = 'PCB';
@@ -156,20 +157,51 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   // ── Seeding: every input from its declared source; the key before a " (" note is the value's name ───────────────────────────────────
   const named = (values: Readonly<Record<string, CalcSeed | undefined>>): SeedProvider => (key) => values[key.split(' (')[0]!.trim()] ?? null;
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
-  const sourced = (v: SourcedValue, what: string): CalcSeed => ({ value: v.mid, source: `${what}: ${saySourced(v)} (${v.sources.map((s) => s.url).join(', ')})` });
+  const sourced = (v: SourcedValue, what: string): CalcSeed => ({ value: v.mid, source: `${what}: ${saySourced(v)} (${v.sources.map((s) => s.url).join(', ')})`, ref: sourcedRef(v, what) });
   const variableSeed = (name: string): CalcSeed | null => {
     const value = num(name);
     return value == null ? null : { value, source: `PCB variable ${name}${ref.unit(name) ? ` (${ref.unit(name)})` : ''}`, ref: { kind: 'variable', domain: PCB_DOMAIN, name } };
   };
+  // ── Where each value came from (its eye): a board fact, a PCB variable, the panel and the nest, step by step ──────────────────────────
+  const factSeed = (f: PcbFact<number>, label: string, unit: string | null, value = f.value, source = `${value}${unit ? ` ${unit}` : ''} (${f.source})`): CalcSeed =>
+    ({ value, source, ref: pcbFactRef(f, label, unit) });
+  const factStep = (label: string, unit: string | null, f: PcbFact<number>) => inputStep(label, unit, f.value, f.source, pcbFactRef(f, label, unit));
+  const varStep = (label: string, name: string) => inputStep(label, ref.unit(name) ?? null, num(name) ?? ref.text(name) ?? 'not set', `PCB variable ${name}`, { kind: 'variable', domain: PCB_DOMAIN, name });
+  const panelRef = (column: 'value_min' | 'value_max') => ({ kind: 'lookup' as const, domain: PCB_DOMAIN, table: 'process_times', column, row: { item_key: 'working_panel_in' } });
+  const panelSteps = () => [
+    inputStep('Working panel, long side', 'in', Math.max(panelIn.min, panelIn.max), 'process_times.csv working_panel_in', panelRef(panelIn.max >= panelIn.min ? 'value_max' : 'value_min')),
+    inputStep('Working panel, short side', 'in', Math.min(panelIn.min, panelIn.max), 'process_times.csv working_panel_in', panelRef(panelIn.max >= panelIn.min ? 'value_min' : 'value_max')),
+  ];
+  const nestSteps = () => [
+    factStep('Board length', 'mm', part.lengthMm), factStep('Board width', 'mm', part.widthMm), ...panelSteps(),
+    varStep('Panel edge, length', multi ? 'defaultPanelSheetPerimeterLengthMultiLayer' : 'defaultPanelSheetPerimeterLengthNonMultiLayer'),
+    varStep('Panel edge, width', multi ? 'defaultPanelSheetPerimeterWidthMultiLayer' : 'defaultPanelSheetPerimeterWidthNonMultiLayer'),
+    varStep('Spacing', 'defaultPanelSheetRectangularNestingSpacing'), varStep('Arrays', 'defaultEnableArrayDepanelization'),
+    ...(arrayOn ? [varStep('Array length', 'defaultArrayLength'), varStep('Array width', 'defaultArrayWidth')] : []),
+  ];
+  // The stack-up's counts (pcb-stackup.ts, tblLayerMaterialType at the board's layers and preference).
+  const stackSays = `the ${layers}-layer stack-up (tblLayerMaterialType, Board Preference ${stackup.preference})`;
   const common: Record<string, CalcSeed | undefined> = {
-    boards_per_panel: seed(perPanel, `${perPanel} board(s) per panel: ${nest.note}`),
-    panel_length_mm: seed(r2(panel.lengthMm), `the ${panelIn.min} x ${panelIn.max} in working panel (process_times.csv working_panel_in)`),
-    panel_width_mm: seed(r2(panel.widthMm), `the ${panelIn.min} x ${panelIn.max} in working panel`),
-    arrays_per_panel: seed(nest.arraysPerPanel, `${nest.arraysPerPanel} array(s) per panel`),
-    board_thickness: seed(part.thicknessMm.value, `${part.thicknessMm.value} mm (${part.thicknessMm.source})`),
-    board_length: seed(r2(part.lengthMm.value), `${r2(part.lengthMm.value)} mm (${part.lengthMm.source})`),
-    board_area_mm2: seed(r2(part.areaMm2.value), `${r2(part.areaMm2.value)} mm² (${part.areaMm2.source})`),
+    boards_per_panel: derivedSeed(perPanel, `${perPanel} board(s) per panel: ${nest.note}`, 'Boards per panel: the nest', [
+      ...nestSteps(), resultStep('Boards per Panel', null, perPanel, nest.note),
+    ]),
+    panel_length_mm: derivedSeed(r2(panel.lengthMm), `the ${panelIn.min} x ${panelIn.max} in working panel (process_times.csv working_panel_in)`, 'Panel length', [
+      ...panelSteps(), resultStep('Panel Length', 'mm', r2(panel.lengthMm), '{Working panel, long side} * 25.4'),
+    ]),
+    panel_width_mm: derivedSeed(r2(panel.widthMm), `the ${panelIn.min} x ${panelIn.max} in working panel`, 'Panel width', [
+      ...panelSteps(), resultStep('Panel Width', 'mm', r2(panel.widthMm), '{Working panel, short side} * 25.4'),
+    ]),
+    arrays_per_panel: derivedSeed(nest.arraysPerPanel, `${nest.arraysPerPanel} array(s) per panel`, 'Arrays per panel: the nest', [
+      ...nestSteps(), resultStep('Arrays per Panel', null, nest.arraysPerPanel, nest.note),
+    ]),
+    board_thickness: factSeed(part.thicknessMm, 'Board thickness', 'mm'),
+    board_length: factSeed(part.lengthMm, 'Board length', 'mm', r2(part.lengthMm.value)),
+    board_area_mm2: factSeed(part.areaMm2, 'Board area', 'mm²', r2(part.areaMm2.value)),
   };
+  /** The area a plating covers: what the board files measure, else the whole board on each side (said). */
+  const areaSeed = (area: { mm2: number; why: string }): CalcSeed => derivedSeed(r2(area.mm2), area.why, 'Plated area', area.mm2 === part.copperAreaMm2 || area.mm2 === part.pasteAreaMm2
+    ? [inputStep('Measured', 'mm²', r2(area.mm2), `Measured from the board files: ${area.why}`), resultStep('Area', 'mm²', r2(area.mm2), area.why)]
+    : [factStep('Board area', 'mm²', part.areaMm2), resultStep('Area', 'mm²', r2(area.mm2), `{Board area} * 2: ${area.why}`)]);
   type Run = { run: ReferenceCalcRun } | { reasons: string[] };
   const run = (calculator: string, machine: SandMachine | null, engine: Record<string, CalcSeed | undefined>): Run => {
     const calc = input.spec.calculators.find((c) => c.name === calculator);
@@ -211,7 +243,15 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     return t != null && part.thicknessMm.value > t + 1e-9 ? `the ${part.thicknessMm.value} mm board is thicker than the ${t} mm it takes` : null;
   };
   const guard = (...reasons: (string | null)[]) => reasons.filter((r): r is string => r != null);
-  const passesSeed = (n: number, why: string) => ({ passes: seed(n, why) });
+  // The panel's passes through a line: one for the outer layers, and one for each inner-layer core imaged before lamination.
+  const passesSeed = (n: number, why: string) => ({
+    passes: derivedSeed(n, why, 'Passes', [
+      factStep('Layers', null, part.layers), inputStep('Inner-layer cores', null, stackup.innerCores, stackSays), resultStep('Passes', null, n, why),
+    ]),
+  });
+  const passesVariable = (name: string) => ({ passes: variableSeed(name) ?? derivedSeed(1, `${name} (not set: one pass)`, 'Passes', [varStep('Passes', name), resultStep('Passes', null, 1, 'one pass')]) });
+  const machineStep = (m: SandMachine, column: string, label: string) =>
+    inputStep(label, null, machineValue(m, column) ?? 'not on file', `machine ${m.name}: ${column}`, { kind: 'machine', machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
 
   // ── The steps every route shares ──────────────────────────────────────────────────────────────────────────────────────────────────
   const steps: CostedStep[] = [];
@@ -224,7 +264,13 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     const why = guard(fits(m, 'max_panel_width_mm', 'max_panel_width_mm', 'panel width'));
     if (why.length) return fail(...why);
     if (!(resistSpeed > 0)) return fail('no photo-resist line speed to run the prep conveyor at');
-    return timed('Surface Preparation', m, { ...passesSeed(imagingPasses, imagingWhy), conveyor_speed_mm_per_s: seed(resistSpeed, `${resistSpeed} mm/s: the photo-resist line it feeds (no speed on file for the prep line)`) });
+    return timed('Surface Preparation', m, {
+      ...passesSeed(imagingPasses, imagingWhy),
+      conveyor_speed_mm_per_s: derivedSeed(resistSpeed, `${resistSpeed} mm/s: the photo-resist line it feeds (no speed on file for the prep line)`, 'Conveyor speed: the photo-resist line', [
+        ...(input.machinesByClass[PCB_CLASS.resist] ?? []).map((x) => machineStep(x, 'conveyor_speed_mm_per_s', `${x.name} conveyor speed`)),
+        resultStep('Conveyor Speed', 'mm/s', resistSpeed, 'the fastest photo-resist line: the prep line feeds it (no speed on file for the prep line)'),
+      ]),
+    });
   }, ['Its width takes the panel']));
   steps.push(step('Apply Photo Resist', PCB_CLASS.resist, (m) => {
     const why = guard(fits(m, 'max_panel_length_mm', 'max_panel_width_mm', 'laminator'), thick(m, 'max_panel_thickness_mm'));
@@ -232,7 +278,10 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   }, ['The panel fits its laminator']));
   steps.push(step('Photolithography', PCB_CLASS.litho, (m) => {
     const why = guard(fits(m, 'max_expose_length_mm', 'max_expose_width_mm', 'exposure area'));
-    return why.length ? fail(...why) : timed('Photolithography', m, { ...passesSeed(imagingPasses, imagingWhy), sides: seed(num('defaultNumFilmImagingSides') ?? 2, 'defaultNumFilmImagingSides') });
+    return why.length ? fail(...why) : timed('Photolithography', m, {
+        ...passesSeed(imagingPasses, imagingWhy),
+        sides: variableSeed('defaultNumFilmImagingSides') ?? derivedSeed(2, 'defaultNumFilmImagingSides (not set: both sides)', 'Sides', [varStep('Sides', 'defaultNumFilmImagingSides'), resultStep('Sides', null, 2, 'both sides')]),
+      });
   }, ['The panel fits its exposure area']));
   if (stackup.innerCores > 0 || layers === 1) {
     const etchPasses = layers === 1 ? 1 : stackup.innerCores;
@@ -250,7 +299,15 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     const plies = stackup.prepregSpaces > 0 ? prepregPlies(ref, stackup.prepregPerSpaceMm) : null;
     const laminates = stackup.doubleCores + stackup.singleCores + stackup.foils + (plies ? plies.plies * stackup.prepregSpaces : 0);
     steps.push(step('Bench Operation', PCB_CLASS.bench, (m) => timed('Bench Operation', m, {
-      laminates: seed(laminates, `${stackup.doubleCores + stackup.singleCores} core(s), ${stackup.foils} foil(s)${plies ? `, ${plies.plies * stackup.prepregSpaces} prepreg ply(ies) (${plies.plies} x ${plies.style} in each of ${stackup.prepregSpaces} space(s))` : ''}`),
+      laminates: derivedSeed(laminates, `${stackup.doubleCores + stackup.singleCores} core(s), ${stackup.foils} foil(s)${plies ? `, ${plies.plies * stackup.prepregSpaces} prepreg ply(ies) (${plies.plies} x ${plies.style} in each of ${stackup.prepregSpaces} space(s))` : ''}`, 'Laminates: the stack-up laid up', [
+        inputStep('Cores', null, stackup.doubleCores + stackup.singleCores, stackSays), inputStep('Foils', null, stackup.foils, stackSays),
+        ...(plies ? [
+          inputStep('Prepreg spaces', null, stackup.prepregSpaces, stackSays),
+          inputStep('Plies a space', null, plies.plies, `tblPrepregThickness: ${plies.style} (${plies.nominalMm} mm), the plies nearest the ${r2(stackup.prepregPerSpaceMm)} mm each space takes`,
+            { kind: 'lookup', domain: PCB_DOMAIN, table: 'tblPrepregThickness', column: 'Nominal Thickness (mm)', row: { Type: plies.style } }),
+        ] : []),
+        resultStep('Laminates', null, laminates, '{Cores} + {Foils} + {Prepreg spaces} * {Plies a space}'),
+      ]),
     }), ['A lay-up bench']));
     steps.push(step('Oven Cure Layers', PCB_CLASS.laminate, (m) => {
       const why = guard(fits(m, 'max_panel_length_mm', 'max_panel_width_mm', 'press platen'));
@@ -278,14 +335,19 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     steps.push(step('Drill Circuit Holes', PCB_CLASS.drill, (m) => {
       const why = guard(fits(m, 'table_length_mm', 'table_width_mm', 'table'));
       return why.length ? fail(...why) : timed('Drill Circuit Holes', m, {
-        hits_per_board: seed(totals.hits, `${totals.hits} drilled hits (${part.holes.source})`), tools: seed(totals.tools, `${totals.tools} drill diameter(s)`),
+        hits_per_board: derivedSeed(totals.hits, `${totals.hits} drilled hits (${part.holes.source})`, 'Drilled hits', [
+          ...drilled.map((h) => inputStep(`Ø${h.diameterMm} mm${h.plated ? ' plated' : ''}`, null, h.count, part.holes.source)), resultStep('Hits per Board', null, totals.hits, 'the holes drilled, summed'),
+        ]),
+        tools: derivedSeed(totals.tools, `${totals.tools} drill diameter(s)`, 'Drill tools', [
+          ...drilled.map((h) => inputStep(`Ø${h.diameterMm} mm${h.plated ? ' plated' : ''}`, null, h.count, part.holes.source)), resultStep('Tools', null, totals.tools, 'one drill a distinct diameter'),
+        ]),
       });
     }, ['The panel fits its table']));
     const drillCost = drillingConsumables(ref, drilled, panel, perPanel);
     if ('reasons' in drillCost) warnings.push(`Drilling consumables are not priced: ${drillCost.reasons.join('; ')}.`);
     else {
       const r = run(PCB_HELPER.drilling, null, {
-        drill_bits_usd: seed(r4(drillCost.bitsUsd), drillCost.bitsDetail), drill_boards_usd_per_panel: seed(r4(drillCost.boardsUsdPerPanel), drillCost.boardsDetail),
+        drill_bits_usd: drillCost.bitsSeed, drill_boards_usd_per_panel: drillCost.boardsSeed,
       });
       if ('run' in r) consumableLines.push(consumableLine('Drilling consumables', PCB_CLASS.drill, r.run, `${drillCost.bitsDetail}; ${drillCost.boardsDetail}`));
     }
@@ -293,7 +355,13 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   if (vias > 0) {
     steps.push(step('Laser Drill Vias', PCB_CLASS.laser, (m) => {
       const why = guard(fits(m, 'table_length_mm', 'table_width_mm', 'table'));
-      return why.length ? fail(...why) : timed('Laser Drill Vias', m, { vias_per_board: seed(vias, `${vias} hole(s) of at most ${viaLimit} mm`) });
+      return why.length ? fail(...why) : timed('Laser Drill Vias', m, {
+        vias_per_board: derivedSeed(vias, `${vias} hole(s) of at most ${viaLimit} mm`, 'Laser-drilled vias', [
+          ...holes.filter((h) => laserable(h.diameterMm)).map((h) => inputStep(`Ø${h.diameterMm} mm`, null, h.count, part.holes.source)),
+          varStep('Via diameter limit', 'viaDrillingUpperDiameterLimit'), varStep('Via depth (layers)', 'viaMaxDepthNumberOfLayers'),
+          resultStep('Vias per Board', null, vias, 'the holes no larger than the via limit, on a board no deeper than the via depth'),
+        ]),
+      });
     }, ['The panel fits its table']));
   }
   const plated = holes.filter((h) => h.plated).reduce((s, h) => s + h.count, 0);
@@ -320,7 +388,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
       if (copperUm == null) return fail('the external hole plating thickness (defaultHolesPlatingThicknessExternalLayers)');
       if (!tin || !tinRate) return fail('the etch-resist tin thickness and rate (process_times.csv tin_thickness_um, tin_rate_um_per_min)');
       return timed('Copper Plate and Tin Coat', m, {
-        copper_plating_thickness: seed(copperUm, `${copperUm} µm (defaultHolesPlatingThicknessExternalLayers)`),
+        copper_plating_thickness: { value: copperUm, source: `${copperUm} µm (defaultHolesPlatingThicknessExternalLayers)`, ref: { kind: 'variable', domain: PCB_DOMAIN, name: 'defaultHolesPlatingThicknessExternalLayers' } },
         tin_thickness: sourced(tin, 'etch-resist tin'), tin_deposition_rate: sourced(tinRate, 'tin deposition rate'),
       });
     }, ['The panel hangs within its cell depth']));
@@ -329,8 +397,8 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     if (tin && tinPrice && tinDensity) {
       const area = platedArea(part);
       const r = run(PCB_HELPER.metal, null, {
-        plated_area_mm2: seed(r2(area.mm2), area.why), thickness_um: sourced(tin, 'etch-resist tin'), density_g_cm3: sourced(tinDensity, 'tin density'),
-        price_usd_per_g: { value: tinPrice.mid / 1000, source: `tin: ${saySourced(tinPrice)} / 1000 g` },
+        plated_area_mm2: areaSeed(area), thickness_um: sourced(tin, 'etch-resist tin'), density_g_cm3: sourced(tinDensity, 'tin density'),
+        price_usd_per_g: { value: tinPrice.mid / 1000, source: `tin: ${saySourced(tinPrice)} / 1000 g`, ref: sourcedRef(tinPrice, 'tin price', 1 / 1000, 'per gram') },
       });
       if ('run' in r) consumableLines.push(consumableLine('Tin (etch resist)', PCB_CLASS.plate, r.run, `${r2(area.mm2)} mm² ${area.why} at ${saySourced(tin)}`));
     }
@@ -353,7 +421,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   // Solder mask and legend.
   const maskSides = part.soldermaskSides.value;
   if (maskSides > 0) {
-    const sides = { solder_mask_sides: seed(maskSides, `${maskSides} masked side(s) (${part.soldermaskSides.source})`) };
+    const sides = { solder_mask_sides: factSeed(part.soldermaskSides, 'Solder mask sides', null, maskSides, `${maskSides} masked side(s) (${part.soldermaskSides.source})`) };
     steps.push(step('Wet Film Solder Mask', PCB_CLASS.mask, (m) => {
       const why = guard(fits(m, 'max_print_length_mm', 'max_print_width_mm', 'print area'), thick(m, 'max_substrate_thickness_mm'));
       return why.length ? fail(...why) : timed('Wet Film Solder Mask', m, sides);
@@ -365,7 +433,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     }, ['The panel fits its exposure area']));
     steps.push(step('Develop Solder Mask', PCB_CLASS.develop, (m) => {
       const why = guard(thick(m, 'max_panel_thickness_mm'), fits(m, 'usable_width_mm', 'usable_width_mm', 'conveyor width'));
-      return why.length ? fail(...why) : timed('Develop Solder Mask', m, passesSeed(num('defaultNumPassesDevelopSolderMask') ?? 1, 'defaultNumPassesDevelopSolderMask'));
+      return why.length ? fail(...why) : timed('Develop Solder Mask', m, passesVariable('defaultNumPassesDevelopSolderMask'));
     }, ['Its conveyor takes the panel']));
     steps.push(step('Cure Solder Mask', PCB_CLASS.maskCure, (m) => ovenStep('Cure Solder Mask', m), ['Its bed holds a case of panels']));
     const solids = processTime(ref, 'solder_mask_solids_pct');
@@ -385,7 +453,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
   if (legendSides > 0) {
     steps.push(step('Screen Printing', PCB_CLASS.legend, (m) => {
       const why = guard(fits(m, 'max_print_length_mm', 'max_print_width_mm', 'print area'), thick(m, 'max_substrate_thickness_mm'));
-      return why.length ? fail(...why) : timed('Screen Printing', m, { legend_sides: seed(legendSides, `${legendSides} legend side(s) (${part.silkscreenSides.source})`) });
+      return why.length ? fail(...why) : timed('Screen Printing', m, { legend_sides: factSeed(part.silkscreenSides, 'Legend sides', null, legendSides, `${legendSides} legend side(s) (${part.silkscreenSides.source})`) });
     }, ['The panel fits its print area']));
     steps.push(step('Silkscreen Cure', PCB_CLASS.legendCure, (m) => {
       const why = guard(fits(m, 'max_panel_length_mm', 'max_panel_width_mm', 'conveyor'), thick(m, 'max_panel_thickness_mm'));
@@ -407,7 +475,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     if (finish === 'osp') {
       return { steps: [step(process, cls, (m) => {
         const why = guard(thick(m, 'max_panel_thickness_mm'), fits(m, 'usable_width_mm', 'usable_width_mm', 'conveyor width'));
-        return why.length ? fail(...why) : timed(process, m, passesSeed(num('defaultNumPassesOSP') ?? 1, 'defaultNumPassesOSP'));
+        return why.length ? fail(...why) : timed(process, m, passesVariable('defaultNumPassesOSP'));
       }, ['Its conveyor takes the panel'])], lines: [] };
     }
     const gold = processTime(ref, 'gold_dwell_min');
@@ -415,7 +483,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
       const why = guard(fits(m, 'max_panel_length_mm', 'max_panel_width_mm', 'fly bar'));
       if (why.length) return fail(...why);
       if (!gold) return fail('the immersion gold dwell (process_times.csv gold_dwell_min)');
-      return timed(process, m, { gold_dwell: { value: gold.mid * 60, source: `immersion gold dwell: ${saySourced(gold)} x 60 s` } });
+      return timed(process, m, { gold_dwell: { value: gold.mid * 60, source: `immersion gold dwell: ${saySourced(gold)} x 60 s`, ref: sourcedRef(gold, 'immersion gold dwell', 60, 's per min') } });
     }, ['The panel fits its fly bars']);
     const lines: ProcessLineCost[] = [];
     const area = pasteArea(part);
@@ -428,8 +496,8 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
       if (!area) { warnings.push(`${label} is not priced: the pad area is not measured (the board files have no paste layer).`); continue; }
       if (!t || !d || !p) { warnings.push(`${label} is not priced: its sourced thickness, density or price is missing.`); continue; }
       const r = run(PCB_HELPER.metal, null, {
-        plated_area_mm2: seed(r2(area.mm2), area.why), thickness_um: sourced(t, label), density_g_cm3: sourced(d, `${label} density`),
-        price_usd_per_g: { value: p.mid * perGram, source: `${label}: ${saySourced(p)}${perGram !== 1 ? ' / 1000 g' : ''}` },
+        plated_area_mm2: areaSeed(area), thickness_um: sourced(t, label), density_g_cm3: sourced(d, `${label} density`),
+        price_usd_per_g: { value: p.mid * perGram, source: `${label}: ${saySourced(p)}${perGram !== 1 ? ' / 1000 g' : ''}`, ref: sourcedRef(p, `${label} price`, perGram, perGram !== 1 ? 'per gram' : '') },
       });
       if ('run' in r) lines.push(consumableLine(label, cls, r.run, `${r2(area.mm2)} mm² ${area.why} at ${saySourced(t)}`));
     }
@@ -469,7 +537,11 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
       const routed = step('Router', PCB_CLASS.router, (m) => {
         const why = guard(fits(m, 'max_panel_length_mm', 'max_panel_width_mm', 'table'));
         return why.length ? fail(...why) : timed('Router', m, {
-          rout_length_per_board: seed(r2(outline), `${r2(part.perimeterMm.value)} mm outline (${part.perimeterMm.source})${routedHoles.length ? ` and ${routedHoles.reduce((s, h) => s + h.count, 0)} hole(s) larger than maxDrilledHoleSize routed round` : ''}`),
+          rout_length_per_board: derivedSeed(r2(outline), `${r2(part.perimeterMm.value)} mm outline (${part.perimeterMm.source})${routedHoles.length ? ` and ${routedHoles.reduce((s, h) => s + h.count, 0)} hole(s) larger than maxDrilledHoleSize routed round` : ''}`, 'Rout length', [
+            factStep('Outline', 'mm', part.perimeterMm),
+            ...routedHoles.map((h) => inputStep(`Ø${h.diameterMm} mm routed round`, null, h.count, `${part.holes.source}: larger than maxDrilledHoleSize`)),
+            resultStep('Rout Length per Board', 'mm', r2(outline), '{Outline} + π x each routed hole\'s diameter x its count'),
+          ]),
         });
       }, ['The panel fits its table']);
       own.push(routed);
@@ -503,7 +575,7 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
       } else {
         own.push(step('Flying Probe', PCB_CLASS.flyingProbe, (m) => {
           const why = guard(fits(m, 'max_board_length_mm', 'max_board_width_mm', 'test area'));
-          return why.length ? fail(...why) : timed('Flying Probe', m, { test_points_per_board: seed(tested.value, `${tested.value} test points (${tested.source})`) });
+          return why.length ? fail(...why) : timed('Flying Probe', m, { test_points_per_board: factSeed(tested, 'Test points', null, tested.value, `${tested.value} test points (${tested.source})`) });
         }, ['The panel fits its test area']));
       }
       const program = consumable(ref, 'flying_probe_program_usd');
@@ -549,7 +621,12 @@ export function buildPcbRoutes(input: PcbRouteInput): PcbBuild {
     const boardUsd = lines.reduce((s, l) => s + l.totalCost, 0);
     const y = fabYield(ref, layers);
     if (y) {
-      const scrap = run(PCB_HELPER.yield, null, { board_cost_usd: seed(r4(boardUsd), 'the board\'s material, process and consumables'), fab_yield_pct: sourced(y, `first-pass yield at ${y.layersRead} layers${y.layersRead !== layers ? ` (the nearest count the source gives for ${layers})` : ''}`) });
+      const scrap = run(PCB_HELPER.yield, null, {
+        board_cost_usd: derivedSeed(r4(boardUsd), 'the board\'s material, process and consumables', "The board's cost", [
+          ...lines.map((l) => inputStep(l.process, 'USD', r4(l.totalCost), `the ${l.process} line's cost per board`)), resultStep('Board Cost', 'USD', r4(boardUsd), 'the lines summed'),
+        ]),
+        fab_yield_pct: sourced(y, `first-pass yield at ${y.layersRead} layers${y.layersRead !== layers ? ` (the nearest count the source gives for ${layers})` : ''}`),
+      });
       if ('run' in scrap) lines.push(consumableLine('Fabrication yield', PCB_CLASS.avi, scrap.run, `${saySourced(y, 2)} first-pass yield at ${y.layersRead} layers: the scrapped boards charged on the good ones`));
     } else warnings.push('No fabrication yield is applied: memory/PCBA/yield.csv has no keyed row.');
     // The assembly follows the bare board (the fabrication yield is the bare board's); its tooling is the job's, with the route's.
@@ -612,7 +689,7 @@ function platedArea(part: PcbPart): { mm2: number; why: string } {
 
 /** What drilling wears out: each diameter's hits at its bit's price over its life, and the entry and backup boards a panel takes. */
 function drillingConsumables(ref: SandReference, holes: readonly { diameterMm: number; count: number }[], panel: { lengthMm: number; widthMm: number }, perPanel: number):
-  { bitsUsd: number; bitsDetail: string; boardsUsdPerPanel: number; boardsDetail: string } | { reasons: string[] } {
+  { bitsUsd: number; bitsDetail: string; bitsSeed: CalcSeed; boardsUsdPerPanel: number; boardsDetail: string; boardsSeed: CalcSeed } | { reasons: string[] } {
   const price = consumable(ref, 'drill_bit_usd');
   const entry = consumable(ref, 'entry_board_usd_per_sheet');
   const backup = consumable(ref, 'backup_board_usd_per_sheet');
@@ -622,6 +699,7 @@ function drillingConsumables(ref: SandReference, holes: readonly { diameterMm: n
   if (!entry || !backup || !sheet) reasons.push('no entry or backup board price or sheet size');
   let bitsUsd = 0;
   const per: string[] = [];
+  const bitSteps: ReturnType<typeof inputStep>[] = [];
   for (const h of holes) {
     const life = consumableForDiameter(ref, 'drill_hit_life_hits', h.diameterMm);
     const repoints = consumableForDiameter(ref, 'drill_repoints', h.diameterMm);
@@ -629,15 +707,31 @@ function drillingConsumables(ref: SandReference, holes: readonly { diameterMm: n
     const hitsPerBit = life.mid * (1 + (repoints?.mid ?? 0));
     bitsUsd += price ? (h.count * price.mid) / hitsPerBit : 0;
     per.push(`${h.count} x ${h.diameterMm} mm (${Math.round(hitsPerBit)} hits a bit)`);
+    bitSteps.push(inputStep(`Ø${h.diameterMm} mm hits`, null, h.count, 'the holes of that diameter'),
+      inputStep(`Ø${h.diameterMm} mm hit life`, 'hits', life.mid, `consumables: drill_hit_life_hits for ${h.diameterMm} mm`, sourcedRef(life, `Ø${h.diameterMm} mm hit life`)),
+      ...(repoints ? [inputStep(`Ø${h.diameterMm} mm repoints`, null, repoints.mid, `consumables: drill_repoints for ${h.diameterMm} mm`, sourcedRef(repoints, `Ø${h.diameterMm} mm repoints`))] : []));
   }
   if (reasons.length) return { reasons };
   const sheetL = Math.max(sheet!.min, sheet!.max) * 25.4;
   const sheetW = Math.min(sheet!.min, sheet!.max) * 25.4;
   const panelsPerSheet = Math.max(1, Math.floor(sheetL / panel.lengthMm) * Math.floor(sheetW / panel.widthMm), Math.floor(sheetL / panel.widthMm) * Math.floor(sheetW / panel.lengthMm));
   const boardsUsdPerPanel = (entry!.mid + backup!.mid) / panelsPerSheet;
+  const bitsDetail = `bits: ${per.join(', ')} at ${saySourced(price!, 2)} a bit`;
+  const boardsDetail = `entry ${saySourced(entry!, 2)} + backup ${saySourced(backup!, 2)} a ${sheet!.min} x ${sheet!.max} in sheet, ${panelsPerSheet} panel(s) from it, shared by ${perPanel} board(s)`;
   return {
-    bitsUsd, bitsDetail: `bits: ${per.join(', ')} at ${saySourced(price!, 2)} a bit`,
-    boardsUsdPerPanel, boardsDetail: `entry ${saySourced(entry!, 2)} + backup ${saySourced(backup!, 2)} a ${sheet!.min} x ${sheet!.max} in sheet, ${panelsPerSheet} panel(s) from it, shared by ${perPanel} board(s)`,
+    bitsUsd, bitsDetail, boardsUsdPerPanel, boardsDetail,
+    bitsSeed: derivedSeed(r4(bitsUsd), bitsDetail, 'Drill bits a board', [
+      ...bitSteps, inputStep('Bit price', 'USD', price!.mid, 'consumables: drill_bit_usd', sourcedRef(price!, 'drill bit price')),
+      resultStep('Bit Cost', 'USD', r4(bitsUsd), 'each diameter\'s hits x the bit price / (its hit life x (1 + its repoints)), summed'),
+    ]),
+    boardsSeed: derivedSeed(r4(boardsUsdPerPanel), boardsDetail, 'Entry and backup boards a panel', [
+      inputStep('Entry board', 'USD', entry!.mid, 'consumables: entry_board_usd_per_sheet', sourcedRef(entry!, 'entry board')),
+      inputStep('Backup board', 'USD', backup!.mid, 'consumables: backup_board_usd_per_sheet', sourcedRef(backup!, 'backup board')),
+      inputStep('Sheet', 'in', `${sheet!.min} x ${sheet!.max}`, 'consumables: drill_board_sheet_in', sourcedRef(sheet!, 'drill board sheet')),
+      inputStep('Panel', 'mm', `${r2(panel.lengthMm)} x ${r2(panel.widthMm)}`, 'the working panel'),
+      resultStep('Panels per Sheet', null, panelsPerSheet, 'the panels the sheet cuts into, either way round'),
+      resultStep('Board Cost', 'USD', r4(boardsUsdPerPanel), '({Entry board} + {Backup board}) / {Panels per Sheet}'),
+    ]),
   };
 }
 
@@ -651,21 +745,32 @@ function boardMaterial(input: PcbRouteInput, stackup: PcbStackup, run: (calculat
   const outer = part.outerCopperOz.value;
   const inner = part.innerCopperOz?.value ?? outer;
   const tolerance = ref.number('coreLayerThicknessSnapTolerance') ?? 0;
+  // Each laminate's Raw Materials record (its price per m², its dielectric), the eye of a value read from it.
+  const laminateRef = (l: PcbLaminate, column: string) => ({ kind: 'material' as const, materialId: l.id, materialName: l.name, column });
+  const coreRefs = new Map<string, ReturnType<typeof laminateRef> | ReturnType<typeof derivedSeed>['ref']>();
   const coreOf = (kind: 'double_core' | 'single_core', copper: number, dielectric: number | null): { usd: number; name: string; detail: string } | null => {
     const candidates = oz(copper).filter((l) => l.kind === kind && l.usdPerM2 != null);
     const exact = dielectric == null ? candidates[0] : candidates.find((l) => l.dielectricMm != null && Math.abs(l.dielectricMm - dielectric) <= tolerance + 1e-9);
-    if (exact) return { usd: exact.usdPerM2!, name: exact.name, detail: `${exact.name} ${exact.usdPerM2} USD/m² (raw_materials)` };
+    if (exact) {
+      coreRefs.set(exact.name, laminateRef(exact, 'base_cost_per_unit_usd'));
+      return { usd: exact.usdPerM2!, name: exact.name, detail: `${exact.name} ${exact.usdPerM2} USD/m² (raw_materials)` };
+    }
     const reference = candidates.find((l) => l.dielectricMm != null);
     const foil = oz(copper).find((l) => l.kind === 'foil' && l.usdPerM2 != null);
     if (!reference || !foil || dielectric == null) return null;
     const r = run(PCB_HELPER.core, null, {
-      reference_core_usd_per_m2: { value: reference.usdPerM2!, source: `${reference.name} (raw_materials)` },
-      reference_dielectric_mm: { value: reference.dielectricMm!, source: `${reference.name}: dielectric` },
-      foil_usd_per_m2: { value: foil.usdPerM2!, source: `${foil.name} (raw_materials)` },
-      core_dielectric_mm: { value: dielectric, source: 'tblDielectricThickness' },
+      reference_core_usd_per_m2: { value: reference.usdPerM2!, source: `${reference.name} (raw_materials)`, ref: laminateRef(reference, 'base_cost_per_unit_usd') },
+      reference_dielectric_mm: { value: reference.dielectricMm!, source: `${reference.name}: dielectric`, ref: laminateRef(reference, 'dielectric_thickness_mm') },
+      foil_usd_per_m2: { value: foil.usdPerM2!, source: `${foil.name} (raw_materials)`, ref: laminateRef(foil, 'base_cost_per_unit_usd') },
+      core_dielectric_mm: {
+        value: dielectric, source: 'tblDielectricThickness',
+        ...(stackup.dielectricRow ? { ref: { kind: 'lookup' as const, domain: 'pcb', table: 'tblDielectricThickness', column: DIELECTRIC_COLUMN[outer] ?? 'Total Board Thickness (mm)', row: { 'Number Layers': stackup.dielectricRow.layers, 'Total Board Thickness (mm)': stackup.dielectricRow.thicknessMm } } } : {}),
+      },
     });
     if (!('run' in r)) return null;
-    return { usd: r.run.value!, name: `${kind === 'double_core' ? '2Ply' : '1Ply'}-${copper}ozCu-FR4 at ${dielectric} mm`, detail: `built from ${reference.name} and ${foil.name} (${PCB_HELPER.core}): ${r2(r.run.value!)} USD/m²` };
+    const built = `${kind === 'double_core' ? '2Ply' : '1Ply'}-${copper}ozCu-FR4 at ${dielectric} mm`;
+    coreRefs.set(built, { kind: 'calculation', name: PCB_HELPER.core, evidence: null, steps: r.run.trace });
+    return { usd: r.run.value!, name: built, detail: `built from ${reference.name} and ${foil.name} (${PCB_HELPER.core}): ${r2(r.run.value!)} USD/m²` };
   };
   let cores = 0;
   const coreCount = stackup.doubleCores + stackup.singleCores;
@@ -680,7 +785,11 @@ function boardMaterial(input: PcbRouteInput, stackup: PcbStackup, run: (calculat
   if (stackup.foils > 0) {
     const foil = oz(outer).find((l) => l.kind === 'foil' && l.usdPerM2 != null);
     if (!foil) warnings.push(`No ${outer} oz copper foil in raw_materials.`);
-    else { foils = foil.usdPerM2! * stackup.foils; uses.push({ name: foil.name, usdPerM2: foil.usdPerM2!, count: stackup.foils, detail: `${foil.name} ${foil.usdPerM2} USD/m² (raw_materials)` }); }
+    else {
+      foils = foil.usdPerM2! * stackup.foils;
+      coreRefs.set(foil.name, laminateRef(foil, 'base_cost_per_unit_usd'));
+      uses.push({ name: foil.name, usdPerM2: foil.usdPerM2!, count: stackup.foils, detail: `${foil.name} ${foil.usdPerM2} USD/m² (raw_materials)` });
+    }
   }
   const plies = stackup.prepregSpaces > 0 ? prepregPlies(ref, stackup.prepregPerSpaceMm) : null;
   const prepregMm = plies ? plies.plies * plies.nominalMm * stackup.prepregSpaces : 0;
@@ -688,11 +797,24 @@ function boardMaterial(input: PcbRouteInput, stackup: PcbStackup, run: (calculat
   if (prepregMm > 0 && !prepregPrice) warnings.push('The prepreg is not priced: no sourced price per kg.');
   if (plies) uses.push({ name: `Prepreg ${plies.style}`, usdPerM2: 0, count: plies.plies * stackup.prepregSpaces, detail: `${plies.plies} x ${plies.style} (${plies.nominalMm} mm pressed) in each of ${stackup.prepregSpaces} space(s)` });
   if (warnings.length && cores === 0) return { costUsd: 0, run: null, uses, warnings };
+  const stackSays = `the ${stackup.layers}-layer stack-up (tblLayerMaterialType, Board Preference ${stackup.preference})`;
+  const usesSeed = (value: number, source: string, label: string, kind: (u: PcbMaterialUse) => boolean): CalcSeed => derivedSeed(r4(value), source, label, [
+    ...uses.filter(kind).map((u) => inputStep(`${u.count} x ${u.name}`, 'USD/m²', u.usdPerM2, u.detail, coreRefs.get(u.name))),
+    ...(uses.some(kind) ? [] : [inputStep('Stack-up', null, 'none', stackSays)]),
+    resultStep(label, 'USD/m²', r4(value), 'each one\'s price per m² x its count, summed'),
+  ]);
   const r = run(PCB_HELPER.material, null, {
-    cores_usd_per_m2: { value: r4(cores), source: uses.filter((u) => u.name.includes('FR4')).map((u) => `${u.count} x ${u.detail}`).join('; ') || 'no cores' },
-    foils_usd_per_m2: { value: r4(foils), source: uses.filter((u) => u.name.endsWith('ozCu')).map((u) => `${u.count} x ${u.detail}`).join('; ') || 'no foils' },
-    prepreg_mm: { value: r4(prepregMm), source: plies ? `${plies.plies * stackup.prepregSpaces} x ${plies.style} at ${plies.nominalMm} mm` : 'no prepreg (one core)' },
-    prepreg_usd_per_kg: prepregPrice ? { value: prepregPrice.mid, source: `prepreg: ${saySourced(prepregPrice)}` } : { value: 0, source: 'no prepreg' },
+    cores_usd_per_m2: usesSeed(cores, uses.filter((u) => u.name.includes('FR4')).map((u) => `${u.count} x ${u.detail}`).join('; ') || 'no cores', 'Core Cost', (u) => u.name.includes('FR4')),
+    foils_usd_per_m2: usesSeed(foils, uses.filter((u) => u.name.endsWith('ozCu')).map((u) => `${u.count} x ${u.detail}`).join('; ') || 'no foils', 'Foil Cost', (u) => u.name.endsWith('ozCu')),
+    prepreg_mm: derivedSeed(r4(prepregMm), plies ? `${plies.plies * stackup.prepregSpaces} x ${plies.style} at ${plies.nominalMm} mm` : 'no prepreg (one core)', 'Prepreg thickness', plies ? [
+      inputStep('Prepreg spaces', null, stackup.prepregSpaces, stackSays),
+      inputStep('Plies a space', null, plies.plies, `tblPrepregThickness: ${plies.style}`, { kind: 'lookup', domain: 'pcb', table: 'tblPrepregThickness', column: 'Nominal Thickness (mm)', row: { Type: plies.style } }),
+      inputStep('Ply thickness', 'mm', plies.nominalMm, `tblPrepregThickness: ${plies.style}, Nominal Thickness (mm)`, { kind: 'lookup', domain: 'pcb', table: 'tblPrepregThickness', column: 'Nominal Thickness (mm)', row: { Type: plies.style } }),
+      resultStep('Prepreg Thickness', 'mm', r4(prepregMm), '{Prepreg spaces} * {Plies a space} * {Ply thickness}'),
+    ] : [inputStep('Prepreg spaces', null, 0, `${stackSays}: one core, no prepreg`), resultStep('Prepreg Thickness', 'mm', 0, 'no prepreg')]),
+    prepreg_usd_per_kg: prepregPrice
+      ? { value: prepregPrice.mid, source: `prepreg: ${saySourced(prepregPrice)}`, ref: sourcedRef(prepregPrice, 'prepreg price') }
+      : derivedSeed(0, 'no prepreg', 'Prepreg price', [inputStep('Prepreg', null, 'none', 'no prepreg is laid, or none is priced (consumables prepreg_usd_per_kg)'), resultStep('Prepreg Price', 'USD/kg', 0, 'not charged')]),
   });
   if (!('run' in r)) return { costUsd: 0, run: null, uses, warnings: [...warnings, ...r.reasons] };
   return { costUsd: r.run.value!, run: r.run, uses, warnings };

@@ -16,7 +16,8 @@
 // is at or above the part weight. Internal surfaces are not measured
 // separately, so the internal rate is not used.
 
-import type { CalculationTraceStep, CalculatorRunDto, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CalculatorRunDto, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, partLengthSeed, resultStep, wallSeed } from './casting-source-refs';
 import { eMithranTerms, resolveSetupMinutes, type EMithranTermsArgs } from '../shared/core/engine-kernel';
 import { runReferenceCalculator, type CalcRun, type CalcSeed, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
 import { castingSeed, runView, SeedSet, type AlloyRecord, type MachineRecord } from './casting-calculator-seeds';
@@ -336,9 +337,14 @@ export function partingLineGrindingLine(input: {
     .put('Flash Height', row.partingLineHeightMm, (x) => castingSeed.lookup('tblGrindingDimensions', 'Parting Line Height (mm)', x, band), 'tblGrindingDimensions Parting Line Height')
     .put('Ingate Height', row.ingateHeightMm, (x) => castingSeed.lookup('tblGrindingDimensions', 'Ingate Height (mm)', x, band), 'tblGrindingDimensions Ingate Height')
     .put('Material Factor', input.speedFactor, (x) => castingSeed.lookup('tblGrindingSpeedMaterialFactor', 'Grinding Speed Material Factor', x, { 'Material Cut Code': input.cutCode! }), input.speedFactorNote)
-    .put('Gates Ground', input.gates.ground ? 1 : 0, (x) => castingSeed.engine(x, x ? 'pressure die: its ingate stubs are ground' : `no gate stubs ground: ${(input.gates as { reason: string }).reason}`), 'gates')
-    .put('Wall Max', input.wallMaxMm, (x) => castingSeed.cad(x, 'thickest wall (mm)'), 'thickest wall not measured, so the runner and ingate are not sized')
-    .put('Part Length', input.partLengthMm, (x) => castingSeed.cad(x, 'longest part dimension (mm)'), 'part length not known, so the ingate count is not known')
+    .put('Gates Ground', input.gates.ground ? 1 : 0, (x) => castingSeed.engine(x, x ? 'pressure die: its ingate stubs are ground' : `no gate stubs ground: ${(input.gates as { reason: string }).reason}`, calculationRef('Gates Ground', [
+      inputStep('Die', null, x ? 'pressure die' : 'gravity die', x
+        ? 'A pressure die casts through ingates the trim press cuts off, leaving stubs on the part'
+        : (input.gates as { reason: string }).reason),
+      resultStep('Gates Ground', null, x, x ? '1: the ingate stubs are ground' : '0: no gate stubs are ground'),
+    ])), 'gates')
+    .put('Wall Max', input.wallMaxMm, (x) => wallSeed(x, 'thickest', 'CAD: thickest wall (mm)'), 'thickest wall not measured, so the runner and ingate are not sized')
+    .put('Part Length', input.partLengthMm, (x) => partLengthSeed(x, 'CAD: longest part dimension (mm)'), 'part length not known, so the ingate count is not known')
     .put('Additional Runner Thickness', v.additionalRunnerThickness, (x) => castingSeed.variable('additionalRunnerThickness', x), 'variables additionalRunnerThickness')
     .put('Runner Aspect Ratio', v.runnerAspectRatio, (x) => castingSeed.variable('runnerAspectRatio', x), 'variables runnerAspectRatio')
     .put('Ingate to Runner Area', v.ingateAreaToRunnerArea, (x) => castingSeed.variable('ingateAreaToRunnerArea', x), 'variables ingateAreaToRunnerArea')
@@ -411,6 +417,8 @@ export function meltingLine(input: {
   /** The calculator run that computed the shot volume (HpdcResult.shotVolumeRun); null when not known. */
   shotVolumeRun?: { name: string; trace: CalculationTraceStep[] } | null;
   cavities: number | null;
+  /** How the cavity count was decided (HpdcCavities.ref); absent when the casting line did not decide it. */
+  cavitiesRef?: SourceRef | null;
   alloy: AlloyRecord | null;
   densityKgM3: number | null;
   injectionTempC: number | null;
@@ -425,11 +433,12 @@ export function meltingLine(input: {
   if (input.injectionTempC == null) return g('the alloy has no Injection Temp on file, so no furnace can be checked for it');
   const seeds = new SeedSet()
     .put('Shot Volume', input.shotVolumeMm3, (x) => castingSeed.calculator(x, input.shotVolumeRun?.name ?? 'Shot Volume', input.shotVolumeRun ?? undefined, 'part_volume'), 'melted metal per part not derived (casting line not costed)')
-    .put('Cavities', input.cavities, (x) => castingSeed.engine(x, `${x} cavit${x === 1 ? 'y' : 'ies'} per shot`), 'cavities')
+    .put('Cavities', input.cavities, (x) => castingSeed.engine(x, `${x} cavit${x === 1 ? 'y' : 'ies'} per shot`, input.cavitiesRef
+      ?? calculationRef('Cavities per die', [resultStep('Cavities', null, x, 'The count the casting line was asked for; its die layout was not verified')])), 'cavities')
     .put('Density', input.densityKgM3, (x) => castingSeed.alloy(input.alloy ?? { id: null, name: 'alloy' }, 'density_kg_m3', 'Density (kg/m^3)', x), 'alloy density')
     .put('Conversion Cost', input.ductileIron.costPerKg, (x) => castingSeed.machine(input.ductileIron!, 'conversion_cost_usd_per_kg', 'Conversion Cost per kg (USD on file, converted to the line currency)', x), 'Conversion Cost')
     .put('Region Conversion Factor', input.regionConvFactor, (x) => castingSeed.variable('regionConvFactor', x), 'variables regionConvFactor')
-    .put('Batch Size', input.batchSize, (x) => castingSeed.scenario(x, 'batch size'), 'batch size')
+    .put('Batch Size', input.batchSize, (x) => castingSeed.scenario(x, 'batch size', 'batchSize'), 'batch size')
     .put('Furnace Capacity Safety Factor', input.furnaceCapacitySafetyFactor, (x) => castingSeed.variable('furnaceCapacitySafetyFactor', x), 'variables furnaceCapacitySafetyFactor');
   if (seeds.missing.length) return g(seeds.missing.join('; '));
   const run = runReferenceCalculator(input.calculators, P, seeds.seeds, 'Cost per Part');
