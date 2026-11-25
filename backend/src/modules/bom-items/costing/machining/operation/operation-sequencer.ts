@@ -663,14 +663,20 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
   };
   // A hole larger than the workbook's drills reach: drilled at the largest of them, then bored to its diameter on the mill.
   const largestDrill = largestDrillMm(workbook, matClass);
-  const boreOp = (diamMm: number, depthMm: number, n: number, occurrences?: readonly FeatureOccurrenceRef[]) => {
-    const cycle = computeBoreCycle('Boring', largestDrill!, diamMm, depthMm, n, matClass, workbook, calculators, occurrences);
+  /** Wider than the workbook's drills reach (its drilling table's top band): no drill, spot drill, step drill or countersink of this size is on file. */
+  const widerThanDrills = (diamMm: number): boolean => largestDrill != null && diamMm > largestDrill;
+  const boreOp = (diamMm: number, depthMm: number, n: number, occurrences?: readonly FeatureOccurrenceRef[], fromMm: number = largestDrill!) => {
+    const cycle = computeBoreCycle('Boring', fromMm, diamMm, depthMm, n, matClass, workbook, calculators, occurrences);
     return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), plan: cycle.plan ? [cycle.plan] : undefined } : { timeSec: cycle.sec, plan: cycle.plan ? [cycle.plan] : undefined };
   };
   // A hole spotted before it is drilled, or countersunk after (the workbook's Drilling sheet: the spot or countersink's depth plus the
   // approach over the feed, at the drilling speed for the diameter; migration 1152).
+  // A hole wider than the drills reach is spotted for the drill that enters it (the largest), not at its own diameter.
   const spotOp = (diamMm: number, n: number, ref: SourceRef | undefined) => workbookOp('Center Drilling', {
-    'Hole Diameter': withSourceRef({ value: diamMm, source: 'CAD: hole diameter' }, ref), 'Holes': withSourceRef({ value: n, source: 'CAD: holes of this diameter' }, ref),
+    'Hole Diameter': withSourceRef(widerThanDrills(diamMm)
+      ? { value: largestDrill!, source: `The largest drill, Ø${largestDrill} mm: the Ø${diamMm} mm hole is wider than the drills reach, so it is spotted for the drill that enters it and bored to size` }
+      : { value: diamMm, source: 'CAD: hole diameter' }, ref),
+    'Holes': withSourceRef({ value: n, source: 'CAD: holes of this diameter' }, ref),
   });
   const countersinkOp = (countersinkMm: number, holeMm: number, holeWhy: string, n: number, ref: SourceRef | undefined, holeRef: SourceRef | undefined) => workbookOp('Countersinking', {
     'Countersink Diameter': withSourceRef({ value: countersinkMm, source: 'CAD: countersink diameter' }, ref),
@@ -824,6 +830,14 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     const occRefs = (occ?: readonly number[]): FeatureOccurrenceRef[] | undefined => (typeof f.id === 'string' && f.id
       ? (occ ?? occurrences.map((_: unknown, i: number) => i)).map((occurrenceIndex) => ({ featureId: f.id as string, occurrenceIndex }))
       : undefined);
+    // Drilling a hole of this diameter: at its own diameter, or, when it is wider than the drills reach, at the largest drill and then
+    // bored to size (the workbook's Internal Boring sheet). No hole is left unpriced for want of a drill of its size.
+    const drilledOps = (holeMm: number, holeDepthMm: number, n: number, occ: readonly FeatureOccurrenceRef[] | undefined, rest: Partial<OperationLine>): OperationLine[] => (widerThanDrills(holeMm)
+      ? [
+        { name: "Drilling", ...drillOp(largestDrill!, holeDepthMm, n, materialGrade, workbook, calculators, occ), source: "feature" as const, cadFeatureType: ft, ...rest },
+        { name: "Boring", ...boreOp(holeMm, holeDepthMm, n, occ), source: "feature" as const, cadFeatureType: ft, ...rest },
+      ]
+      : [{ name: "Drilling", ...drillOp(holeMm, holeDepthMm, n, materialGrade, workbook, calculators, occ), source: "feature" as const, cadFeatureType: ft, ...rest }]);
     const instanceCount = variant === "pcd_pattern"
       ? occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0)
       : count;
@@ -885,13 +899,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       case "SimpleHole:cross":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...spotOp(diamMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          if (largestDrill != null && diamMm > largestDrill) {
-            // Larger than the workbook's drills reach: drilled at the largest of them, then bored to size.
-            ops.push({ name: "Drilling", ...drillOp(largestDrill, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-            ops.push({ name: "Boring", ...boreOp(diamMm, depthMm, count, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          } else {
-            ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          }
+          ops.push(...drilledOps(diamMm, depthMm, count, occRefs(), { diameterMm: diamMm }));
         }
         break;
 
@@ -901,7 +909,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         const holes = occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0);
         if (diamMm > 0 && holes > 0) {
           ops.push({ name: "Center Drilling", ...spotOp(diamMm, holes, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push(...drilledOps(diamMm, depthMm, holes, occRefs(), { diameterMm: diamMm }));
         }
         break;
       }
@@ -915,6 +923,10 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         let drillSec = 0;
         const stepMissing: string[] = [];
         const stepPlans: PlannedRun[] = [];
+        // Steps wider than the drills reach: drilled at the largest drill, then bored to size.
+        let boreSec = 0;
+        const boreMissing: string[] = [];
+        const borePlans: PlannedRun[] = [];
         for (const [i, occ] of occurrences.entries()) {
           const steps: Array<{ diameter_mm: number; depth_mm: number }> = Array.isArray(occ.steps) ? occ.steps : [];
           if (steps.length === 0) continue;
@@ -923,10 +935,17 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           const entry = Number(steps[0]!.diameter_mm);
           if (entry > 0) spotDiameters.set(entry, [...(spotDiameters.get(entry) ?? []), i]);
           for (const step of steps) {
-            const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators, occRefs([i]));
+            const wide = widerThanDrills(step.diameter_mm);
+            const op = drillOp(wide ? largestDrill! : step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators, occRefs([i]));
             drillSec += op.timeSec;
             if (op.missing) stepMissing.push(op.missing);
             stepPlans.push(...(op.plan ?? []).map((p) => ({ ...p, label: `Step Ø${step.diameter_mm}` })));
+            if (wide) {
+              const bore = boreOp(step.diameter_mm, step.depth_mm, 1, occRefs([i]));
+              boreSec += bore.timeSec;
+              if (bore.missing) boreMissing.push(bore.missing);
+              borePlans.push(...(bore.plan ?? []).map((p) => ({ ...p, label: `Step Ø${step.diameter_mm}` })));
+            }
           }
         }
         if (spots > 0 || drillSec > 0) {
@@ -935,6 +954,12 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
             name: "Drilling", timeSec: drillSec, source: "feature", cadFeatureType: ft,
             ...(stepPlans.length ? { plan: stepPlans } : {}), ...(stepMissing.length ? { missing: stepMissing.join('; ') } : {}),
           });
+          if (borePlans.length > 0 || boreMissing.length > 0) {
+            ops.push({
+              name: "Boring", timeSec: boreSec, source: "feature", cadFeatureType: ft,
+              ...(borePlans.length ? { plan: borePlans } : {}), ...(boreMissing.length ? { missing: boreMissing.join('; ') } : {}),
+            });
+          }
         }
         break;
       }
@@ -942,7 +967,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       case "SimpleHole:threaded":
         if (diamMm > 0) {
           ops.push({ name: "Center Drilling", ...spotOp(diamMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
+          ops.push(...drilledOps(diamMm * 0.8, depthMm, count, occRefs(), { diameterMm: diamMm })); // minor diameter
           ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, [], count, 'chamfer'), (label) => refOf(label)), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
@@ -957,10 +982,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           if (ownBore > 0) {
             const boreOcc = occurrences.length > 0 ? ownBoreOcc : undefined;
             ops.push({ name: "Center Drilling", ...spotOp(diamMm, ownBore, refOf(`${ownBore} counterbored hole${ownBore === 1 ? '' : 's'}`, boreOcc)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore });
-            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, ownBore, materialGrade, workbook, calculators, occRefs(boreOcc)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore }); // through bore
+            ops.push(...drilledOps(diamMm * 0.6, depthMm, ownBore, occRefs(boreOcc), { diameterMm: diamMm, count: ownBore })); // through bore
           }
-          // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it.
-          ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it. One wider than the
+          // drills reach has no step drill on file: it is bored out from the hole under it.
+          ops.push(widerThanDrills(diamMm)
+            ? { name: "Boring", ...boreOp(diamMm, depthMm, count, occRefs(), Math.min(diamMm * 0.6, largestDrill!)), source: "feature", cadFeatureType: ft, diameterMm: diamMm }
+            : { name: "Step Drilling", ...stepOp(diamMm, depthMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
@@ -970,6 +998,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           // countersinking is added, over that hole's diameter (countersunk-holes.ts). One with no hole under it is spotted and drilled
           // here at 0.6 x its diameter, and countersunk over that drilled hole.
           const under = new Map<string, { holeMm: number; why: string; n: number; occ: number[] }>();
+          // A countersink wider than the drills reach has no countersink tool on file: its mouth is chamfer milled, one pass of the end
+          // mill round it (the Chamfering calculator, as a chamfer of that diameter is).
+          const mouth = (n: number, occ: readonly number[] | undefined): EdgeLength[] => Array.from({ length: n }, (_, k) => ({
+            lengthMm: mm3dp(Math.PI * diamMm),
+            source: `CAD: pi x Ø${diamMm} mm, the countersink's mouth (wider than the countersink tools reach, so it is chamfer milled)`,
+            ...(occ?.[k] != null ? { occ: occ[k] } : {}),
+          }));
           let alone = occurrences.length > 0 ? 0 : count;
           const aloneOcc: number[] = [];
           for (const [i, o] of occurrences.entries()) {
@@ -994,12 +1029,16 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
               resultStep('Hole Diameter', 'mm', diamMm * 0.6, 'Countersink diameter x Drilled share of the diameter'),
             ]);
             ops.push({ name: "Center Drilling", ...spotOp(diamMm, alone, ref), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
-            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators, occRefs(occ)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
-            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, diamMm * 0.6, 'The hole drilled under the countersink: 0.6 x its diameter, as the drilling above takes it', alone, ref, drilledRef), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push(...drilledOps(diamMm * 0.6, depthMm, alone, occRefs(occ), { diameterMm: diamMm, count: alone }));
+            ops.push(widerThanDrills(diamMm)
+              ? { name: "Chamfering", ...edgeOp('Chamfering', mouth(alone, occ), refOf), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone }
+              : { name: "Countersinking", ...countersinkOp(diamMm, diamMm * 0.6, 'The hole drilled under the countersink: 0.6 x its diameter, as the drilling above takes it', alone, ref, drilledRef), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
           }
           for (const { holeMm, why, n, occ } of under.values()) {
             const ref = refOf(`${n} countersink${n === 1 ? '' : 's'}`, occ);
-            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, holeMm, why, n, ref, ref), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n });
+            ops.push(widerThanDrills(diamMm)
+              ? { name: "Chamfering", ...edgeOp('Chamfering', mouth(n, occ), refOf), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n }
+              : { name: "Countersinking", ...countersinkOp(diamMm, holeMm, why, n, ref, ref), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n });
           }
         }
         break;
