@@ -38,6 +38,9 @@ export function machineSourceTable(
   machine: { id: string; machineClass: string; location: string | null },
   column: string,
 ): SourceTable {
+  // A value read from the record's specs is named by its path (the cutting calculators' spindle cap: "specs.spindle_speed_rpm"); the rows
+  // hold the specs flattened, so its column is the key alone, or the table opens with the value's column empty.
+  const valueColumn = column.replace(/^specs\./, '');
   const flat = rows.map((r) => {
     const specs = r.specs && typeof r.specs === 'object' && !Array.isArray(r.specs) ? (r.specs as Record<string, unknown>) : {};
     const out: Record<string, unknown> = { id: String(r.id), machine_name: r.machine_name };
@@ -49,7 +52,7 @@ export function machineSourceTable(
   return {
     id: `mhr_records:${machine.machineClass}:${machine.location ?? ''}`,
     tableName: `HR Rates machines: ${machine.machineClass}${machine.location ? ` (${machine.location})` : ''}`,
-    columnDefinitions: columnsOf(flat, ['machine_name'], MACHINE_SKIP, column),
+    columnDefinitions: columnsOf(flat, ['machine_name'], MACHINE_SKIP, valueColumn),
     rows: flat,
     matchedRowKeys: { id: machine.id },
   };

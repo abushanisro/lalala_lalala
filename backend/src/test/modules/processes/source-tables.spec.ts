@@ -75,3 +75,14 @@ describe('machineSourceTable shows whatever column an engine reads', () => {
     expect(t.rows.find((r) => r['id'] === 'p1')!['press_cycle_time_s']).toBe(4.2);
   });
 });
+
+describe('machineSourceTable for a cutting calculator\'s spindle cap', () => {
+  it('the value read from the specs by its path ("specs.spindle_speed_rpm") is the spindle speed column, last', () => {
+    const t = machineSourceTable([
+      { id: 'v22', machine_name: 'Makino V22', specs: { spindle_speed_rpm: 30000, rapid_traverse_mm_per_min: 20000 } },
+      { id: 'haas', machine_name: 'Haas VF-2', specs: { spindle_speed_rpm: 8100, rapid_traverse_mm_per_min: 25400 } },
+    ], { id: 'v22', machineClass: '3_axis_mill', location: 'USA' }, 'specs.spindle_speed_rpm');
+    expect(t.columnDefinitions.at(-1)).toEqual({ name: 'spindle_speed_rpm', label: 'Spindle Speed Rpm' });
+    expect(t.rows.map((r) => [r['machine_name'], r['spindle_speed_rpm']])).toEqual([['Haas VF-2', 8100], ['Makino V22', 30000]]);
+  });
+});
