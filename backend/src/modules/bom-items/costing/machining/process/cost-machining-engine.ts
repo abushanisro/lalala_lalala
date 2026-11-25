@@ -1624,12 +1624,14 @@ function tapThreadGroups(
   workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
   machine: Record<string, CalcSeed>,
-): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; groups: FeatureOp[] } {
+): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; groups: FeatureOp[]; outputs: Record<string, number> } {
   const trace: CalculationTraceStep[] = [];
   const missing: string[] = [];
   const lookups: CalcRun['lookups'] = {};
   const groups: FeatureOp[] = [];
   let totalSec = 0;
+  // The taps' wear: one tap for each thread size (the calculator's Tool Cost per Part, rupees).
+  let toolInr = 0;
   let calculatorId: string | null = null;
   let calculatorVersion: number | null = null;
   const multi = threads.length > 1;
@@ -1643,6 +1645,7 @@ function tapThreadGroups(
       continue;
     }
     totalSec += cycle.sec;
+    toolInr += cycle.outputs?.['Tool Cost per Part'] ?? 0;
     trace.push(...(multi ? prefixTrace(`${t.size} ·`, cycle.trace) : cycle.trace));
     // The tapped holes of this size, for the Process tree (only when the threads came from the CAD, so they name real holes).
     if (t.occurrences?.length) {
@@ -1653,7 +1656,7 @@ function tapThreadGroups(
     }
   }
   if (multi && trace.length > 0) trace.push(traceCalc('Tapping cycle time', totalSec, 's', 'Sum of every thread-size group Cycle Time'));
-  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, groups };
+  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, groups, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {} };
 }
 
 
@@ -2168,11 +2171,11 @@ export function computeMillingCostSummary(
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
     const tapSetup = hostSetup ? hostSetup.cost : (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
     const tapRun = (tappingMin / 60) * tappingRate.rate;
-    processLines.push(withFeatureGroups(withRun(makeLine(
+    processLines.push(withFeatureGroups(withToolCost(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
       hostSetup ? hostSetup.disclosure : tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
-    ), tapping), tapping.groups));
+    ), tapping), tapping, input.workbook, warnings), tapping.groups));
   }
 
   // ── Deburring ────────────────────────────────────────────────────────────
@@ -2718,11 +2721,11 @@ export function computeTurningCostSummary(
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
     const tapSetup = (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
     const tapRun = (tappingMin / 60) * tappingRate.rate;
-    processLines.push(withFeatureGroups(withRun(makeLine(
+    processLines.push(withFeatureGroups(withToolCost(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
       tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
-    ), tapping), tapping.groups));
+    ), tapping), tapping, input.workbook, warnings), tapping.groups));
   }
 
   // ── Secondary setup / rechucking (2-axis lathe only) ─────────────────────

@@ -283,26 +283,37 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
 
 describe('a Slot and a pocket are milled on the workbook\'s sheets, not by a keyway\'s passes', () => {
   it('a Slot is one Slot Milling operation (the workbook\'s Slot Milling sheet), with no separate roughing of its volume', () => {
-    // 30 x 6 x 4 in mild steel: a 6 mm cutter (the slot's width), 4 teeth, 90 m/min and 0.115 mm/tooth: n = 4774.65 rpm; depth of cut
-    // 0.5 x 6 = 3 mm, ceil(4 / 3) = 2 depth passes, 1 width pass; (30 + 10 + 6) / (0.115 x 4 x 4774.65) x 2 = 0.04189 min = 2.51 s -> 3 s.
-    // Plunging it would take ceil(30 / 3) = 10 plunges of 14 mm: 0.0637 min, slower, so it is slotted.
+    // 30 x 6 x 4 in mild steel: a 6 mm cutter (the slot's width), 4 teeth, 90 m/min and 0.115 mm/tooth: n = 4774.65 rpm; a pass is as deep
+    // as the cutter is wide (6 mm, migration 1157), so 1 depth pass, 1 width pass; (30 + 10 + 6) / (0.115 x 4 x 4774.65) = 0.02094 min =
+    // 1.26 s -> 2 s. Plunging it would take ceil(30 / 3) = 10 plunges of 14 mm: 0.0637 min, slower, so it is slotted.
     const ops = onMachine([SLOT], 'mild_steel');
     expect(ops.map((o) => o.name)).toEqual(['Slot Milling', 'Deburr']);
     const [slot] = named(ops, 'Slot Milling');
-    expect(slot).toMatchObject({ cadFeatureType: 'Slot', featureIds: ['Slot-straight_c1'], timeSec: 3, count: 1 });
+    expect(slot).toMatchObject({ cadFeatureType: 'Slot', featureIds: ['Slot-straight_c1'], timeSec: 2, count: 1 });
     expect(slot!.calculator?.id).toBe('Machining - Slot Milling');
     expect(slot!.trace!.find((st) => st.fieldName === 'Cutter Diameter')!.source).toBe('CAD: slot width 6 mm, narrower than the material\'s end mill');
     expect(named(ops, 'Obround Slot Milling')).toEqual([]);
   });
 
-  it('a deep slot is plunged: the workbook\'s Plunge Milling sheet, corrected, when it is the quicker', () => {
-    // 30 x 6 x 30 deep: slotting takes ceil(30 / 3) = 10 passes of 46 mm (460 mm); plunging 10 plunges of 40 mm (400 mm), so it is plunged:
-    // 400 / (0.115 x 4 x 4774.65) = 0.18213 min = 10.93 s -> 11 s.
-    const deep = { ...SLOT, occurrences: [{ ...SLOT.occurrences[0], extents_mm: [30, 6, 0], depth_mm: 30, material_removed_mm3: 5400 }] };
+  it('a short, deep slot is plunged: the workbook\'s Plunge Milling sheet, corrected, when it is the quicker', () => {
+    // 8 x 6 x 60 deep: slotting takes ceil(60 / 6) = 10 passes of 8 + 10 + 6 = 24 mm (240 mm, 6.56 s -> 7 s); plunging ceil(8 / 3) = 3
+    // plunges of 70 mm (210 mm), so it is plunged: 210 / (0.115 x 4 x 4774.65) = 0.09561 min = 5.74 s -> 6 s. The two are compared in
+    // the whole seconds each calculator states.
+    const deep = { ...SLOT, occurrences: [{ ...SLOT.occurrences[0], extents_mm: [8, 6, 0], length_mm: 8, depth_mm: 60, material_removed_mm3: 2880 }] };
     const [slot] = named(onMachine([deep], 'mild_steel'), 'Slot Milling');
     expect(slot!.calculator?.id).toBe('Machining - Plunge Milling');
-    expect(slot!.timeSec).toBe(11);
-    expect(slot!.trace!.find((st) => st.fieldName === 'Plunges')!.value).toBe(10);
+    expect(slot!.timeSec).toBe(6);
+    expect(slot!.trace!.find((st) => st.fieldName === 'Plunges')!.value).toBe(3);
+  });
+
+  it('a long, deep slot is slotted a cutter diameter a pass: quicker than plunging its length', () => {
+    // 30 x 6 x 30 deep: ceil(30 / 6) = 5 passes of 46 mm (230 mm) against 10 plunges of 40 mm (400 mm):
+    // 230 / (0.115 x 4 x 4774.65) = 0.10472 min = 6.28 s -> 7 s. (Half the cutter a pass, before 1157, made it 10 passes and plunged it.)
+    const deep = { ...SLOT, occurrences: [{ ...SLOT.occurrences[0], extents_mm: [30, 6, 0], depth_mm: 30, material_removed_mm3: 5400 }] };
+    const [slot] = named(onMachine([deep], 'mild_steel'), 'Slot Milling');
+    expect(slot!.calculator?.id).toBe('Machining - Slot Milling');
+    expect(slot!.timeSec).toBe(7);
+    expect(slot!.trace!.find((st) => st.fieldName === 'Depth Passes')!.value).toBe(5);
   });
 
   it('a pocket is roughed by the workbook\'s End Milling sheet, then its floor and walls finished', () => {

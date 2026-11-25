@@ -422,16 +422,40 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect([run.value('Stepover'), run.value('Width Passes')]).toEqual([1.5, 6]);
   });
 
-  it('Slot Milling reproduces the workbook\'s Slot Milling sheet: 0.35814 min, 22 s (the sheet: 0.35828 min, 22 s)', () => {
-    // 16 x 12 x 6.5 with a 12 mm 4-tooth cutter, 50 m/min, 0.02 mm/tooth, the whole depth in one pass (the sheet cuts 6.5 mm a pass: any
-    // ratio from 6.5 / 12 up does); n = 1326.29 rpm; (16 + 10 + 12) / (0.02 x 4 x 1326.29) = 0.35814 min = 21.49 s -> 22 s.
+  it('Slot Milling reproduces the workbook\'s Slot Milling sheet on its own depth rule: 0.35814 min, 22 s (the sheet: 0.35828 min, 22 s)', () => {
+    // 16 x 12 x 6.5 with a 12 mm 4-tooth cutter, 50 m/min, 0.02 mm/tooth. A pass is as deep as the cutter is wide (the end milling table
+    // pasted on the sheet: slot milling, axial depth of cut 1 x D), so the sheet's 6.5 mm is its one pass; n = 1326.29 rpm;
+    // (16 + 10 + 12) / (0.02 x 4 x 1326.29) = 0.35814 min = 21.49 s -> 22 s. No depth is typed here: the calculator's own default.
     const run = sheet('Slot Milling', {
       'Slot Length': 16, 'Slot Width': 12, 'Slot Depth': 6.5, 'Slots': 1, 'Cutter Diameter': 12, 'Teeth': 4,
-      'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.02, 'Feed per Tooth Max': 0.02, 'Slotting Depth Ratio': 0.55, 'Tool Price': 1337.5, 'Tool Life': 1000,
+      'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.02, 'Feed per Tooth Max': 0.02, 'Tool Price': 1337.5, 'Tool Life': 1000,
     });
-    expect([run.value('Depth Passes'), run.value('Width Passes')]).toEqual([1, 1]);
+    expect([run.value('Slotting Depth Ratio'), run.value('Depth of Cut'), run.value('Depth Passes'), run.value('Width Passes')]).toEqual([1, 12, 1, 1]);
     expect(run.value('Machining Time')).toBeCloseTo(0.3581, 4);
     expect(run.sec).toBe(22);
+    // A slot deeper than its cutter takes a pass for each cutter diameter of depth: 30 mm with the 12 mm cutter, 3 passes, 65 s.
+    const deep = sheet('Slot Milling', {
+      'Slot Length': 16, 'Slot Width': 12, 'Slot Depth': 30, 'Slots': 1, 'Cutter Diameter': 12, 'Teeth': 4,
+      'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.02, 'Feed per Tooth Max': 0.02, 'Tool Price': 1337.5, 'Tool Life': 1000,
+    });
+    expect([deep.value('Depth Passes'), deep.sec]).toEqual([3, 65]);
+  });
+
+  it('the slot depth rule and the tap\'s cost ship in 1157; what 1140 and 1139 shipped is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1157_machining_slot_depth_and_tap_cost.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1157, spec));
+    const all = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators;
+    const versions = (name: string) => all.filter((c) => c.name === name).map((c) => [c.migration ?? 804, c.supersededBy ?? null]);
+    expect(versions('Machining - Slot Milling')).toEqual([[1031, 1140], [1140, 1157], [1157, null]]);
+    expect(versions('Machining - Rigid Tapping')).toEqual([[804, 1139], [1139, 1157], [1157, null]]);
+    // Half the cutter a pass until 1157: the sheet's own example (6.5 mm, a 12 mm cutter) took two passes.
+    const ratioOf = (migration: number) => all.find((c) => c.name === 'Machining - Slot Milling' && c.migration === migration)!.fields.find((f) => f.name === 'Slotting Depth Ratio')!.default;
+    expect([ratioOf(1140), ratioOf(1157)]).toEqual([0.5, 1]);
+    // The tap's price and life are stated in the calculator (the workbook pictures the tap; its tool cost table has no row for one).
+    const tap = spec.calculators.find((c) => c.name === 'Machining - Rigid Tapping')!;
+    expect(tap.fields.filter((f) => f.name.startsWith('Tool')).map((f) => [f.name, f.source ?? null, f.default ?? f.formula])).toEqual([
+      ['Tool Price', 'default', 498.4], ['Tool Life', 'default', 300], ['Tool Cost per Part', null, '{Tool Price} / {Tool Life}'],
+    ]);
+    expect(tap.fields.at(-1)!.name).toBe('Cycle Time');
   });
 
   it('Plunge Milling, corrected: plunges half a cutter apart along the slot (the sheet copies Slot Milling on 3.7 x 3.142 x 10 mm)', () => {
@@ -492,6 +516,9 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     // (The sheet: (60 + 4) / (0.25 x 560.22) = 0.457 min, a drilling cut.)
     const run = sheet('Tapping', { 'Thread Diameter': 25, 'Thread Depth': 60, 'Thread Pitch': 1.5, 'Threads': 1, 'Speed Min': 44, 'Speed Max': 44 });
     expect(run.sec).toBe(10);
+    // The tap's wear (1157): Rs 498.4, the middle of the Rs 36.02 - 960.85 the workbook pictures a tap at, over 300 parts = Rs 1.6613 a part.
+    expect((36.02 + 960.85) / 2).toBeCloseTo(498.4, 1);
+    expect(run.value('Tool Cost per Part')).toBeCloseTo(1.6613, 4);
   });
 
   it('the milling calculator prices the line of every mill station, and of the live-tool turning machines', () => {
