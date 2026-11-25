@@ -17,6 +17,7 @@
 // 60 000 mm^3/min is Removed Volume x 1.3 / 1000 seconds (the stored calculator). Every expected number is worked out by hand.
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence, type MillingFinishingRow, type OperationLine } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 import { featureRemovedVolumeMm3, isTurnedDiameter, stockExcess, type StockExcess } from '../../../../../../modules/bom-items/costing/machining/operation/stock-excess';
 import { workbookFixture } from '../workbook-fixture';
 
@@ -42,8 +43,10 @@ const RINGS = SHAFT.filter(isTurnedDiameter);
 const PIECE_MM3 = 6648.16;
 const PART_MM3 = 2646.02;
 
-const sequence = (stockAround: StockExcess | null) =>
-  buildOperationSequence(SHAFT, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockAround });
+// Planned, then timed on a 10 000 rpm test mill as a route times them (every cutting calculator caps its spindle at the machine's own).
+const sequence = (stockAround: StockExcess | null) => timeOperations(
+  buildOperationSequence(SHAFT, { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: 60000, finishing: ALUMINIUM, stockAround }),
+  CALCS, { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } });
 const named = (ops: OperationLine[], name: string) => ops.filter((o) => o.name === name);
 const statedMm3 = (features: readonly { occurrences: readonly { material_removed_mm3: number }[] }[]) =>
   features.reduce((sum, f) => sum + f.occurrences.reduce((s, o) => s + o.material_removed_mm3, 0), 0);

@@ -12,8 +12,8 @@ import { workbookFixture } from '../workbook-fixture';
 
 const CALCS = specAsCalculators();
 const seed = (value: number): CalcSeed => ({ value, source: 'test' });
-// A 9.971 x 4 x 2.951 mm keyway in aluminium (the tblMillingFinishing row): 4 passes of 6.70875 mm; at the calculator's own 10 000 rpm
-// the feed is 10 000 x 3 x 0.008 x 4 = 960 mm/min and the cut 4 x 6.70875 / 960 x 60 = 1.6772 s.
+// A 9.971 x 4 x 2.951 mm keyway in aluminium (the tblMillingFinishing row): 4 passes of 6.70875 mm; on a 10 000 rpm machine the feed is
+// 10 000 x 3 x 0.008 x 4 = 960 mm/min and the cut 4 x 6.70875 / 960 x 60 = 1.6772 s. Its spindle limit is the machine's (migration 1150).
 const KEYWAY: OperationLine = {
   name: 'Obround Slot Milling', timeSec: 1.6772, source: 'feature', cadFeatureType: 'Keyway',
   plan: [{
@@ -27,10 +27,23 @@ const KEYWAY: OperationLine = {
 const machine = (rpm: number): Record<string, CalcSeed> => ({ 'Max Spindle Speed': seed(rpm) });
 
 describe('timeOperations', () => {
-  it('with no machine, an operation is timed as it was planned', () => {
+  it('with no machine, an operation whose calculator reads the machine is a named gap, never a stand-in speed', () => {
     const [timed] = timeOperations([KEYWAY], CALCS);
+    expect(timed!.timeSec).toBe(0);
+    expect(timed!.missing).toBe('Obround Slot Milling: Max Spindle Speed');
+  });
+
+  it('on a 10 000 rpm machine: 960 mm/min, 1.6772 s', () => {
+    const [timed] = timeOperations([KEYWAY], CALCS, machine(10000));
     expect(timed!.timeSec).toBeCloseTo(1.6772, 3);
     expect(timed!.calculator?.id).toBe('Machining - Obround Slot Milling');
+  });
+
+  it('above 10 000 rpm the cutter is no longer held at 10 000: on a 20 000 rpm machine it turns at its cutting speed, 14 563 rpm', () => {
+    // 183 000 / (pi x 4) = 14 563.4 rpm, under the machine's 20 000: feed 14 563.4 x 3 x 0.008 x 4 = 1398.1 mm/min; 4 x 6.70875 / 1398.1 x 60.
+    const [timed] = timeOperations([KEYWAY], CALCS, machine(20000));
+    expect(timed!.trace!.find((s) => s.fieldName === 'Spindle Speed')!.value).toBeCloseTo(183000 / (Math.PI * 4), 1);
+    expect(timed!.timeSec).toBeCloseTo((4 * 6.70875 / ((183000 / (Math.PI * 4)) * 0.096)) * 60, 3);
   });
 
   it('on a machine, its spindle limit caps the cut: 6000 rpm feeds 576 mm/min, 2.7953 s', () => {

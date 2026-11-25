@@ -12,6 +12,7 @@
 // "Machining - Obround Slot Milling". Every expected number is worked out by hand from these.
 import { specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence, type MillingFinishingRow, type SequenceOptions } from '../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
+import { timeOperations } from '../../../../../modules/bom-items/costing/machining/operation/time-operations';
 import { isReferenceOperation } from '../../../../../modules/bom-items/costing/shared/reference-features.generated';
 import { loadStockMachiningCalculatorSpec, stockMachiningCalculatorsByName } from '../../../../../modules/bom-items/costing/stock-machining/calculators/stock-machining-calculator-spec';
 import {
@@ -29,6 +30,7 @@ const cutOf = (over: Partial<Parameters<typeof perimeterCutOperation>[0]> = {}) 
   calculators: STOCK_CALCS, outlinePerimeterMm: 397.81, plateThicknessMm: 12.7, finishing: ALUMINIUM, matClass: 'aluminum', machinabilityFactor: 1, slotting: SLOTTING, ...over,
 });
 const step = (op: ReturnType<typeof cutOf>, field: string) => op.trace!.find((s) => s.fieldName === field);
+const onAMill = (rpm: number) => ({ 'Max Spindle Speed': { value: rpm, source: 'Machine: test mill spindle_speed_rpm' } });
 
 describe('the perimeter cut: the catalog\'s operation and its calculator', () => {
   it('is Perimeter Milling on the part\'s Perimeter, a catalog operation of the mills', () => {
@@ -46,7 +48,8 @@ describe('the perimeter cut: the catalog\'s operation and its calculator', () =>
   });
 
   it('reads the slotting rule off the keyway\'s stored calculator, and has none without it', () => {
-    expect(SLOTTING).toEqual({ depthRatio: 0.2, maxSpindleRpm: 10000 });
+    // The depth ratio only: the spindle is the mill's own (migration 1150), not a speed stated on the keyway's calculator.
+    expect(SLOTTING).toEqual({ depthRatio: 0.2 });
     expect(slottingRuleOf({})).toBeNull();
     expect(slottingRuleOf(null)).toBeNull();
     const { 'Obround Slot Milling': keyway, ...rest } = MACHINING;
@@ -77,11 +80,23 @@ describe('Stock Machining - Perimeter Cut: the calculator, by hand', () => {
     expect(op.timeSec).toBeCloseTo(221.26, 1);
   });
 
-  it('a free-machining aluminium (machinability 150: factor 2) runs at the spindle limit: 2400 mm/min = 71.37 s', () => {
-    // 2 x 183 000 / (pi x 10) = 11 650 rpm, held to 10 000. Feed 10 000 x 0.24 = 2400 mm/min. 7 x 407.81 / 2400 x 60 = 71.367 s.
+  it('a free-machining aluminium (machinability 150: factor 2) on a 10 000 rpm mill runs at the mill\'s limit: 2400 mm/min = 71.37 s', () => {
+    // 2 x 183 000 / (pi x 10) = 11 650 rpm, held to the mill's 10 000. Feed 10 000 x 0.24 = 2400 mm/min. 7 x 407.81 / 2400 x 60 = 71.367 s.
+    const [onMill] = timeOperations([cutOf({ machinabilityFactor: 2 })], null, onAMill(10000));
+    expect(step(onMill!, 'Spindle Speed')!.value).toBe(10000);
+    expect(onMill!.timeSec).toBeCloseTo(71.367, 2);
+    // On a 15 000 rpm mill it turns at its cutting speed, 11 650 rpm: 2796 mm/min.
+    const [faster] = timeOperations([cutOf({ machinabilityFactor: 2 })], null, onAMill(15000));
+    expect(step(faster!, 'Spindle Speed')!.value).toBeCloseTo(11650.14, 1);
+    expect(faster!.timeSec).toBeCloseTo((7 * 407.81) / ((2 * 183000 / (Math.PI * 10)) * 0.24) * 60, 4);
+  });
+
+  it('before a mill is chosen the cut is compared uncapped, and says so; the mill line times it on its own spindle', () => {
     const op = cutOf({ machinabilityFactor: 2 });
-    expect(step(op, 'Spindle Speed')!.value).toBe(10000);
-    expect(op.timeSec).toBeCloseTo(71.367, 2);
+    expect(step(op, 'Max Spindle Speed')!.source).toMatch(/^No mill yet/);
+    expect(step(op, 'Spindle Speed')!.value).toBeCloseTo(11650.14, 1);
+    expect(op.plan).toHaveLength(1);
+    expect(op.plan![0]!.seeds['Max Spindle Speed']).toBeUndefined();
   });
 
   it('takes one pass more for each slotting depth of plate, and none more for an exact number of them', () => {
@@ -100,7 +115,7 @@ describe('Stock Machining - Perimeter Cut: the calculator, by hand', () => {
     expect(step(op, 'Cutter Diameter')!.source).toBe('tblMillingFinishing: aluminum ToolDiameterMm');
     expect(step(op, 'Cutting Speed')!.source).toBe('tblMillingFinishing: aluminum CuttingSpeedMPerMin 183 m/min x machinability factor 1');
     expect(step(op, 'Slotting Depth Ratio')!.source).toContain('Machining - Obround Slot Milling');
-    expect(step(op, 'Max Spindle Speed')!.source).toContain('Machining - Obround Slot Milling');
+    expect(step(timeOperations([op], null, onAMill(10000))[0]!, 'Max Spindle Speed')!.source).toBe('Machine: test mill spindle_speed_rpm');
     expect(op.calculator?.id).toBe(PERIMETER_CUT_CALC);
   });
 

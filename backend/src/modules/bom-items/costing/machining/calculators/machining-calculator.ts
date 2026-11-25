@@ -37,6 +37,8 @@ export function runMachiningCalculator(
 export interface PlannedRun {
   operation: string;
   seeds: Record<string, CalcSeed>;
+  /** The calculators the run's operation is in, when not the machining set (the Stock Machining perimeter cut's own). */
+  calculators?: MachiningCalculators;
   /** The run's name among an operation's several (a stepped hole's "Step Ø6"). */
   label?: string;
   lookupMissing?: string[];
@@ -48,6 +50,6 @@ export function runPlanned(
   plan: PlannedRun,
   machine: Record<string, CalcSeed> = {},
 ): ReferenceCalcRun {
-  const run = runReferenceCalculator(calculators, plan.operation, { ...plan.seeds, ...machine });
+  const run = runReferenceCalculator(plan.calculators ?? calculators, plan.operation, { ...plan.seeds, ...machine });
   return run.missing.length > 0 && plan.lookupMissing?.length ? { ...run, missing: [...plan.lookupMissing, ...run.missing] } : run;
 }

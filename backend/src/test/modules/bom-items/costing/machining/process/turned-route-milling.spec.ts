@@ -336,7 +336,7 @@ describe('the keyway is timed on the lathe\'s own live-tool spindle (timeOperati
     latheMilling: millingOf([KEYWAY]),
   })).processLines, 'Obround Slot Milling')!;
 
-  it('a 5000 rpm live tool: the cutter turns at half the 10 000 rpm default, so the keyway takes twice as long', () => {
+  it('a 5000 rpm live tool: the cutter turns at half the speed of a 10 000 rpm one, so the keyway takes twice as long', () => {
     // 4 x 6.70875 / (5000 x 3 x 0.008 x 4 = 480 mm/min) x 60 = 3.3545 s.
     const keyway = at(5000);
     expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ value: 5000, source: expect.stringContaining('live_tooling_speed_rpm') });
@@ -348,7 +348,10 @@ describe('the keyway is timed on the lathe\'s own live-tool spindle (timeOperati
     expect(sec(at(20000))).toBeCloseTo(1.1517, 2);
   });
 
-  it('a lathe with no live-tool speed on file keeps the calculator\'s own 10 000 rpm, as before', () => {
-    expect(sec(at(null))).toBeCloseTo(KEYWAY_SEC, 2);
+  it('a lathe with no live-tool speed on file cannot time the keyway: a named gap, never a stand-in 10 000 rpm', () => {
+    // Every live-tool lathe class on file has its speed (migration 1136); a record without one says so rather than borrow a speed.
+    const keyway = at(null);
+    expect(sec(keyway)).toBe(0);
+    expect(keyway.physicsGap).toBeDefined();
   });
 });

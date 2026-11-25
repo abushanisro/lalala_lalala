@@ -520,7 +520,7 @@
           "name": "Max Spindle Speed",
           "unit": "rpm",
           "source": {
-            "engine": "max_spindle_rpm (the spindle limit of Machining - Obround Slot Milling)"
+            "engine": "max_spindle_rpm (the top spindle speed of the mill that cuts it: mhr_records specs.spindle_speed_rpm, migration 1136)"
           }
         },
         {
