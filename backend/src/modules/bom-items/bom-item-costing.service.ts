@@ -1628,10 +1628,8 @@ export class BomItemCostingService {
         `piece holds (${mm3(stockAround.pieceMm3)} mm³): the volumes are inconsistent, and no Bulk Milling of the stock around the part is costed.`,
       );
     }
-    const [workbook, chamferParams, roundingParams, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
+    const [workbook, keywayBroach, operationSizeRanges, machiningCalculators] = await Promise.all([
       this.machiningWorkbookTables(),
-      this.machiningLookup.getChamferParams(matClass),
-      this.machiningLookup.getRoundingParams(matClass),
       this.machiningLookup.getKeywayBroachReference(),
       this.machiningLookup.getOperationSizeRanges(),
       this.resolveMachiningCalculators(accessToken),
@@ -1672,7 +1670,7 @@ export class BomItemCostingService {
     }
 
     const rawFeatureOps = buildOperationSequence(
-      chemSplit.filteredFeatures, { matClass, machinabilityFactor, materialGrade: grade, chamferLinearSpeedMmPerSec: chamferParams.dataFound ? chamferParams.linearSpeedMmPerSec : null, roundingLinearSpeedMmPerSec: roundingParams.dataFound ? roundingParams.linearSpeedMmPerSec : null, workbook, calculators: machiningCalculators, removalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(matClass), finishing: await this.machiningLookup.getMillingFinishing(matClass), stockAround, stockOps, facing: stockAround ? milledPiece?.facing ?? null : null },
+      chemSplit.filteredFeatures, { matClass, machinabilityFactor, materialGrade: grade, workbook, calculators: machiningCalculators, removalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(matClass), finishing: await this.machiningLookup.getMillingFinishing(matClass), stockAround, stockOps, facing: stockAround ? milledPiece?.facing ?? null : null },
     );
     // Fix 5: inject drawing intelligence overrides into the operation list
     const allFeatureOps = injectDrawingIntelligence(

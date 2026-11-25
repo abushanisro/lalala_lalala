@@ -235,6 +235,42 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(r.sec).toBeCloseTo(perPart, 9);
   });
 
+  it('spotting, countersinking and the edges follow the workbook (1152); what 1031 and 1035 shipped is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1152_machining_edges_and_spots_workbook.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1152, spec));
+    for (const n of [1031, 1035]) {
+      const file = n === 1031 ? '1031_machining_mill_operation_calculators.sql' : '1035_machining_countersinking_calculator.sql';
+      expect(readFileSync(join(ROOT, `migrations/${file}`), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(n, spec));
+    }
+    const current = loadMachiningCalculatorSpec().calculators;
+    const fields = (name: string) => current.find((c) => c.name === name)!.fields;
+    // No set time per hole or per edge is left.
+    for (const name of ['Machining - Center Drilling', 'Machining - Countersinking', 'Machining - Chamfering', 'Machining - Filleting', 'Machining - Groove Milling']) {
+      expect(fields(name).some((f) => /Time per (Hole|Unsized Edge)/.test(f.name) && f.source === 'default')).toBe(false);
+      expect(fields(name).find((f) => f.name === 'Max Spindle Speed')).toMatchObject({ source: 'machine' });
+    }
+    // Groove Milling copies the 1152 Filleting.
+    expect(fields('Machining - Groove Milling')).toEqual(fields('Machining - Filleting'));
+  });
+
+  it('Center Drilling and Countersinking reproduce the Drilling sheet; an edge the End Milling sheet', () => {
+    // Mild steel Ø6 spot: 17 m/min, 0.1 mm/rev, n = 17 000 / (pi x 6) = 901.9 rpm; (3 + 10) / (0.1 x 901.9) = 0.14414 min -> 9 s a hole.
+    const spot = sheet('Center Drilling', { 'Hole Diameter': 6, 'Holes': 2, 'Speed Min': 17, 'Speed Max': 17, 'Feed': 0.1 });
+    expect(spot.missing).toEqual([]);
+    expect(spot.value('Spot Depth')).toBe(3);
+    expect(spot.value('Time per Hole')).toBe(9);
+    expect(spot.sec).toBe(18);
+    // Ø8 countersink over a 4.8 mm hole: 1.6 mm deep; 0.23 mm/rev at 676.4 rpm; (1.6 + 10) / (0.23 x 676.4) = 0.07457 min -> 5 s.
+    const csk = sheet('Countersinking', { 'Countersink Diameter': 8, 'Hole Diameter': 4.8, 'Holes': 1, 'Speed Min': 17, 'Speed Max': 17, 'Feed': 0.23 });
+    expect(csk.value('Countersink Depth')).toBeCloseTo(1.6, 9);
+    expect(csk.sec).toBe(5);
+    // A 27 mm edge, 10 mm 3-tooth end mill, 450 m/min, 0.15 mm/tooth, held to a 10 000 rpm machine: (27 + 10 + 5) / (0.15 x 3 x 10 000) min
+    // = 0.56 s -> 1 s an edge.
+    const edge = sheet('Filleting', { 'Edge Length': 27, 'Edges': 3, 'Cutter Diameter': 10, 'Teeth': 3, 'Speed Min': 450, 'Speed Max': 450,
+      'Feed per Tooth Min': 0.15, 'Feed per Tooth Max': 0.15, 'Max Spindle Speed': 10000 });
+    expect(edge.value('Time per Edge')).toBe(1);
+    expect(edge.sec).toBe(3);
+  });
+
   it('RM Composition Analysis reproduces the workbook\'s sheet: 60 s a lot over its 300 parts, 0.2 s a part', () => {
     // The sheet: Time/part = 60 / (MOQ 0.6256 t x 1000 / part weight 2.0855 kg) = 60 / 300 = 0.2 s.
     expect(sheet('RM Composition Analysis', { 'Lot Size': 300 }).sec).toBeCloseTo(0.2, 9);

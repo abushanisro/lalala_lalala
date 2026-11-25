@@ -70,7 +70,7 @@ import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { isTurnedDiameter, type StockExcess } from './stock-excess';
 import type { StockFacing } from '../../stock/stock-facing';
-import { holeAxes, sitsOnHole } from './countersunk-holes';
+import { holeAxes, holeUnder } from './countersunk-holes';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
 // (computeDrillCycle / computeTapCycle)
@@ -360,15 +360,8 @@ function opOrderIndex(name: string): number {
  *   resolveDrillingSpeedFeed/resolveTapPhysicsInputs already do.
  * @param workbook  the machining workbook's cutting data: drilling, step drilling (a counterbore), boring (a hole the drills do not reach)
  *   and tapping are timed on it; a material or size it has no row for is a named gap.
- * @param chamferLinearSpeedMmPerSec  real hardness-matched tblChamfering
- *   linear speed (MachiningLookupService.getChamferParams), resolved once
- *   for the whole part (no diameter axis in that table); null/absent falls
- *   back to the previous flat constant, disclosed as such.
- * @param roundingLinearSpeedMmPerSec  real hardness-matched
- *   tblCornerRoundingMill linear speed (MachiningLookupService
- *   .getRoundingParams), resolved once for the whole part (no diameter axis
- *   in that table either); null/absent falls back to the previous flat
- *   constant, disclosed as such.
+ * Chamfering, filleting, groove milling, spotting and countersinking are timed on the workbook (migration 1152): the edges by its End
+ *   Milling sheet with the material's end mill, the spots and countersinks by its Drilling sheet.
  * @param stockAround  on a milled route, the stock around the part (stock-excess.ts):
  *   what it holds beyond the part and its features is milled away by one Bulk
  *   Milling operation. null/absent (a lathe's plan, a part with no stock chosen)
@@ -382,8 +375,6 @@ export interface SequenceOptions {
   matClass: MaterialClass;
   machinabilityFactor?: number;
   materialGrade?: string | null;
-  chamferLinearSpeedMmPerSec?: number | null;
-  roundingLinearSpeedMmPerSec?: number | null;
   /** The machining workbook's cutting data (migration 1137): what drilling, tapping, step drilling and boring are timed on. */
   workbook?: MachiningWorkbookInput | null;
   calculators?: MachiningCalculators | null;
@@ -399,7 +390,7 @@ export interface SequenceOptions {
 
 export function buildOperationSequence(fgv2Features: unknown[] | null | undefined, options: SequenceOptions): OperationLine[] {
   const {
-    matClass, machinabilityFactor = 1.0, materialGrade = null, chamferLinearSpeedMmPerSec = null, roundingLinearSpeedMmPerSec = null,
+    matClass, machinabilityFactor = 1.0, materialGrade = null,
     workbook = null, calculators = null, removalRateMm3PerMin = null, finishing = null, stockAround = null, stockOps = [], facing = null,
   } = options;
   if (!Array.isArray(fgv2Features) || fgv2Features.length === 0) return [];
@@ -503,7 +494,6 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     const plunged = workbookCycle('Plunge Milling', workbook, calculators, matClass, seeds, uncapped).sec;
     return workbookOp(plunged != null && (slotted == null || plunged < slotted) ? 'Plunge Milling' : 'Slot Milling', seeds);
   };
-  const countOp = (operation: string, field: string, n: number) => calcOp(calculators, operation, { [field]: { value: n, source: 'CAD: feature count' } });
   // A counterbore, drilled with a step drill to its diameter and depth (no CAD depth: the drilling depth rule's, stated).
   const stepOp = (diamMm: number, depthMm: number, n: number) => {
     const depth = depthMm > 0
@@ -523,16 +513,46 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), plan: cycle.plan ? [cycle.plan] : undefined } : { timeSec: cycle.sec, plan: cycle.plan ? [cycle.plan] : undefined };
   };
   // An edge with a CAD diameter is timed by its length (pi x D per edge) at the table's edge speed; one without, per edge.
-  const edgeOp = (operation: string, table: string, speedMmPerSec: number | null, diameterMm: number, n: number) => {
-    const sized = diameterMm > 0;
-    return calcOp(calculators, operation, {
-      'Edge Length': { value: sized ? Math.PI * diameterMm * n : 0, source: sized ? `CAD: pi x Ø${diameterMm} mm x ${n}` : 'CAD: no sized edge' },
-      'Unsized Edges': { value: sized ? 0 : n, source: 'CAD: edges with no diameter' },
-      ...(speedMmPerSec && speedMmPerSec > 0
-        ? { 'Edge Speed': { value: speedMmPerSec, source: `${table}: edge speed for ${matClass}`, lookup: true } }
-        // No sized edge: the speed divides a zero length, so its absence is not a gap.
-        : sized ? {} : { 'Edge Speed': { value: 1, source: 'Not used: no sized edge on the part' } }),
-    });
+  // A hole spotted before it is drilled, or countersunk after (the workbook's Drilling sheet: the spot or countersink's depth plus the
+  // approach over the feed, at the drilling speed for the diameter; migration 1152).
+  const spotOp = (diamMm: number, n: number) => workbookOp('Center Drilling', {
+    'Hole Diameter': { value: diamMm, source: 'CAD: hole diameter' }, 'Holes': { value: n, source: 'CAD: holes of this diameter' },
+  });
+  const countersinkOp = (countersinkMm: number, holeMm: number, holeWhy: string, n: number) => workbookOp('Countersinking', {
+    'Countersink Diameter': { value: countersinkMm, source: 'CAD: countersink diameter' },
+    'Hole Diameter': { value: holeMm, source: holeWhy },
+    'Holes': { value: n, source: 'CAD: countersinks of this size' },
+  });
+  // An edge chamfered, rounded or grooved in one pass of the material's end mill (the workbook's End Milling sheet; migration 1152): edges
+  // of one length are cut alike. A round edge's length is pi x its diameter; another's the CAD's longest extent of its face.
+  const edgeOp = (operation: string, diameterMm: number, edgeOccurrences: readonly any[], n: number): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cutter = endMillSeeds(standardToolMm, '');
+    if (!cutter) return { timeSec: 0, missing: noEndMill };
+    const groups = new Map<number, { edges: number; source: string }>();
+    let unmeasured = 0;
+    if (diameterMm > 0) groups.set(Math.round(Math.PI * diameterMm * 1000) / 1000, { edges: n, source: `CAD: pi x Ø${diameterMm} mm` });
+    else {
+      for (const o of edgeOccurrences) {
+        const longest = Math.max(0, ...(Array.isArray(o?.extents_mm) ? o.extents_mm.map(Number).filter(Number.isFinite) : []));
+        if (!(longest > 0)) { unmeasured += 1; continue; }
+        const key = Math.round(longest * 1000) / 1000;
+        const g = groups.get(key) ?? { edges: 0, source: 'CAD: the edge face\'s longest extent' };
+        g.edges += 1;
+        groups.set(key, g);
+      }
+    }
+    const runs = [...groups.entries()].map(([lengthMm, g]) => ({ lengthMm, run: workbookOp(operation, {
+      'Edge Length': { value: lengthMm, source: g.source }, 'Edges': { value: g.edges, source: 'CAD: edges of this length' }, ...cutter,
+    }) }));
+    const missing = [...runs.flatMap((r) => (r.run.missing ? [r.run.missing] : [])), ...(unmeasured > 0 ? [`the CAD length of ${unmeasured} edge${unmeasured === 1 ? '' : 's'}`] : [])];
+    if (runs.length === 1 && unmeasured === 0) return runs[0]!.run;
+    return {
+      timeSec: runs.reduce((t, r) => t + r.run.timeSec, 0),
+      ...(runs.length === 1 ? { trace: runs[0]!.run.trace } : {}),
+      ...(runs[0]?.run.calculator ? { calculator: runs[0].run.calculator } : {}),
+      plan: runs.flatMap((r) => (r.run.plan ?? []).map((pl) => ({ ...pl, label: `Edge ${r.lengthMm} mm` }))),
+      ...(missing.length > 0 ? { missing: missing.join('; ') } : {}),
+    };
   };
 
   // The piece's faces, faced down to the part before any feature is cut (the workbook's Face Milling sheet). The stock model states the
@@ -667,7 +687,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       case "SimpleHole:blind":
       case "SimpleHole:cross":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           if (largestDrill != null && diamMm > largestDrill) {
             // Larger than the workbook's drills reach: drilled at the largest of them, then bored to size.
             ops.push({ name: "Drilling", ...drillOp(largestDrill, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
@@ -683,7 +703,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // it stands for (hole_count), so drilling is costed per real hole.
         const holes = occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0);
         if (diamMm > 0 && holes > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', holes), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, holes), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
@@ -694,6 +714,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // spot drill per hole assembly; drill time is the same drillTimeSec
         // physics applied per real step.
         let spots = 0;
+        const spotDiameters = new Map<number, number>();
         let drillSec = 0;
         const stepMissing: string[] = [];
         const stepPlans: PlannedRun[] = [];
@@ -701,6 +722,9 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           const steps: Array<{ diameter_mm: number; depth_mm: number }> = Array.isArray(occ.steps) ? occ.steps : [];
           if (steps.length === 0) continue;
           spots += 1;
+          // The hole is spotted at its entry: its first step's diameter.
+          const entry = Number(steps[0]!.diameter_mm);
+          if (entry > 0) spotDiameters.set(entry, (spotDiameters.get(entry) ?? 0) + 1);
           for (const step of steps) {
             const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators);
             drillSec += op.timeSec;
@@ -709,7 +733,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           }
         }
         if (spots > 0 || drillSec > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', spots), source: "feature", cadFeatureType: ft });
+          for (const [entryMm, n] of spotDiameters) ops.push({ name: "Center Drilling", ...spotOp(entryMm, n), source: "feature", cadFeatureType: ft, diameterMm: entryMm });
           ops.push({
             name: "Drilling", timeSec: drillSec, source: "feature", cadFeatureType: ft,
             ...(stepPlans.length ? { plan: stepPlans } : {}), ...(stepMissing.length ? { missing: stepMissing.join('; ') } : {}),
@@ -720,16 +744,16 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
       case "SimpleHole:threaded":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
-          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', 'tblChamfering', chamferLinearSpeedMmPerSec, diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
       case "MultiStepHole:counterbore":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // through bore
           // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it.
           ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
@@ -739,32 +763,46 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       case "Edge:countersink":
         if (diamMm > 0) {
           // A countersink on a hole the CAD recognised is that hole's mouth: the hole is drilled as its own feature, so only the
-          // countersinking is added (countersunk-holes.ts). One with no hole under it is drilled here, as before.
-          const alone = occurrences.length > 0 ? occurrences.filter((o: any) => !sitsOnHole(o, holes)).length : count;
-          if (alone > 0) {
-            ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
-            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+          // countersinking is added, over that hole's diameter (countersunk-holes.ts). One with no hole under it is spotted and drilled
+          // here at 0.6 x its diameter, and countersunk over that drilled hole.
+          const under = new Map<string, { holeMm: number; why: string; n: number }>();
+          let alone = occurrences.length > 0 ? 0 : count;
+          for (const o of occurrences) {
+            const hole = holeUnder(o, holes);
+            if (!hole) { alone += 1; continue; }
+            const holeMm = hole.diameterMm ?? diamMm * 0.6;
+            const why = hole.diameterMm !== null
+              ? `CAD: the hole the countersink sits on, Ø${holeMm} mm`
+              : 'The hole the countersink sits on has no diameter in the CAD: 0.6 x the countersink diameter';
+            const group = under.get(why) ?? { holeMm, why, n: 0 };
+            group.n += 1;
+            under.set(why, group);
           }
-          ops.push({ name: "Countersinking", ...countOp('Countersinking', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          if (alone > 0) {
+            ops.push({ name: "Center Drilling", ...spotOp(diamMm, alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, diamMm * 0.6, 'The hole drilled under the countersink: 0.6 x its diameter, as the drilling above takes it', alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+          }
+          for (const { holeMm, why, n } of under.values()) {
+            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, holeMm, why, n), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n });
+          }
         }
         break;
 
       case "Edge:chamfer":
-        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', 'tblChamfering', chamferLinearSpeedMmPerSec, diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "Edge:round":
-        // Convex toroidal blend. Driven by the real tblCornerRoundingMill
-        // linear speed (the Filleting calculator); edge-rounding, not material removal.
-        ops.push({ name: "Filleting", ...edgeOp('Filleting', 'tblCornerRoundingMill', roundingLinearSpeedMmPerSec, diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        // Convex toroidal blend: one pass of the end mill along each edge (the Filleting calculator, the workbook's End Milling sheet).
+        ops.push({ name: "Filleting", ...edgeOp('Filleting', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "Slot:groove":
       case "Ring:groove":
-        // Concave toroidal recess ("Groove Milling//Slot" on a mill,
-        // "Plunging//Ring" on a lathe) -- costed by the same real rounding
-        // linear speed, a disclosed stand-in until a groove table exists.
-        ops.push({ name: "Groove Milling", ...edgeOp('Groove Milling', 'tblCornerRoundingMill', roundingLinearSpeedMmPerSec, diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        // Concave toroidal recess ("Groove Milling//Slot" on a mill, "Plunging//Ring" on a lathe): one pass of the end mill along it, as an
+        // edge is rounded (the Groove Milling calculator copies Filleting's, the workbook's End Milling sheet).
+        ops.push({ name: "Groove Milling", ...edgeOp('Groove Milling', diamMm, occurrences, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "PlanarFace:default":
