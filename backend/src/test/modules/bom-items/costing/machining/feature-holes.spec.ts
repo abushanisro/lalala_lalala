@@ -4,7 +4,7 @@
 // its diameter (hole_diameter_mm) and its thread (tap_spec) were not found.
 import { liveToolHoles } from '../../../../../modules/bom-items/costing/machining/capability/live-tooling';
 import {
-  holeGroupsOfFeatures, mergeThreads, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, type MachiningFeatureLike,
+  drawingThreadsOf, holeGroupsOfFeatures, mergeThreads, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, type MachiningFeatureLike,
 } from '../../../../../modules/bom-items/costing/machining/feature-holes';
 import { timeHoleGroups, timeThreadGroups } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-cost.service';
 import { multiSpindleWork } from '../../../../../modules/bom-items/costing/multi-spindle/multi-spindle-work';
@@ -176,5 +176,27 @@ describe('mergeThreads: the drawing\'s threads and the CAD\'s tapped holes toget
   it('no drawing: the CAD\'s holes as they are; no CAD holes: the drawing\'s threads', () => {
     expect(mergeThreads([], cad).map((t) => [t.size, t.count])).toEqual([['M3', 6], ['M4', 2]]);
     expect(mergeThreads([{ size: 'M5', count: 3 }], []).map((t) => [t.size, t.count])).toEqual([['M5', 3]]);
+  });
+});
+
+describe('drawingThreadsOf: the drawing\'s thread callouts as stored', () => {
+  it('normalises size, count and pitch, and keeps what a callout states of its kind, class and length', () => {
+    expect(drawingThreadsOf({
+      threads: [
+        { size: 'M12', pitch: 1.75, count: 1, countStated: false, pitchStated: true, toleranceClass: '6g', threadKind: 'external', lengthMm: 15 },
+        { spec: ' M3 ', count: '6', pitch: 0.5, toleranceClass: null, threadKind: null, lengthMm: null },
+        { size: '1/4-20', tpi: 20, count: 2, toleranceClass: '2B', threadKind: 'internal' },
+      ],
+    })).toEqual([
+      { size: 'M12', count: 1, pitchMm: 1.75, pitchStated: true, threadKind: 'external', toleranceClass: '6g', lengthMm: 15 },
+      { size: 'M3', count: 6, pitchMm: 0.5 },
+      { size: '1/4-20', count: 2, threadKind: 'internal', toleranceClass: '2B' },
+    ]);
+  });
+
+  it('a count it does not give is 1; an unknown kind is not kept; no drawing, no threads', () => {
+    expect(drawingThreadsOf({ threads: [{ size: 'M5', threadKind: 'sideways' }] })).toEqual([{ size: 'M5', count: 1 }]);
+    expect(drawingThreadsOf(null)).toEqual([]);
+    expect(drawingThreadsOf({})).toEqual([]);
   });
 });

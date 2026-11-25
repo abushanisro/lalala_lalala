@@ -1,6 +1,7 @@
 import { latheMillingLines, type LatheMillingOp } from './lathe-milling';
 import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
-import { cylindersToTurn, type TurnedCylinder, type TurnedRing } from './turned-diameters';
+import { cylindersToTurn, ringLabel, type TurnedCylinder, type TurnedRing } from './turned-diameters';
+import type { ExternalThread, KnurlOp } from '../external-threads';
 import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
 import { findRouteDataGaps, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
@@ -99,6 +100,13 @@ export interface MachiningCostInput {
   /** Threads by size; `occurrences` = the tapped holes' feature_graph_v2 occurrences when they come from the CAD (not from a drawing). */
   /** liveCount: of count, the threads off the turning centreline, tapped with a live tool (feature-holes.ts). */
   threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; isThrough?: boolean; occurrences?: FeatureOccurrenceRef[]; liveCount?: number }>;
+  /**
+   * The drawing's external threads, each turned on its Ring (external-threads.ts splitExternalThreads): the Thread Turning line. Turned
+   * families only; their callouts are not in `threads` (which a lathe taps).
+   */
+  externalThreads?: ExternalThread[];
+  /** The drawing's knurls, each on its Ring (external-threads.ts knurlsOnRings): the Knurling line. Turned families only. */
+  knurls?: KnurlOp[];
   tightestToleranceMm: number | null;
   gdtFeatureCount: number;
   batchSize: number;
@@ -2559,6 +2567,48 @@ export function computeTurningCostSummary(
   }
   if (finishTurningMin > 0 || finish.run.missing.length > 0) {
     processLines.push(withFeatureGroups(latheLine('Finish Turning', finishTurningMin, finish.run), finish.rings));
+  }
+
+  // ── Thread turning and knurling ───────────────────────────────────────────
+  // The drawing's external threads, single-point turned on their Rings, and its knurls, rolled on theirs (external-threads.ts), each a run
+  // of its workbook calculator (the Threading and Knurling sheets, migration 1138) on this lathe's spindle: one line per operation, each
+  // run under its Ring's name, each Ring cut a row the Process tree lists and lights. With no bar the turning gap above says why.
+  if (!barMissing) {
+    const ringRef = (ring: TurnedRing | null) => (ring && ring.faceIds.length > 0
+      ? { ref: { kind: 'faces' as const, label: ringLabel(ring), faceIds: [...ring.faceIds] } } : {});
+    /** A run whose op names what it lacks: those names (with any workbook row it lacks), not the calculator's bare field names. */
+    const withNamedGaps = (operation: string, run: CalcRun & { outputs?: Record<string, number> }, missing: readonly string[]) =>
+      (missing.length > 0 ? { ...run, sec: null, missing: [...missing, ...run.missing.filter((m) => !m.startsWith(`${operation}:`))] } : run);
+    const ringOpLine = (operation: string, runs: ReadonlyArray<{ label: string; ring: TurnedRing | null; count: number; run: CalcRun & { outputs?: Record<string, number> } }>) => {
+      if (runs.length === 0) return;
+      const summed = sumRuns(runs.map(({ label, run }) => ({ label, run })), `${operation} cycle time`);
+      if (summed.missing.length > 0) warnings.push(`${operation} not priced — missing real input: ${summed.missing.join('; ')}.`);
+      const toolInr = runs.reduce((t, { run }) => t + (run.outputs?.['Tool Cost per Part'] ?? 0), 0);
+      const rows: FeatureOp[] = runs.flatMap(({ ring, count, run }) => (ring && run.sec != null && run.sec > 0 ? [{
+        name: `${operation} // ${ringLabel(ring)}`, timeSec: run.sec, featureType: 'Ring', count,
+        ...(ring.faceIds.length > 0 ? { faceIds: [...ring.faceIds] } : {}),
+      }] : []));
+      const line = latheLine(operation, (summed.sec ?? 0) / 60, summed);
+      processLines.push(withFeatureGroups(withToolCost(line, { outputs: { 'Tool Cost per Part': toolInr } }, input.workbook, warnings), rows));
+    };
+    ringOpLine('Thread Turning', (input.externalThreads ?? []).map((t) => {
+      const ref = ringRef(t.ring);
+      const seeds: Record<string, CalcSeed> = {
+        'Thread Diameter': { value: t.diameterMm, source: t.diameterSource, ...ref },
+        'Threads': { value: t.threads, source: t.threadsSource },
+        ...(t.lengthMm != null ? { 'Thread Length': { value: t.lengthMm, source: t.lengthSource, ...ref } } : {}),
+        ...(t.pitchMm != null ? { 'Pitch': { value: t.pitchMm, source: t.pitchSource } } : {}),
+      };
+      return { label: t.label, ring: t.ring, count: t.threads, run: withNamedGaps('Thread Turning', workbookRun('Thread Turning', seeds), t.missing) };
+    }));
+    ringOpLine('Knurling', (input.knurls ?? []).map((k) => {
+      const ref = ringRef(k.ring);
+      const seeds: Record<string, CalcSeed> = {
+        ...(k.diameterMm != null ? { 'Knurl Diameter': { value: k.diameterMm, source: k.diameterSource, ...ref } } : {}),
+        ...(k.lengthMm != null ? { 'Knurl Length': { value: k.lengthMm, source: k.lengthSource, ...ref } } : {}),
+      };
+      return { label: k.label, ring: k.ring, count: 1, run: withNamedGaps('Knurling', workbookRun('Knurling', seeds), k.missing) };
+    }));
   }
 
   // ── Drilling ──────────────────────────────────────────────────────────────

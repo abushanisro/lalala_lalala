@@ -50,6 +50,43 @@ export interface ThreadInput {
   liveCount?: number;
 }
 
+/**
+ * A thread callout as the drawing states it (cad-engine drawing_analyzer._extract_threads, stored in bom_items.drawing_intelligence.threads):
+ * its size and count, its pitch when written, and what it states of the thread: external or internal (threadKind, from its tolerance
+ * class or its words), the class itself, and its length. Absent where the callout (or a drawing analysed before these were read) has none.
+ */
+export interface DrawnThread {
+  size: string;
+  count: number;
+  pitchMm?: number;
+  /** False when the pitch above is the analyser's coarse-series default, not the drawing's ("M12" with no pitch written). */
+  pitchStated?: boolean;
+  threadKind?: 'internal' | 'external';
+  toleranceClass?: string;
+  lengthMm?: number;
+}
+
+/**
+ * The drawing's thread callouts (drawing_intelligence.threads), each as { size, count, pitchMm } with what it states of the thread. A
+ * callout may name its size `spec`, and its count may arrive as text; a count it does not give is 1.
+ */
+export function drawingThreadsOf(drawingIntelligence: unknown): DrawnThread[] {
+  const threads = (drawingIntelligence as { threads?: unknown } | null | undefined)?.threads;
+  return (Array.isArray(threads) ? threads : []).map((t: Record<string, unknown>) => {
+    const kind = t?.threadKind;
+    const cls = typeof t?.toleranceClass === 'string' ? t.toleranceClass.trim() : '';
+    return {
+      size: String(t?.size ?? t?.spec ?? '').trim(),
+      count: Number(t?.count) || 1,
+      ...(Number(t?.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
+      ...(typeof t?.pitchStated === 'boolean' ? { pitchStated: t.pitchStated } : {}),
+      ...(kind === 'internal' || kind === 'external' ? { threadKind: kind } : {}),
+      ...(cls ? { toleranceClass: cls } : {}),
+      ...(Number(t?.lengthMm) > 0 ? { lengthMm: Number(t.lengthMm) } : {}),
+    };
+  });
+}
+
 /** Hole variants drilled at their own diameter (a threaded hole at its tap drill, then tapped). */
 const DRILLED: ReadonlySet<string> = new Set(['through', 'blind', 'threaded', 'cross', 'pcd_pattern']);
 

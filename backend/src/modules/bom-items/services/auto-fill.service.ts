@@ -16,7 +16,8 @@ import { DrawingIntelligenceDto } from '../dto/drawing-intelligence.dto';
 // Bumped whenever drawing-intelligence.dto.ts's expected shape changes, so a
 // stored drawing_intelligence row can be told apart from one written under a
 // future, differently-shaped parser response.
-const DRAWING_PARSER_VERSION = 'v1';
+// v2: threads keep countStated, pitchStated, toleranceClass, threadKind and lengthMm; knurl callouts (knurls).
+const DRAWING_PARSER_VERSION = 'v2';
 import { machiningRouteFamilyOf, resolveCanonicalOperation } from '../costing/machining/process/canonical-operation';
 import { REFERENCE_FEATURE_OPERATIONS } from '../costing/shared/reference-features.generated';
 import { MachiningLookupService } from '../costing/machining/lookup/machining-lookup.service';

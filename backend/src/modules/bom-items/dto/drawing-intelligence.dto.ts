@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  IsString, IsNumber, IsArray, IsOptional, ValidateNested, Min, Max, Matches,
+  IsString, IsNumber, IsArray, IsOptional, ValidateNested, Min, Max, Matches, IsBoolean, IsIn,
 } from 'class-validator';
 
 // Mirrors cad-engine/drawing_analyzer.py's real POST /drawing/analyze response
@@ -15,7 +15,7 @@ import {
 // exists yet, only the placeholder fields) — giving them a detailed nested
 // shape now would describe data that doesn't exist.
 
-class ThreadCalloutDto {
+export class ThreadCalloutDto {
   @IsString()
   size!: string;
 
@@ -27,6 +27,34 @@ class ThreadCalloutDto {
   @Min(1)
   count!: number;
 
+  // Whether the callout states its count ("4 X M6") or names the size alone ("M6", where 1 is the analyser's default). Optional: a
+  // drawing analysed before the analyser reported it has no such field. Undecorated it was stripped by the whitelist and never stored.
+  @IsOptional()
+  @IsBoolean()
+  countStated?: boolean;
+
+  // Whether the callout writes its pitch ("M12x1.75") or the pitch above is the analyser's coarse-series default ("M12").
+  @IsOptional()
+  @IsBoolean()
+  pitchStated?: boolean;
+
+  // The tolerance class printed after the size (ISO 965-1 "6g" / "6H", UN "2A" / "2B"); null when none is printed.
+  @IsOptional()
+  @IsString()
+  toleranceClass?: string | null;
+
+  // What the callout states of the thread: 'external' (a small-letter class, 2A, EXTERNAL) or 'internal' (a capital class, 2B,
+  // TAPPED); null when it states neither.
+  @IsOptional()
+  @IsIn(['internal', 'external'])
+  threadKind?: 'internal' | 'external' | null;
+
+  // The thread's length the callout states ("M12x1.75-6g x 15 LG"); null when it states none.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  lengthMm?: number | null;
+
   @IsString()
   standard!: string; // 'metric' | 'imperial'
 
@@ -34,6 +62,46 @@ class ThreadCalloutDto {
   @Min(0)
   @Max(1)
   extractionConfidence!: number;
+
+  @IsString()
+  extractionSource!: string;
+}
+
+/**
+ * A knurl callout as printed (cad-engine drawing_analyzer._extract_knurls): "MEDIUM DIAMOND KNURL", "STRAIGHT KNURL 30 TPI",
+ * "Ø20 DIAMOND KNURL 10 LG", "RGE 1.0 DIN 82". Each value is null when the callout does not state it.
+ */
+export class KnurlCalloutDto {
+  @IsOptional()
+  @IsIn(['diamond', 'straight', 'diagonal', 'crossed'])
+  pattern?: string | null;
+
+  @IsOptional()
+  @IsIn(['fine', 'medium', 'coarse'])
+  grade?: string | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pitchMm?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  tpi?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  diameterMm?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  lengthMm?: number | null;
+
+  @IsString()
+  text!: string;
 
   @IsString()
   extractionSource!: string;
@@ -159,6 +227,13 @@ export class DrawingIntelligenceDto {
   @ValidateNested({ each: true })
   @Type(() => ThreadCalloutDto)
   threads!: ThreadCalloutDto[];
+
+  // Knurl callouts. Optional: a drawing analysed before the analyser read knurls has no such field.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KnurlCalloutDto)
+  knurls?: KnurlCalloutDto[];
 
   // Always [] today — see class-level comment.
   @IsArray()
