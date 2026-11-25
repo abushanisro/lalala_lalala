@@ -685,6 +685,69 @@ describe('spotting and countersinking on the workbook\'s Drilling sheet (1152)',
     expect(ops.filter((o) => o.cadFeatureType === 'Edge' && (o.name === 'Drilling' || o.name === 'Center Drilling'))).toEqual([]);
   });
 
+  describe('holes wider than the drills reach (the drilling table ends at Ø38)', () => {
+    const missingOf = (features: object[]) => onMill(features).filter((o) => o.missing).map((o) => `${o.name}: ${o.missing}`);
+    const names = (features: object[], type: string) => onMill(features).filter((o) => o.cadFeatureType === type).map((o) => o.name);
+
+    it('a Ø40 blind hole is spotted for the Ø38 drill that enters it, drilled at Ø38 and bored to Ø40: nothing is left unpriced', () => {
+      // LINEAR BRACKET (2026-11-25): its Ø40 x 4.597 hole was drilled and bored, but the spot before it was looked up at Ø40, which the
+      // drilling table does not reach, and that one step left the whole Drilling line "unresolved" at $0.
+      const ops = onMill([{ feature_type: 'SimpleHole', variant: 'blind', diameter_mm: 40, occurrences: [{ depth_mm: 4.597 }] }]);
+      expect(ops.filter((o) => o.missing)).toEqual([]);
+      const of = (name: string) => ops.find((o) => o.name === name && o.cadFeatureType === 'SimpleHole')!;
+      const spot = of('Center Drilling');
+      expect(spot.trace!.find((t) => t.fieldName === 'Hole Diameter')!.value).toBe(38);
+      expect(String(spot.trace!.find((t) => t.fieldName === 'Hole Diameter')!.source)).toContain('The largest drill, Ø38 mm: the Ø40 mm hole is wider than the drills reach');
+      // Spotted 38 / 2 = 19 mm deep at the Ø38 drilling speed and feed; drilled 4.597 mm deep with the Ø38 drill.
+      expect(spot.timeSec).toBe(holeSec(19, 38));
+      const drill = of('Drilling');
+      expect(drill.trace!.find((t) => t.fieldName === 'Hole Diameter')!.value).toBe(38);
+      expect(drill.trace!.find((t) => t.fieldName === 'Hole Depth')!.value).toBe(4.597);
+      expect(drill.timeSec).toBeGreaterThan(0);
+      const bore = of('Boring');
+      expect(bore.timeSec).toBeGreaterThan(0);
+      expect([bore.trace!.find((t) => t.fieldName === 'Initial Diameter')!.value, bore.trace!.find((t) => t.fieldName === 'Final Diameter')!.value]).toEqual([38, 40]);
+    });
+
+    it('a hole pattern, a tapped hole and a stepped hole follow the same rule: drilled at Ø38, bored to size', () => {
+      const pattern = [{ feature_type: 'SimpleHole', variant: 'pcd_pattern', diameter_mm: 40, occurrences: [{ hole_count: 4, depth_mm: 12 }] }];
+      expect(missingOf(pattern)).toEqual([]);
+      expect(names(pattern, 'SimpleHole')).toEqual(['Center Drilling', 'Drilling', 'Boring']);
+      // An M52 x 5 thread: its tap drill (0.8 x 52 = 41.6 mm) is wider than the drills reach.
+      const tapped = [{ feature_type: 'SimpleHole', variant: 'threaded', diameter_mm: 52, occurrences: [{ depth_mm: 30, spec: 'M52×5', tapped: true }] }];
+      expect(missingOf(tapped)).toEqual([]);
+      expect(names(tapped, 'SimpleHole')).toEqual(expect.arrayContaining(['Center Drilling', 'Drilling', 'Boring', 'Tapping']));
+      // A stepped hole whose first step is Ø45: that step is drilled at Ø38 and bored, the Ø20 step drilled as it is.
+      const stepped = [{ feature_type: 'MultiStepHole', variant: 'stepped', diameter_mm: 0, occurrences: [{ steps: [{ diameter_mm: 45, depth_mm: 6 }, { diameter_mm: 20, depth_mm: 15 }, { diameter_mm: 10, depth_mm: 8 }] }] }];
+      expect(missingOf(stepped)).toEqual([]);
+      const steppedOps = onMill(stepped).filter((o) => o.cadFeatureType === 'MultiStepHole');
+      expect(steppedOps.map((o) => o.name)).toEqual(['Center Drilling', 'Drilling', 'Boring']);
+      // The three steps are drilled with the Ø38, Ø20 and Ø10 drills; only the Ø45 step is bored (from Ø38).
+      const stepDrills = steppedOps.find((o) => o.name === 'Drilling')!.trace!.filter((t) => t.fieldName.endsWith('Hole Diameter')).map((t) => t.value);
+      expect(stepDrills).toEqual([38, 20, 10]);
+      const stepBores = steppedOps.find((o) => o.name === 'Boring')!.trace!.filter((t) => /(Initial|Final) Diameter$/.test(t.fieldName)).map((t) => t.value);
+      expect(stepBores).toEqual([38, 45]);
+    });
+
+    it('a counterbore wider than the drills is bored out from the hole under it; a countersink that wide is chamfer milled round its mouth', () => {
+      // A Ø50 counterbore over its own Ø30 hole (0.6 x 50): the hole is spotted and drilled, the Ø50 step bored from Ø30.
+      const counterbore = [{ feature_type: 'MultiStepHole', variant: 'counterbore', diameter_mm: 50, occurrences: [{ depth_mm: 8 }] }];
+      expect(missingOf(counterbore)).toEqual([]);
+      const cb = onMill(counterbore).filter((o) => o.cadFeatureType === 'MultiStepHole');
+      expect(cb.map((o) => o.name)).toEqual(['Center Drilling', 'Drilling', 'Boring']);
+      const bored = cb.find((o) => o.name === 'Boring')!;
+      expect([bored.trace!.find((t) => t.fieldName === 'Initial Diameter')!.value, bored.trace!.find((t) => t.fieldName === 'Final Diameter')!.value]).toEqual([30, 50]);
+      // A Ø50 countersink with no hole of its own in the CAD: its Ø30 hole is drilled, its mouth milled as a chamfer of pi x 50 mm.
+      const countersink = [{ feature_type: 'Edge', variant: 'countersink', diameter_mm: 50, occurrences: [{ depth_mm: 5 }] }];
+      expect(missingOf(countersink)).toEqual([]);
+      const cs = onMill(countersink).filter((o) => o.cadFeatureType === 'Edge');
+      expect(cs.map((o) => o.name)).toEqual(['Center Drilling', 'Drilling', 'Chamfering']);
+      expect(cs.find((o) => o.name === 'Chamfering')!.timeSec).toBe(edgeSec(Math.PI * 50));
+      // Up to the largest drill nothing changes: a Ø38 hole is spotted and drilled at its own diameter, with no boring.
+      expect(names([{ feature_type: 'SimpleHole', variant: 'through', diameter_mm: 38, occurrences: [{ depth_mm: 10 }] }], 'SimpleHole')).toEqual(['Center Drilling', 'Drilling']);
+    });
+  });
+
   it('a stepped hole is spotted at its entry step', () => {
     const spot = onMill([{ feature_type: 'MultiStepHole', variant: 'stepped', diameter_mm: 0, occurrences: [{ steps: [{ diameter_mm: 8, depth_mm: 4 }, { diameter_mm: 5, depth_mm: 10 }] }] }])
       .find((o) => o.name === 'Center Drilling')!;
