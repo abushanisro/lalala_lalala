@@ -473,6 +473,9 @@ export function ProcessCostDialog({
   const [selectedLookupField, setSelectedLookupField] = useState<any>(null);
   const [showLookupTable, setShowLookupTable] = useState<boolean>(false);
   const [lookupTableData, setLookupTableData] = useState<any>(null);
+  // The open panel picks a machine for the line (a machine input's eye), and the input it is for.
+  const lookupPicksMachine = (lookupTableData as { pickMachine?: boolean } | null)?.pickMachine === true;
+  const lookupFieldLabel = (lookupTableData as { fieldLabel?: string } | null)?.fieldLabel ?? '';
 
   // ─── ONE architecture: HR Rates (mhr_records) drives this whole dialog ────
   //
@@ -1515,6 +1518,25 @@ export function ProcessCostDialog({
     );
   };
 
+  // The machine inputs (top spindle speed) read again from the chosen machine's record, a typed one too: the machine selects its speed.
+  const readMachineFields = () => {
+    for (const f of machiningMachineFieldsRef.current) machiningEditedRef.current.delete(f);
+    void resolveMachiningInputs(selectedCalculatorId, editedMachiningKeys(), true);
+  };
+
+  /**
+   * The machine record a machine input is picked from when its value names none (typed, or cleared): the machine chosen here, in the
+   * column the engine's run read (a lathe's live tool for milling on the lathe). Its eye opens the class's machines to pick from.
+   */
+  const machinePickRef = (fieldName: string): SourceRef | undefined => {
+    if (!machiningMachineFieldsRef.current.has(fieldName) || !selectedMHR?.id) return undefined;
+    const seed = engineSeedRef.current?.calculatorId === selectedCalculatorId ? engineSeedRef.current : engineSeedsRef.current[selectedCalculatorId] ?? null;
+    return {
+      kind: 'machine', machineId: selectedMHR.id, machineName: selectedMHR.machineName,
+      column: runsOnLiveTool(seed?.refs) ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm',
+    };
+  };
+
   const onMachiningKeyEdited = (fieldName: string) => {
     if (!selectedCalculatorId || !machiningCalculatorIds.has(selectedCalculatorId)) return;
     const field = (selectedCalculator?.fields ?? []).find((f: CalculatorField) => f.fieldName === fieldName);
@@ -2345,8 +2367,7 @@ export function ProcessCostDialog({
       // from it (the engine ran on it, or they were read for it), there is nothing to read.
       const shown = [...machiningMachineFieldsRef.current].filter((f) => !machiningEditedRef.current.has(f)).map((f) => sourceRefFor(f));
       if (allReadFrom(shown, loadedMHRId)) return;
-      for (const f of machiningMachineFieldsRef.current) machiningEditedRef.current.delete(f);
-      void resolveMachiningInputs(selectedCalculatorId, editedMachiningKeys(), true);
+      readMachineFields();
       return;
     }
     // The saved machine arriving on open is not a change: only fill the
@@ -2442,7 +2463,9 @@ export function ProcessCostDialog({
 
       // The engine said where the value was read (SourceRef): open that record or table with its row outlined, or the calculation behind
       // it step by step with the faces it rests on lit. Every engine that records refs is shown this one way, not per field name.
-      const ref = sourceRefFor(field.fieldName);
+      const ref = sourceRefFor(field.fieldName) ?? machinePickRef(field.fieldName);
+      // A machine input (top spindle speed) is picked by its machine: a row selects that machine for the line, rates and speed together.
+      const pickMachine = ref?.kind === 'machine' && machiningMachineFieldsRef.current.has(field.fieldName);
       if (ref && opensTable(ref)) {
         const current = calculatorInputs[field.fieldName];
         let panel: SourcePanel;
@@ -2453,7 +2476,7 @@ export function ProcessCostDialog({
         else if (ref.kind === 'calculation') panel = calculationPanel(ref);
         else if (ref.kind === 'smTable') panel = smTablePanel(ref, await fetchSheetMetalTable(processesApi, ref.table), current);
         else return;
-        setLookupTableData({ fieldName: field.fieldName, fieldLabel: field.displayLabel || field.fieldName, tableId: null, ...panel });
+        setLookupTableData({ fieldName: field.fieldName, fieldLabel: field.displayLabel || field.fieldName, tableId: null, pickMachine, ...panel });
         setShowLookupTable(true);
         // A calculation over CAD measurements: its faces too, beside the steps (the one case both panels show at once).
         const evidence = evidenceOfRef(ref);
@@ -3833,7 +3856,7 @@ export function ProcessCostDialog({
                         // An eye opens the reference table for inputs read from one.
                         const hasLookupEye =
                           // The engine recorded where the value was read: a record, table or calculation to open.
-                          opensTable(sourceRefFor(field.fieldName)) ||
+                          opensTable(sourceRefFor(field.fieldName)) || !!machinePickRef(field.fieldName) ||
                           (field.fieldType === 'database_lookup' && field.dataSource === 'processes') ||
                           !!field.sourceField?.startsWith('from_') ||
                           // Real sm_lookup_* cost-engine tables, DB-marked or resolved in application code.
@@ -4160,8 +4183,22 @@ export function ProcessCostDialog({
             isCurrent={(row) => isMatchedLookupRow(row, lookupTableData.matchedRowKeys)}
             currentTitle={`Currently used for ${lookupTableData.fieldLabel}`}
             currentRowRef={matchedCurrentRowRef}
-            onPick={(value) => {
-              if (selectedLookupField) setCalculatorInputs((prev: Record<string, any>) => ({ ...prev, [selectedLookupField.fieldName]: value }));
+            {...(lookupPicksMachine ? {
+              pickRow: true,
+              // Only the machines this line can run on (the dialog's machine list for its process and location).
+              canPick: (row: Record<string, unknown>) => filteredMHR.some((m) => m.id === String(row.id)),
+              cannotPickTitle: 'Not offered for this line (its process or location)',
+              pickHint: <>
+                Click a machine to use it for this line: its rates and its top speed for{' '}
+                <strong className="text-foreground">{lookupFieldLabel}</strong> come with it.
+              </>,
+            } : {})}
+            onPick={(value, row) => {
+              if (lookupPicksMachine) {
+                // The machine selects its speed: choosing it changes the line's machine; choosing the one in use reads its speed again.
+                if (String(row.id) === selectedMHRId) readMachineFields();
+                else { setSelectedMHRId(String(row.id)); setUserOverrodeMHR(true); }
+              } else if (selectedLookupField) setCalculatorInputs((prev: Record<string, any>) => ({ ...prev, [selectedLookupField.fieldName]: value }));
               // Close only the reference table, after the input update has been queued.
               setTimeout(() => {
                 setShowLookupTable(false);

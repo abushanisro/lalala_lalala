@@ -47,3 +47,31 @@ describe('ReferenceTable', () => {
     expect(html).toContain('>—</td>');
   });
 });
+
+describe('ReferenceTable picking a machine (Max Spindle Speed\'s eye)', () => {
+  // The 3-axis mills at the line's location, with their top spindle speed last; the Haas is not offered for the line.
+  const machines = renderToStaticMarkup(createElement(ReferenceTable, {
+    columns: [{ name: 'machine_name', label: 'Machine Name' }, { name: 'spindle_speed_rpm', label: 'Spindle Speed Rpm' }],
+    rows: [{ id: 'haas', machine_name: 'Haas VF-2', spindle_speed_rpm: 8100 }, { id: 'v22', machine_name: 'Makino V22', spindle_speed_rpm: 30000 }],
+    fieldLabel: 'Max Spindle Speed (rpm)',
+    isCurrent: (row: Record<string, unknown>) => row.id === 'v22',
+    onPick: () => undefined,
+    pickRow: true,
+    canPick: (row: Record<string, unknown>) => row.id === 'v22',
+    cannotPickTitle: 'Not offered for this line (its process or location)',
+    pickHint: 'Click a machine to use it for this line: its rates and its top speed come with it.',
+  }));
+
+  it('says that picking a row picks the machine, not a value', () => {
+    expect(machines).toContain('Click a machine to use it for this line');
+    expect(machines).not.toContain('Click a row to use its');
+  });
+
+  it('shows a machine the line cannot use, dimmed, with why it cannot be picked', () => {
+    const haas = /<tr class="([^"]*)" title="([^"]*)"[^>]*>(?:(?!<\/tr>).)*Haas VF-2/s.exec(machines);
+    expect(haas?.[1]).toContain('cursor-not-allowed');
+    expect(haas?.[2]).toBe('Not offered for this line (its process or location)');
+    const makino = /<tr class="([^"]*)"[^>]*>(?:(?!<\/tr>).)*Makino V22/s.exec(machines);
+    expect(makino?.[1]).toContain('cursor-pointer');
+  });
+});

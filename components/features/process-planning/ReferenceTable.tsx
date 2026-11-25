@@ -13,7 +13,7 @@ const MIN_COLUMN_REM = 5;
  * column is in view at once: each gets a share of the width by the text it holds (columnShares) and long text (names, notes, sources) wraps
  * inside it. The value column (the last) is pinned to the right edge, for a table of so many columns that the panel scrolls sideways.
  */
-export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, currentTitle, currentRowRef, onPick }: {
+export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, currentTitle, currentRowRef, onPick, pickRow, canPick, pickHint, cannotPickTitle }: {
   columns: readonly ReferenceColumn[];
   rows: readonly Record<string, unknown>[];
   /** The input the picked value goes to. */
@@ -24,7 +24,16 @@ export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, cur
   isCurrent?: (row: Record<string, unknown>) => boolean;
   currentTitle?: string;
   currentRowRef?: Ref<HTMLTableRowElement>;
-  onPick: (value: unknown) => void;
+  /** The picked row's value (the last column), and the row itself (a machine picked whole, by its id). */
+  onPick: (value: unknown, row: Record<string, unknown>) => void;
+  /** A row is picked whole (a machine for the line), its value column empty or not. */
+  pickRow?: boolean;
+  /** Whether a row can be picked for this input: one it cannot take is shown, dimmed, and not picked. */
+  canPick?: (row: Record<string, unknown>) => boolean;
+  /** Says what picking a row does, in place of "Click a row to use its value". */
+  pickHint?: ReactNode;
+  /** Why a dimmed row cannot be picked. */
+  cannotPickTitle?: string;
 }) {
   const output = outputColumn(columns);
   const stop = (e: { stopPropagation: () => void; preventDefault: () => void }) => { e.stopPropagation(); e.preventDefault(); };
@@ -34,8 +43,10 @@ export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, cur
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <p className="shrink-0 border-b border-border bg-primary/5 px-3 py-1.5 text-xs leading-relaxed text-muted-foreground">
-        Click a row to use its <strong className="text-primary">{output?.label ?? 'value'}</strong> for{' '}
-        <strong className="text-foreground">{fieldLabel}</strong>.
+        {pickHint ?? <>
+          Click a row to use its <strong className="text-primary">{output?.label ?? 'value'}</strong> for{' '}
+          <strong className="text-foreground">{fieldLabel}</strong>.
+        </>}
         {note && <> {note}</>}
       </p>
 
@@ -43,7 +54,7 @@ export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, cur
         <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: `${2.5 + columns.length * MIN_COLUMN_REM}rem` }}>
           <colgroup>
             <col className="w-10" />
-            {columns.map((c, i) => <col key={c.name} style={{ width: `${shares[i]}%` }} />)}
+            {columns.map((c, i) => <col key={c.name} style={{ width: `${shares[i] ?? 0}%` }} />)}
           </colgroup>
           <thead>
             <tr>
@@ -63,14 +74,18 @@ export function ReferenceTable({ columns, rows, fieldLabel, note, isCurrent, cur
             {rows.map((row, i) => {
               const current = isCurrent?.(row) ?? false;
               const value = output ? columnValue(row, output.name) : undefined;
+              const pickable = canPick?.(row) ?? true;
               return (
                 <tr
                   key={i}
                   ref={current ? currentRowRef : undefined}
-                  className={`group cursor-pointer ${current ? 'bg-primary/10' : 'hover:bg-muted/60'}`}
-                  title={current ? currentTitle ?? `Currently used for ${fieldLabel}` : `Use ${output?.label ?? 'value'} = ${cellText(value)}`}
+                  className={`group ${pickable ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${current ? 'bg-primary/10' : pickable ? 'hover:bg-muted/60' : ''}`}
+                  title={current
+                    ? currentTitle ?? `Currently used for ${fieldLabel}`
+                    : !pickable ? cannotPickTitle ?? 'Cannot be used for this input'
+                      : pickRow ? `Use this row for ${fieldLabel}` : `Use ${output?.label ?? 'value'} = ${cellText(value)}`}
                   onMouseDown={stop}
-                  onClick={(e) => { stop(e); if (value !== undefined) onPick(pickedValue(value)); }}
+                  onClick={(e) => { stop(e); if (pickable && (pickRow || value !== undefined)) onPick(pickedValue(value), row); }}
                 >
                   <td className={`border-b border-r border-border px-1 py-1.5 text-center align-top font-mono tabular-nums ${current ? 'font-semibold text-primary' : 'text-muted-foreground'}`}>
                     {current ? '★' : i + 1}
