@@ -213,12 +213,33 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(sheet('RM Composition Analysis', { 'Lot Size': 300 }).sec).toBeCloseTo(0.2, 9);
   });
 
-  it('the milling line times its moves from data (1142): tool changes and rapids, not a flat 15 %; Stock Prep Mill keeps what it shipped', () => {
+  it('the milling line times its moves from data (1142): tool changes and rapids, not a flat 15 %', () => {
     expect(readFileSync(join(ROOT, 'migrations/1142_machining_milling_rapids_tool_changes.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1142, spec));
     const station = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Milling')!;
     expect(station.fields.map((f) => f.name)).not.toContain('Rapids and Tool Change Allowance');
     expect(station.fields.find((f) => f.name === 'Cycle Time')!.formula).toBe('{Cutting Time} + {Tool Change Time Total} + {Rapid Time}');
-    expect(loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Stock Prep Mill')!.fields.map((f) => f.name)).toContain('Rapids and Tool Change Allowance');
+  });
+
+  it('Stock Prep Mill times its moves as the Milling station does (1149); what 1030 shipped is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1149_machining_stock_prep_mill_moves_from_data.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1149, spec));
+    expect(readFileSync(join(ROOT, 'migrations/1030_machining_calculators_batch_2.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1030, spec));
+    const current = loadMachiningCalculatorSpec().calculators;
+    const prep = current.find((c) => c.name === 'Machining - Stock Prep Mill')!;
+    const station = current.find((c) => c.name === 'Machining - Milling')!;
+    // The same fields and formulas as the Milling station: no flat allowance left.
+    expect(prep.fields).toEqual(station.fields);
+    expect(prep.fields.map((f) => f.name)).not.toContain('Rapids and Tool Change Allowance');
+    expect(prep.fields.find((f) => f.name === 'Cycle Time')!.formula).toBe('{Cutting Time} + {Tool Change Time Total} + {Rapid Time}');
+    // The engine sees only the current entry.
+    expect(current.filter((c) => c.name === 'Machining - Stock Prep Mill')).toHaveLength(1);
+  });
+
+  it('a copied calculator keeps the version it was copied at: Bulk Milling stays the removal-rate model 1031 shipped (a fresh database builds it so)', () => {
+    // sameFieldsAs resolves at the copy's own migration, so a database built from the migrations in order and the spec agree: Rough Milling
+    // moved to the workbook in 1140, Bulk Milling (the stock around the part, which no workbook sheet times) did not (user decision 2026-11-25).
+    const bulk = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Bulk Milling')!;
+    expect(bulk.fields.map((f) => f.name)).toEqual(['Removed Volume', 'Material Removal Rate', 'Roughing Share', 'Finishing Rate Factor', 'Cycle Time']);
+    expect(readFileSync(join(ROOT, 'migrations/1031_machining_mill_operation_calculators.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1031, spec));
   });
 
   it('the named milling operations follow the workbook (1140); Bulk Milling keeps the Rough Milling fields 1031 shipped it with', () => {

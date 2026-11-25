@@ -3266,7 +3266,18 @@
       ],
       "migration": 1030,
       "sameFieldsAs": "Machining - Milling",
-      "description": "Preparing the stock on a mill before the part is machined: the time of each milling operation group on the stock, plus the allowance for rapid moves and tool changes."
+      "description": "Preparing the stock on a mill before the part is machined: the time of each milling operation group on the stock, plus the allowance for rapid moves and tool changes.",
+      "supersededBy": 1149
+    },
+    {
+      "name": "Machining - Stock Prep Mill",
+      "operation": "{station}",
+      "machineClasses": [
+        "stock_prep_mill"
+      ],
+      "migration": 1149,
+      "sameFieldsAs": "Machining - Milling",
+      "description": "Preparing the stock on a mill before the part is machined: the time of each milling operation group on the stock, plus its moves from data, as the Milling station calculator times them since migration 1142: a tool change per tool (Tool Change Time) and a rapid move to each feature visited (the rapid transfer distance over the machine's rapid traverse rate). Was the cutting time plus a flat 15 % allowance (user decision 2026-11-25: the same model as the Milling station)."
     },
     {
       "name": "Machining - Stock Prep Lathe",
