@@ -70,17 +70,19 @@ describe('the mill has milling to do: its milling line carries the setup, as it 
   const milling = lineOf(result.processLines, '3 Axis Mill')!;
 
   it('the line is the bulk milling at the mill\'s rate plus the setup, and the route total is unchanged', () => {
-    // 12,000 * 0.8 / 60,000 = 0.16 min; 12,000 * 0.2 / 24,000 = 0.10 min; 0.26 min = 15.6 s; at 900 per hour = 3.90.
-    expect(milling.cycleTimeMin * 60).toBeCloseTo(15.6, 4);
-    expect(milling).toMatchObject({ setupCost: SETUP_COST, runCost: 3.9, totalCost: 8.4, setupTimeMin: 30, setupTimeSource: 'machine' });
+    // Roughing Share 0.9 (1158): 12,000 * 0.9 / 60,000 = 0.18 min; 12,000 * 0.1 / 24,000 = 0.05 min; 0.23 min = 13.8 s; at 900 per hour = 3.45.
+    expect(milling.cycleTimeMin * 60).toBeCloseTo(13.8, 4);
+    expect(milling).toMatchObject({ setupCost: SETUP_COST, setupTimeMin: 30, setupTimeSource: 'machine' });
+    expect(milling.runCost).toBeCloseTo(3.45, 10);
+    expect(milling.totalCost).toBeCloseTo(7.95, 10);
     expect(setupCarriers(result.processLines)).toEqual(['3 Axis Mill']);
     // Part Setup: load 10 s + unload 10 s = 20 s at 900 per hour = 5.00, with no setup of its own (closeTo: not rounded to cents).
     const partSetup = lineOf(result.processLines, 'Part Setup');
     expect(partSetup).toMatchObject({ setupCost: 0, setupTimeMin: 0, setupTimeSource: 'none' });
     expect(partSetup?.runCost).toBeCloseTo(5, 10);
     expect(partSetup?.totalCost).toBeCloseTo(5, 10);
-    // The mill's share of the route: 8.40 + 5.00.
-    expect(onTheMill(result.processLines).reduce((s, l) => s + l.totalCost, 0)).toBeCloseTo(13.4, 10);
+    // The mill's share of the route: 7.95 + 5.00.
+    expect(onTheMill(result.processLines).reduce((s, l) => s + l.totalCost, 0)).toBeCloseTo(12.95, 10);
     expect(result.warnings.some((w) => w.includes('setup not charged'))).toBe(false);
   });
 });

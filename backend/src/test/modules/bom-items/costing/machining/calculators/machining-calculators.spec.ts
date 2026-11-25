@@ -96,7 +96,10 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     // The header states where the one default the reference data has no value for comes from; the database keeps it in the description.
     expect(committed).toContain('-- Machining - Obround Slot Milling, Slotting Depth Ratio = 0.2. The engine\'s own value: the');
     expect(committed).toContain('mmc-carbide.com/permanent/courses/70/depth-of-cut.html');
-    expect(spec.calculators.find((c) => c.operation === 'Obround Slot Milling')!.description).toContain('Mitsubishi Materials');
+    const shipped1118 = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators.find((c) => c.name === 'Machining - Obround Slot Milling' && c.migration === 1118)!;
+    expect(shipped1118.description).toContain('Mitsubishi Materials');
+    // Since 1158 a pass is as deep as the cutter is wide (the Corrax table on the workbook's Slot Milling sheet).
+    expect(spec.calculators.find((c) => c.operation === 'Obround Slot Milling')!.description).toContain('ap = 1 x D');
     // The calculators shipped before it are the files they were: the header's new paragraph is written only for a field with a source note.
     expect(readFileSync(join(ROOT, 'migrations/1037_machining_part_setup_calculator.sql'), 'utf-8')).not.toContain('The engine\'s own value');
   });
@@ -175,14 +178,21 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(timed.value('Tool Cost per Part')).toBeCloseTo(0.3333, 4);
   });
 
-  it('Knurling: the sheet\'s 30 s on its own feed; the corrected feed is a turning feed, not 25.4 / TPI', () => {
-    const knurl = (feed: number) => sheet('Knurling', {
-      'Knurl Diameter': 27, 'Knurl Length': 3, 'Feed Min': feed, 'Feed Max': feed, 'Tool Price': 100, 'Tool Life': 300,
+  it('Knurling reproduces the workbook\'s Knurling sheet: the feed is the knurl\'s pitch, 25.4 / TPI (1158)', () => {
+    const knurl = (values: Record<string, number> = {}) => sheet('Knurling', {
+      'Knurl Diameter': 27, 'Knurl Length': 3, 'Tool Price': 100, 'Tool Life': 300, ...values,
     });
-    // Knurling sheet: 6 m/min on Ø27 = 70.74 rpm; feed 25.4 / 32 TPI = 0.79375; (3 + 4) / (0.79375 x 70.74) x 4 = 0.4989 min -> 30 s.
-    expect(knurl(25.4 / 32).sec).toBe(30);
-    // The workbook's finishing turning feed (aluminium 0.05-0.2, middle 0.125): 7 / (0.125 x 70.7355) x 4 = 3.1667 min = 190.004 s -> 191 s.
-    expect(knurl(0.125).sec).toBe(191);
+    // Knurling sheet: 6 m/min on Ø27 = 70.74 rpm; feed 25.4 / 32 TPI = 0.79375 (G13 =25.4/G11); (3 + 4) / (0.79375 x 70.74) x 4 =
+    // 0.4989 min -> 30 s, the sheet's own 30 s. No TPI typed: the calculator's own, the sheet's 32.
+    const run = knurl();
+    expect(run.value('TPI')).toBe(32);
+    expect(run.value('Feed')).toBeCloseTo(0.7938, 4);
+    expect(run.sec).toBe(30);
+    // A coarser knurl (20 TPI, the drawing's) feeds 1.27 mm a rev: 7 / (1.27 x 70.7355) x 4 = 0.31168 min = 18.70 s -> 19 s.
+    expect(knurl({ TPI: 20 }).sec).toBe(19);
+    // The turning finishing band it was fed from until 1158 is gone with its inputs.
+    expect(spec.calculators.find((c) => c.name === 'Machining - Knurling')!.fields.map((f) => f.name)).not.toEqual(expect.arrayContaining(['Feed Band Depth']));
+    expect(spec.calculators.find((c) => c.name === 'Machining - Knurling')!.fields.some((f) => ['Feed Min', 'Feed Max', 'Range Position'].includes(f.name))).toBe(false);
   });
 
   it('End Facing and Parting: the workbook\'s Facing and Cutoff sheets, with the travel corrected to the bar\'s radius', () => {
@@ -251,7 +261,8 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     // 1152 shipped Groove Milling as a copy of its Filleting; 1155 replaced it with the ball nose model, and 1152 still generates as applied.
     const shipped = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators.find((c) => c.name === 'Machining - Groove Milling' && c.migration === 1152)!;
     expect(shipped.supersededBy).toBe(1155);
-    expect(shipped.fields).toEqual(fields('Machining - Filleting'));
+    const filleting1152 = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators.find((c) => c.name === 'Machining - Filleting' && c.migration === 1152)!;
+    expect(shipped.fields).toEqual(filleting1152.fields);
     expect(fields('Machining - Groove Milling').map((f) => f.name)).toContain('Path Length');
   });
 
@@ -445,8 +456,8 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(readFileSync(join(ROOT, 'migrations/1157_machining_slot_depth_and_tap_cost.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1157, spec));
     const all = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators;
     const versions = (name: string) => all.filter((c) => c.name === name).map((c) => [c.migration ?? 804, c.supersededBy ?? null]);
-    expect(versions('Machining - Slot Milling')).toEqual([[1031, 1140], [1140, 1157], [1157, null]]);
-    expect(versions('Machining - Rigid Tapping')).toEqual([[804, 1139], [1139, 1157], [1157, null]]);
+    expect(versions('Machining - Slot Milling')).toEqual([[1031, 1140], [1140, 1157], [1157, 1158], [1158, null]]);
+    expect(versions('Machining - Rigid Tapping')).toEqual([[804, 1139], [1139, 1157], [1157, 1158], [1158, null]]);
     // Half the cutter a pass until 1157: the sheet's own example (6.5 mm, a 12 mm cutter) took two passes.
     const ratioOf = (migration: number) => all.find((c) => c.name === 'Machining - Slot Milling' && c.migration === migration)!.fields.find((f) => f.name === 'Slotting Depth Ratio')!.default;
     expect([ratioOf(1140), ratioOf(1157)]).toEqual([0.5, 1]);
@@ -458,16 +469,17 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     expect(tap.fields.at(-1)!.name).toBe('Cycle Time');
   });
 
-  it('Plunge Milling, corrected: plunges half a cutter apart along the slot (the sheet copies Slot Milling on 3.7 x 3.142 x 10 mm)', () => {
-    // The sheet's 116.254 mm x 10 x 5 deep, a 10 mm 4-tooth cutter, 50 m/min, 0.05 mm/tooth: ceil(116.254 / 5) = 24 plunges, each
-    // (5 + 10) / (0.05 x 4 x 1591.55) = 0.047124 min; 1.13097 min = 67.86 s -> 68 s. (The sheet: 129 s, the slot formula over 5 passes.)
+  it('Plunge Milling, corrected: plunges three quarters of a cutter apart along the slot (the sheet copies Slot Milling on 3.7 x 3.142 x 10 mm)', () => {
+    // The sheet's 116.254 mm x 10 x 5 deep, a 10 mm 4-tooth cutter, 50 m/min, 0.05 mm/tooth: a step of 0.75 x 10 mm (Sandvik's plunge
+    // step, 1158), ceil(116.254 / 7.5) = 16 plunges, each (5 + 10) / (0.05 x 4 x 1591.55) = 0.047124 min; 0.75398 min = 45.24 s -> 46 s.
+    // (The sheet: 129 s, the slot formula over 5 passes.)
     const run = sheet('Plunge Milling', {
       'Slot Length': 116.254, 'Slot Width': 10, 'Slot Depth': 5, 'Slots': 1, 'Cutter Diameter': 10, 'Teeth': 4,
       'Speed Min': 50, 'Speed Max': 50, 'Feed per Tooth Min': 0.05, 'Feed per Tooth Max': 0.05, 'Tool Price': 1337.5, 'Tool Life': 1000,
     });
-    expect([run.value('Plunges'), run.value('Width Passes')]).toEqual([24, 1]);
-    expect(run.value('Machining Time')).toBeCloseTo(1.131, 3);
-    expect(run.sec).toBe(68);
+    expect([run.value('Plunges'), run.value('Width Passes')]).toEqual([16, 1]);
+    expect(run.value('Machining Time')).toBeCloseTo(0.754, 3);
+    expect(run.sec).toBe(46);
   });
 
   it('hole making follows the workbook (1139); Drill Press copies the 1139 Drilling, and what 804 and 1030 shipped is kept', () => {
@@ -553,6 +565,44 @@ describe('machining calculator spec ↔ migration ↔ engine', () => {
     called.add('Gun Drilling'); called.add('Deep Bore Machine');
     const specified = new Set(spec.calculators.map((c) => c.operation));
     expect([...called].filter((op) => !specified.has(op))).toEqual([]);
+  });
+
+  it('the sourced defaults ship in 1158 (user decisions 2026-11-25): each changed calculator is a new version, and what it replaced is kept', () => {
+    expect(readFileSync(join(ROOT, 'migrations/1158_machining_sourced_defaults.sql'), 'utf-8')).toBe(buildMachiningCalculatorMigrationSql(1158, spec));
+    const all = loadMachiningCalculatorSpec({ includeSuperseded: true }).calculators;
+    const shipped = spec.calculators.filter((c) => c.migration === 1158);
+    // Every replaced entry stays in the spec right before its replacement, so the display order of the calculators does not move.
+    for (const c of shipped) {
+      const i = all.findIndex((x) => x === all.find((y) => y.name === c.name && y.migration === 1158));
+      expect(all[i - 1]).toMatchObject({ name: c.name, supersededBy: 1158 });
+    }
+    const value = (name: string, field: string) => spec.calculators.find((c) => c.name === `Machining - ${name}`)!.fields.find((f) => f.name === field)?.default;
+    // Range Position 0.3: the median place of the workbook's worked feeds inside its ranges, on every calculator that has one.
+    const withRange = spec.calculators.filter((c) => c.fields.some((f) => f.name === 'Range Position'));
+    expect(withRange.map((c) => c.name.replace('Machining - ', '')).sort()).toEqual([
+      'Boring', 'Center Drilling', 'Chamfering', 'Countersinking', 'Drill Press', 'Drilling', 'End Facing', 'Facing', 'Filleting', 'Finish Turning',
+      'Internal Boring', 'Plunge Milling', 'Reaming', 'Rigid Tapping', 'Rough Milling', 'Rough Turning', 'Slot Milling', 'Step Drilling', 'Stock Prep Lathe',
+    ]);
+    for (const c of withRange) expect(c.fields.find((f) => f.name === 'Range Position')).toMatchObject({ default: 0.3, note: expect.stringContaining('median 0.29') });
+    expect([
+      value('Milling', 'Tool Change Time'), value('Stock Prep Mill', 'Tool Change Time'), value('Fine Finish Milling', 'Floor Stepover Ratio'),
+      value('Fine Finish Milling', 'Wall Step-down Ratio'), value('Contouring', 'Wall Step-down Ratio'), value('Perimeter Milling', 'Wall Step-down Ratio'),
+      value('Contouring', 'Scallop Height'), value('Obround Slot Milling', 'Slotting Depth Ratio'), value('Plunge Milling', 'Plunge Step Ratio'),
+      value('Bulk Milling', 'Roughing Share'), value('Bulk Milling', 'Finishing Rate Factor'), value('Knurling', 'TPI'),
+    ]).toEqual([4.2, 4.2, 0.95, 1.5, 1.5, 1.5, 0.0125, 1, 0.75, 0.9, 0.4, 32]);
+    // A value with only a closest published basis says so; one with no source anywhere says that, and keeps its value.
+    const note = (name: string, field: string) => spec.calculators.find((c) => c.name === `Machining - ${name}`)!.fields.find((f) => f.name === field)!.note!;
+    expect(note('Fine Finish Milling', 'Floor Stepover Ratio')).toMatch(/^Closest published basis: Autodesk Fusion/);
+    expect(note('Contouring', 'Scallop Height')).toMatch(/^Closest published basis \(derived\)/);
+    expect(note('Bulk Milling', 'Roughing Share')).toMatch(/^Closest published basis: Otsuka/);
+    expect(note('Bulk Milling', 'Finishing Rate Factor')).toMatch(/^No published source found/);
+    // Bulk Milling keeps the removal model it shipped with in 1031, now as fields of its own.
+    expect(spec.calculators.find((c) => c.name === 'Machining - Bulk Milling')!.fields.map((f) => f.name)).toEqual([
+      'Removed Volume', 'Material Removal Rate', 'Roughing Share', 'Finishing Rate Factor', 'Cycle Time',
+    ]);
+    // Every default of a calculator 1158 ships states where it comes from.
+    const unsourced = shipped.flatMap((c) => c.fields.filter((f) => f.default != null && !f.note?.trim()).map((f) => `${c.name}: ${f.name}`));
+    expect(unsourced).toEqual([]);
   });
 
   it('a missing calculator is a named gap, not a number', () => {

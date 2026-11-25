@@ -106,7 +106,7 @@ import { appliedOtherMoldingRouteId, projectMoldingRoute, type OtherMoldingRoute
 import type { InjectionMoldingCostInput } from './costing/plastic-molding/process/cost-injection-molding-engine';
 import { requiredClampForce, type MaterialClampProperties } from './costing/plastic-molding/clamp-force';
 import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './costing/plastic-molding/shot-size';
-import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
+import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, TAP_MOTION_SOURCES, TAP_SURFACE_SPEED_SOURCE, TAP_ENGAGEMENT_SOURCE, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
 import { rawMaterialPricePerKg } from './costing/shared/core/material-location-price';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
@@ -437,7 +437,7 @@ function tappingSeedRefs(
   t: { size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] },
   tap: ReturnType<typeof resolveTapPhysicsInputs>,
   sheetThicknessMm: number,
-  fallbackDepthMm: number,
+  fallbackDepthMm: number | null,
 ): Record<string, SourceRef> {
   const holes = featuresRef(`${t.size} tapped holes`, t.occurrences) ?? calculationRef(`${t.size} thread callout`, [
     inputStep('Thread size', null, t.size, 'The thread callout (drawing analysis, or the CAD thread recognition)'),
@@ -448,14 +448,20 @@ function tappingSeedRefs(
     'No of Uses': holes,
     'Tap Diameter': calculationRef('Tap Diameter', [size, resultStep('Tap Diameter', 'mm', tap.diameterMm, tap.diameterIsAssumed ? 'No M-diameter in the size: the assumed tap diameter' : 'The M-diameter of the thread size')]),
     Length: tap.depthIsAssumed
-      ? calculationRef('Tapped length (no tapped-hole depth)', [
-        inputStep('Sheet thickness', 'mm', sheetThicknessMm, sheetThicknessMm > 0 ? 'CAD: the sheet thickness the thread is tapped through' : 'No sheet thickness on the part: the 3 mm fallback'),
-        resultStep('Length', 'mm', fallbackDepthMm, 'The sheet thickness (3 mm when none)'),
-      ])
+      ? fallbackDepthMm != null
+        ? calculationRef('Tapped length (no tapped-hole depth)', [
+          inputStep('Sheet thickness', 'mm', sheetThicknessMm, 'CAD: the sheet thickness the thread is tapped through'),
+          resultStep('Length', 'mm', tap.depthMm, 'The sheet thickness'),
+        ])
+        : calculationRef('Tapped length (no tapped-hole depth): the thread engagement', [
+          resultStep('Tap Diameter', 'mm', tap.diameterMm, tap.diameterIsAssumed ? 'No M-diameter in the size: the assumed tap diameter' : 'The M-diameter of the thread size'),
+          inputStep('Material family', null, tap.materialFamily, 'The material grade\'s family (classifyMaterialFamily)'),
+          resultStep('Length', 'mm', tap.depthMm, `${tap.materialFamily === 'aluminum' ? '2' : '1'} x Tap Diameter. ${TAP_ENGAGEMENT_SOURCE}`),
+        ])
       : holes,
     'Cutting Speed': calculationRef(`Tapping surface speed, ${tap.materialFamily}`, [
       inputStep('Material family', null, tap.materialFamily, 'The material grade\'s family (classifyMaterialFamily)'),
-      resultStep('Cutting Speed', 'm/min', tap.surfaceSpeedMMin, 'HSS (M2) tapping surface speed of the family: the midpoint of Viking/Norseman Drill & Tool tap feeds and speeds and the Slugger Tools tap speed chart (TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL)'),
+      resultStep('Cutting Speed', 'm/min', tap.surfaceSpeedMMin, `HSS tapping surface speed of the family: ${TAP_SURFACE_SPEED_SOURCE[tap.materialFamily] ?? TAP_SURFACE_SPEED_SOURCE.__default__} (TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL)`),
     ]),
     'Feed per Rev': t.pitchMm != null
       ? holes
@@ -2020,7 +2026,8 @@ export class BomItemCostingService {
     materialGrade: string | null,
   ): FeatureOp[] {
     if (threads.length === 0) return [];
-    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : 3;
+    // A sheet is tapped through its thickness; a hole in solid stock, for its thread engagement (tapEngagementDepthMm).
+    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : null;
     const result: FeatureOp[] = [];
     for (const t of threads) {
       const b = computeTapCycleSec(t.size, t.count, t.pitchMm, t.depthMm, fallbackDepthMm, materialGrade);
@@ -10515,7 +10522,8 @@ export class BomItemCostingService {
   ): Promise<{ cycleTimeSec: number | undefined; gap: PhysicsGap | null; calculatorId: string | null; calculatorVersion: number | null; confidence: ConfidenceLevel; resolutionStatus: ResolutionStatus; trace: CalculationTraceStep[] }> {
     if (threads.length === 0) return { cycleTimeSec: undefined, gap: null, calculatorId: null, calculatorVersion: null, confidence: 'unsupported', resolutionStatus: 'unsupported_operation', trace: [] };
 
-    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : 3;
+    // A sheet is tapped through its thickness; a hole in solid stock, for its thread engagement (tapEngagementDepthMm).
+    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : null;
     let totalSec = 0;
     let anyResolved = false;
     let gap: PhysicsGap | null = null;
@@ -10592,8 +10600,8 @@ export class BomItemCostingService {
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each thread size's run, and the unload once per operation.
       trace: anyResolved ? groupedRunsTrace('Tapping', groupTraces, {
-        label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)',
-        ref: allowanceRef('Unload Time', TAP_UNLOAD_SEC, 'TAP_UNLOAD_SEC: the final clear and unload of the tapping cycle, once per operation (default-rates.constants.ts)'),
+        label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: `Final spindle stop and clear, once per operation. ${TAP_MOTION_SOURCES.unload}`,
+        ref: allowanceRef('Unload Time', TAP_UNLOAD_SEC, `TAP_UNLOAD_SEC: the final spindle stop and clear of the tapping cycle, once per operation (default-rates.constants.ts). ${TAP_MOTION_SOURCES.unload}`),
       }, totalSec + TAP_UNLOAD_SEC) : [],
     };
   }
@@ -11125,8 +11133,8 @@ export class BomItemCostingService {
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each hole diameter's run, and the unload once per operation.
       trace: anyResolved ? groupedRunsTrace(config.operation, groupTraces, {
-        label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)',
-        ref: allowanceRef('Unload Time', HOLE_OP_UNLOAD_SEC, 'HOLE_OP_UNLOAD_SEC: the final clear and unload of the hole operation, once per operation (default-rates.constants.ts)'),
+        label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: `Final spindle stop and clear, once per operation (the tapping cycle's). ${TAP_MOTION_SOURCES.unload}`,
+        ref: allowanceRef('Unload Time', HOLE_OP_UNLOAD_SEC, `HOLE_OP_UNLOAD_SEC: the final spindle stop and clear of the hole operation, once per operation, as the tapping cycle's (default-rates.constants.ts). ${TAP_MOTION_SOURCES.unload}`),
       }, totalSec + HOLE_OP_UNLOAD_SEC) : [],
     };
   }

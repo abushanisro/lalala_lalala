@@ -19,7 +19,9 @@
 //
 // A knurl callout knurls the Ring at the diameter it names (within 0.2 mm), else the part's one Ring, else, with several, the largest (the
 // project owner's decision of 2026-11-25), stated as an assumption. Its length is the callout's, else its Ring's. No Ring and no named
-// diameter: the line's named gap.
+// diameter: the line's named gap. Its threads per inch (the feed of the Knurling calculator is the knurl's pitch, 25.4 / TPI, as the
+// workbook's Knurling sheet has it: user decision 2026-11-25) are the callout's TPI, else 25.4 / the callout's pitch in mm; a callout that
+// states neither leaves the calculator's own TPI (the sheet's example).
 import { isoCoarsePitchMm } from '../shared/core/default-rates.constants';
 import { normalizeThreadSpecs, type DrawnThread, type ThreadInput } from './feature-holes';
 import { ringLabel, type TurnedRing } from './process/turned-diameters';
@@ -53,6 +55,11 @@ export interface KnurlOp {
   diameterSource: string;
   lengthMm: number | null;
   lengthSource: string;
+  /** The knurl's threads per inch from its callout (a pitch in mm as 25.4 / pitch); null: the callout states none. */
+  tpi: number | null;
+  tpiSource: string;
+  /** The pitch in mm the callout states, when the TPI is worked out from it. */
+  pitchMm: number | null;
   ring: TurnedRing | null;
   missing: string[];
 }
@@ -230,7 +237,13 @@ export function knurlsOnRings(knurls: readonly KnurlCallout[], rings: readonly T
       ...(diameterMm == null ? [`the diameter knurled (the knurl callout "${text}" names none and the CAD has no turned diameter)`] : []),
       ...(length.lengthMm == null ? [`the knurl's length (the knurl callout "${text}" states none${ring ? ' and its turned diameter has no length in the CAD' : ' and no turned diameter of the CAD is at its diameter'})`] : []),
     ];
+    const pitchMm = k.pitchMm != null && k.pitchMm > 0 ? k.pitchMm : null;
+    const pitch = k.tpi != null && k.tpi > 0
+      ? { tpi: k.tpi, tpiSource: `Drawing: the knurl callout "${text}" states ${k.tpi} TPI`, pitchMm: null }
+      : pitchMm != null
+        ? { tpi: 25.4 / pitchMm, tpiSource: `Drawing: the knurl callout "${text}" states a ${pitchMm} mm pitch: 25.4 / ${pitchMm} TPI`, pitchMm }
+        : { tpi: null, tpiSource: '', pitchMm: null };
     const label = ring ? ringLabel(ring) : named != null ? `Knurl Ø${named}` : `Knurl ${knurls.length > 1 ? i + 1 : ''}`.trim();
-    return { label, diameterMm, diameterSource, ...length, ring, missing };
+    return { label, diameterMm, diameterSource, ...length, ...pitch, ring, missing };
   });
 }

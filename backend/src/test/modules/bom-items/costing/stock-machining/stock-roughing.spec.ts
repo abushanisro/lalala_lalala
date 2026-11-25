@@ -159,7 +159,7 @@ describe('every technique is priced beside the quoted one', () => {
     expect(option(plan(), 'all_bulk_milling').separation).toEqual({ process: 'Band Saw', machineClass: 'band_saw', machineName: null, cost: null, timeSec: null });
   });
 
-  it('Perimeter Milling with Drop-off: 40 outlines a plate, cut out by the mill in 122.52 s', () => {
+  it('Perimeter Milling with Drop-off: 40 outlines a plate, cut out by the mill in 35.00 s', () => {
     const o = option(plan(), 'perimeter_milling_dropoff');
     expect(o).toMatchObject({ label: 'Perimeter Milling with Drop-off', chosen: false, unavailable: null, partsPerPlate: 40, processes: [] });
     // 14.335404 kg / 40 = 0.358385 kg a part: the 10 mm cut between parts makes fewer of them than the saw's 0.889 mm kerf.
@@ -168,7 +168,7 @@ describe('every technique is priced beside the quoted one', () => {
     // The mill's own operation: its time here, its cost at the rate of the mill that makes the part.
     expect(o.separation!.process).toBe('Perimeter Milling');
     expect(o.separation!.cost).toBeNull();
-    expect(o.separation!.timeSec).toBeCloseTo(122.516, 2);
+    expect(o.separation!.timeSec).toBeCloseTo(35.005, 2);
   });
 
   it('Plate Cutting with Drop-off: the cheapest part of the processes that are priced, the others listed with why', () => {
@@ -260,7 +260,7 @@ describe('Perimeter Milling with Drop-off, quoted', () => {
   it('gives the mill its perimeter cut, and the piece inside it as the blank', () => {
     expect(saw.roughing!.millOps).toHaveLength(1);
     expect(saw.roughing!.millOps[0]).toMatchObject({ name: 'Perimeter Milling', source: 'stock', cadFeatureType: 'Perimeter' });
-    expect(saw.roughing!.millOps[0]!.timeSec).toBeCloseTo(122.516, 2);
+    expect(saw.roughing!.millOps[0]!.timeSec).toBeCloseTo(35.005, 2);
     const blank = stockBlankResult(p.choice!, 'saw', p.priced)!;
     expect(blank.billetVolMm3).toBeCloseTo(64244.22, 6);
     expect(blank.purchasedVolMm3).toBeCloseTo(5309408.736 / 40, 4);
@@ -414,8 +414,8 @@ describe('the Cost Summary\'s roughing section', () => {
 
   it('prices the perimeter cut at the quoted mill\'s rate, and leaves the saw and the cutting process at their own', () => {
     const section = stockMachiningBreakdown(plan(), 'saw', 100, mill)!.roughing!;
-    // 122.5165 s at the mill's 0.02 a second: 2.45.
-    expect(section.options[1]!.separation).toEqual({ process: 'Perimeter Milling', machineClass: null, machineName: null, timeSec: 122.517, cost: 2.45 });
+    // 35.0047 s (2 passes a slotting depth of 1 x D apart, migration 1158) at the mill's 0.02 a second: 0.70.
+    expect(section.options[1]!.separation).toEqual({ process: 'Perimeter Milling', machineClass: null, machineName: null, timeSec: 35.005, cost: 0.7 });
     expect(section.options[0]!.separation).toEqual({ process: 'Band Saw', machineClass: 'band_saw', machineName: null, cost: null, timeSec: null });
     expect(section.options[2]!.separation).toEqual({ process: 'Laser Cut', machineClass: 'fiber_laser', machineName: 'Laser Cut machine', cost: 1.2, timeSec: 30 });
     // With no mill given (the quoted machine is not known), neither the bulk nor the cut's cost is stated.

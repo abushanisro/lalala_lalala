@@ -113,9 +113,9 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
   return input;
 }
 
-// The mill line's moves between its operations (migration 1142): a 5 s tool change for each cutter, and a rapid move to each feature of
-// 0.5 x the part's 83 mm box length at the test mill's 30 000 mm/min (0.083 s each).
-const moves = (tools: number, visits: number, boxMm = 83) => tools * 5 + visits * ((0.5 * boxMm) / 30000) * 60;
+// The mill line's moves between its operations (migration 1142): a 4.2 s tool change for each cutter (Haas VF-2 tool-to-tool, migration
+// 1158), and a rapid move to each feature of 0.5 x the part's 83 mm box length at the test mill's 30 000 mm/min (0.083 s each).
+const moves = (tools: number, visits: number, boxMm = 83) => tools * 4.2 + visits * ((0.5 * boxMm) / 30000) * 60;
 
 describe('computeMillingCostSummary — billet and chip loss', () => {
   it('the billet is the stock chosen for the part', () => {
@@ -680,14 +680,14 @@ describe('computeTurningCostSummary — data sanity', () => {
 });
 
 // Turning, as the Machining calculator workbook's Turning sheet times a cut (calculators of migration 1138): the speed and feed of
-// the workbook's Turning cutting conditions for the material on carbide, at the middle of each range (AL6061-T6: rough, 2 mm deep,
-// 270 m/min and 0.25 mm/rev; finish, 0.5 mm deep, 375 m/min and 0.125 mm/rev); whole passes; the spindle capped at the machine's limit;
-// whole seconds per cut. Ø20 from a Ø30 bar, 100 mm long:
-//   rough  finish start 20 + 2 x 0.5 = 21; ceil((30 - 21) / 4) = 3 passes from the bar at 270 * 1000 / (pi * 30) = 2864.79 rpm;
-//          (100 + 10) / (0.25 x 2864.79) x 3 = 0.4608 min = 27.65 s -> 28 s
-//   finish min(4000, 375 * 1000 / (pi * 21)) = 4000 rpm; (100 + 10) / (0.125 x 4000) = 13.2 s -> 14 s
-const ROUGH_SEC = 28;
-const FINISH_SEC = 14;
+// the workbook's Turning cutting conditions for the material on carbide, at the Range Position 0.3 of each range (AL6061-T6: rough,
+// 2 mm deep, 90-450 m/min and 0.2-0.3 mm/rev -> 198 and 0.23; finish, 0.5 mm deep, 150-600 m/min and 0.05-0.2 mm/rev -> 285 and 0.095);
+// whole passes; the spindle capped at the machine's limit; whole seconds per cut. Ø20 from a Ø30 bar, 100 mm long:
+//   rough  finish start 20 + 2 x 0.5 = 21; ceil((30 - 21) / 4) = 3 passes from the bar at 198 * 1000 / (pi * 30) = 2100.85 rpm;
+//          (100 + 10) / (0.23 x 2100.85) x 3 = 0.6830 min = 40.98 s -> 41 s
+//   finish min(4000, 285 * 1000 / (pi * 21)) = 4000 rpm; (100 + 10) / (0.095 x 4000) = 17.37 s -> 18 s
+const ROUGH_SEC = 41;
+const FINISH_SEC = 18;
 describe('OD Turning — the workbook\'s Turning sheet, whole passes and seconds', () => {
   it('computes the rough passes and the finish pass, split into the distinct Rough Turning / Finish Turning operations', () => {
     const result = computeTurningCostSummary(
@@ -1086,8 +1086,8 @@ describe('Fix 4 — machinabilityRating: scales MRR in both engines', () => {
   });
 
   it('featureOps path: a pocket roughs faster in aluminium than in mild steel, by the workbook\'s milling conditions for each', () => {
-    // A 50 x 25 x 12 pocket roughed with the material's 10 mm end mill on a 10 000 rpm mill: aluminium 450 m/min (held to 10 000 rpm),
-    // 0.15 mm/tooth, 3 teeth; mild steel 90 m/min (2864.79 rpm), 0.115 mm/tooth, 4 teeth.
+    // A 50 x 25 x 12 pocket roughed with the material's 10 mm end mill on a 10 000 rpm mill, at the Range Position 0.3: aluminium
+    // 390 m/min (held to 10 000 rpm), 0.13 mm/tooth, 3 teeth; mild steel 78 m/min (2482.82 rpm), 0.101 mm/tooth, 4 teeth.
     const fgv2 = [
       { feature_type: 'PocketV2', variant: 'default', diameter_mm: 0,
         occurrences: [{ depth_mm: 12, extents_mm: [50, 25, 0], material_removed_mm3: 15_000 }] },
@@ -2581,13 +2581,13 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
 
   it('adds a tool change for each cutter and a rapid move to each feature at the mill\'s rapid traverse rate, not a flat 15 %', () => {
     // 6 cutting operations (Tapping and Deburr are their own lines), one cutter and one feature each: the milling line's 4 (Facing, Rough
-    // and Fine Finish Milling, Filleting) are 4 x 5 s + 4 x 0.083 s; the Drilling line's 2 (Center Drilling, Drilling) 2 x 5 s + 2 x 0.083 s.
-    // Together the one line's 6 x 5 s + 6 x 0.083 s = 30.498 s, on the same 535 s.
-    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([4, 4, 5, 83, 0.5]);
+    // and Fine Finish Milling, Filleting) are 4 x 4.2 s + 4 x 0.083 s; the Drilling line's 2 (Center Drilling, Drilling) 2 x 4.2 s + 2 x
+    // 0.083 s. Together the one line's 6 x 4.2 s + 6 x 0.083 s = 25.698 s, on the same 535 s.
+    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([4, 4, 4.2, 83, 0.5]);
     expect([drillStep('Tools'), drillStep('Feature Visits')]).toEqual([2, 2]);
     expect(step('Rapid Traverse Rate')).toBe(30000);
     expect(line.calculationTrace!.find((st) => st.fieldName === 'Rapid Traverse Rate')!.source).toBe('Machine: Test VMC specs.rapid_traverse_mm_per_min (mhr_records)');
-    expect(step('Tool Change Time Total')).toBe(20);
+    expect(step('Tool Change Time Total')).toBeCloseTo(16.8, 10);
     expect(step('Rapid Time')).toBeCloseTo(0.332, 3);
     expect(line.cycleTimeMin).toBeCloseTo((505 + moves(4, 4)) / 60, 4);
     expect(drillLine.cycleTimeMin).toBeCloseTo((30 + moves(2, 2)) / 60, 4);

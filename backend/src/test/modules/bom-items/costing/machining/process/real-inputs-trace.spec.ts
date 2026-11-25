@@ -27,8 +27,8 @@ const rate = (r: number, extra: Partial<MHRRateInput> = {}): MHRRateInput =>
   ({ rate: r, source: 'mhr_database', machineClass: 'x', machineName: 'M', commodityCode: null, ...extra } as MHRRateInput);
 
 // Drilling, as the machining workbook's Drilling sheet times it (calculator of migration 1139): a Ø4 hole in aluminium is in the
-// 4-6 mm band of its drilling table (feed 0.13 mm/rev, 75-110 m/min, 92.5 at the middle); n = 92 500 / (pi x 4) = 7360.9 rpm on a
-// 10 000 rpm machine; (3.029 + 10) / (0.13 x 7360.9) = 0.013615 min = 0.817 s -> 1 s.
+// 4-6 mm band of its drilling table (feed 0.13 mm/rev, 75-110 m/min, 85.5 at the Range Position 0.3); n = 85 500 / (pi x 4) = 6803.9 rpm
+// on a 10 000 rpm machine; (3.029 + 10) / (0.13 x 6803.9) = 0.014730 min = 0.884 s -> 1 s.
 const MILL_10K = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test spindle_speed_rpm' } };
 describe('computeDrillCycle — the workbook\'s drilling data, gaps instead of guesses', () => {
   it('without a CAD depth the hole is not priced and the missing input is named', () => {
@@ -55,8 +55,9 @@ describe('computeDrillCycle — the workbook\'s drilling data, gaps instead of g
     expect(c.sec).toBe(1);
     const step = (name: string) => c.trace.find((s) => s.fieldName === name);
     expect(step('Feed')).toMatchObject({ value: 0.13, source: expect.stringContaining('tblDrillReamData: ALUMINUM ALLOY CAST AND WROUGHT, Hole Diameter 4 in 4-6') });
-    expect(step('Cutting Speed')).toMatchObject({ value: 92.5 });
-    expect(step('Spindle Speed')).toMatchObject({ value: 7360.92 });
+    // 75 - 110 m/min at the Range Position 0.3: 85.5 m/min; 85 500 / (pi x 4) = 6803.87 rpm.
+    expect(step('Cutting Speed')).toMatchObject({ value: 85.5 });
+    expect(step('Spindle Speed')).toMatchObject({ value: 6803.87 });
     expect(c.calculatorId).toBe('Machining - Drilling');
     // The drill's wear: Rs 624.80 over 600 parts.
     expect(step('Tool Cost per Part')).toMatchObject({ value: 1.0413 });
@@ -116,16 +117,16 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     expect(line('Finish Turning').calculatorId).toBe('Machining - Finish Turning');
   });
 
-  // The workbook's Turning cutting conditions for aluminium on carbide, at the middle of each range: rough (2 mm deep) 270 m/min and
-  // 0.25 mm/rev, finish (0.5 mm deep) 375 m/min and 0.125 mm/rev; the spindle capped at the lathe's 4000 rpm.
+  // The workbook's Turning cutting conditions for aluminium on carbide, at the Range Position 0.3 of each range: rough (2 mm deep)
+  // 198 m/min and 0.23 mm/rev, finish (0.5 mm deep) 285 m/min and 0.095 mm/rev; the spindle capped at the lathe's 4000 rpm.
   it('the Ø20 bar leaves 0.7 mm above the finish cut: one whole rough pass, rounded up to whole seconds', () => {
     // Radial stock (20 - 17.6) / 2 = 1.2 mm: the 0.5 mm finish cut, and 0.7 mm for roughing: ceil(1.4 / 4) = 1 pass. From the bar:
-    // min(4000, 270 * 1000 / (pi * 20) = 4297.18) = 4000 rpm, 1000 mm/min; (3 + 10) / 1000 = 0.78 s -> 1 s.
+    // min(4000, 198 * 1000 / (pi * 20)) = 3151.27 rpm, 0.23 x 3151.27 = 724.79 mm/min; (3 + 10) / 724.79 = 1.08 s -> 2 s.
     const rough = line('Rough Turning');
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Finish Start Diameter')).toMatchObject({ value: 18.6, unit: 'mm' });
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 1 });
-    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 4000 });
-    expect(rough.cycleTimeMin * 60).toBeCloseTo(1, 2);
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 3151.27 });
+    expect(rough.cycleTimeMin * 60).toBeCloseTo(2, 2);
     expect(findRouteDataGaps(result.processLines).filter((g) => g.process.includes('Turning'))).toEqual([]);
   });
 
@@ -138,8 +139,8 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     expect(snug.processLines.find((l) => l.process === 'Rough Turning')).toBeUndefined();
     const finish = snug.processLines.find((l) => l.process === 'Finish Turning')!;
     expect(finish.calculationTrace!.find((s) => s.fieldName === 'Finish Start Diameter')).toMatchObject({ value: 18.6 });
-    // min(4000, 375 * 1000 / (pi * 18.6) = 6417.5) = 4000 rpm; 500 mm/min; (3 + 10) / 500 = 1.56 s -> 2 s.
-    expect(finish.cycleTimeMin * 60).toBeCloseTo(2, 2);
+    // min(4000, 285 * 1000 / (pi * 18.6) = 4877.3) = 4000 rpm; 380 mm/min; (3 + 10) / 380 = 2.05 s -> 3 s.
+    expect(finish.cycleTimeMin * 60).toBeCloseTo(3, 2);
     expect(findRouteDataGaps(snug.processLines).filter((g) => g.process.includes('Turning'))).toEqual([]);
   });
 
@@ -152,10 +153,10 @@ describe('turned part costed from CAD geometry (a Ø17.6 × 3.0 mm gear blank)',
     const rough = larger.processLines.find((l) => l.process === 'Rough Turning')!;
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Bar Diameter')).toMatchObject({ value: 25, source: expect.stringContaining('Ø25 round bar') });
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Rough Passes')).toMatchObject({ value: 2 });
-    // The spindle speed is the bar's, under the machine's limit: 270 * 1000 / (pi * 25) = 3437.75 rpm.
-    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 3437.75, unit: 'rpm' });
-    // (3 + 10) / (0.25 x 3437.75) x 2 = 0.03025 min = 1.82 s -> 2 s.
-    expect(rough.cycleTimeMin * 60).toBeCloseTo(2, 2);
+    // The spindle speed is the bar's, under the machine's limit: 198 * 1000 / (pi * 25) = 2521.01 rpm.
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 2521.01, unit: 'rpm' });
+    // (3 + 10) / (0.23 x 2521.01) x 2 = 0.04484 min = 2.69 s -> 3 s.
+    expect(rough.cycleTimeMin * 60).toBeCloseTo(3, 2);
     expect(rough.calculatorId).toBe('Machining - Rough Turning');
   });
 
