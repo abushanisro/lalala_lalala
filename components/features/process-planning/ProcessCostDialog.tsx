@@ -39,6 +39,7 @@ import { calculationOfRecord, NO_CALCULATION, runOfCalculator, type LineCalculat
 import type { EngineCalculatorSeed } from '@/lib/calculators/engine-calculator-seeds';
 import { calculationPanel, evidenceOfRef, isSheetMetalLibraryTable, lookupPanel, opensTable, showsFeatures, recordPanel, smTablePanel, variablePanel, type SourcePanel, type SourceRef } from '@/lib/calculators/input-source';
 import { columnValue, isMatchedLookupRow } from '@/lib/calculators/lookup-row-match';
+import { engineLineForEdit } from '@/lib/calculators/engine-line-for-edit';
 import { allReadFrom, CLEARED_PROVENANCE, isCleared, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
 import { describeStrokeLookup, strokeComplexity as strokeComplexityOf } from '@/lib/calculators/stroke-lookup';
 import { formatFieldValue } from '@/lib/costing/cycle-fields';
@@ -914,6 +915,8 @@ export function ProcessCostDialog({
     const fromMachine = (selectedMHR)?.machineClass;
     if (fromMachine) return String(fromMachine);
     if (categoryMachineClasses.size === 1) return [...categoryMachineClasses][0]!;
+    // A category of several classes (Inspection: the CMM station and the XRF analyzer): the saved row's own class, when it is one of them.
+    if (editData?.machineClass && categoryMachineClasses.has(String(editData.machineClass))) return String(editData.machineClass);
     // A line priced on a resource HR Rates does not hold (the molding engine's bench scale, dryer, inspection operator) has no machine and
     // no HR Rates category of its class: its own saved class still names its catalog row, and with it the calculator that costed it.
     if (!savedMHRId && categoryMachineClasses.size === 0 && editData?.machineClass) return String(editData.machineClass);
@@ -1165,12 +1168,13 @@ export function ProcessCostDialog({
     if (currentValid) return;
     const liveForCategory = liveProcessLines.filter((l) => categoryMachineClasses.has(l.machineClass));
     const lineProcess = operationOptionsWithSaved.find((o) => o.value === selectedOperation)?.lineProcess ?? selectedOperation;
-    const liveLine = liveForCategory.find((l) => l.process === lineProcess) ?? liveForCategory[0];
+    // The row's own machine class first: a category can span classes (Inspection: the CMM station and the XRF analyzer).
+    const liveLine = engineLineForEdit(liveForCategory, editData?.machineClass, lineProcess);
     const engineMachineId = liveLine?.machineSelection?.balanced?.candidate?.machineId;
     if (engineMachineId && filteredMHR.some(r => String(r.id) === String(engineMachineId))) {
       setSelectedMHRId(String(engineMachineId));
     }
-  }, [processFullySelected, filteredMHR, userOverrodeMHR, selectedMHRId, liveProcessLines, categoryMachineClasses, selectedOperation, operationOptionsWithSaved]);
+  }, [processFullySelected, filteredMHR, userOverrodeMHR, selectedMHRId, liveProcessLines, categoryMachineClasses, selectedOperation, operationOptionsWithSaved, editData?.machineClass]);
 
 
   // Reset the calculator override whenever the process identity changes, OR
