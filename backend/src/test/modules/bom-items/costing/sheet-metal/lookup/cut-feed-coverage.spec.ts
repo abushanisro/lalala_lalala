@@ -66,17 +66,17 @@ describe('SheetMetalLookupService.getCutFeedCoverage', () => {
     expect(await coverage('co2_laser', grade)).toMatchObject({ material: 'Carbon Steel', minThicknessMm: 0.25, maxThicknessMm: 25.4 });
     expect(await coverage('waterjet', grade)).toMatchObject({ material: 'Carbon Steel', minThicknessMm: 3, maxThicknessMm: 32 });
     // The plasma and oxyfuel rows name it Steel.
-    expect(await coverage('plasma_cut', grade)).toMatchObject({ material: 'Steel', minThicknessMm: 6.4, maxThicknessMm: 77 });
+    expect(await coverage('plasma_cut', grade)).toMatchObject({ material: 'Steel', minThicknessMm: 3, maxThicknessMm: 77 });
     expect(await coverage('oxyfuel_cut', grade)).toMatchObject({ material: 'Steel', minThicknessMm: 3, maxThicknessMm: 305 });
   });
 
   it('cast iron is read at its own rows, not the steel\'s', async () => {
-    expect(await coverage('plasma_cut', 'Cast Iron, Gray, ASTM A48 Class 30')).toMatchObject({ material: 'Cast Iron', minThicknessMm: 6.4, maxThicknessMm: 77 });
+    expect(await coverage('plasma_cut', 'Cast Iron, Gray, ASTM A48 Class 30')).toMatchObject({ material: 'Cast Iron', minThicknessMm: 3, maxThicknessMm: 77 });
     expect(await coverage('oxyfuel_cut', 'EN-GJS-400-15')).toMatchObject({ material: 'Cast Iron', minThicknessMm: 3, maxThicknessMm: 305 });
   });
 
   it('stainless steel is read at its own rows', async () => {
-    expect(await coverage('plasma_cut', 'SS304')).toMatchObject({ material: 'Stainless Steel', minThicknessMm: 6.4, maxThicknessMm: 77 });
+    expect(await coverage('plasma_cut', 'SS304')).toMatchObject({ material: 'Stainless Steel', minThicknessMm: 3, maxThicknessMm: 77 });
     expect(await coverage('waterjet', 'SS304')).toMatchObject({ material: 'Stainless Steel' });
   });
 
@@ -125,5 +125,59 @@ describe('the plasma cutting line says where a feed came from when it is not the
     expect(fromWorkbook.cuttingMin * 60).toBeCloseTo(20, 6);
     const fromData = new PlasmaCuttingEngine().computeCost({ ...base, plasmaCutParams: { feedRateLargeFeaturesMmPerMin: 1800, pierceTimeSec: 1, dataFound: true } });
     expect(fromData.warnings.some((w) => w.includes('workbook'))).toBe(false);
+  });
+});
+
+describe('plasma on plate thinner than the plasma data\'s thinnest row (user decision 2026-11-25)', () => {
+  // The staged plasma rows start at 6.4 mm (Steel 1,037 / 1,280 / 1,573 mm/min at 100 / 200 / 300 A); the machining workbook's curve
+  // covers 3 to 6.35 mm (2,400 mm/min to 4 mm, 2,200 to 6.35). Plate below 6.4 mm is fed at the curve, with the 6.4 mm row's pierce time.
+  const plasmaRow = (materialTypeName: string, thicknessMm: number, feed: number) => ({
+    key: `nestingCutRate:10:PlasmaCut:NoGas:${materialTypeName}:200:${thicknessMm}`,
+    raw: { materialTypeName, thicknessMm, powerWatts: 200, feedRateLargeFeaturesMmPerMin: feed, pierceTimeS: 0.8 },
+  });
+  const rows = [plasmaRow('Steel', 6.4, 1280), plasmaRow('Steel', 8, 1063)];
+  const curve = [[3, 2400, 1], [4, 2400, 1.2], [6.35, 2200, 1.5], [8, 2200, 2.5]]
+    .map(([ThicknessMm, FeedMmPerMin, KerfMm]) => ({ Machine: 'Plasma Cutting Machine', ThicknessMm, FeedMmPerMin, KerfMm }));
+  function db(powerWatts = 200) {
+    const query = (table: string) => {
+      const eq: Record<string, unknown> = {};
+      let like = '';
+      const builder: any = {
+        select: () => builder,
+        eq: (c: string, v: unknown) => { eq[c] = v; return builder; },
+        like: (_c: string, pattern: string) => { like = pattern; return builder; },
+        then: (resolve: (v: { data: unknown; error: null }) => void) => { resolve({ data: matching(), error: null }); },
+        maybeSingle: async () => ({ data: matching()[0] ?? null, error: null }),
+      };
+      const matching = () => {
+        if (table === 'machining_reference_data') return [{ key: 'tblThermalCutFeed', raw: curve }];
+        if (table === 'sm_reference_data' && eq['category'] === 'machine') return [{ raw: { power_watts: powerWatts } }];
+        const pattern = new RegExp(`^${like.replace(/%/g, '.*')}$`);
+        return rows.filter((r) => !like || pattern.test(r.key));
+      };
+      return builder;
+    };
+    return { getPrivilegedClient: () => ({ from: query }) } as any;
+  }
+  const feed = (t: number) => new SheetMetalLookupService(db()).getPlasmaCutParams('Hypertherm 200A', 'AISI 1018', t);
+
+  it('5 mm steel: the workbook\'s 2,200 mm/min at its 6.35 mm row, the 6.4 mm row\'s pierce time; 3.5 mm: 2,400 at its 4 mm row', async () => {
+    expect(await feed(5)).toMatchObject({ feedRateLargeFeaturesMmPerMin: 2200, pierceTimeSec: 0.8, dataFound: true });
+    expect((await feed(5)).source).toContain('fed at the machining workbook\'s plasma curve');
+    expect(await feed(3.5)).toMatchObject({ feedRateLargeFeaturesMmPerMin: 2400, pierceTimeSec: 0.8 });
+  });
+
+  it('a heavy machine whose data starts thicker and faster than the curve keeps its thinnest row\'s feed: thinner plate never cuts slower', async () => {
+    // ESAB Avenger Plus (1000): its Steel rows start at 12.7 mm, 3,068 mm/min, faster than the curve's 2,400.
+    rows.push({ key: 'nestingCutRate:10:PlasmaCut:NoGas:Steel:1000:12.7', raw: { materialTypeName: 'Steel', thicknessMm: 12.7, powerWatts: 1000, feedRateLargeFeaturesMmPerMin: 3068, pierceTimeS: 7.04 } });
+    const heavy = new SheetMetalLookupService(db(1000)).getPlasmaCutParams('ESAB - Avenger Plus', 'AISI 1018', 1.5);
+    expect(await heavy).toMatchObject({ feedRateLargeFeaturesMmPerMin: 3068, pierceTimeSec: 7.04, dataFound: true });
+    expect((await heavy).source).toContain('thinner plate does not cut slower on one machine');
+    rows.pop();
+  });
+
+  it('6.4 mm and thicker: the plasma data, as before', async () => {
+    expect(await feed(6.4)).toEqual({ feedRateLargeFeaturesMmPerMin: 1280, pierceTimeSec: 0.8, dataFound: true });
+    expect(await feed(8)).toEqual({ feedRateLargeFeaturesMmPerMin: 1063, pierceTimeSec: 0.8, dataFound: true });
   });
 });
