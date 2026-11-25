@@ -1376,6 +1376,128 @@
           "unit": "s",
           "formula": "{Threads} * {Time per Thread}"
         }
+      ],
+      "supersededBy": 1157
+    },
+    {
+      "name": "Machining - Rigid Tapping",
+      "operation": "Tapping",
+      "machineClasses": "lathes+mills",
+      "migration": 1157,
+      "description": "Rigid tapping, as the Machining calculator workbook's Tapping sheet times it, corrected: n = 1000 v / (pi D) at the thread's nominal diameter, capped at the machine's spindle limit; the feed is the thread pitch (a tap advances one pitch a turn; the sheet's 0.25 mm/rev and its 122 m/min table are a drilling cut); the tap goes in and back out over the thread depth + 4 mm; rounded up to whole seconds a thread. Cutting speed is the sheet's own HSS tapping speed for the material (Tapping!A33:D58), a range picked at the Range Position. The tap's wear is the line's tool cost: Rs 498.4 a tap, the middle of the Rs 36.02 - 960.85 the workbook pictures a tap at (the supplier listing on its Knurling and Threading sheets; the workbook prices its drill, insert holder and end mill at the middle of their pictured ranges), over the 300 parts a tool lasts on those two sheets; one tap for each thread size. (No tool cost until migration 1157.)",
+      "fields": [
+        {
+          "name": "Thread Diameter",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Thread Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Threads",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Thread Pitch",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblHssHoleSpeeds",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "HssGroup"
+          },
+          "where": {
+            "Operation": "Tapping"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblHssHoleSpeeds",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkGroup",
+            "map": "HssGroup"
+          },
+          "where": {
+            "Operation": "Tapping"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds as ranges ('75 - 110' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Tapping sheet: the length of cut plus 4 mm for the tool's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Thread Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "2 * ({Thread Depth} + {Approach Length}) / ({Thread Pitch} * {Spindle Speed})"
+        },
+        {
+          "name": "Time per Thread",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "default",
+          "default": 498.4,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx): the tap pictured on its Knurling and Threading sheets (supplier listing 'Professional Tapping Tools M2 M4 M6 M8 M12', Rs 36.02 - 960.85 a piece); the middle of that range, as the workbook prices its drill (624.8), insert holder (732.4) and end mill (1337.5) from their pictures. The Tapping sheet itself has no cost block."
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "default",
+          "default": 300,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Knurling and Threading sheets (the two that picture the tap): Tool life 300 parts. The workbook states no life for a tap by name."
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Threads} * {Time per Thread}"
+        }
       ]
     },
     {
@@ -4466,6 +4588,187 @@
           "source": "default",
           "default": 0.5,
           "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Slot Milling sheet: it cuts 6.5 mm a pass with a 12 mm cutter (0.54 of it); half the cutter's diameter a pass."
+        },
+        {
+          "name": "Approach Length",
+          "unit": "mm",
+          "source": "default",
+          "default": 10,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Slot Milling sheet: the length of cut plus 10 mm for the cutter's approach and overrun."
+        },
+        {
+          "name": "Cutting Speed",
+          "unit": "m/min",
+          "formula": "{Speed Min} + {Range Position} * ({Speed Max} - {Speed Min})"
+        },
+        {
+          "name": "Feed per Tooth",
+          "unit": "mm/tooth",
+          "formula": "{Feed per Tooth Min} + {Range Position} * ({Feed per Tooth Max} - {Feed per Tooth Min})"
+        },
+        {
+          "name": "Spindle Speed",
+          "unit": "rpm",
+          "formula": "min({Max Spindle Speed}, {Cutting Speed} * 1000 / (pi * {Cutter Diameter}))"
+        },
+        {
+          "name": "Depth of Cut",
+          "unit": "mm",
+          "formula": "{Slotting Depth Ratio} * {Cutter Diameter}"
+        },
+        {
+          "name": "Depth Passes",
+          "unit": null,
+          "formula": "max(1, ceil({Slot Depth} / {Depth of Cut}))"
+        },
+        {
+          "name": "Width Passes",
+          "unit": null,
+          "formula": "max(1, ceil({Slot Width} / {Cutter Diameter}))"
+        },
+        {
+          "name": "Machining Time",
+          "unit": "min",
+          "formula": "({Slot Length} + {Approach Length} + {Cutter Diameter}) / ({Feed per Tooth} * {Teeth} * {Spindle Speed}) * {Depth Passes} * {Width Passes}"
+        },
+        {
+          "name": "Time per Slot",
+          "unit": "s",
+          "formula": "ceil({Machining Time} * 60)"
+        },
+        {
+          "name": "Tool Price",
+          "unit": "INR",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "PriceInr",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Life",
+          "unit": "parts",
+          "source": "lookup",
+          "table": "tblCuttingToolCost",
+          "column": "ToolLifeParts",
+          "where": {
+            "Tool": "Carbide end mill"
+          }
+        },
+        {
+          "name": "Tool Cost per Part",
+          "unit": "INR",
+          "formula": "{Tool Price} / {Tool Life}"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "{Slots} * {Time per Slot}"
+        }
+      ],
+      "supersededBy": 1157
+    },
+    {
+      "name": "Machining - Slot Milling",
+      "operation": "Slot Milling",
+      "machineClasses": "lathes+mills",
+      "migration": 1157,
+      "description": "Milling a slot out with an end mill, as the Machining calculator workbook's Slot Milling sheet times it: n = 1000 v / (pi D), capped at the machine's spindle limit; depth passes = slot depth / depth of cut and width passes = slot width / D, each rounded up; time = (slot length + 10 mm + D) / (feed per tooth x teeth x n) x depth passes x width passes, rounded up to whole seconds a slot. The depth of cut is the slotting depth ratio of the cutter: its whole diameter a pass, the slot milling depth of the end milling table pasted on the sheet (axial depth of cut 1 x D), which cuts the sheet's own example (6.5 mm deep with a 12 mm cutter) in its one pass. (Half the cutter until migration 1157, which took the sheet's example in two passes: 43 s for its 22 s.) Cutting speed and feed per tooth from the workbook's milling conditions for the material; the cutter is the slot's width, or the material's end mill (tblMillingFinishing) when the slot is wider; the end mill's price and life from the workbook. The engine also times the slot by Plunge Milling and keeps the quicker. (It replaces the slot's volume at the material removal rate plus 20 s a slot.)",
+      "fields": [
+        {
+          "name": "Slot Length",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Slot Width",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Slot Depth",
+          "unit": "mm",
+          "source": "cad"
+        },
+        {
+          "name": "Slots",
+          "unit": null,
+          "source": "cad"
+        },
+        {
+          "name": "Cutter Diameter",
+          "unit": "mm",
+          "source": "engine"
+        },
+        {
+          "name": "Teeth",
+          "unit": null,
+          "source": "engine"
+        },
+        {
+          "name": "Speed Min",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMinMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Speed Max",
+          "unit": "m/min",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "SpeedMaxMPerMin",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Min",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMinMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Feed per Tooth Max",
+          "unit": "mm/tooth",
+          "source": "lookup",
+          "table": "tblMillingConditions",
+          "column": "FeedPerToothMaxMm",
+          "group": {
+            "column": "WorkMaterial",
+            "map": "MillingMaterial"
+          }
+        },
+        {
+          "name": "Range Position",
+          "unit": null,
+          "source": "default",
+          "default": 0.5,
+          "note": "The workbook gives cutting speeds and feeds as ranges ('60 - 120' m/min). 0.5 takes the middle of each range; 0 its low end, 1 its high end."
+        },
+        {
+          "name": "Max Spindle Speed",
+          "unit": "rpm",
+          "source": "machine",
+          "note": "The selected machine's own top spindle speed (mhr_records.specs spindle_speed_rpm, migration 1136). The workbook has no cap."
+        },
+        {
+          "name": "Slotting Depth Ratio",
+          "unit": null,
+          "source": "default",
+          "default": 1,
+          "note": "the Machining calculator workbook (memory/Machining - Calculator Database (1).xlsx), Slot Milling sheet: the Uddeholm Corrax end milling table pasted on the sheet gives slot milling an axial depth of cut of 1 x D, and the sheet's own example cuts 6.5 mm in one pass with a 12 mm cutter: a pass as deep as the cutter is wide."
         },
         {
           "name": "Approach Length",

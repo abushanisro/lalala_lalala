@@ -48,8 +48,8 @@ const KEYWAY = {
 // A wider keyway elsewhere on a shaft: another group of the same type.
 const KEYWAY_2 = { id: 'Keyway-default_c2', feature_type: 'Keyway', variant: 'default', occurrences: [{ material_removed_mm3: 300, depth_mm: 3, length_mm: 20, width_mm: 5 }] };
 // Two radial slots, 6 x 3 x 2 mm: their floor's box and measured depth. Each is cut by a 3 mm end mill (the slot's width): 450 m/min holds
-// the live tool's 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; depth of cut 1.5 mm, ceil(2 / 1.5) = 2 passes of 6 + 10 + 3 = 19 mm:
-// 38 / 4500 = 0.00844 min = 0.51 s -> 1 s a slot (plunging, 4 plunges of 12 mm, is no quicker), 2 s for the two.
+// the live tool's 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; a pass as deep as the cutter is wide (3 mm, migration 1157), so the 2 mm is
+// one pass of 6 + 10 + 3 = 19 mm: 19 / 4500 = 0.00422 min = 0.25 s -> 1 s a slot (plunging, 4 plunges of 12 mm, is no quicker), 2 s for the two.
 const SLOTS = {
   id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial',
   occurrences: [{ extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }, { extents_mm: [6, 3, 0], depth_mm: 2, material_removed_mm3: 36 }],
@@ -146,7 +146,7 @@ describe('latheMillingLines: one lathe line per operation', () => {
     const lines = milling([SLOTS]);
     expect(lines.map((l) => [l.operation, l.run.calculatorId])).toEqual([['Slot Milling', 'Machining - Slot Milling']]);
     expect(lines[0].run.sec).toBe(SLOTS_SEC);
-    expect(lines[0].run.trace.find((s) => s.fieldName === 'Depth Passes')).toMatchObject({ kind: 'calculated', value: 2 });
+    expect(lines[0].run.trace.find((s) => s.fieldName === 'Depth Passes')).toMatchObject({ kind: 'calculated', value: 1 });
     expect(lines[0].rows).toEqual([{ name: 'Slot Milling // Slot ×2', timeSec: SLOTS_SEC, featureType: 'Slot', count: 2, featureIds: ['Slot-radial_c1'] }]);
   });
 
