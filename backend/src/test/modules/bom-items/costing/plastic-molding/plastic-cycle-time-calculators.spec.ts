@@ -10,7 +10,8 @@ import {
 import { calculatorFingerprint, runInjectionCycleTime } from '../../../../../modules/bom-items/costing/plastic-molding/calculators/plastic-cycle-time';
 import { computeCycleTime, type CycleTimeInput } from './legacy-cycle-time-oracle';
 import { computeCompressionMoldingCost } from '../../../../../modules/bom-items/costing/plastic-molding/process/cost-compression-molding-engine';
-import { runReferenceCalculator, type ReferenceCalculators } from '../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
+import { withDomainSpecNotes } from '../../../../../modules/bom-items/costing/shared/calculators/domain-calculator-spec';
+import { calculatorFieldDefaults, isConstantField, runReferenceCalculator, type ReferenceCalculators } from '../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
 import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import { allRealPresses, realCureTimeMin, realFillFactorRows, realMaterialNames, realOperationCatalog, realPlasticReference, realResinInputs, realRimMachines } from './real-plastic-reference';
 
@@ -23,6 +24,35 @@ function run(name: string, seeds: Record<string, import('../../../../../modules/
   const calculators: ReferenceCalculators = { [name]: BY_NAME[name]! };
   return runReferenceCalculator(calculators, name, seeds);
 }
+
+// Migration 1161 (user decisions 2026-11-25): each constant the cycle-time calculators state has its source, in the spec's note, laid over the
+// database's fields by whoever loads them (withDomainSpecNotes): the trace step's source and the eye's table of defaults show it.
+describe('the constants of the cycle-time calculators state their sources', () => {
+  const spec = loadPlasticMoldingCalculatorSpec();
+
+  it('pack ratio 0.20 (Priamus), LSR A 0.0022 fitted to Dow\'s 3-5 s/mm, Ea/R kept with the published range, the 180 C mold (Wacker), the Kelvin offset (BIPM)', () => {
+    const note = (calc: string, field: string) => spec.calculators.find((c) => c.name === calc)!.fields.find((f) => f.name === field)!.note ?? '';
+    for (const calc of [INJECTION_CALCULATOR, STRUCTURAL_FOAM_CALCULATOR]) expect(note(calc, 'Pack to Cooling Ratio')).toMatch(/Priamus patent US 7,931,837 B2.*Was 0\.35/s);
+    expect(note(LSR_CALCULATOR, 'LSR Pre-exponential Factor')).toMatch(/3-5 sec\/mm.*A = 0\.0022.*Ossipov/s);
+    expect(note(LSR_CALCULATOR, 'LSR Activation Energy over R')).toMatch(/Kept at 3500 K.*134\.5 kJ\/mol/s);
+    expect(note(LSR_CALCULATOR, 'LSR Mold Temperature')).toMatch(/Wacker/);
+    expect(note(LSR_CALCULATOR, 'Kelvin Offset')).toMatch(/BIPM/);
+    expect(spec.calculators.find((c) => c.name === LSR_CALCULATOR)!.description).not.toMatch(/Ossipov/);
+  });
+
+  it('a database calculator takes the spec\'s notes: the constant\'s step names its source and opens the table of defaults, which lists it', () => {
+    const inj = BY_NAME[INJECTION_CALCULATOR]!;
+    // as the catalog loads it: the database row has no note, the spec's is laid over it
+    const fromDb = { ...inj, calculatorId: 'db-uuid', fields: withDomainSpecNotes(spec, INJECTION_CALCULATOR, inj.fields.map(({ note: _note, ...f }) => f)) };
+    const ratio = fromDb.fields.find((f) => f.field_name === 'Pack to Cooling Ratio')!;
+    expect(ratio.note).toMatch(/Priamus/);
+    expect(isConstantField(ratio)).toBe(true);
+    const defaults = calculatorFieldDefaults(fromDb);
+    expect(defaults.find((d) => d.field === 'Pack to Cooling Ratio')).toMatchObject({ value: 0.2, source: expect.stringMatching(/Priamus/) });
+    // a formula over other fields is not a default
+    expect(defaults.some((d) => d.field === 'Pack Time Minimum' || d.field === 'Pack Time')).toBe(false);
+  });
+});
 
 describe('plastic molding calculator spec', () => {
   const spec = loadPlasticMoldingCalculatorSpec();
@@ -59,9 +89,16 @@ describe('plastic molding calculator spec', () => {
     expect(committed('1008_plastic_injection_cycle_restore_v1.sql')).toBe(buildPlasticMoldingCalculatorsMigrationSql(1008));
     // the plain injection calculator's name is a part of the RIM one's, so the name as it is quoted in the SQL is what is looked for
     const quoted = (name: string) => '$q$' + name + '$q$';
-    // RIM is at version 2 (976); injection and structural foam at version 3 (1008, after 1007's version 2 was reverted); the rest at version 1
+    // RIM is at version 2 (976); injection and structural foam at version 4 and LSR at version 2 (1161, the sourced pack and cure constants; 1008's
+    // version 3 and the LSR's 977 entry are kept, superseded, as they shipped); the rest at version 1
     expect(spec.calculators.filter((c) => (c.version ?? 1) > 1).map((c) => [c.name, c.version, c.migration]))
-      .toEqual([[INJECTION_CALCULATOR, 3, 1008], [STRUCTURAL_FOAM_CALCULATOR, 3, 1008], [RIM_CALCULATOR, 2, 976], ['Injection Mold - Tooling', 10, 1082]]);
+      .toEqual([[INJECTION_CALCULATOR, 4, 1161], [LSR_CALCULATOR, 2, 1161], [STRUCTURAL_FOAM_CALCULATOR, 4, 1161], [RIM_CALCULATOR, 2, 976], ['Injection Mold - Tooling', 10, 1082]]);
+    expect(committed('1161_plastic_sourced_cycle_constants.sql')).toBe(buildPlasticMoldingCalculatorsMigrationSql(1161));
+    const m1161 = committed('1161_plastic_sourced_cycle_constants.sql');
+    for (const name of [INJECTION_CALCULATOR, LSR_CALCULATOR, STRUCTURAL_FOAM_CALCULATOR]) expect(m1161).toContain(quoted(name));
+    expect(m1161).toContain('$q$max(2 * {Fill Time}, 1)$q$');
+    expect(m1161).toContain('$q$0.2$q$');
+    expect(m1161).toContain('$q$0.0022$q$');
     // 1008 writes the version-1 cycle again: fill + pack + cooling + mold open/close, no plasticizing or ejection field
     const m1008 = committed('1008_plastic_injection_cycle_restore_v1.sql');
     expect(m1008).toContain('version = 3');

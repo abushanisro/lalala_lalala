@@ -46,7 +46,7 @@ import { reconcileSheetGeometry } from './costing/shared/geometry-reconciliation
 import type { CalculationTraceStep, PhysicsGap, UnsupportedOperationGap, ManufacturingPhysicsResult, ConfidenceLevel, ResolutionStatus, LookupResolution, ValidatedInput } from './dto/cost-breakdown.dto';
 import { computeCostSummary, computeSustainability, applyPersistedRouteToSummary, selectAppliedGeneration, detectAppliedGenerationDrift } from './costing/shared/core/cost-engine';
 import type { MHRRateInput, AppliedProcessCostRecord } from './costing/shared/core/cost-engine';
-import { planInspection, finalizeInspectionLine } from './costing/shared/process/inspection-engine';
+import { planInspection, finalizeInspectionLine, inspectionSeedProvenance } from './costing/shared/process/inspection-engine';
 import type { InspectionInput } from './costing/shared/process/inspection-engine';
 import { evaluateCalculatorFormulas, normalizeFieldName } from '../calculators/calculator-formula-evaluator';
 import type { CalculatorFieldRow } from '../calculators/calculator-formula-evaluator';
@@ -106,7 +106,7 @@ import { appliedOtherMoldingRouteId, projectMoldingRoute, type OtherMoldingRoute
 import type { InjectionMoldingCostInput } from './costing/plastic-molding/process/cost-injection-molding-engine';
 import { requiredClampForce, type MaterialClampProperties } from './costing/plastic-molding/clamp-force';
 import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './costing/plastic-molding/shot-size';
-import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, TAP_MOTION_SOURCES, TAP_SURFACE_SPEED_SOURCE, TAP_ENGAGEMENT_SOURCE, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
+import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, TAP_MOTION_SOURCES, TAP_SURFACE_SPEED_SOURCE, TAP_ENGAGEMENT_SOURCE, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, BEND_SHOULDER_RULE_SOURCE, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
 import { rawMaterialPricePerKg } from './costing/shared/core/material-location-price';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
@@ -4238,7 +4238,7 @@ export class BomItemCostingService {
             'Bending Line Length': smRealBendLengths.length > 0
               ? `CAD feature extraction — longest of ${smRealBendLengths.length} bend lines`
               : (((item as any).maxLength != null) ? 'CAD/BOM part geometry — max length (flat-pattern proxy: no per-bend lengths in this analysis)' : 'Default (200mm, no CAD length available)'),
-            'Shoulder Width': 'Approximated as 8× sheet thickness (standard V-die shoulder rule)',
+            'Shoulder Width': `8 × sheet thickness: ${BEND_SHOULDER_RULE_SOURCE}`,
             UTS: 'raw_materials — material grade Ultimate Tensile Strength (verified DB value, or an approved material-family default; omitted when neither is available)',
             'No Of Bends': 'CAD/drawing feature extraction — bend count',
             'Time Per Stroke': this.rates.describeStrokeTimeProvenance(sheetThicknessMm, strokeComplexity, smStrokeResult.resolution, smStrokeResult.roundedFromTonnage),
@@ -4650,19 +4650,8 @@ export class BomItemCostingService {
             'Has Dimension Check': smInspectionPlan.hasDimensionCheck ? 1 : 0,
             'Dimension Check Time': smInspectionPlan.dimensionCheckSec,
           },
-          seedProvenance: {
-            'Visual Pass Base': 'inspection_operation_defaults — visual_base cycle time',
-            'Holes to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Hole Check Time': `inspection_operation_defaults — hole check time for ${smInspectionPlan.method} method`,
-            'Bends to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Bend Check Time': `inspection_operation_defaults — bend check time for ${smInspectionPlan.method} method`,
-            'Threads to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Thread Gauge Time': `inspection_operation_defaults — thread gauge time for ${smInspectionPlan.method} method`,
-            'Has Thickness Check': 'Real geometry — sheet thickness known',
-            'Thickness Check Time': `inspection_operation_defaults — thickness check time for ${smInspectionPlan.method} method`,
-            'Has Dimension Check': 'Real geometry — overall dimensions known',
-            'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${smInspectionPlan.method} method`,
-          },
+          // Each check time with its row of inspection_operation_defaults and where that time comes from (migration 1163).
+          seedProvenance: inspectionSeedProvenance(smInspectionPlan),
           seedRefs: inspectionSeedRefs(smInspectionPlan, smInspectionInput),
         });
     const smInspectionLineResult = finalizeInspectionLine(smInspectionInput, smInspectionPlan, {
@@ -7133,7 +7122,7 @@ export class BomItemCostingService {
         seedProvenance: {
           Thickness: 'BOM sheet thickness',
           'Bending Line Length': 'CAD/BOM part geometry — max bend length',
-          'Shoulder Width': 'Approximated as 8× sheet thickness (standard V-die shoulder rule)',
+          'Shoulder Width': `8 × sheet thickness: ${BEND_SHOULDER_RULE_SOURCE}`,
           UTS: 'raw_materials — material grade Ultimate Tensile Strength',
           'No Of Bends': 'CAD/drawing feature extraction — bend count',
           'Time Per Stroke': this.rates.describeStrokeTimeProvenance(thk, rcBendComplexity, rcStrokeResult.resolution, rcStrokeResult.roundedFromTonnage),
@@ -7340,19 +7329,8 @@ export class BomItemCostingService {
               'Has Dimension Check': rcInspectionPlan.hasDimensionCheck ? 1 : 0,
               'Dimension Check Time': rcInspectionPlan.dimensionCheckSec,
             },
-            seedProvenance: {
-              'Visual Pass Base': 'inspection_operation_defaults — visual_base cycle time',
-              'Holes to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Hole Check Time': `inspection_operation_defaults — hole check time for ${rcInspectionPlan.method} method`,
-              'Bends to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Bend Check Time': `inspection_operation_defaults — bend check time for ${rcInspectionPlan.method} method`,
-              'Threads to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Thread Gauge Time': `inspection_operation_defaults — thread gauge time for ${rcInspectionPlan.method} method`,
-              'Has Thickness Check': 'Real geometry — sheet thickness known',
-              'Thickness Check Time': `inspection_operation_defaults — thickness check time for ${rcInspectionPlan.method} method`,
-              'Has Dimension Check': 'Real geometry — overall dimensions known',
-              'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${rcInspectionPlan.method} method`,
-            },
+            // Each check time with its row of inspection_operation_defaults and where that time comes from (migration 1163).
+            seedProvenance: inspectionSeedProvenance(rcInspectionPlan),
             seedRefs: inspectionSeedRefs(rcInspectionPlan, rcInspectionInput),
           });
       const rcInspectionResult = finalizeInspectionLine(rcInspectionInput, rcInspectionPlan, {

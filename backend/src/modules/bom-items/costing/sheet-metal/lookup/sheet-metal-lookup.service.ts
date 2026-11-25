@@ -1599,13 +1599,15 @@ export class SheetMetalLookupService {
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data } = await db
       .from('inspection_operation_defaults')
-      .select('feature, method, cycle_time_sec, sampling_default, equipment');
+      .select('*');
     return (data ?? []).map((r: any) => ({
       feature: r.feature,
       method: r.method,
       cycle_time_sec: Number(r.cycle_time_sec),
       sampling_default: r.sampling_default ?? null,
       equipment: r.equipment ?? null,
+      // Where the time comes from (migration 1163); absent on a database that has not run it.
+      source: typeof r.source === 'string' && r.source.trim() ? r.source.trim() : null,
     }));
   }
 

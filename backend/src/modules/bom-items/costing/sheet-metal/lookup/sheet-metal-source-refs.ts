@@ -1,3 +1,4 @@
+import { BEND_SHOULDER_RULE_SOURCE } from '../../shared/core/default-rates.constants';
 import type { CalculationTraceStep, LookupResolution, SheetMetalSourceTable, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MaterialSourceColumns } from '../../../services/material-resolution.service';
 import type { InspectionInput, InspectionPlan } from '../../shared/process/inspection-engine';
@@ -129,7 +130,7 @@ export function sheetThicknessRef(input: {
 export function shoulderWidthRef(thicknessMm: number, thicknessRef: SourceRef): SourceRef {
   return calc('Shoulder Width: the standard V-die shoulder rule', [
     step('Thickness', 'mm', thicknessMm, 'The sheet thickness of the part', thicknessRef),
-    step('Shoulder width per thickness', null, 8, 'The standard V-die shoulder rule: the die shoulder is 8 sheet thicknesses wide'),
+    step('Shoulder width per thickness', null, 8, `The standard V-die shoulder rule: the die shoulder is 8 sheet thicknesses wide. ${BEND_SHOULDER_RULE_SOURCE}`),
     result('Shoulder Width', 'mm', 8 * thicknessMm, '{Shoulder width per thickness} * {Thickness}'),
   ]);
 }

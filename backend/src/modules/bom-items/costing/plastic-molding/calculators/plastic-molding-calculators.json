@@ -156,7 +156,165 @@
         }
       ],
       "migration": 1008,
-      "version": 3
+      "version": 3,
+      "supersededBy": 1161
+    },
+    {
+      "key": "injection",
+      "name": "Injection Molding - Cycle Time",
+      "description": "Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 20 % of cooling, at least the larger of 2 x the fill time and 1 s (F-06 version 2, ASSUMED: the reference holds no hold time; closest published basis for the 20 %: the Priamus patent US 7,931,837 B2, hold 10 % and cooling 50 % of the cycle; the floor is Moldflow's default hold, US 7,037,452 B1, \"the greater of 2 times injection time and one second\"). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s. (Version 4, migration 1161: the pack was 35 % of cooling with a 2 s floor.)",
+      "operations": [
+        "Injection Molding"
+      ],
+      "fields": [
+        {
+          "name": "Nominal Wall Thickness",
+          "unit": "mm",
+          "source": {
+            "cad": "wallThicknessNominalMm"
+          }
+        },
+        {
+          "name": "Melt Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "meltingTempC"
+          }
+        },
+        {
+          "name": "Mold Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "moldTempC"
+          }
+        },
+        {
+          "name": "Mold Temperature Increase",
+          "unit": "°C",
+          "source": {
+            "variable": "defaultMoldTemperatureIncrease"
+          }
+        },
+        {
+          "name": "Ejection Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "ejectDeflectionTempC"
+          }
+        },
+        {
+          "name": "Specific Heat of Melt",
+          "unit": "J/g·K",
+          "source": {
+            "material": "specificHeatOfMeltJgC"
+          }
+        },
+        {
+          "name": "Thermal Conductivity of Melt",
+          "unit": "W/m·K",
+          "source": {
+            "material": "thermalConductivityOfMeltWattsMC"
+          }
+        },
+        {
+          "name": "Melt Density",
+          "unit": "kg/m³",
+          "source": {
+            "material": "densityOfMeltKgM3"
+          }
+        },
+        {
+          "name": "Shot Melt Volume",
+          "unit": "mm³",
+          "source": {
+            "engine": "shotMeltVolumeMm3 (part volume x cavities + runner, at melt density)"
+          }
+        },
+        {
+          "name": "Press Injection Rate",
+          "unit": "mm³/s",
+          "source": {
+            "machine": "rates.injectionRateMm3PerS"
+          }
+        },
+        {
+          "name": "Fill Factor for Cavities",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Cavities Per Mold and Number >= cavities per mold (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Fill Factor for Gates",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Gates Per Cavity and Number >= gates per cavity (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Press Dry Cycle Time",
+          "unit": "s",
+          "source": {
+            "machine": "time.dryCycleTimeS (Euromap 6: mold open and close, no material)"
+          }
+        },
+        {
+          "name": "Cycle Time Adjustment Factor",
+          "unit": null,
+          "source": {
+            "variable": "cycleTimeAdjustmentFactor"
+          }
+        },
+        {
+          "name": "Mold Wall Temperature",
+          "unit": "°C",
+          "formula": "{Mold Temperature} + {Mold Temperature Increase}"
+        },
+        {
+          "name": "Thermal Diffusivity",
+          "unit": "mm²/s",
+          "formula": "{Thermal Conductivity of Melt} / ({Melt Density} * {Specific Heat of Melt} * 1000) * 1000000"
+        },
+        {
+          "name": "Cooling Time",
+          "unit": "s",
+          "formula": "floor({Nominal Wall Thickness} * {Nominal Wall Thickness} / (pi * pi * {Thermal Diffusivity}) * LN(4 / pi * ({Melt Temperature} - {Mold Wall Temperature}) / ({Ejection Temperature} - {Mold Wall Temperature})) * 10 + 0.5) / 10"
+        },
+        {
+          "name": "Fill Time",
+          "unit": "s",
+          "formula": "floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100"
+        },
+        {
+          "name": "Pack to Cooling Ratio",
+          "unit": null,
+          "formula": "0.2",
+          "note": "Closest published basis: Priamus patent US 7,931,837 B2 (Background of the Invention): \"the injection process 5% and the holding pressure phase 10%\" and \"the cooling time always takes up 50%\" of the cycle, a hold of 10 / 50 = 0.20 of the cooling time. No published source gives the 0.35 it was (migration 975 to 1008, called the Menges gate-freeze rule): practice sets the hold by a gate-freeze study. Was 0.35."
+        },
+        {
+          "name": "Pack Time Minimum",
+          "unit": "s",
+          "formula": "max(2 * {Fill Time}, 1)"
+        },
+        {
+          "name": "Pack Time",
+          "unit": "s",
+          "formula": "max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "floor(({Fill Time} + {Pack Time} + {Cooling Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100"
+        }
+      ],
+      "migration": 1161,
+      "version": 4
     },
     {
       "key": "injection_lsr",
@@ -256,7 +414,113 @@
           "formula": "floor(({Fill Time} + {Cure Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100"
         }
       ],
-      "migration": 977
+      "migration": 977,
+      "supersededBy": 1161
+    },
+    {
+      "key": "injection_lsr",
+      "name": "Injection Molding - LSR Cycle Time",
+      "description": "Liquid silicone rubber cures instead of cooling: Cure Time = A x exp(Ea/R / (T + 273.15)) x wall (Arrhenius, F-09 version 2, ASSUMED for every LSR grade: A and Ea/R fitted to Dow's \"vulcanization time of 3-5 sec/mm ... standard value\" (XIAMETER LSR injection molding guide, p. 13), 5 s/mm at a 180 C mold, inside Wacker's 150-200 C processing range); no pack phase; Cycle Time = (Fill + Cure + Mold open/close) x Cycle Time Adjustment Factor. The engine uses this variant for LSR materials; no catalog operation maps to it. (Version 2, migration 1161: A was 0.008, 18.1 s/mm at 180 C.)",
+      "operations": [],
+      "helper": true,
+      "fields": [
+        {
+          "name": "Nominal Wall Thickness",
+          "unit": "mm",
+          "source": {
+            "cad": "wallThicknessNominalMm"
+          }
+        },
+        {
+          "name": "Shot Melt Volume",
+          "unit": "mm³",
+          "source": {
+            "engine": "shotMeltVolumeMm3 (part volume x cavities + runner, at melt density)"
+          }
+        },
+        {
+          "name": "Press Injection Rate",
+          "unit": "mm³/s",
+          "source": {
+            "machine": "rates.injectionRateMm3PerS"
+          }
+        },
+        {
+          "name": "Fill Factor for Cavities",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Cavities Per Mold and Number >= cavities per mold (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Fill Factor for Gates",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Gates Per Cavity and Number >= gates per cavity (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Press Dry Cycle Time",
+          "unit": "s",
+          "source": {
+            "machine": "time.dryCycleTimeS (Euromap 6: mold open and close, no material)"
+          }
+        },
+        {
+          "name": "Cycle Time Adjustment Factor",
+          "unit": null,
+          "source": {
+            "variable": "cycleTimeAdjustmentFactor"
+          }
+        },
+        {
+          "name": "LSR Mold Temperature",
+          "unit": "°C",
+          "formula": "180",
+          "note": "Wacker, Solid and Liquid Silicone Rubber guidelines (6709 EN) section 5.4: \"ELASTOSIL liquid silicone rubber is usually processed at between 150 and 200 C\"; 180 C is the mould wall temperature of a published LSR study (Azevedo et al., Polymers 17(22):3086, 2025, \"the mould walls were maintained at 180 C\")."
+        },
+        {
+          "name": "LSR Pre-exponential Factor",
+          "unit": null,
+          "formula": "0.0022",
+          "note": "Fitted to Dow's standard vulcanization time, \"3-5 sec/mm ... standard value\" (XIAMETER LSR injection molding guide, dow.com 95-716-01, p. 13): with Ea/R kept at 3500 K, A = 0.0022 gives 0.0022 x exp(3500 / 453.15) = 5.0 s per mm of wall at a 180 C mold. Was 0.008 (18.1 s/mm), cited to \"Ossipov et al., Polymer Engineering 2002\", a paper that could not be found."
+        },
+        {
+          "name": "LSR Activation Energy over R",
+          "unit": "K",
+          "formula": "3500",
+          "note": "Kept at 3500 K (about 29 kJ/mol), fitted with A to Dow's 3-5 s/mm (see the pre-exponential factor). Published LSR cure activation energies are higher, 80-100 kJ/mol (Ke et al.) and 134.5 kJ/mol (Azevedo et al., Polymers 17(22):3086, 2025): with them A must be refitted; the pair here is a fit at 180 C, not a kinetics measurement, and is less sensitive to the mold temperature than the material is."
+        },
+        {
+          "name": "Kelvin Offset",
+          "unit": "K",
+          "formula": "273.15",
+          "note": "The definition of the Celsius scale: t/C = T/K - 273.15 (BIPM, The International System of Units, 9th ed., 2.3.1)."
+        },
+        {
+          "name": "Cure Time",
+          "unit": "s",
+          "formula": "floor({LSR Pre-exponential Factor} * exp({LSR Activation Energy over R} / ({LSR Mold Temperature} + {Kelvin Offset})) * {Nominal Wall Thickness} * 10 + 0.5) / 10"
+        },
+        {
+          "name": "Fill Time",
+          "unit": "s",
+          "formula": "floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "floor(({Fill Time} + {Cure Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100"
+        }
+      ],
+      "migration": 1161,
+      "version": 2
     },
     {
       "key": "structural_foam",
@@ -412,7 +676,165 @@
         }
       ],
       "migration": 1008,
-      "version": 3
+      "version": 3,
+      "supersededBy": 1161
+    },
+    {
+      "key": "structural_foam",
+      "name": "Structural Foam Molding - Cycle Time",
+      "description": "Structural foam uses the injection cycle model unchanged (the cost engine reuses it with a foam press): the reference holds no foam-specific cooling or fill formula, so foaming, which lengthens cooling, is NOT modelled and the cycle is understated for foam parts until a validated formula is supplied. Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 20 % of cooling, at least the larger of 2 x the fill time and 1 s (F-06 version 2, ASSUMED: the reference holds no hold time; closest published basis for the 20 %: the Priamus patent US 7,931,837 B2, hold 10 % and cooling 50 % of the cycle; the floor is Moldflow's default hold, US 7,037,452 B1, \"the greater of 2 times injection time and one second\"). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s. (Version 4, migration 1161: the pack was 35 % of cooling with a 2 s floor.)",
+      "operations": [
+        "Structural foam molding"
+      ],
+      "fields": [
+        {
+          "name": "Nominal Wall Thickness",
+          "unit": "mm",
+          "source": {
+            "cad": "wallThicknessNominalMm"
+          }
+        },
+        {
+          "name": "Melt Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "meltingTempC"
+          }
+        },
+        {
+          "name": "Mold Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "moldTempC"
+          }
+        },
+        {
+          "name": "Mold Temperature Increase",
+          "unit": "°C",
+          "source": {
+            "variable": "defaultMoldTemperatureIncrease"
+          }
+        },
+        {
+          "name": "Ejection Temperature",
+          "unit": "°C",
+          "source": {
+            "material": "ejectDeflectionTempC"
+          }
+        },
+        {
+          "name": "Specific Heat of Melt",
+          "unit": "J/g·K",
+          "source": {
+            "material": "specificHeatOfMeltJgC"
+          }
+        },
+        {
+          "name": "Thermal Conductivity of Melt",
+          "unit": "W/m·K",
+          "source": {
+            "material": "thermalConductivityOfMeltWattsMC"
+          }
+        },
+        {
+          "name": "Melt Density",
+          "unit": "kg/m³",
+          "source": {
+            "material": "densityOfMeltKgM3"
+          }
+        },
+        {
+          "name": "Shot Melt Volume",
+          "unit": "mm³",
+          "source": {
+            "engine": "shotMeltVolumeMm3 (part volume x cavities + runner, at melt density)"
+          }
+        },
+        {
+          "name": "Press Injection Rate",
+          "unit": "mm³/s",
+          "source": {
+            "machine": "rates.injectionRateMm3PerS"
+          }
+        },
+        {
+          "name": "Fill Factor for Cavities",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Cavities Per Mold and Number >= cavities per mold (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Fill Factor for Gates",
+          "unit": null,
+          "source": {
+            "lookup": "injectionTimeAdjustmentFactors.Adjustment Factor where Attribute = Gates Per Cavity and Number >= gates per cavity (first bracket)"
+          },
+          "dataSource": "machining_lookup",
+          "sourceTable": "injectionTimeAdjustmentFactors",
+          "sourceField": "adjustment_factor"
+        },
+        {
+          "name": "Press Dry Cycle Time",
+          "unit": "s",
+          "source": {
+            "machine": "time.dryCycleTimeS (Euromap 6: mold open and close, no material)"
+          }
+        },
+        {
+          "name": "Cycle Time Adjustment Factor",
+          "unit": null,
+          "source": {
+            "variable": "cycleTimeAdjustmentFactor"
+          }
+        },
+        {
+          "name": "Mold Wall Temperature",
+          "unit": "°C",
+          "formula": "{Mold Temperature} + {Mold Temperature Increase}"
+        },
+        {
+          "name": "Thermal Diffusivity",
+          "unit": "mm²/s",
+          "formula": "{Thermal Conductivity of Melt} / ({Melt Density} * {Specific Heat of Melt} * 1000) * 1000000"
+        },
+        {
+          "name": "Cooling Time",
+          "unit": "s",
+          "formula": "floor({Nominal Wall Thickness} * {Nominal Wall Thickness} / (pi * pi * {Thermal Diffusivity}) * LN(4 / pi * ({Melt Temperature} - {Mold Wall Temperature}) / ({Ejection Temperature} - {Mold Wall Temperature})) * 10 + 0.5) / 10"
+        },
+        {
+          "name": "Fill Time",
+          "unit": "s",
+          "formula": "floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100"
+        },
+        {
+          "name": "Pack to Cooling Ratio",
+          "unit": null,
+          "formula": "0.2",
+          "note": "Closest published basis: Priamus patent US 7,931,837 B2 (Background of the Invention): \"the injection process 5% and the holding pressure phase 10%\" and \"the cooling time always takes up 50%\" of the cycle, a hold of 10 / 50 = 0.20 of the cooling time. No published source gives the 0.35 it was (migration 975 to 1008, called the Menges gate-freeze rule): practice sets the hold by a gate-freeze study. Was 0.35."
+        },
+        {
+          "name": "Pack Time Minimum",
+          "unit": "s",
+          "formula": "max(2 * {Fill Time}, 1)"
+        },
+        {
+          "name": "Pack Time",
+          "unit": "s",
+          "formula": "max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)"
+        },
+        {
+          "name": "Cycle Time",
+          "unit": "s",
+          "formula": "floor(({Fill Time} + {Pack Time} + {Cooling Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100"
+        }
+      ],
+      "migration": 1161,
+      "version": 4
     },
     {
       "key": "compression",

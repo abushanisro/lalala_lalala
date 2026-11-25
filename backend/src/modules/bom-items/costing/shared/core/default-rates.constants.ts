@@ -129,7 +129,14 @@ export const PRESS_BRAKE_SEC_PER_BEND: Record<number, number> = {
 // the calculator's 'Shoulder Width' field). The cost engine, machine
 // selection and the calculator popup all size a brake against this one
 // formula, so the tonnage the engineer sees is the tonnage the machine was
-// chosen for.
+// chosen for. Source: the "rule of 8" (Bystronic, "Rules of press brake tool
+// selection": the V-die opening is 8 times the material thickness); MISUMI
+// names the die opening the die shoulder width L and gives the coefficient
+// 1.33 at L = 8t, the Bending Coefficient below (the Sheet Metal workbook's
+// TPP!D80 "Constant" 1.33). The workbook's own example, TPP!D79, is 15 mm for
+// a 2 mm sheet (7.5 t), "to be captured from part drawing".
+export const BEND_SHOULDER_RULE_SOURCE =
+  'The rule of 8: the V-die opening is 8 times the sheet thickness (Bystronic, "Rules of press brake tool selection"); MISUMI calls it the die shoulder width and gives the bending coefficient 1.33 at 8 t, the coefficient the calculator uses (Sheet Metal workbook TPP!D80)';
 export const BEND_COEFFICIENT = 1.33;
 export const BEND_RECOMMENDED_FORCE_FACTOR = 1.25;
 export const bendShoulderWidthMm = (thicknessMm: number) => 8 * thicknessMm;

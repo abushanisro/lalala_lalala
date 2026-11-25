@@ -104,7 +104,117 @@
           "unit": "kg",
           "formula": "{Risers} * {Riser Volume} / 1e9 * {Density}"
         }
-      ]
+      ],
+      "supersededBy": 1160
+    },
+    {
+      "key": "sand.risers",
+      "name": "Sand Casting - Risers",
+      "description": "Risers by the modulus method with its feed-volume check (D146): each riser's modulus is the casting's (volume / surface) times a factor, so it freezes after the casting; and the risers hold the metal the casting and they shrink by, of which a riser gives only its feed efficiency. A cylinder cooling through its side and top, the larger of the two sizes. The factor is Foseco's Mf = 1.2 x Mc, the shape the SFSA side riser H = 1.5 D, the efficiency Foseco's 10 % for a natural (unsleeved) feeder that is not live, the shrinkage the alloy family's typical value, until the plant sets its own. One riser per ingate. (Version 2, migration 1160: the feed efficiency was 14 %, Foseco's figure for a live natural feeder.)",
+      "operations": [],
+      "helper": true,
+      "output": "Riser Weight",
+      "results": [
+        "Riser Diameter",
+        "Riser Height"
+      ],
+      "fields": [
+        {
+          "name": "Casting Modulus",
+          "unit": "mm",
+          "source": {
+            "cad": "modulus_mm"
+          }
+        },
+        {
+          "name": "Casting Volume",
+          "unit": "mm³",
+          "source": {
+            "cad": "volume_mm3"
+          }
+        },
+        {
+          "name": "Density",
+          "unit": "kg/m³",
+          "source": {
+            "material": "density_kg_m3"
+          }
+        },
+        {
+          "name": "Risers",
+          "unit": null,
+          "source": {
+            "engine": "risers"
+          }
+        },
+        {
+          "name": "Shrinkage (estimate)",
+          "unit": "%",
+          "source": {
+            "engine": "shrinkage_pct"
+          }
+        },
+        {
+          "name": "Riser Modulus Factor (standard rule)",
+          "unit": null,
+          "formula": "1.2",
+          "note": "Foseco Ferrous Foundryman's Handbook (ed. J.R. Brown, Butterworth-Heinemann 2000), ch. 19 p. 302 eq. (3): \"Mf = 1.2 x Mc ... This equation applies to natural feeders for most alloys\" (for grey and ductile iron the handbook reduces the factor). Also Wlodawer: a riser modulus 20 % larger than the casting's (Ou, Carlson & Beckermann, Metall. Mater. Trans. B 36B, 2005, p. 98)."
+        },
+        {
+          "name": "Height to Diameter (standard rule)",
+          "unit": null,
+          "formula": "1.5",
+          "note": "SFSA Feeding & Risering Guidelines for Steel Castings (2001) section 6: \"For side risers, H = 1.5DR is often used. A riser height exceeding 1.5 times the riser diameter is uneconomical\" (a top riser can be H = DR)."
+        },
+        {
+          "name": "Feed Efficiency (natural feeder)",
+          "unit": "%",
+          "formula": "10",
+          "note": "Foseco Ferrous Foundryman's Handbook (ed. J.R. Brown, Butterworth-Heinemann 2000), pp. 296-297 and 309-310: a natural feeder holds \"only about 14% of the original volume of the feeder, and some of this volume has been used to feed the feeder itself, so that in practice only about 10% ... is available\"; the safe values are 33-50 % with a Foseco sleeve, 14-16 % for a live natural feeder and 10 % for other natural feeders. 10 %: the risers are natural (no sleeve is costed) and top risers are not live. Was 14 % (migration 956), the live-feeder figure."
+        },
+        {
+          "name": "Riser Modulus",
+          "unit": "mm",
+          "formula": "{Casting Modulus} * {Riser Modulus Factor (standard rule)}"
+        },
+        {
+          "name": "Diameter by Modulus",
+          "unit": "mm",
+          "formula": "{Riser Modulus} * (4 * {Height to Diameter (standard rule)} + 1) / {Height to Diameter (standard rule)}"
+        },
+        {
+          "name": "Feed Volume per Riser",
+          "unit": "mm³",
+          "formula": "{Shrinkage (estimate)} * {Casting Volume} / ({Feed Efficiency (natural feeder)} - {Shrinkage (estimate)}) / {Risers}"
+        },
+        {
+          "name": "Diameter by Feeding",
+          "unit": "mm",
+          "formula": "(4 * {Feed Volume per Riser} / (pi * {Height to Diameter (standard rule)})) ^ (1 / 3)"
+        },
+        {
+          "name": "Riser Diameter",
+          "unit": "mm",
+          "formula": "max({Diameter by Modulus}, {Diameter by Feeding})"
+        },
+        {
+          "name": "Riser Height",
+          "unit": "mm",
+          "formula": "{Riser Diameter} * {Height to Diameter (standard rule)}"
+        },
+        {
+          "name": "Riser Volume",
+          "unit": "mm³",
+          "formula": "pi / 4 * {Riser Diameter} ^ 2 * {Riser Height}"
+        },
+        {
+          "name": "Riser Weight",
+          "unit": "kg",
+          "formula": "{Risers} * {Riser Volume} / 1e9 * {Density}"
+        }
+      ],
+      "version": 2,
+      "migration": 1160
     },
     {
       "key": "sand.gating",
@@ -248,7 +358,8 @@
         {
           "name": "Well Depth to Runner Height (standard rule)",
           "unit": null,
-          "formula": "2"
+          "formula": "2",
+          "note": "Foseco Ferrous Foundryman's Handbook (ed. J.R. Brown, Butterworth-Heinemann 2000), ch. 17 p. 247: \"Recommended sizes of the sprue base are, a diameter two-three times the sprue exit diameter and depth equal to twice the depth of the runner bar.\""
         },
         {
           "name": "Pour Time",

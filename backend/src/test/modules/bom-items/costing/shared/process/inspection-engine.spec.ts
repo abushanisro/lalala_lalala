@@ -1,4 +1,7 @@
-import { planInspection, finalizeInspectionLine, type InspectionInput, type InspectionOperationDefaultRow, type InspectionResult } from '../../../../../../modules/bom-items/costing/shared/process/inspection-engine';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+import { planInspection, finalizeInspectionLine, inspectionSeedProvenance, type InspectionInput, type InspectionOperationDefaultRow, type InspectionResult } from '../../../../../../modules/bom-items/costing/shared/process/inspection-engine';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
 import type { InspectionRuleRow } from '../../../../../../modules/bom-items/costing/shared/physics/gdt-severity';
 import type { UnsupportedOperationGap } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
@@ -345,5 +348,39 @@ describe('finalizeInspectionLine — Manufacturing Physics Calculator gap report
     const plan = planInspection(input);
     const result = finalizeInspectionLine(input, plan, { cycleTimeSec: 999 });
     expect(result.processLines).toHaveLength(0);
+  });
+});
+
+// Migration 1163 (user decisions 2026-11-25): the visual method's check times are the BasicMOST measure values of the instrument each check implies,
+// each row with its source; the engine's fallback for a missing row takes the same values, and the trace says where each time comes from.
+describe('the visual check times and their sources (migration 1163)', () => {
+  const migration = readFileSync(join(__dirname, '../../../../../../../migrations/1163_inspection_check_times_sourced.sql'), 'utf8');
+  /** The visual row's time migration 1163 writes for a feature (visual_base is kept at 423's 5 s). */
+  const written = (feature: string): number => {
+    const m = new RegExp(`SET cycle_time_sec = ([0-9.]+)(?:(?!UPDATE).)*?WHERE feature = '${feature}' AND method = 'visual'`, 's').exec(migration);
+    return m ? Number(m[1]) : 5;
+  };
+
+  it('the fallback for a missing row is the visual time the migration writes: hole 5.76 (plug gauge), bend 3.60, thickness 15.12, dimension 5.76, thread 8.64 s', () => {
+    const plan = planInspection(baseInput({ operationDefaults: [], holes: [{ diameterMm: 4 }], bends: [{}], threads: [{ size: 'M4', count: 1 }] }));
+    expect(plan.method).toBe('visual');
+    expect([plan.holeCheckSec, plan.bendCheckSec, plan.thicknessCheckSec, plan.dimensionCheckSec, plan.threadGaugeSec, plan.visualPassBaseSec])
+      .toEqual([5.76, 3.6, 15.12, 5.76, 8.64, 5]);
+    expect([written('hole'), written('bend'), written('thickness'), written('dimension'), written('thread'), written('visual_base')])
+      .toEqual([5.76, 3.6, 15.12, 5.76, 8.64, 5]);
+    const says = inspectionSeedProvenance(plan);
+    expect(says['Hole Check Time']).toMatch(/no row on file, the fallback 5\.76 s \(closest published basis: BasicMOST M16, plug gauge/);
+    expect(says['Visual Pass Base']).toMatch(/no published source found/);
+  });
+
+  it('a row with a source: the trace names the row and where its time comes from', () => {
+    const rows: InspectionOperationDefaultRow[] = OPERATION_DEFAULTS.map((r) => (r.feature === 'thickness' && r.method === 'visual'
+      ? { ...r, cycle_time_sec: 15.12, source: 'BasicMOST measure M42, micrometer < 4 in, outside diameter, 420 TMU = 15.12 s' } : r));
+    const plan = planInspection(baseInput({ operationDefaults: rows }));
+    expect(plan.thicknessCheckSec).toBe(15.12);
+    expect(inspectionSeedProvenance(plan)['Thickness Check Time'])
+      .toBe('inspection_operation_defaults — thickness check time for visual method: BasicMOST measure M42, micrometer < 4 in, outside diameter, 420 TMU = 15.12 s');
+    // A row with no source still names its row.
+    expect(inspectionSeedProvenance(plan)['Dimension Check Time']).toBe('inspection_operation_defaults — dimension check time for visual method');
   });
 });

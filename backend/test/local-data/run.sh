@@ -141,6 +141,17 @@ ALTER TABLE public.calculator_fields ADD COLUMN input_config jsonb DEFAULT '{}':
 INSERT INTO public.calculator_fields (calculator_id, field_name, display_label, field_type, unit, default_value, display_order) VALUES
   ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Tool Cost', 'Tool Cost ($)', 'number', '$', '0', 6),
   ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Tool Life', 'Tool Life (Parts)', 'number', 'Parts', '0', 7);
+-- the counterbore's tool fields as the real database has them (migrations/calculators/050): migration 1162 prices its wear by the minutes it
+-- cuts (USD 6.00 for 15 min, memory/Machining tblCounterboring), with each default's source, and raises its version
+INSERT INTO public.calculator_fields (calculator_id, field_name, display_label, field_type, unit, default_value, display_order) VALUES
+  ('edccd27a-c91c-479d-a440-d00053249a3a', 'Tool Cost', 'Tool Cost', 'number', NULL, '0', 6),
+  ('edccd27a-c91c-479d-a440-d00053249a3a', 'Tool Life', 'Tool Life (Parts)', 'number', 'Parts', '0', 7),
+  ('edccd27a-c91c-479d-a440-d00053249a3a', 'No of Uses', 'No. of Uses', 'number', NULL, '1', 8),
+  ('edccd27a-c91c-479d-a440-d00053249a3a', 'Machining Time Min', 'Machining Time (min)', 'calculated', 'min', '{Depth} / ({Spindle RPM} * {Feed per Rev})', 14),
+  ('edccd27a-c91c-479d-a440-d00053249a3a', 'Tool Cost per Part', 'Tool Cost/Part', 'calculated', NULL, 'IF({Tool Life} > 0, {Tool Cost} / {Tool Life}, 0)', 21);
+-- the feature inspection times as the real database has them (migration 423): migration 1163 times the visual checks by the BasicMOST measure
+-- card and gives every row its source
+\i /migrations/423_inspection_operation_defaults.sql
 -- the materials table as the real database has it (migration 352 adds cut_code): migration 978 writes the cut code of the plastics onto it
 CREATE TABLE public.raw_materials (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name varchar(255) NOT NULL, cut_code decimal(10,2));
 -- the material columns as the real database has them (migration 069 on): migrations 1090 and 1092 fill the bar and tube materials' strengths and specific heat

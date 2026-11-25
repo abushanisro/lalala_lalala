@@ -7,9 +7,15 @@ import {
 } from '../../../shared/calculators/domain-calculator-spec';
 import type { ReferenceCalculatorDef, ReferenceCalculators } from '../../../shared/calculators/reference-calculator';
 
-/** The sand-casting calculator spec (sand-casting-calculators.json), validated. */
-export function loadSandCastingCalculatorSpec(): DomainCalculatorSpec {
-  return validateDomainCalculatorSpec(spec as DomainCalculatorSpec);
+/**
+ * The sand-casting calculator spec (sand-casting-calculators.json), validated: the current entry of each calculator. `includeSuperseded` keeps an entry a
+ * later migration replaced, for generating the migration that shipped it (which stays byte-identical once applied).
+ */
+export function loadSandCastingCalculatorSpec(opts: { includeSuperseded?: boolean } = {}): DomainCalculatorSpec {
+  const raw = spec as DomainCalculatorSpec;
+  // Names are unique among the current entries; a superseded entry shares its replacement's name, so only the current set is validated.
+  validateDomainCalculatorSpec({ ...raw, calculators: raw.calculators.filter((c) => c.supersededBy == null) });
+  return { ...raw, calculators: raw.calculators.filter((c) => opts.includeSuperseded === true || c.supersededBy == null) };
 }
 
 /** The spec as the per-operation calculator set the engine receives (tests; the engine reads the database). */

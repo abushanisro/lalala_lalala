@@ -190,12 +190,26 @@ describe('sand calculators run through the shared evaluator on hand-worked input
     expect(run.missing.join(' ')).toMatch(/Shakeout Time/);
   });
 
-  it('risers (a helper, found by name): modulus 5 mm, 1e6 mm³, 7200 kg/m³, 5 % shrinkage, 2 risers: Ø61.78 x 92.67 mm, 4.00 kg of risers', () => {
+  it('risers (a helper, found by name): modulus 5 mm, 1e6 mm³, 7200 kg/m³, 5 % shrinkage, 2 risers: Ø75.15 x 112.73 mm, 7.20 kg of risers', () => {
     const run = runReferenceCalculator(byName, 'Sand Casting - Risers', seeds({ 'Casting Modulus': 5, 'Casting Volume': 1e6, Density: 7200, Risers: 2, 'Shrinkage (estimate)': 5 }), 'Riser Weight');
-    // by modulus: 5 x 1.2 = 6; D = 6 x (4 x 1.5 + 1) / 1.5 = 28. by feeding: V = 5 x 1e6 / (14 - 5) / 2; D = (4V / (pi x 1.5))^(1/3) = 61.7787. The larger wins.
-    expect(run.outputs['Riser Diameter']).toBeCloseTo(61.77870299, 6);
-    expect(run.outputs['Riser Height']).toBeCloseTo(92.66805448, 6);
-    expect(run.value).toBeCloseTo(4, 9);
+    // by modulus: 5 x 1.2 = 6; D = 6 x (4 x 1.5 + 1) / 1.5 = 28. by feeding (version 2, migration 1160: Foseco's 10 % for a natural feeder, was 14 %):
+    // V = 5 x 1e6 / (10 - 5) / 2 = 500000; D = (4V / (pi x 1.5))^(1/3) = 75.1501. The larger wins. (At 14 %: Ø61.78 x 92.67 mm, 4.00 kg.)
+    expect(run.outputs['Riser Diameter']).toBeCloseTo(75.15011012, 6);
+    expect(run.outputs['Riser Height']).toBeCloseTo(112.72516518, 6);
+    expect(run.value).toBeCloseTo(7.2, 9);
+  });
+
+  it('the riser constants state their sources (the eye\'s table of defaults): Foseco\'s 1.2 and 10 %, the SFSA 1.5', () => {
+    const run = runReferenceCalculator(byName, 'Sand Casting - Risers', seeds({ 'Casting Modulus': 5, 'Casting Volume': 1e6, Density: 7200, Risers: 2, 'Shrinkage (estimate)': 5 }), 'Riser Weight');
+    const step = (name: string) => run.trace.find((s) => s.fieldName === name)!;
+    expect(step('Feed Efficiency (natural feeder)').value).toBe(10);
+    expect(step('Feed Efficiency (natural feeder)').source).toMatch(/Foseco.*10 % for other natural feeders/);
+    expect(step('Riser Modulus Factor (standard rule)').source).toMatch(/Mf = 1\.2 x Mc/);
+    expect(step('Height to Diameter (standard rule)').source).toMatch(/SFSA/);
+    const ref = step('Feed Efficiency (natural feeder)').ref;
+    expect(ref?.kind).toBe('calculatorField');
+    const defaults = ref?.kind === 'calculatorField' ? ref.defaults : [];
+    expect(defaults.find((d) => d.field === 'Feed Efficiency (natural feeder)')).toMatchObject({ value: 10, unit: '%', source: expect.stringMatching(/Foseco/) });
   });
 
   // A small iron casting: plausible values for every input name the sand calculators have, so each formula is run on physically consistent

@@ -147,13 +147,24 @@ export function calculatorDefaultSource(calculator: string, note: string | null 
 
 const defaultsCache = new WeakMap<object, CalculatorFieldDefault[]>();
 
-/** A calculator's input fields that have a default value, each with that value, its unit and where it comes from (calculatorField's table). */
+/** A number written as a formula: a value the calculator states itself (a riser's feed efficiency, a molding's pack ratio), not a calculation. */
+const NUMBER_LITERAL = /^\s*-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
+
+/** A calculated field whose formula is a plain number: a constant the calculator states, a default in all but name. */
+export function isConstantField(f: Pick<ReferenceCalculatorField, 'field_type' | 'default_value'>): boolean {
+  return f.field_type === 'calculated' && NUMBER_LITERAL.test(String(f.default_value ?? ''));
+}
+
+/**
+ * A calculator's fields that have a default value, each with that value, its unit and where it comes from (calculatorField's table): the inputs with
+ * a default, and the constants the calculator states as formulas (a plain number).
+ */
 export function calculatorFieldDefaults(def: Pick<ReferenceCalculatorDef, 'fields'>): CalculatorFieldDefault[] {
   const cached = defaultsCache.get(def.fields);
   if (cached) return cached;
   const rows = [...def.fields]
     .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
-    .filter((f) => f.field_type !== 'calculated' && hasValue(f.default_value))
+    .filter((f) => (f.field_type !== 'calculated' || isConstantField(f)) && hasValue(f.default_value))
     .map((f) => ({
       field: f.field_name,
       value: Number.isFinite(Number(f.default_value)) ? Number(f.default_value) : String(f.default_value),
@@ -267,6 +278,8 @@ export function runReferenceCalculator(
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'calculated' as const,
         value: finite ? round(v as number) : null,
         unit: f.unit ?? null, formula: String(f.default_value ?? ''), stepType: 'physics' as const,
+        // A constant the calculator states, with a note on where it comes from: that source, and the calculator's table of defaults for the eye.
+        ...(!own && f.note?.trim() && isConstantField(f) ? { source: f.note.trim(), ref: calculatorFieldRef(def, f.field_name) } : {}),
         ...(own ? { source: overrideSource(own, 'the formula'), override: { original: typeof was === 'number' && Number.isFinite(was) ? round(was) : null, reason: own.reason } } : {}),
       };
     });
