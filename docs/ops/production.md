@@ -60,8 +60,16 @@ For a signed-in check as well: `LOAD_BASE=https://stage.emithran.com LOAD_EMAIL=
 - Two sign-ins, two lists: the Auth0 account (who can authenticate) and `public.authorized_users` (who the app admits). Both must contain the person.
 
 ## Data safety
-- Backups are OFF (test data only, by decision 2026-11-11). Before real customer data: schedule `infra/oracle/backup.sh` (age-encrypted dump -> R2 `backups/`, 30-day lifecycle)
-  on the app server (cron or a systemd timer) and run a restore drill; the private key is on the developer Mac only.
+- Backups are ON since 2026-11-25: the systemd timer `emithran-backup.timer` on the app server runs `emithran-backup.service` nightly at 21:30 UTC
+  (03:00 IST, up to 10 min late; a missed run catches up at boot). It runs `/opt/emithran/infra/oracle/backup.sh` (a copy of the repo's
+  `infra/oracle/backup.sh`; releases do not ship it, so copy it again after changing it): pg_dump | gzip | age to the public key
+  `BACKUP_AGE_RECIPIENT` -> R2 `emithran-prod/backups/`, size-checked in R2, the last 14 days kept in `/opt/emithran/backups`.
+  Check: `ssh ubuntu@<app> 'systemctl list-timers emithran-backup.timer; journalctl -u emithran-backup -n 5 -o cat'`.
+  `BACKUP_HEARTBEAT_URL` is empty, so a failed night alerts no one yet (add a free heartbeat check to get an email).
+  The R2 key the app uses cannot read the bucket's lifecycle rules: confirm the 30-day expiry of `backups/` in the Cloudflare dashboard.
+- Restore (into an EMPTY database, never over the live one). pg_dump does not carry roles, so create them first, or every grant and policy fails:
+  `for r in anon authenticated cad_runner grafana_reader service_role; do psql -c "create role $r nologin"; done`, then
+  `age -d -i ~/emithran-backup-age.key <file>.sql.gz.age | gunzip | psql`. Drill 2026-11-25: 0 errors; tables, 463 policies and row counts equal production.
 - A database copy for a migration or rehearsal: `infra/oracle/micro-db.sh` (proves every table's row count against the source).
 
 ## Watching it
@@ -84,7 +92,7 @@ On a bigger server (the ARM one): set the same variable in `prd.env` and add the
 
 ## Known risks and open items
 1. Capacity: a pilot of 3-5 comfortable, about 10 slow users, one CAD job at a time (`capacity.md`).
-2. Backups off; no outside uptime check; no Grafana for production.
+2. No outside uptime check and no backup heartbeat; no Grafana for production.
 3. Stale DNS: `backend.emithran.com` and `cad.emithran.com` still point at deleted Railway services. The takeover risk is low (Railway only serves a custom domain after a TXT proof in our DNS) but they should go, with the `_railway-verify.*` TXT records.
 4. Single points of failure: one app server, one database, no replica. The Mac is the only other copy of the code's build tooling.
 5. Staging is on the developer Mac.
