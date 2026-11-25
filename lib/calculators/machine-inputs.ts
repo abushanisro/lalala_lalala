@@ -27,6 +27,14 @@ export function allReadFrom(shown: readonly (SourceRef | undefined)[], machineId
   return shown.length > 0 && shown.every((r) => r?.kind === 'machine' && r.machineId === machineId);
 }
 
+/** A box the engineer emptied: no value (the calculator names it as missing), never a 0. */
+export function isCleared(value: unknown): boolean {
+  return value === '' || value == null || (typeof value === 'string' && value.trim() === '');
+}
+
+/** The source shown under a box the engineer emptied. */
+export const CLEARED_PROVENANCE = 'No value: enter one (Calculate names what it is missing)';
+
 /**
  * Leaving a field is an entry only when its value changed from the one it was filled with (cost engine, database, machine), or the
  * engineer already entered it; a field clicked into and left keeps its value's source.

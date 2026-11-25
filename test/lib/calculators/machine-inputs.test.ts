@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SourceRef } from '@/lib/calculators/input-source';
-import { allReadFrom, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
+import { allReadFrom, isCleared, isEntry, machineFieldsOf, readFromAnotherMachine, runsOnLiveTool } from '@/lib/calculators/machine-inputs';
 
 // The engine's run of Tapping on the cannula end bearing housing: its spindle cap read from the mill it ran on.
 const spindle = (machineId: string, column = 'specs.spindle_speed_rpm'): SourceRef =>
@@ -49,5 +49,12 @@ describe('leaving a machining input', () => {
     expect(isEntry(false, 10000, 8000)).toBe(true);
     expect(isEntry(true, 10000, 10000)).toBe(true);
     expect(isEntry(false, undefined, 6)).toBe(true);
+  });
+});
+
+describe('a cleared machining input', () => {
+  it('is an emptied box (no value), never a 0 the calculator would divide by', () => {
+    for (const v of ['', '  ', null, undefined]) expect(isCleared(v)).toBe(true);
+    for (const v of [0, '0', 10000, 'x']) expect(isCleared(v)).toBe(false);
   });
 });

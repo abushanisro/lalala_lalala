@@ -8454,6 +8454,7 @@ export class BomItemCostingService {
     location?: string,
     batchSize?: number,
     machine?: { id: string; liveTool: boolean },
+    process?: string,
   ): Promise<MachiningCalculatorInputsDto> {
     const item = await this.items.findOne(id, userId, accessToken);
     const calculators = await this.resolveMachiningCalculators(accessToken);
@@ -8559,7 +8560,9 @@ export class BomItemCostingService {
       try {
         const summary = await this.getCostSummary(id, userId, accessToken, batchSize, location);
         const lines = (summary as any).processLines as ProcessLineCost[] ?? [];
-        const own = lines.find((l) => l.calculatorId === calculatorId && l.calculationTrace?.length);
+        // The line being edited: a mill's Drilling line runs the mill's calculator too, and its inputs are its own, not the mill line's.
+        const ranIt = (l: ProcessLineCost) => l.calculatorId === calculatorId && !!l.calculationTrace?.length;
+        const own = (process ? lines.find((l) => ranIt(l) && l.process === process) : undefined) ?? lines.find(ranIt);
         const SHARED = new Set(['Bar Diameter', 'Batch Size']);
         // Under the calculator's own field names: a line run once per group (thread sizes, hole diameters) gives its first group.
         const stepsOf = (l: ProcessLineCost) => calculatorInputSteps(l.calculationTrace ?? []).filter((st) => typeof st.value === 'number');
