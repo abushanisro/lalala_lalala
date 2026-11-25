@@ -153,6 +153,33 @@ def _classify_edge(edge_in_a: Any, face_a: Any, face_b: Any) -> Optional[Dict[st
     return {"convexity": kind, "dihedral_deg": round(dihedral, 2)}
 
 
+def face_neighbours(shape: Any) -> Dict[int, set]:
+    """Which faces each face shares an edge with (face ids are TopExp_Explorer ordinals, as everywhere): the topology build_face_attributes
+    walks, without measuring anything, for a caller that only needs to know what touches what (a hole wall and the countersink at its mouth)."""
+    faces: List[Any] = []
+    face_index = TopTools_IndexedMapOfShape()
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = topods.Face(exp.Current())
+        faces.append(face)
+        face_index.Add(face)
+        exp.Next()
+    edge_faces = TopTools_IndexedDataMapOfShapeListOfShape()
+    topexp.MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edge_faces)
+    neighbours: Dict[int, set] = {i: set() for i in range(len(faces))}
+    for k in range(1, edge_faces.Size() + 1):
+        ids = []
+        it = TopTools_ListIteratorOfListOfShape(edge_faces.FindFromIndex(k))
+        while it.More():
+            i = face_index.FindIndex(it.Value()) - 1
+            it.Next()
+            if i >= 0:
+                ids.append(i)
+        for i in ids:
+            neighbours[i].update(j for j in ids if j != i)
+    return neighbours
+
+
 def build_face_attributes(shape: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Returns (face_attributes, edge_graph) for the shape, one pass each.
 

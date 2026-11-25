@@ -40,14 +40,14 @@ export const MHR_RATE_MACHINE_CLASSES: readonly MachineClass[] = [
   // cnc_lathe_live/cnc_mill_turn buckets (Machining Engine Re-Architecture).
   '3_axis_mill', '4_axis_mill', '5_axis_mill',
   '2_axis_lathe', '3_axis_lathe', '2_axis_bar_feed_lathe_with_sub_spindle', '3_axis_bar_feed_lathe_with_sub_spindle',
-  'injection_molding', 'compression_molding', 'structural_foam_molding', 'reaction_injection_molding', 'drill_press', 'pem_press', 'hole_forming',
+  'injection_molding', 'compression_molding', 'structural_foam_molding', 'reaction_injection_molding', 'assembly_molding_insert_injection_molding', 'drill_press', 'pem_press', 'hole_forming',
   'gun_drill', 'deep_bore_machine', 'manual_deburr', 'manual_bench_cell', 'cylindrical_grinder', 'jig_bore', 'jig_grind', 'internal_grinder', 'broach', 'machining_millturn', 'wire_edm', 'hob_machine', 'simultaneous_turning',
-  'machining_inspection', 'special_inspection',
+  'machining_inspection', 'special_inspection', 'xrf_analyzer',
 ];
 
 /** The catalog identity of a machine class: its process_calculator_mappings row
  *  and, through canonical_process_id, its process_taxonomy process. */
-interface ProcessIdentity {
+export interface ProcessIdentity {
   processGroup: string;
   processRoute: string;
   operation: string;
@@ -142,6 +142,8 @@ export class RateResolutionService {
     // preferRealRate() pattern already used for manualDeburr vs. deburring).
     machiningInspection: MHRRateInput;
     specialInspection: MHRRateInput;
+    /** The XRF analyzer of a raw material lot's composition check (class xrf_analyzer, migration 1145). */
+    xrf: MHRRateInput;
     turret: MHRRateInput;
     waterjet: MHRRateInput;
     router: MHRRateInput;
@@ -189,6 +191,8 @@ export class RateResolutionService {
     compressionMolding: MHRRateInput;
     structuralFoamMolding: MHRRateInput;
     reactionInjectionMolding: MHRRateInput;
+    /** The insert molding press (Assembly Molding): the injection engine on an insert press. */
+    insertInjectionMolding: MHRRateInput;
     /**
      * The blanket labour rate for lines whose machine carries none. Always
      * null: labour is each machine's own memory/ LHR (see get() below), and no
@@ -215,10 +219,9 @@ export class RateResolutionService {
     const requirements = physics?.requirements ?? {};
     const overrides = physics?.overrides ?? new Map<string, string>();
     const localCurrencyCode = (LOCATION_INFO[location] ?? LOCATION_INFO['Other']).code;
-    // mhr_records.total_machine_hour_rate is stored in the location own
-    // currency; usd_lhr_total is USD. Labour is converted so the two can be
-    // added on one line — they were previously summed unconverted, which is
-    // only correct for USD locations.
+    // HR Rates holds every machine in USD, whatever its location (machine hour
+    // rate and labour alike): mhrRateFromCandidate converts both to the
+    // location's currency, so the two are added on one line in one currency.
     const usdToLocal = fxRates.convertStrict('USD', localCurrencyCode);
 
     const get = (cls: MachineClass): MHRRateInput => {
@@ -271,6 +274,7 @@ export class RateResolutionService {
       hobMachine:       get('hob_machine'),
       machiningInspection: get('machining_inspection'),
       specialInspection:   get('special_inspection'),
+      xrf:                 get('xrf_analyzer'),
       turret:           get('turret_punch'),
       waterjet:         get('waterjet'),
       router:           get('router_2axis'),
@@ -299,6 +303,7 @@ export class RateResolutionService {
       compressionMolding: get('compression_molding'),
       structuralFoamMolding: get('structural_foam_molding'),
       reactionInjectionMolding: get('reaction_injection_molding'),
+      insertInjectionMolding: get('assembly_molding_insert_injection_molding'),
       directLaborRate: null,
       qaInspectorRate: inspection.labourRate ?? null,
     };

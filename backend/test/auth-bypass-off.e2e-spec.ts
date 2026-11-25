@@ -6,7 +6,6 @@
 // the "on" case lives in auth-bypass-on.e2e-spec.ts. ADMIN_FALLBACK_EMAIL stays configured on
 // purpose: having it must not be enough to get in.
 process.env.ALLOW_DEV_AUTH_BYPASS = 'false';
-process.env.ELECTRONICS_QUEUE_DRIVER = 'memory';
 
 import { ConfigService } from '@nestjs/config';
 import type { INestApplication } from '@nestjs/common';

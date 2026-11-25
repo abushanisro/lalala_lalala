@@ -84,11 +84,11 @@ imports, so every existing import path (including Sheet Metal's real
 Covers turned and mill_turn parts (_recognize_turned):
   external_diameter, through_hole, blind_hole, cross_hole, pcd_hole_pattern,
   chamfer, groove, fillet, slot, radial_slot, pocket, counterbore,
-  countersink, keyway, multi_step_hole
+  countersink, keyway, multi_step_hole, flat
 
 milled (_recognize_milled) covers the same feature set as the turned
 path minus the turning-specific ones (external_diameter, pcd_hole_pattern,
-radial_slot), using generic "pocket" instead of the turned-only keyway/
+radial_slot, flat), using generic "pocket" instead of the turned-only keyway/
 radial_slot split, plus the milled-only Phase 3-5 additions: planar_face/
 curved_wall/curved_surface (general face classification) and cutout
 (non-circular through-openings).
@@ -114,15 +114,19 @@ from typing import Dict, List, Optional, Tuple
 # Metal's real `from machining.machining_feature_recognizer import
 # _TAP_DRILL_RANGES` / `MachiningFeature` / etc.), keeps working unchanged.
 from .feature_models import MachiningFeatureType, MachiningFeature, MachiningFeatureTree
+from .toroid_features import classify_toroid as _classify_toroid
 from shared.error_reporting import report_failure
 from shared.part_family import MILLED, TURNED_FAMILIES
 from shared.machining_geometry import (
     TAP_DRILL_RANGES as _TAP_DRILL_RANGES,
     HELICOIL_DRILL_RANGES as _HELICOIL_DRILL_RANGES,
     MAX_COAXIAL_DIST_MM as _MAX_COAXIAL_DIST_MM,
+    HOLE_MIN_SWEEP_RAD,
     classify_hole as _classify_hole,
     annotate_hole_depth as _annotate_hole_depth,
     classify_cone as _classify_cone,
+    countersink_mouths as _countersink_mouths,
+    same_axis_line as _same_axis_line,
     detect_counterbores as _detect_counterbores,
     detect_multistep_holes as _detect_multistep_holes,
     point_to_axis_distance as _point_to_axis_distance,
@@ -131,6 +135,7 @@ from shared.machining_geometry import (
     axis_span as _axis_span,
     part_bounding_box as _part_bounding_box,
     collect_cylinders as _collect_cylinders_fn,
+    turning_line_point,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +150,19 @@ _MIN_FILLET_RADIUS_MM = 0.5
 # _collect_prismatic_pockets' own doc comment for the bug this closes.
 _STRUCTURAL_FACE_AXIS_TOL_MM = 0.05
 
+# A planar face is square to the turning axis (a candidate floor of a keyway
+# or a slot milled into a turned surface) when its normal makes less than
+# this cosine with the axis: within about 8 degrees of square.
+_RADIAL_FLOOR_MAX_DOT = 0.15
+
+# A floor facing across the turning axis is a flat cut into a turned diameter when the diameter stands at least this
+# far above it, and the axis lies behind it to within this (a flat on the centre line leaves a half round): the
+# recessed-floor rise tolerance (recessed_floor._RISE_TOL_MM). A plane that only touches the round is not a cut.
+_TURNED_FLAT_TOL_MM = 0.02
+
+# A flat spans the round it is cut into: it is as wide as the round's chord at its plane, to within this.
+_TURNED_FLAT_CHORD_TOL_MM = 0.05
+
 
 def _is_bore(f: MachiningFeature) -> bool:
     """An individual axial bore (not a cross hole or an already-grouped pattern)."""
@@ -152,8 +170,39 @@ def _is_bore(f: MachiningFeature) -> bool:
 
 
 def _is_plain_bore(f: MachiningFeature) -> bool:
-    """An untapped axial bore -- the only kind that can be a counterbore/step member."""
+    """An untapped axial bore -- the only kind that can be a multi-step hole member."""
     return f.type == "SimpleHole" and f.variant in ("through", "blind")
+
+
+def _merge_counterbores(features: List[MachiningFeature], bore_id_to_cyl: Dict[str, Dict]) -> List[MachiningFeature]:
+    """
+    Coaxial bore pairs, the outer wider and shallower, become one MultiStepHole counterbore (shared detect_counterbores). Tapped bores
+    are paired too: the thread of a bore is read from its diameter alone, so a short counterbore step at a tap-drill size read as a
+    thread of its own (Motor Mount: six Ø4.5 x 2.03 counterbores over M3 tapped holes were six M4 helicoil holes). The outer step is
+    the counterbore and is absorbed into it. A tapped inner bore stays the threaded hole it is (it is drilled and tapped; the
+    counterbore carries its bore_spec), so the counterbore claims only the outer step's faces; a plain inner bore is absorbed as before.
+    """
+    counterbores = _detect_counterbores([f for f in features if _is_bore(f)], bore_id_to_cyl)
+    if not counterbores:
+        return features
+    by_id = {f.id: f for f in features}
+    absorbed: set = set()
+    added: List[MachiningFeature] = []
+    for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
+        inner_tapped = by_id[inner_id].variant == "threaded"
+        members = [outer_id] if inner_tapped else [outer_id, inner_id]
+        added.append(MachiningFeature(
+            id=f"cbore_{cb_idx}",
+            type="MultiStepHole",
+            variant="counterbore",
+            params=params,
+            confidence=0.78,
+            children=[outer_id, inner_id],
+            # Union face_ids from the absorbed bores for visual coverage
+            face_ids=list(set(fid for m in members for fid in bore_id_to_cyl.get(m, {}).get("face_indices", []))),
+        ))
+        absorbed.update(members)
+    return [f for f in features if f.id not in absorbed] + added
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -243,15 +292,22 @@ class MachiningFeatureRecognizer:
             return MachiningFeatureTree(family=family, features=[], warnings=warnings)
 
         main_axis = self._dominant_cylinder_axis(shape)
+        # The line the part is turned about. A part with no turned diameter has none: it is measured from the centre of its box.
+        on_axis = turning_line_point(shape, main_axis)
 
-        raw_cylinders = self._collect_cylinders(shape, main_axis, bbox)
+        raw_cylinders = self._collect_cylinders(shape, main_axis, bbox, on_axis)
         # Merge face patches of the same physical feature before emitting features.
         # Without this, OCC can represent a single bore or OD step as 2–8 separate
         # cylindrical face patches, inflating counts into the hundreds.
         cylinders = _deduplicate_cylinders(raw_cylinders)
         cones = self._collect_cones(shape)
         toroids = self._collect_toroids(shape)
-        prismatic = self._collect_prismatic_pockets(shape, main_axis, bbox)
+        hole_flats: List[Dict] = []
+        # The faces of the turned diameters, each with its radius: what a flat is milled into.
+        turned_radii = {i: c["radius"] for c in raw_cylinders if c["kind"] == "external_diameter" for i in c["face_indices"]}
+        prismatic = self._collect_prismatic_pockets(
+            shape, main_axis, bbox, radial=True, hole_flats=hole_flats, on_axis=on_axis, turned_radii=turned_radii,
+        )
 
         # ── Teeth around the axis (gear / spline) → AxiGroove ────────────────
         # Off-axis convex faces with N-fold rotational symmetry (axigroove.py).
@@ -281,6 +337,36 @@ class MachiningFeatureRecognizer:
             f"cones={len(cones)} toroids={len(toroids)} prismatic={len(prismatic)}"
         )
 
+        # ── Recess floors → keyway / radial slot / flat, classified before the cylinders ─
+        # A keyway, a slot or a flat milled into a turned surface owns its faces (the floor and the walls standing on
+        # it), so none of them is reported a second time as something else.
+        # The flat bottom of a round hole that breaks out of the turned surface (a spot face, a counterbore on a
+        # diameter) is walled by that hole's cylinder alone: it belongs to the hole, which stays a cross hole.
+        cross_cylinders = [c for c in cylinders if c["kind"] == "cross_hole"]
+        recesses: List[Tuple[Dict, Tuple[MachiningFeatureType, str, Dict]]] = []
+        for p in prismatic:
+            result = _classify_prismatic_turned(p, main_axis)
+            if result is None:
+                continue
+            if p["radial"] and p["wall_faces"] and any(set(p["wall_faces"]) <= set(c.get("face_indices", [])) for c in cross_cylinders):
+                continue
+            recesses.append((p, result))
+        recess_faces = {i for p, _result in recesses if p["radial"] for i in p["face_indices"]}
+        # A flat wall of such a recess faces along the axis when the recess runs across it: it is the recess's
+        # wall, not the floor of a slot of its own.
+        recesses = [(p, result) for p, result in recesses if p["radial"] or p["face_indices"][0] not in recess_faces]
+        # The concave arcs that end a keyway or a radial slot are its end walls, as the two half turns of a milled
+        # slot are its ends (_recognize_milled): a cylinder face that sweeps less than a bore and stands on the
+        # recess's floor is not a cross hole. A cross hole drilled through the shaft wraps all the way round and
+        # stays one. Read face by face: the ends of two keyways cut opposite each other lie on one axis line, and
+        # together they sweep a full turn.
+        half_turns = [c for c in raw_cylinders if c["kind"] == "cross_hole" and c.get("u_range", 2.0 * math.pi) < HOLE_MIN_SWEEP_RAD]
+        recess_ends = {i for c in half_turns for i in c.get("face_indices", [])} & recess_faces
+
+        # The countersinks at the bores' mouths, read before the bores: one wide enough to seat a screw head makes the hole it
+        # opens into a clearance hole, whatever its diameter (classify_hole countersink_entry_mm).
+        mouths = _countersink_mouths(cones, cylinders)
+
         # ── Cylinders → external_diameter / through_hole / blind_hole / cross_hole ─
         # bore_id_to_cyl lets PCD detection read dist_from_axis and angle_deg after
         # bore features are emitted, without storing those fields in the public API.
@@ -289,6 +375,8 @@ class MachiningFeatureRecognizer:
         bore_id_to_cyl: Dict[str, Dict] = {}
 
         for cyl in cylinders:
+            if cyl["kind"] == "cross_hole" and set(cyl.get("face_indices", [])) <= recess_ends:
+                continue
             diameter_mm = round(cyl["radius"] * 2.0, 3)
             kind = cyl["kind"]
 
@@ -314,16 +402,30 @@ class MachiningFeatureRecognizer:
 
             elif kind in ("through_hole", "blind_hole"):
                 fid = f"bore_{bore_idx}"
+                # A bore whose wall does not go all the way round (a flat closes it, a keyway opens it) cannot be tapped,
+                # so no thread is read from its diameter. The milled path never asks either: there a cylinder that
+                # sweeps less than a bore is kept as a round before the hole is classified.
                 hole_variant, tap_spec, is_helicoil = _classify_hole(
                     diameter_mm, through=(kind == "through_hole"),
+                    full_turn=cyl.get("u_range", 2.0 * math.pi) >= HOLE_MIN_SWEEP_RAD,
+                    countersink_entry_mm=max((mouths.get(i, 0.0) for i in face_ids), default=0.0) or None,
                 )
 
                 params: Dict = {
                     "diameter_mm": diameter_mm,
                     "depth_mm": round(cyl["length"], 3),
+                    # As on a cross hole: 0 on the turning centreline (a stationary tool drills it), more off it (a live tool does).
+                    "distance_from_axis_mm": round(cyl["dist_from_axis"], 3),
                     "centroid": centroid,
                 }
                 _annotate_hole_depth(params, diameter_mm, cyl["length"])
+                # The flats that close the bore (one on a D bore, two on a double D), measured as floors: the widest
+                # flat, and the hole's size across a flat (how far its wall rises above it; between the two of a double D).
+                flats = [f for f in hole_flats if set(f["wall_faces"]) & set(face_ids)]
+                if flats:
+                    params["flat_count"] = len(flats)
+                    params["flat_mm"] = round(max(f["width_mm"] for f in flats), 3)
+                    params["across_flat_mm"] = round(min(f["across_mm"] for f in flats), 3)
                 if tap_spec:
                     params["spec"] = tap_spec
                     params["detection"] = "geometry_heuristic"
@@ -352,6 +454,16 @@ class MachiningFeatureRecognizer:
                     "centroid": centroid,
                 }
                 _annotate_hole_depth(cross_params, diameter_mm, cyl["length"])
+                # A cross hole is drilled and tapped like a bore: at a tap-drill size, round all the way, it is a tapped hole (an M3 at
+                # Ø2.5 across a shaft). It stays a cross hole, which a lathe drills and taps radially with a live tool; the thread is a param.
+                _, cross_tap_spec, cross_helicoil = _classify_hole(
+                    diameter_mm, through=True, full_turn=cyl.get("u_range", 2.0 * math.pi) >= HOLE_MIN_SWEEP_RAD,
+                )
+                if cross_tap_spec:
+                    cross_params["spec"] = cross_tap_spec
+                    cross_params["detection"] = "geometry_heuristic"
+                    if cross_helicoil:
+                        cross_params["helicoil_candidate"] = True
                 features.append(MachiningFeature(
                     id=fid,
                     type="SimpleHole",
@@ -408,14 +520,27 @@ class MachiningFeatureRecognizer:
                 pcd_face_ids = list(set(
                     fid for gid in group_ids for fid in cross_face_ids_map.get(gid, [])
                 ))
+                # Tapped as its members are, as an axial bolt circle carries it (above): when every member hole is tapped to one size.
+                cross_specs = [f.params.get("spec") for f in group]
+                cross_tap: Dict = (
+                    {"tap_spec": cross_specs[0], "hole_type": "tapped"}
+                    if cross_specs[0] and all(sp == cross_specs[0] for sp in cross_specs) else {}
+                )
+                if cross_tap and any(f.params.get("helicoil_candidate") for f in group):
+                    cross_tap["helicoil_candidate"] = True
                 features.append(MachiningFeature(
                     id=f"pcd_{pcd_feature_idx}",
                     type="SimpleHole",
                     variant="pcd_pattern",
                     params={
+                        # The circle the holes' axes touch: 0 for radial holes, whose axes meet on the turning axis.
                         "pcd_mm": round(sample.params["distance_from_axis_mm"] * 2.0, 3),
                         "hole_count": len(group),
                         "hole_diameter_mm": sample.params["diameter_mm"],
+                        # The members' depth, as an axial bolt circle carries it (_detect_pcd_from_axial_bores): the member holes are
+                        # absorbed into the pattern, so without it costing would have no depth to drill them to.
+                        "depth_mm": round(sum(f.params["depth_mm"] for f in group) / len(group), 3),
+                        **cross_tap,
                     },
                     confidence=0.82,
                     children=group_ids,
@@ -458,59 +583,30 @@ class MachiningFeatureRecognizer:
         if multistep_absorbed:
             features = [f for f in features if f.id not in multistep_absorbed]
 
-        # ── Detect counterbores (coaxial cylinder pairs) ──────────────────────
-        counterbores = _detect_counterbores(
-            [f for f in features if _is_plain_bore(f)],
-            bore_id_to_cyl,
-        )
-        if counterbores:
-            absorbed: set = set()
-            for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
-                # Union face_ids from both constituent bores for visual coverage
-                cb_face_ids = list(set(
-                    bore_id_to_cyl.get(outer_id, {}).get("face_indices", []) +
-                    bore_id_to_cyl.get(inner_id, {}).get("face_indices", [])
-                ))
-                features.append(MachiningFeature(
-                    id=f"cbore_{cb_idx}",
-                    type="MultiStepHole",
-                    variant="counterbore",
-                    params=params,
-                    confidence=0.78,
-                    children=[outer_id, inner_id],
-                    face_ids=cb_face_ids,
-                ))
-                absorbed.update([outer_id, inner_id])
-            features = [f for f in features if f.id not in absorbed]
+        # ── Detect counterbores (coaxial cylinder pairs, a tapped bore included) ─
+        features = _merge_counterbores(features, bore_id_to_cyl)
 
-        # ── Toroids → groove / fillet ─────────────────────────────────────────
+        # ── Toroids → groove / fillet / round ─────────────────────────────────
+        # A full-turn concave torus on the turning line is cut on the lathe: a
+        # groove profile is plunged ("Plunging//Ring"), a fillet profile is the
+        # shoulder fillet finish turning forms (turned_shoulder). Any other
+        # concave torus is milled; a convex one is a rounded edge
+        # ("Rounding//Edge"). Rules and thresholds: toroid_features.py.
         for tor_idx, tor in enumerate(toroids):
-            # Concave annular recess on a turned part is a plunged groove
-            # ("Plunging//Ring"); a convex blend is a rounded edge ("Rounding//Edge").
-            ftype, variant = ("Ring", "groove") if tor["is_concave"] else ("Edge", "round")
+            ftype, variant, params = _classify_toroid(tor, turned=True, turning_axis=main_axis, on_axis=on_axis)
             features.append(MachiningFeature(
                 id=f"{variant}_{tor_idx}",
                 type=ftype,
                 variant=variant,
-                params={
-                    "major_diameter_mm": round(tor["major_radius"] * 2.0, 3),
-                    "radius_mm": round(tor["minor_radius"], 3),
-                    "centroid": list(tor.get("centroid", (0.0, 0.0, 0.0))),
-                },
+                params=params,
                 confidence=0.80,
                 face_ids=tor.get("face_indices", []),
             ))
 
-        # ── Prismatic pockets → slot / keyway only (skip structural faces) ────
-        # Structural transition faces (shoulders, datums) are excluded by requiring
-        # aspect ratio > 2.5. Generic "pocket" is not emitted from turned parts —
-        # pockets on turned parts are either keyways or radial slots.
-        p_idx = 0
-        for p in prismatic:
-            result = _classify_prismatic_turned(p, main_axis)
-            if result is None:
-                continue
-            ftype, variant, params = result
+        # ── Prismatic pockets → slot / keyway / flat only (skip structural faces) ─
+        # Classified above (recesses). Generic "pocket" is not emitted from turned
+        # parts — pockets on turned parts are keyways, radial slots or flats.
+        for p_idx, (p, (ftype, variant, params)) in enumerate(recesses):
             features.append(MachiningFeature(
                 id=f"{ftype}_{p_idx}",
                 type=ftype,
@@ -519,7 +615,6 @@ class MachiningFeatureRecognizer:
                 confidence=0.70,
                 face_ids=p.get("face_indices", []),
             ))
-            p_idx += 1
 
         if not features:
             warnings.append(
@@ -558,7 +653,8 @@ class MachiningFeatureRecognizer:
         # represented as 4 quarter-circle patches would inflate hole counts 4×.
         cylinders = _deduplicate_cylinders(raw_cylinders)
         cones = self._collect_cones(shape)
-        prismatic = self._collect_prismatic_pockets(shape, datum_axis, bbox)
+        hole_bottoms: set = set()
+        prismatic = self._collect_prismatic_pockets(shape, datum_axis, bbox, hole_bottoms)
         # Reuse the same toroid detector the turned path already uses (Phase 0
         # coverage fix) — fillets/grooves are real, common features on milled
         # parts too (edge blends, corner radii); this detector is orientation-
@@ -614,6 +710,10 @@ class MachiningFeatureRecognizer:
                 confidence=0.75,
                 face_ids=sorted(set(a.get("face_indices", [])) | set(b.get("face_indices", []))),
             ))
+        # The countersinks at the holes' mouths, read before the holes: one wide enough to seat a screw head makes the hole it
+        # opens into a clearance hole, whatever its diameter (classify_hole countersink_entry_mm).
+        mouths = _countersink_mouths(cones, cylinders)
+
         round_idx = 0
         for cyl in cylinders:
             if id(cyl) in slot_arc_ids:
@@ -653,6 +753,7 @@ class MachiningFeatureRecognizer:
             kind = cyl["kind"] if cyl["kind"] in ("through_hole", "blind_hole") else "blind_hole"
             hole_variant, tap_spec, is_helicoil = _classify_hole(
                 diameter_mm, through=(kind == "through_hole"),
+                countersink_entry_mm=max((mouths.get(i, 0.0) for i in cyl.get("face_indices", [])), default=0.0) or None,
             )
 
             params: Dict = {
@@ -679,15 +780,10 @@ class MachiningFeatureRecognizer:
             bore_id_to_cyl[fid] = cyl
             bore_idx += 1
 
-        # Counterbore detection with centroid distance guard. Without bore_id_to_cyl the
-        # O(n²) pair check would produce thousands of false positives from non-coaxial
-        # bore pairs that happen to satisfy diam_outer > diam_inner + depth_outer < depth_inner.
-        bore_features = [f for f in features if _is_bore(f)]
-
         # Multi-step holes (3+ coaxial bores) BEFORE counterbores — see the
         # matching comment in _recognize_turned for why the ordering matters.
         multistep_groups = _detect_multistep_holes(
-            [f for f in bore_features if _is_plain_bore(f)],
+            [f for f in features if _is_plain_bore(f)],
             bore_id_to_cyl,
         )
         multistep_absorbed: set = set()
@@ -704,30 +800,10 @@ class MachiningFeatureRecognizer:
             multistep_absorbed.update(member_ids)
         if multistep_absorbed:
             features = [f for f in features if f.id not in multistep_absorbed]
-            bore_features = [f for f in bore_features if f.id not in multistep_absorbed]
 
-        counterbores = _detect_counterbores(
-            [f for f in bore_features if _is_plain_bore(f)],
-            bore_id_to_cyl,
-        )
-        if counterbores:
-            absorbed: set = set()
-            for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
-                cb_face_ids = list(set(
-                    bore_id_to_cyl.get(outer_id, {}).get("face_indices", []) +
-                    bore_id_to_cyl.get(inner_id, {}).get("face_indices", [])
-                ))
-                features.append(MachiningFeature(
-                    id=f"cbore_{cb_idx}",
-                    type="MultiStepHole",
-                    variant="counterbore",
-                    params=params,
-                    confidence=0.78,
-                    children=[outer_id, inner_id],
-                    face_ids=cb_face_ids,
-                ))
-                absorbed.update([outer_id, inner_id])
-            features = [f for f in features if f.id not in absorbed]
+        # Counterbores: coaxial bore pairs, a tapped bore included (_merge_counterbores). With bore_id_to_cyl the
+        # pair must share one axis line; without it the O(n²) pair check would pair bores that only lie near each other.
+        features = _merge_counterbores(features, bore_id_to_cyl)
 
         for cone_idx, cone in enumerate(cones):
             edge_variant, params, conf = _classify_cone(cone, cylinders)
@@ -752,18 +828,17 @@ class MachiningFeatureRecognizer:
             ))
 
         for tor_idx, tor in enumerate(toroids):
-            # Concave toroidal recess on a milled part is a milled groove
-            # ("Groove Milling//Slot"); a convex blend is a rounded edge.
-            ftype, variant = ("Slot", "groove") if tor["is_concave"] else ("Edge", "round")
+            # A concave torus with a groove profile on a milled part is a milled
+            # groove ("Groove Milling//Slot"); one with a fillet profile is an
+            # inside fillet, a concave Edge:round cut by a ball-nose end mill
+            # along its path; a convex blend is a rounded edge. Rules and
+            # thresholds: toroid_features.py.
+            ftype, variant, params = _classify_toroid(tor)
             features.append(MachiningFeature(
                 id=f"{variant}_{tor_idx}",
                 type=ftype,
                 variant=variant,
-                params={
-                    "major_diameter_mm": round(tor["major_radius"] * 2.0, 3),
-                    "radius_mm": round(tor["minor_radius"], 3),
-                    "centroid": list(tor.get("centroid", (0.0, 0.0, 0.0))),
-                },
+                params=params,
                 confidence=0.80,
                 face_ids=tor.get("face_indices", []),
             ))
@@ -791,6 +866,8 @@ class MachiningFeatureRecognizer:
         claimed_face_ids: set = set()
         for f in features:
             claimed_face_ids.update(f.face_ids)
+        # The flat bottom of a hole is made by the drill or counterbore that makes the hole: not a face to finish.
+        claimed_face_ids.update(hole_bottoms)
 
         # ── Cutout rings (Phase 5) — non-circular through-openings (11 real
         # catalog rows). Runs BEFORE general face classification so a real
@@ -890,44 +967,18 @@ class MachiningFeatureRecognizer:
     # ── OCC collection helpers ────────────────────────────────────────────────
 
     def _dominant_cylinder_axis(self, shape) -> Tuple[float, float, float]:
-        """
-        Returns the dominant cylinder axis as a normalized unit vector.
-        Votes are cast by each cylindrical face; the plurality wins.
-        Falls back to (0, 0, 1) if the shape has no cylindrical faces.
-        """
-        from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
-        from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
-        from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
-
-        # Count-based voting (not radius-weighted) to match memory_optimizer.py's
-        # _compute_cyl_signals, which correctly classifies this family.
-        # Radius-weighted voting is biased toward fewer large features and can
-        # mis-elect a perpendicular axis when many small bores dominate by count.
-        votes: Dict[Tuple[float, float, float], int] = {}
-        exp = TopExp_Explorer(shape, TopAbs_FACE)
-        while exp.More():
-            surf = BRepAdaptor_Surface(exp.Current())
-            if surf.GetType() == GeomAbs_Cylinder:
-                d = surf.Cylinder().Axis().Direction()
-                # Snap to 2-decimal grid so near-parallel axes collapse to same key
-                key = (round(abs(d.X()), 2), round(abs(d.Y()), 2), round(abs(d.Z()), 2))
-                votes[key] = votes.get(key, 0) + 1
-            exp.Next()
-
-        if not votes:
-            return (0.0, 0.0, 1.0)
-        dominant = max(votes, key=lambda k: votes[k])
-        logger.info(
-            f"[machining_features] dominant_axis={dominant} votes={votes[dominant]}/{sum(votes.values())}"
-        )
-        return dominant
+        """The dominant cylinder axis (shared.machining_geometry.dominant_cylinder_axis); (0, 0, 1) when the part has no cylinder."""
+        from shared.machining_geometry import dominant_cylinder_axis
+        axis = dominant_cylinder_axis(shape)
+        logger.info(f"[machining_features] dominant_axis={axis}")
+        return axis if axis is not None else (0.0, 0.0, 1.0)
 
     def _collect_cylinders(
         self,
         shape,
         main_axis: Tuple[float, float, float],
         bbox: Dict,
+        axis_point: Optional[Tuple[float, float, float]] = None,
     ) -> List[Dict]:
         """
         Thin delegating wrapper -- the real implementation moved to
@@ -936,14 +987,22 @@ class MachiningFeatureRecognizer:
         called this exact method as `recognizer._collect_cylinders(...)`;
         that call pattern is preserved unchanged here).
         """
-        return _collect_cylinders_fn(shape, main_axis, bbox)
+        return _collect_cylinders_fn(shape, main_axis, bbox, axis_point)
 
     def _collect_cones(self, shape) -> List[Dict]:
+        """
+        The part's conical faces, for chamfer / countersink classification (shared classify_cone). Each carries
+        whether it is concave (the material is outside the cone: the wall of a hole's mouth; a convex cone is
+        cut on the outside of a diameter or a boss) and the faces that share an edge with it.
+        """
         from OCC.Core.GeomAbs import GeomAbs_Cone  # type: ignore
         from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
         from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-        from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_FORWARD  # type: ignore
+        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+        from shared.bspline_cylinder import face_is_internal
+        from shared.face_topology import FaceTopology
 
+        topology = None  # the face adjacency map, built for the first cone
         results = []
         face_idx = 0
         exp = TopExp_Explorer(shape, TopAbs_FACE)
@@ -960,14 +1019,17 @@ class MachiningFeatureRecognizer:
                 # radii are r(v) = RefRadius + v * sin(SemiAngle) over its V range.
                 sin_a = math.sin(cone.SemiAngle())
                 radii = [ref_radius + v * sin_a for v in (surf.FirstVParameter(), surf.LastVParameter())]
-                is_reversed = face.Orientation() != TopAbs_FORWARD
+                d = cone.Axis().Direction()
+                if topology is None:
+                    topology = FaceTopology(shape)
                 results.append({
                     "half_angle_deg": half_angle_deg,
                     "ref_radius": ref_radius,
                     "min_radius": min(radii),
                     "max_radius": max(radii),
                     "centroid": (loc.X(), loc.Y(), loc.Z()),
-                    "is_reversed": is_reversed,
+                    "concave": face_is_internal(face, (loc.X(), loc.Y(), loc.Z()), (d.X(), d.Y(), d.Z())),
+                    "adjacent_faces": sorted(topology.neighbours(face_idx)),
                     "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
                 })
             face_idx += 1  # increment for EVERY face, not just cones
@@ -975,66 +1037,78 @@ class MachiningFeatureRecognizer:
         return results
 
     def _collect_toroids(self, shape) -> List[Dict]:
-        """Real toroidal (GeomAbs_Torus) faces only — corner blends and
-        fillets swept along a curved edge. A fillet along a straight linear
+        """Real toroidal (GeomAbs_Torus) faces only — corner blends, fillets
+        and grooves swept along a curved edge, with r >= _MIN_FILLET_RADIUS_MM.
+        Each carries its sweep round the major circle, its profile (how much of
+        the cross-section circle it covers), the path a ball of radius r takes
+        along it, its axis and which side of the tube the material is on;
+        patches of one torus surface are merged into one toroid
+        (machining/toroid_features.py). A fillet along a straight linear
         edge is a cylindrical blend (GeomAbs_Cylinder), not a torus, and is
         NOT detected here; that is a separate, not-yet-built classification
         (tracked as a CurvedWall sub-case, see Phase 3 of the machining
         feature-extraction plan) — do not assume this covers all fillets."""
-        from OCC.Core.GeomAbs import GeomAbs_Torus  # type: ignore
-        from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
         from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
-        from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_FORWARD  # type: ignore
-        from OCC.Core.GProp import GProp_GProps  # type: ignore
-        from OCC.Core.BRepGProp import brepgprop  # type: ignore
+        from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+        from OCC.Core.TopoDS import topods  # type: ignore
+        from .toroid_features import torus_face_facts, merge_torus_patches
 
-        results = []
+        patches = []
         face_idx = 0
         exp = TopExp_Explorer(shape, TopAbs_FACE)
         while exp.More():
-            face = exp.Current()
-            surf = BRepAdaptor_Surface(face)
-            if surf.GetType() == GeomAbs_Torus:
-                tor = surf.Torus()
-                minor_r = tor.MinorRadius()
-                if minor_r >= _MIN_FILLET_RADIUS_MM:
-                    is_concave = face.Orientation() != TopAbs_FORWARD
-                    # Real face centroid (same GProp_GProps/brepgprop technique
-                    # shared/stable_face_id.py already uses) — fillet/groove
-                    # previously carried no centroid at all, so
-                    # build_machining_feature_graph_v2's `if centroid_abs is
-                    # None: continue` guard silently dropped every one of
-                    # them before this fix, real face_ids notwithstanding.
-                    props = GProp_GProps()
-                    brepgprop.SurfaceProperties(face, props)
-                    cg = props.CentreOfMass()
-                    results.append({
-                        "major_radius": tor.MajorRadius(),
-                        "minor_radius": minor_r,
-                        "is_concave": is_concave,
-                        "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
-                        "centroid": (round(cg.X(), 3), round(cg.Y(), 3), round(cg.Z(), 3)),
-                    })
+            # Every toroid carries a real face centroid: build_machining_feature_graph_v2
+            # drops a feature with none (`if centroid_abs is None: continue`).
+            facts = torus_face_facts(topods.Face(exp.Current()), face_idx)  # face_idx: the OCC face ordinal, matching face_map in memory_optimizer
+            if facts is not None and facts["minor_radius"] >= _MIN_FILLET_RADIUS_MM:
+                patches.append(facts)
             face_idx += 1  # increment for EVERY face, not just toroids
             exp.Next()
-
-        if len(results) > 500:
+        if len(patches) > 500:
             logger.warning(
-                f"[cnc_recognizer] {len(results)} torus faces after radius filter — "
+                f"[cnc_recognizer] {len(patches)} torus faces after radius filter — "
                 f"likely STEP quality issue; suppressing all fillet/groove features"
             )
             return []
-        return results
+        return merge_torus_patches(patches)
 
     def _collect_prismatic_pockets(
         self,
         shape,
         main_axis: Tuple[float, float, float],
         bbox: Optional[Dict] = None,
+        hole_bottoms: Optional[set] = None,
+        radial: bool = False,
+        hole_flats: Optional[List[Dict]] = None,
+        on_axis: Optional[Tuple[float, float, float]] = None,
+        turned_radii: Optional[Dict[int, float]] = None,
     ) -> List[Dict]:
         """
-        Detects enclosed planar-walled recesses for slot / keyway / pocket classification.
-        Phase 1: uses face-count heuristics. Phase 2 will use full wire topology.
+        The floors of the part's recesses, for slot / keyway / pocket classification: planar faces that
+        face along main_axis and have a wall rising from them (recessed_floor.py). The flat top of a rib or
+        a boss is not a floor, and the flat bottom of a hole belongs to the hole. Each floor carries
+        dims = [depth, width, length]: the height of its tallest wall and the two sides of the floor itself.
+        The face ordinals of hole bottoms are added to `hole_bottoms` when the caller passes a set.
+
+        radial (turned and mill-turn parts, where main_axis is the turning axis): the floors that face
+        across the axis are collected too. A keyway or a slot milled into a turned diameter or a bore has
+        such a floor; a shoulder or an end face does not (it faces along the axis). These floors carry
+        radial = True and own their walls: face_indices is the floor and the faces standing on its edges
+        (side walls, rounded ends). Where a keyway crosses two turned diameters its depth is that of its
+        deepest wall, the one cut into the larger diameter. A floor that faces the turning axis with walls
+        reaching up to it is left out: it is one side of a hole the axis runs through (the flat of a
+        D-shaped bore, a flat of a square or hexagon socket), not a recess cut into a turned surface.
+        Those flats are added to `hole_flats` when the caller passes a list: each with its width, the
+        hole's size across it (how far the hole's wall rises above the flat) and the faces standing on it.
+        on_axis is a point on the turning axis (shared turning_line_point); without one the axis is
+        taken through the centre of the bounding box, as collect_cylinders takes it.
+
+        turned_radii (face ordinal -> radius of the part's turned diameters): a floor facing across the
+        axis that meets one of them in an outside corner, the round falling away from its edge, lies
+        inside it and has the axis behind it may be a flat milled into that diameter (a wrench flat, a
+        D flat, a tang; _classify_turned_flat decides). It is collected with or without a wall standing
+        on it (a flat along the whole shaft has none) and carries turned_radius_mm, the largest such
+        diameter's radius, and axis_distance_mm, how far its plane stands from the turning axis.
 
         Structural-face exclusion (fixed 2026-09-19, real confirmed bug): a face
         whose normal is parallel to main_axis (dot > 0.85) is kept as a pocket-
@@ -1057,8 +1131,15 @@ class MachiningFeatureRecognizer:
         from OCC.Core.BRepBndLib import brepbndlib  # type: ignore
         from OCC.Core.Bnd import Bnd_Box  # type: ignore
 
+        from OCC.Core.TopoDS import topods  # type: ignore
+        from shared.feature_extent import faces_box
+        from .recessed_floor import RecessedFloors
+
         ax, ay, az = main_axis
         axis_lo, axis_hi = _axis_range(bbox, (ax, ay, az)) if bbox is not None else (None, None)
+        if on_axis is None and bbox is not None:
+            on_axis = ((bbox["xmin"] + bbox["xmax"]) / 2, (bbox["ymin"] + bbox["ymax"]) / 2, (bbox["zmin"] + bbox["zmax"]) / 2)
+        floors = RecessedFloors(shape)
         pockets = []
         face_idx = 0
         exp = TopExp_Explorer(shape, TopAbs_FACE)
@@ -1072,13 +1153,14 @@ class MachiningFeatureRecognizer:
                 # Only include faces whose normal is parallel to the main axis
                 # (these are pocket-floor CANDIDATES; the part's own outer
                 # boundary faces at the axis extremes are excluded below).
+                # On a turned part, also the faces square to the turning axis
+                # (within about 8 degrees: a keyway's floor runs along the axis).
                 dot_with_axis = abs(nx * ax + ny * ay + nz * az)
-                if dot_with_axis > 0.85:
+                across_axis = radial and on_axis is not None and dot_with_axis < _RADIAL_FLOOR_MAX_DOT
+                if dot_with_axis > 0.85 or across_axis:
                     fbox = Bnd_Box()
                     brepbndlib.Add(face, fbox)
                     xmin, ymin, zmin, xmax, ymax, zmax = fbox.Get()
-                    dx, dy, dz = xmax - xmin, ymax - ymin, zmax - zmin
-                    dims = sorted([dx, dy, dz])
                     cx = (xmin + xmax) / 2
                     cy = (ymin + ymax) / 2
                     cz = (zmin + zmax) / 2
@@ -1091,12 +1173,48 @@ class MachiningFeatureRecognizer:
                             face_idx += 1
                             exp.Next()
                             continue
-                    pockets.append({
-                        "normal": (nx, ny, nz),
-                        "dims": dims,
-                        "centroid": (cx, cy, cz),
-                        "face_indices": [face_idx],  # OCC face ordinal — matches face_map in memory_optimizer
-                    })
+                    floor = floors.measure(topods.Face(face))
+                    if floor and floor["hole_bottom"] and hole_bottoms is not None:
+                        hole_bottoms.add(face_idx)
+                    recessed = bool(floor and floor["recessed"] and not floor["hole_bottom"])
+                    hole_side = False
+                    turned_radius = None
+                    if floor and across_axis:
+                        # How far the turning axis stands above the floor, on the side its walls rise on. Within
+                        # the walls' height, the axis runs through the space they enclose: a side of an axial hole.
+                        origin = plane.Location()
+                        fnx, fny, fnz = floor["normal"]
+                        axis_height = (on_axis[0] - origin.X()) * fnx + (on_axis[1] - origin.Y()) * fny + (on_axis[2] - origin.Z()) * fnz
+                        hole_side = recessed and 0.0 < axis_height <= floor["depth_mm"]
+                        # A flat is milled into a turned diameter from outside it: the floor meets the diameter in an outside
+                        # corner (the round falls away from its edge), the diameter stands above it, and the axis lies behind
+                        # it, in the material. The side wall of a keyway or a slot meets the round too, with the axis in front
+                        # of it; a flat cut past the axis is not told from one and is left out.
+                        radius = max((turned_radii[i] for i in floor["outside_faces"] if i in (turned_radii or {})), default=None)
+                        if radius is not None and -_TURNED_FLAT_TOL_MM <= -axis_height < radius - _TURNED_FLAT_TOL_MM:
+                            turned_radius = radius
+                    sides = faces_box([topods.Face(face)]) if recessed or turned_radius is not None else None
+                    if sides and hole_side:
+                        if hole_flats is not None:
+                            # The flat's width is its side across the axis; its other side runs the hole's length.
+                            width = min(sides[:2], key=lambda side: abs(side[1][0] * ax + side[1][1] * ay + side[1][2] * az))[0]
+                            hole_flats.append({"width_mm": width, "across_mm": floor["depth_mm"], "wall_faces": floor["wall_faces"]})
+                    elif sides:
+                        (length, long_direction), (width, _across) = sides[0], sides[1]
+                        pockets.append({
+                            "normal": (nx, ny, nz),
+                            "dims": [floor["depth_mm"], width, length],
+                            "long_direction": long_direction,
+                            "area_mm2": floor["area_mm2"],
+                            "walled_fraction": floor["walled_fraction"],
+                            "width_confined": floor["width_confined"],
+                            "centroid": (cx, cy, cz),
+                            "radial": across_axis,
+                            "wall_faces": floor["wall_faces"],
+                            # OCC face ordinals — match face_map in memory_optimizer
+                            "face_indices": sorted([face_idx] + floor["wall_faces"]) if across_axis else [face_idx],
+                            **({"turned_radius_mm": turned_radius, "axis_distance_mm": -axis_height} if turned_radius is not None else {}),
+                        })
             face_idx += 1  # increment for EVERY face, not just planes
             exp.Next()
         return pockets
@@ -1139,9 +1257,8 @@ def _count_face_types(shape) -> Dict[str, int]:
 # ── Deduplication ────────────────────────────────────────────────────────────
 
 
-# A cylinder face is a bore only if it sweeps at least this much of a full turn (its patches
-# merged). 97 %: a bore split into patches measures 2*pi to within the sampling of the sweep.
-HOLE_MIN_SWEEP_RAD = 0.97 * 2.0 * math.pi
+# HOLE_MIN_SWEEP_RAD (the sweep a cylinder face needs to be a bore) lives in shared/machining_geometry.py, imported above:
+# classify_cone asks it of the hole a countersink opens into.
 # Smallest partial arc kept as a round (the torus detector uses the same 0.5 mm floor).
 MIN_ARC_RADIUS_MM = 0.5
 
@@ -1199,18 +1316,9 @@ def _pair_slot_ends(arcs: List[Dict], walls_of=None) -> List[Tuple[Dict, Dict, f
     return out
 
 
-def _same_axis_line(a: Dict, b: Dict) -> bool:
-    """Patches of ONE cylinder lie on the same axis line. Arcs that only share a radius and a
-    distance from the part axis (the four corners of a rounded pocket) are different features."""
-    ax, bx = a.get("axis"), b.get("axis")
-    ca, cb = a.get("centroid"), b.get("centroid")
-    if ax is None or bx is None or ca is None or cb is None:
-        return True  # no axis recorded: the position / distance test above is all there is
-    if abs(sum(x * y for x, y in zip(ax, bx))) < 0.9999:
-        return False
-    d = (cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2])
-    cross = (d[1] * ax[2] - d[2] * ax[1], d[2] * ax[0] - d[0] * ax[2], d[0] * ax[1] - d[1] * ax[0])
-    return math.sqrt(sum(c * c for c in cross)) <= 0.02 + 0.005 * a["radius"]
+# _same_axis_line (patches of ONE cylinder lie on the same axis line; arcs that only share a radius and a distance from the part
+# axis, the four corners of a rounded pocket, are different features) is shared.machining_geometry.same_axis_line, imported above:
+# the countersink and counterbore tests ask it too.
 
 
 def _deduplicate_cylinders(raw: List[Dict]) -> List[Dict]:
@@ -1294,15 +1402,18 @@ def _deduplicate_cylinders(raw: List[Dict]) -> List[Dict]:
 
 def _classify_prismatic(pocket: Dict, main_axis: Tuple[float, float, float]) -> Tuple[MachiningFeatureType, str, Dict]:
     """
-    Classify a planar floor face into (type, variant, params):
+    Classify a recess floor into (type, variant, params); dims are [depth, width, length].
 
-    Keyway        : elongated, floor normal parallel to the datum axis
-    Slot/straight : elongated otherwise
-    PocketV2      : default -- enclosed planar recess
+    Keyway        : elongated channel (walls on both sides of its width), floor normal parallel to the datum axis
+    Slot/straight : elongated channel otherwise
+    PocketV2      : default -- a pocket, or an open step (a floor with a wall on one side, whatever its proportions)
     """
     dims = pocket["dims"]
     short, mid, long = dims[0], dims[1], dims[2]
-    aspect = long / max(mid, 0.1)
+    # A floor measured from the shape says whether walls stand on both sides of it; an open step is not a channel.
+    aspect = long / max(mid, 0.1) if pocket.get("width_confined", True) else 0.0
+    measured = {k: (round(v, 3) if isinstance(v, float) else v) for k in ("area_mm2", "walled_fraction", "width_confined")
+                if (v := pocket.get(k)) is not None}
 
     nx, ny, nz = pocket["normal"]
     ax, ay, az = main_axis
@@ -1324,6 +1435,7 @@ def _classify_prismatic(pocket: Dict, main_axis: Tuple[float, float, float]) -> 
             "width_mm": round(mid, 3),
             "depth_mm": round(short, 3),
             "centroid": centroid,
+            **measured,
         }
 
     if aspect > 2.5:
@@ -1332,6 +1444,7 @@ def _classify_prismatic(pocket: Dict, main_axis: Tuple[float, float, float]) -> 
             "width_mm": round(mid, 3),
             "depth_mm": round(short, 3),
             "centroid": centroid,
+            **measured,
         }
 
     return "PocketV2", "default", {
@@ -1339,6 +1452,7 @@ def _classify_prismatic(pocket: Dict, main_axis: Tuple[float, float, float]) -> 
         "width_mm": round(mid, 3),
         "depth_mm": round(short, 3),
         "centroid": centroid,
+        **measured,
     }
 
 
@@ -1347,43 +1461,98 @@ def _classify_prismatic_turned(
     main_axis: Tuple[float, float, float],
 ) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
     """
-    Classify a prismatic face collected from a turned part.
-    Returns None for structural/transition faces (end faces, shoulders, datums).
+    Classify a recess floor collected from a turned part.
+    Returns None for structural faces (end faces, shoulders, datums), the end walls
+    of flats, and an open floor that is not cut into a turned diameter.
 
-    Only Keyway and Slot/radial are emitted from turned parts — PocketV2 is not
-    valid here because pockets on turned ODs are either keyways (parallel to axis)
-    or radial slots (perpendicular). Structural faces are filtered by aspect < 2.5.
+    Only Keyway, Slot/radial and Flat are emitted from turned parts — PocketV2 is not
+    valid here because pockets on turned ODs are either keyways (parallel to axis),
+    radial slots (perpendicular) or flats.
+
+    A channel is a floor with walls standing on both sides of its width. A floor that
+    is not one and spans a turned diameter it is cut into is a flat milled on it
+    (_classify_turned_flat); any other is left out, as every generic pocket on a turned
+    part is.
+
+    A floor that faces across the axis (milled into a turned diameter or a bore) is
+    named by the direction of its long side, not by its normal: Keyway when it runs
+    along the turning axis, Slot/radial when it runs across it. Its proportions do
+    not decide (a keyway is often only two widths long).
+
+    A floor that faces along the axis lies across it, so nothing cut there runs along
+    the shaft: it is never a keyway. A channel at least 2.5 times as long as it is
+    wide is a slot across an end face or a shoulder (a drive slot): Slot/radial. A
+    floor walled on one side only is the end wall of a milled flat (a D flat, a
+    wrench flat, a tang), and a squarer one is a shoulder or the bottom of a socket
+    or of a face groove: none of them is a slot.
     """
     dims = pocket["dims"]
     short, mid, long = dims[0], dims[1], dims[2]
     if mid < 0.1:
         return None
-    aspect = long / mid
-    if aspect < 2.5:
-        return None  # structural transition face, shoulder, or datum face
+    if not pocket["width_confined"]:
+        return _classify_turned_flat(pocket, main_axis)
 
     nx, ny, nz = pocket["normal"]
     ax, ay, az = main_axis
-    dot_with_axis = abs(nx * ax + ny * ay + nz * az)
+    faces_along_axis = abs(nx * ax + ny * ay + nz * az) > 0.85
+    if faces_along_axis and long / mid < 2.5:
+        return None
 
-    # centroid: see _classify_prismatic's identical fix above.
-    centroid = pocket.get("centroid")
-
-    if dot_with_axis > 0.85:
-        # Floor normal is parallel to axis → keyway running along the shaft
-        return "Keyway", "default", {
-            "length_mm": round(long, 3),
-            "width_mm": round(mid, 3),
-            "depth_mm": round(short, 3),
-            "centroid": centroid,
-        }
-
-    # Elongated face with normal perpendicular to axis → radial slot on OD
-    return "Slot", "radial", {
+    # The same fields a milled part's keyway carries: costing reads walled_fraction to tell a keyway closed at an
+    # end (milled) from one open at both ends (broached).
+    params = {
         "length_mm": round(long, 3),
         "width_mm": round(mid, 3),
         "depth_mm": round(short, 3),
-        "centroid": centroid,
+        # centroid: see _classify_prismatic's identical fix above.
+        "centroid": pocket.get("centroid"),
+        **{k: (round(v, 3) if isinstance(v, float) else v) for k in ("area_mm2", "walled_fraction", "width_confined")
+           if (v := pocket.get(k)) is not None},
+    }
+    lx, ly, lz = pocket["long_direction"]
+    if not faces_along_axis and abs(lx * ax + ly * ay + lz * az) > 0.85:
+        return "Keyway", "default", params
+    return "Slot", "radial", params
+
+
+def _classify_turned_flat(
+    pocket: Dict,
+    main_axis: Tuple[float, float, float],
+) -> Optional[Tuple[MachiningFeatureType, str, Dict]]:
+    """
+    A flat milled on a turned diameter: a floor facing across the turning axis, cut into the diameter it meets in an
+    outside corner and spanning it, as wide as its chord (the round falls away on both sides of it), walled at most at
+    its ends (a wrench flat, a D flat at a shaft end, either face of a tang, a flat along the whole shaft). The catalog
+    names the feature Flat and gives it no variant.
+
+    None for an open floor cut into no turned diameter, and for one narrower than the chord: a bevel along the edge of
+    a keyway or a slot meets the round on one side only (Lead Screw side shaft: the 0.28 mm chamfers along its keyway).
+
+    It carries what it is costed from: its length along the axis and its width across it (the chord), its depth below
+    the diameter it is cut into and that diameter, the floor's area and walled_fraction (the share of its outline that
+    has a wall: its end walls), and its centroid.
+    """
+    radius = pocket.get("turned_radius_mm")
+    if radius is None:
+        return None
+    _depth, mid, long = pocket["dims"]
+    ax, ay, az = main_axis
+    lx, ly, lz = pocket["long_direction"]
+    along_axis = abs(lx * ax + ly * ay + lz * az) > 0.5
+    width = mid if along_axis else long
+    distance = pocket["axis_distance_mm"]
+    if width < 2.0 * math.sqrt(max(radius * radius - distance * distance, 0.0)) - _TURNED_FLAT_CHORD_TOL_MM:
+        return None
+    return "Flat", "default", {
+        "length_mm": round(long if along_axis else mid, 3),
+        "width_mm": round(width, 3),
+        # Below the round it is cut into, not the height of its tallest wall: a flat cut up to a shoulder is no deeper for it.
+        "depth_mm": round(radius - distance, 3),
+        "diameter_mm": round(2.0 * radius, 3),
+        "area_mm2": round(pocket["area_mm2"], 3),
+        "walled_fraction": round(pocket["walled_fraction"], 3),
+        "centroid": pocket.get("centroid"),
     }
 
 
@@ -1519,8 +1688,8 @@ def _angles_equally_spaced(angles: List[float], tolerance_deg: float = 8.0) -> b
 # occurrence fields are emitted. A (type, variant) missing from _SHAPE is a
 # programming error, raised loudly -- never silently dropped.
 
-_DIAMETER, _TOROID, _VOLUMETRIC, _PATTERN, _STEPPED, _REGION, _TOOTHED = (
-    "diameter", "toroid", "volumetric", "pattern", "stepped", "region", "toothed",
+_DIAMETER, _TOROID, _VOLUMETRIC, _PATTERN, _STEPPED, _REGION, _TOOTHED, _FLAT = (
+    "diameter", "toroid", "volumetric", "pattern", "stepped", "region", "toothed", "flat",
 )
 _SHAPE: Dict[Tuple[str, str], str] = {
     ("SimpleHole", "through"): _DIAMETER,
@@ -1545,9 +1714,32 @@ _SHAPE: Dict[Tuple[str, str], str] = {
     ("CurvedWall", "default"): _REGION,
     ("CurvedSurface", "default"): _REGION,
     ("AxiGroove", "default"): _TOOTHED,
+    ("Flat", "default"): _FLAT,
 }
+# A toroid's measured facts (toroid_features.py): its sweep round its axis, the profile of its cross-section, the path a
+# ball of its radius takes along it, a groove's depth and width, which side of it the material is on, its axis, and
+# whether it is a shoulder fillet the finish turning forms. A cylindrical arc (Edge:round) states its sweep and side too.
+_TOROID_FIELDS = (
+    "sweep_deg", "profile_deg", "path_length_mm", "depth_mm", "width_mm", "concave", "axis", "turned_shoulder",
+)
 _TOOTH_FIELDS = ("tooth_count", "tip_diameter_mm", "root_diameter_mm", "face_width_mm")
 _KEYWAY_DIM_FIELDS = ("length_mm", "width_mm", "depth_mm")
+_FLAT_FIELDS = ("length_mm", "width_mm", "depth_mm", "diameter_mm", "area_mm2", "walled_fraction")
+
+
+def _flat_removed_mm3(diameter_mm: float, depth_mm: float, area_mm2: float) -> float:
+    """
+    The material a flat cuts off the round it is milled into: the circular segment between its plane and that diameter,
+    over its length. The length is the floor's area over its chord, exact for a floor that spans the chord, as a flat
+    milled across a round does. A flat that runs across a shoulder is measured against the larger diameter.
+    """
+    r = diameter_mm / 2.0
+    d = r - depth_mm  # the plane's distance from the axis
+    if r <= 0 or not -r < d < r:
+        return 0.0
+    half_chord = math.sqrt(r * r - d * d)
+    segment = r * r * math.acos(d / r) - d * half_chord
+    return area_mm2 * segment / (2.0 * half_chord)
 
 
 def _extract_diam_depth(ftype: str, variant: str, p: dict):
@@ -1624,16 +1816,22 @@ def build_machining_feature_graph_v2(
             buckets[(ftype, variant, round(diam / 0.1) * 0.1)].append({
                 **base,
                 "depth_mm": depth,
-                "tapped": variant == "threaded",
+                # A threaded hole, or a cross hole the tap-drill check found tapped (its thread is a param; it stays a cross hole).
+                "tapped": variant == "threaded" or bool(variant == "cross" and p.get("spec")),
                 "spec": p.get("spec"),
+                # A counterbore over a tapped bore that is a threaded hole of its own (detect_counterbores): the bore's thread, so the
+                # costing drills and taps the bore once, as that hole, and adds only the counterbore's step here.
+                **({"bore_spec": p["bore_spec"]} if p.get("bore_spec") else {}),
                 "material_removed_mm3": round(math.pi * (diam / 2) ** 2 * depth, 2) if depth else 0.0,
             })
 
         elif shape == _TOROID:
-            # material_removed_mm3 stays a disclosed 0.0: a toroidal blend's
-            # removed volume depends on its arc sweep, which is not extracted.
+            # material_removed_mm3 stays a disclosed 0.0: the volume a blend or
+            # groove takes off is not measured. Its sweep, profile and path are
+            # (toroid_features.py), carried when the feature states them.
             buckets[(ftype, variant, round(p.get("major_diameter_mm", 0.0) or 0.0, 1))].append({
                 **base, "radius_mm": p.get("radius_mm"), "material_removed_mm3": 0.0,
+                **{fld: p[fld] for fld in _TOROID_FIELDS if p.get(fld) is not None},
             })
 
         elif shape == _VOLUMETRIC:
@@ -1641,6 +1839,11 @@ def build_machining_feature_graph_v2(
             area = p.get("area_mm2")  # an obround slot states its own area; a rectangle is length x width
             removed = (area * dims[0]) if area else dims[2] * dims[1] * dims[0]
             entry = {**base, "material_removed_mm3": round(removed, 2)}
+            if p.get("walled_fraction") is not None:
+                # Measured from the shape: the recess's depth, and how far its floor is walled in.
+                entry["depth_mm"] = dims[0]
+                entry["walled_fraction"] = p["walled_fraction"]
+                entry["width_confined"] = p.get("width_confined")
             if ftype == "Keyway":
                 for fld in _KEYWAY_DIM_FIELDS:
                     entry[fld] = p.get(fld)
@@ -1654,6 +1857,8 @@ def build_machining_feature_graph_v2(
                 "depth_mm": p.get("depth_mm", 0.0) or 0.0,
                 "hole_count": p.get("hole_count", 1),
                 "pcd_mm": p.get("pcd_mm"),
+                "tapped": p.get("hole_type") == "tapped",
+                "spec": p.get("tap_spec"),
                 "material_removed_mm3": 0.0,
             })
 
@@ -1669,6 +1874,11 @@ def build_machining_feature_graph_v2(
                 "step_count": p.get("step_count", len(steps)),
                 "material_removed_mm3": round(removed, 2),
             })
+
+        elif shape == _FLAT:
+            flat = {f: p.get(f) for f in _FLAT_FIELDS}
+            removed = _flat_removed_mm3(flat["diameter_mm"] or 0.0, flat["depth_mm"] or 0.0, flat["area_mm2"] or 0.0)
+            buckets[(ftype, variant, None)].append({**base, **flat, "material_removed_mm3": round(removed, 2)})
 
         elif shape == _TOOTHED:
             # Teeth around the axis; removed volume is not derivable from the
@@ -1710,22 +1920,36 @@ def build_machining_feature_graph_v2(
                 occ_entry["ld_ratio"] = round(depth / max(diam, 0.1), 3) if (diam and depth) else None
                 occ_entry["tapped"] = occ["tapped"]
                 occ_entry["spec"] = occ["spec"]
+                if occ.get("bore_spec"):
+                    occ_entry["bore_spec"] = occ["bore_spec"]
             elif shape == _TOROID:
                 occ_entry["radius_mm"] = occ["radius_mm"]
+                for fld in _TOROID_FIELDS:
+                    if fld in occ:
+                        occ_entry[fld] = occ[fld]
             elif shape == _PATTERN:
                 occ_entry["depth_mm"] = round(depth, 3)
                 occ_entry["hole_count"] = occ["hole_count"]
                 occ_entry["pcd_mm"] = occ["pcd_mm"]
+                occ_entry["tapped"] = occ["tapped"]
+                occ_entry["spec"] = occ["spec"]
             elif shape == _STEPPED:
                 occ_entry["steps"] = occ["steps"]
                 occ_entry["step_count"] = occ["step_count"]
             elif shape == _TOOTHED:
                 for fld in _TOOTH_FIELDS:
                     occ_entry[fld] = occ.get(fld)
+            elif shape == _FLAT:
+                for fld in _FLAT_FIELDS:
+                    occ_entry[fld] = occ.get(fld)
             elif shape == _REGION:
                 occ_entry["area_mm2"] = occ["area_mm2"]
                 if ftype == "Cutout":
                     occ_entry["side_count"] = occ["side_count"]
+            if shape == _VOLUMETRIC and occ.get("walled_fraction") is not None:
+                occ_entry["depth_mm"] = round(depth, 3)
+                occ_entry["walled_fraction"] = occ["walled_fraction"]
+                occ_entry["width_confined"] = occ["width_confined"]
             if ftype == "Keyway":
                 for fld in _KEYWAY_DIM_FIELDS:
                     val = occ.get(fld)

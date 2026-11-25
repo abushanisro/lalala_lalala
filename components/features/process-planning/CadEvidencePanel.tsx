@@ -1,11 +1,11 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Loader2, X } from 'lucide-react';
 
-import { Button } from '@/components/ui/button';
-import { ModelViewer } from '@/components/ui/model-viewer';
 import { CadFeatureViewer } from '@/components/features/cad-feature-viewer/CadFeatureViewer';
+import { Button } from '@/components/ui/button';
+import { Loader2, X } from '@/components/ui/icons';
+import { ModelViewer } from '@/components/ui/model-viewer';
 import type { FieldHighlight } from '@/lib/features/field-highlight';
 import type { FaceMapEntry } from '@/lib/types/manufacturing';
 
@@ -50,8 +50,12 @@ export function CadEvidencePanel({
           <h3 className="font-semibold text-sm">CAD evidence: {evidence.fieldLabel}</h3>
           {highlight ? (
             <>
-            <p className={`text-xs ${highlight.reconciles ? 'text-muted-foreground' : 'text-amber-600'}`}>
-              {highlight.measured.label} = {Math.round(highlight.measured.value * 10) / 10} {highlight.measured.unit}
+            <p className={`text-xs ${highlight.reconciles ? 'text-muted-foreground' : 'text-warning'}`}>
+              {highlight.measured
+                ? <>{highlight.measured.label} = {Math.round(highlight.measured.value * 10) / 10} {highlight.measured.unit}</>
+                : highlight.wholePart
+                  ? <>{highlight.wholePart.label}: measured over the whole part ({highlight.wholePart.faces} faces)</>
+                  : highlight.faceSet && <>{highlight.faceSet.label}: measured along {highlight.faceSet.faces} faces</>}
               {!highlight.reconciles && ` — ${highlight.note ?? 'these faces do not fully account for the extracted value'}`}
             </p>
             <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
@@ -59,10 +63,10 @@ export function CadEvidencePanel({
             </p>
             </>
           ) : (
-            <p className="text-xs text-amber-600">The CAD faces for this value were not recorded by this analysis</p>
+            <p className="text-xs text-warning">The CAD faces for this value were not recorded by this analysis</p>
           )}
         </div>
-        <Button type="button" variant="ghost" size="sm" onClick={onClose} className="h-6 w-6 p-0" title="Close">
+        <Button type="button" variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0" title="Close">
           <X className="h-4 w-4" />
         </Button>
       </div>

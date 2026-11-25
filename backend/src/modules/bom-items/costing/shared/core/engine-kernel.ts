@@ -17,7 +17,7 @@
 // cost-engine.ts's own 9 call sites import it back from here too — one
 // formula core, not two.
 import type { MHRRateInput } from './cost-engine';
-import type { LookupResolution, LookupTableRow } from '../../../dto/cost-breakdown.dto';
+import type { LookupResolution, LookupTableRow, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 
 export function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -349,59 +349,103 @@ export function isPerPartCharge(line: { rateSource?: string | null }): boolean {
 }
 
 /**
+ * The reference data's name for what a process does not cost. Every memory/<process> variables file carries failNotSupportedGcds ("if false Not Supported
+ * GCDs will cost successfully as a No Cost Feature"); the user chose that behaviour on 2026-11-20 (Apply never fails): an operation the part's
+ * route cannot cost is written as a $0 No Cost Feature with its reason, and the rest of the route is applied.
+ */
+export const NO_COST_FEATURE = 'No Cost Feature';
+
+/** The machine class of a No Cost Feature line: it runs on no machine, so it never stands for (or is compared with) a costed line of a machine. */
+export const NO_COST_FEATURE_CLASS = 'no_cost_feature';
+
+/** True for a No Cost Feature line (noCostFeatureLine): $0 by design, never a gap. */
+export function isNoCostFeature(line: { rateSource?: string | null }): boolean {
+  return line.rateSource === 'no_cost_feature';
+}
+
+/**
+ * A line for what a process does not cost (NO_COST_FEATURE): the part's shape or feature the process cannot make, at $0 with the reason as
+ * its operation. Shown with the route and written on Apply as a $0 record; never a gap, so the route stays complete and is applied.
+ */
+export function noCostFeatureLine(input: { reason: string; processGroup: string }): ProcessLineCost {
+  return {
+    process: NO_COST_FEATURE, processGroup: input.processGroup, processRoute: NO_COST_FEATURE, operation: input.reason,
+    setupCost: 0, runCost: 0, totalCost: 0, cycleTimeMin: 0, setupTimeMin: 0, hourlyRate: 0, rateSource: 'no_cost_feature',
+    machineClass: NO_COST_FEATURE_CLASS, machineName: null, commodityCode: null, labourRate: null,
+  };
+}
+
+/** Why `line` cannot be costed or persisted as it stands, or null when it can: the rule findRouteDataGaps applies to every line. */
+export function lineDataGap(line: RouteDataGapLine): RouteDataGap | null {
+  if (isNoCostFeature(line)) return null;
+  const cycleTimeSec = persistableCycleSec(line.cycleTimeMin);
+  let reason: string | null = null;
+  let nearestRows: LookupTableRow[] | undefined;
+
+  if (line.physicsGap) {
+    if (line.physicsGap.gapType === 'missing_lookup') {
+      reason = line.physicsGap.requiredAction;
+      nearestRows = line.physicsGap.lookupResolution?.nearestRows;
+    } else {
+      reason = line.physicsGap.reason;
+    }
+  } else if (isPerPartCharge(line)) {
+    if (!(line.totalCost != null && line.totalCost > 0)) {
+      reason = 'no per-part charge was resolved for this line, so it cannot be costed or persisted';
+    }
+  } else if (cycleTimeSec < MIN_PERSISTABLE_CYCLE_SEC) {
+    // Says what is actually wrong. A cycle that rounds to 0.0000 s at the
+    // column scale means no cycle time was resolved at all -- which is what
+    // happens when no capable machine was selected -- not that the operation
+    // is too fast to store.
+    reason = 'no cycle time was resolved for this operation, so it cannot be costed or persisted';
+  } else if (line.setupTimeMin == null) {
+    // The write path used `line.setupTimeMin ?? 15`. Fifteen minutes is not a
+    // setup time anyone measured, published or chose — every real source in
+    // this system says otherwise (30min across all 8 press machines, 22.8min
+    // across all 10 shearing machines, or the machine's own setup_time_hr).
+    // A row saved at 15 disagreed with the quote that produced it, and the
+    // Cost Guide re-derives setup cost from the row.
+    reason = 'setup time was not resolved, and this system will not persist a substituted one';
+  }
+
+  if (reason === null) return null;
+  return {
+    process: line.process,
+    machineClass: line.machineClass ?? '',
+    reason,
+    ...(nearestRows && nearestRows.length > 0 ? { nearestRows } : {}),
+  };
+}
+
+/**
  * Every operation in `lines` whose required costing data is missing, in line
- * order. Empty means the route is fully costed and can be both ranked and
- * applied.
+ * order. Empty means the route is fully costed and can be ranked first; an
+ * operation listed here is applied as a No Cost Feature.
  */
 export function findRouteDataGaps(lines: readonly RouteDataGapLine[]): RouteDataGap[] {
-  const gaps: RouteDataGap[] = [];
-  for (const line of lines) {
-    const cycleTimeSec = persistableCycleSec(line.cycleTimeMin);
-    let reason: string | null = null;
-    let nearestRows: LookupTableRow[] | undefined;
-
-    if (line.physicsGap) {
-      if (line.physicsGap.gapType === 'missing_lookup') {
-        reason = line.physicsGap.requiredAction;
-        nearestRows = line.physicsGap.lookupResolution?.nearestRows;
-      } else {
-        reason = line.physicsGap.reason;
-      }
-    } else if (isPerPartCharge(line)) {
-      if (!(line.totalCost != null && line.totalCost > 0)) {
-        reason = 'no per-part charge was resolved for this line, so it cannot be costed or persisted';
-      }
-    } else if (cycleTimeSec < MIN_PERSISTABLE_CYCLE_SEC) {
-      // Says what is actually wrong. A cycle that rounds to 0.0000 s at the
-      // column scale means no cycle time was resolved at all -- which is what
-      // happens when no capable machine was selected -- not that the operation
-      // is too fast to store.
-      reason = 'no cycle time was resolved for this operation, so it cannot be costed or persisted';
-    } else if (line.setupTimeMin == null) {
-      // The write path used `line.setupTimeMin ?? 15`. Fifteen minutes is not a
-      // setup time anyone measured, published or chose — every real source in
-      // this system says otherwise (30min across all 8 press machines, 22.8min
-      // across all 10 shearing machines, or the machine's own setup_time_hr).
-      // A row saved at 15 disagreed with the quote that produced it, and the
-      // Cost Guide re-derives setup cost from the row.
-      reason = 'setup time was not resolved, and this system will not persist a substituted one';
-    }
-
-    if (reason !== null) {
-      gaps.push({
-        process: line.process,
-        machineClass: line.machineClass ?? '',
-        reason,
-        ...(nearestRows && nearestRows.length > 0 ? { nearestRows } : {}),
-      });
-    }
-  }
-  return gaps;
+  return lines.map(lineDataGap).filter((g): g is RouteDataGap => g !== null);
 }
 
 /** True when every operation on the route has the real data it needs to be costed. */
 export function isRouteDataComplete(lines: readonly RouteDataGapLine[]): boolean {
   return findRouteDataGaps(lines).length === 0;
+}
+
+/** What each input the quote cannot be priced without says when the part lacks it (the unpriced summary's missingInputs). */
+const MISSING_INPUT_REASON: Readonly<Partial<Record<string, string>>> = {
+  materialGrade: 'the part has no material grade (choose one in Material Grade, then Apply)',
+};
+
+/**
+ * Why `summary` priced nothing at all: an input the quote needs is missing (scenarioReady false; bom-item-costing unpricedSummary), such as
+ * the material grade. Null when it was priced. A route priced on such a summary is not feasible and not a route the part cannot take: its
+ * reason is the missing input (capability reason code INPUT_MISSING), never "the part could not be costed".
+ */
+export function unpricedReason(summary: { scenarioReady?: boolean; missingInputs?: readonly string[]; warnings?: readonly string[] }): string | null {
+  if (summary.scenarioReady !== false) return null;
+  const named = (summary.missingInputs ?? []).map((k) => MISSING_INPUT_REASON[k]).find((r) => r !== undefined);
+  return named ?? summary.warnings?.[0] ?? 'an input the quote needs is missing';
 }
 
 // ── Route recommendation ──────────────────────────────────────────────────────
@@ -493,6 +537,46 @@ export function selectRecommendedRoute<T extends RankableRoute>(routes: readonly
     }
     return r.routeId < best.routeId ? r : best;
   });
+}
+
+/**
+ * Which routes a part's selected secondary operations (heat treatment, a surface finish, ...) go on: every route the part has, that is every
+ * route with lines of its own. A route with none is not one the part has (an assembly's or a weldment's route its parts cannot take, a
+ * route no machine prices): it stays empty, so Apply never takes it for a real one (selectAppliableRoute). When no route has lines of its
+ * own, they all take them: nothing else would carry the part's secondary operations.
+ */
+export function routesTakingSecondary(routes: readonly { processLines: readonly unknown[] }[]): (route: { processLines: readonly unknown[] }) => boolean {
+  const anyOwn = routes.some((r) => r.processLines.length > 0);
+  return (route) => !anyOwn || route.processLines.length > 0;
+}
+
+/**
+ * The route Apply writes when none is recommended (no route is both feasible and fully costed): Apply never fails, so it is the best route
+ * there is. A route with lines first (one with none is not a route the part has: it would write nothing of the part's work), then feasible
+ * and compatible routes, then the fewest operations that cannot be costed (each written as a No Cost Feature), then the cheapest, then the
+ * shortest cycle and the route id. Null only when the part has no route at all.
+ */
+export function selectAppliableRoute<T extends RankableRoute & { dataGaps?: readonly unknown[] | null; processLines?: readonly unknown[] | null }>(routes: readonly T[]): T | null {
+  const empty = (r: T) => Number(r.processLines?.length === 0);
+  const fit = (r: T) => Number(!(r.capability.overallCapable && r.isFeasible && r.producesBlank !== false && r.compatibility?.status !== 'incompatible'));
+  const gaps = (r: T) => r.dataGaps?.length ?? (r.dataComplete ? 0 : 1);
+  const cost = (r: T) => (typeof r.totalCost === 'number' ? r.totalCost : Infinity);
+  const compare = (a: T, b: T) =>
+    empty(a) - empty(b) || fit(a) - fit(b) || gaps(a) - gaps(b) || (cost(a) === cost(b) ? 0 : cost(a) - cost(b))
+    || a.cycleTimes.totalMin - b.cycleTimes.totalMin || (a.routeId < b.routeId ? -1 : a.routeId > b.routeId ? 1 : 0);
+  return routes.length === 0 ? null : routes.reduce((best, r) => (compare(r, best) < 0 ? r : best));
+}
+
+/**
+ * The route a part is quoted on, when the quote has to stand on one of several routes: the route the comparison recommends
+ * (selectRecommendedRoute, among the routes automatic routing may take: `recommendable`) or, when it recommends none, the route Apply then
+ * writes (selectAppliableRoute, over every route). A quote that prices its own candidate routes chooses by this, so the Cost tab, the
+ * comparison's recommendation and the applied route are one choice and not two rules that happen to agree. Null only for no route at all.
+ */
+export function selectQuotedRoute<T extends RankableRoute & { dataGaps?: readonly unknown[] | null; processLines?: readonly unknown[] | null }>(
+  routes: readonly T[], recommendable: (route: T) => boolean = () => true,
+): T | null {
+  return selectRecommendedRoute(routes.filter(recommendable)) ?? selectAppliableRoute(routes);
 }
 
 /**
@@ -640,8 +724,20 @@ export function drawnShellNeedsDrawing(drawnShell: { depthMm: number; openingWid
   if (!drawnShell) return null;
   return (
     `This part is a drawn shell (${drawnShell.depthMm} mm deep, ${drawnShell.openingWidthMm} mm wide opening) `
-    + `— it cannot be produced by cutting a blank and bending it. This route does not include a drawing operation.`
+    + `— it cannot be produced by cutting a blank and bending it. This route does not include a drawing operation: `
+    + `set its Process to Sheet Metal - Hydroforming to cost it drawn.`
   );
+}
+
+/** The part's drawn shell from its feature graph (the cad-engine's Form feature, variant drawn), or null when it has none. */
+export function drawnShellFromFeatures(features: readonly Record<string, any>[] | null | undefined): { depthMm: number; openingWidthMm: number; developedAreaMm2: number } | null {
+  const entry = (features ?? []).find((f) => f.feature_type === 'Form' && f.variant === 'drawn');
+  const occ = entry?.occurrences?.[0];
+  if (!occ) return null;
+  const depthMm = Number(occ.depth_mm);
+  const openingWidthMm = Number(occ.opening_width_mm);
+  const developedAreaMm2 = Number(occ.developed_area_mm2);
+  return [depthMm, openingWidthMm, developedAreaMm2].every((n) => Number.isFinite(n) && n > 0) ? { depthMm, openingWidthMm, developedAreaMm2 } : null;
 }
 
 export function rolledFormNeedsRollBender(

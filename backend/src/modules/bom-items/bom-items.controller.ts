@@ -2,7 +2,6 @@ import { Throttle } from '@nestjs/throttler';
 import { AuditService } from '../../common/audit/audit.service';
 import { MAX_CAD_FILE_BYTES } from '../../common/upload-limits';
 import { breakerFor, CAD_ENGINE, isServiceUnavailable } from '../../common/resilience/circuit-breaker';
-import { catalogRowForLine, identityRows, type CatalogRow } from './process-catalog/catalog-row-for-line';
 import {
   Controller,
   Get,
@@ -20,9 +19,7 @@ import {
   NotFoundException,
   Logger,
   Patch,
-  InternalServerErrorException,
   ServiceUnavailableException,
-  ConflictException,
   UseGuards,
   ParseUUIDPipe,
   ParseEnumPipe,
@@ -37,18 +34,21 @@ import { memoryStorage } from 'multer';
 import * as path from 'path';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes, ApiQuery } from '@nestjs/swagger';
 import { BOMItemsService } from './bom-items.service';
+import { MAX_BOARD_FILES, prepareBoardUpload } from './costing/pcb/board-graph/board-files';
+import { BomItemCostingService } from './bom-item-costing.service';
+import { NestingCostService } from './services/nesting-cost.service';
+import { GdtAnalysisService } from './services/gdt-analysis.service';
+import { CostOverridesService } from './services/cost-overrides.service';
 import { FeatureToleranceService } from './services/feature-tolerance.service';
 import { AnalysisStatusService } from './services/analysis-status.service';
-import { currentFeatureGraphVersion, MISSING_ANALYSIS_TEXT, type AnalysisStatus } from './analysis-status';
+import { currentFeatureGraphVersion, type AnalysisStatus } from './analysis-status';
 import { CreateBOMItemDto, UpdateBOMItemDto, QueryBOMItemsDto, BOMItemType } from './dto/bom-items.dto';
 import { BOMItemResponseDto, BOMItemListResponseDto } from './dto/bom-item-response.dto';
 import { AutoFillResponseDto } from './dto/auto-fill.dto';
 import { MachineOverrideDto } from './dto/machine-selection.dto';
 import { CostOverrideDto } from './dto/cost-override.dto';
-import { ApplyRouteDto, AUTO_ROUTE_ID, type ApplyRouteResult, ApplyCustomRouteDto, type ApplyCustomRouteResult } from './dto/apply-route.dto';
-import type { PhysicsGap } from './dto/cost-breakdown.dto';
-import { LOCATION_INFO } from './costing/shared/core/default-rates.constants';
-import { ExchangeRateService, RateSnapshot } from '../../common/exchange-rate/exchange-rate.service';
+import { ApplyRouteDto, type ApplyRouteResult, ApplyCustomRouteDto, type ApplyCustomRouteResult } from './dto/apply-route.dto';
+import { ExchangeRateService } from '../../common/exchange-rate/exchange-rate.service';
 import { deriveImplications } from './intelligence/manufacturing-implication.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PmiReviewService, type PmiReviewRequest } from './services/pmi-review.service';
@@ -67,22 +67,21 @@ import { DFMScoringService } from './services/dfm-scoring.service';
 import { MaterialIntelligenceService, type MaterialCandidate } from './services/material-intelligence.service';
 import { MaterialResolutionService } from './services/material-resolution.service';
 import { DatabaseService } from '../../common/database/database.service';
-import { findRouteDataGaps, formatNearestRowsDisclosure, isPerPartCharge } from './costing/shared/core/engine-kernel';
-import { RouteResultDto } from './dto/route-comparison.dto';
-import {
-  PersistedLineCurrency,
-  resolvePersistedCostCurrencyBasis,
-} from './costing/shared/core/persisted-currency-contract';
-import { COST_ENGINE_CONTRACT_VERSION } from './costing/shared/core/persisted-process-cost';
 import axios from 'axios';
 import { RouteApplicationService } from './services/route-application.service';
 import { ScenarioApplicationService } from './services/scenario-application.service';
 import { CostTableService } from './services/cost-table.service';
 import type { CostTable } from './costing/shared/cost-table';
 import { ApplyScenarioDto, type ScenarioApplicationResult } from './dto/apply-scenario.dto';
+import type { MaterialUsageExplanation } from './costing/shared/material-usage-explanation';
+import { MaterialCostSnapshotService } from './services/material-cost-snapshot.service';
 import { PartSummaryService } from './services/part-summary.service';
 import type { PartSummary } from './costing/shared/part-summary';
+import { DesignGuidanceService } from './services/design-guidance.service';
+import type { DesignGuidance } from './costing/shared/design-guidance';
 import { PlasticDfmService, MOLDING_PROCESS_NAMES } from './costing/plastic-molding/dfm/plastic-dfm.service';
+import { MachiningDfmService } from './costing/machining/dfm/machining-dfm.service';
+import { ForgingDfmService } from './costing/forging/dfm/forging-dfm.service';
 import { AnalysisRunService, type AnalysisRunResult } from './services/analysis-run.service';
 import { BomItemReanalysisService } from './services/bom-item-reanalysis.service';
 import { CalculatorInputsRequestDto, MachiningCalculatorInputsRequestDto } from './dto/machining-calculator-inputs.dto';
@@ -115,6 +114,10 @@ export class BOMItemsController {
 
   constructor(
     private readonly bomItemsService: BOMItemsService,
+    private readonly costing: BomItemCostingService,
+    private readonly nesting: NestingCostService,
+    private readonly gdt: GdtAnalysisService,
+    private readonly overrides: CostOverridesService,
     private readonly fileStorageService: FileStorageService,
     private readonly stepConverterService: StepConverterService,
     private readonly cadAnalysisService: CADAnalysisService,
@@ -125,7 +128,11 @@ export class BOMItemsController {
     private readonly nreService: NreService,
     private readonly dfmScoringService: DFMScoringService,
     private readonly plasticDfm: PlasticDfmService,
+    private readonly machiningDfm: MachiningDfmService,
+    private readonly forgingDfm: ForgingDfmService,
     private readonly partSummaries: PartSummaryService,
+    private readonly materialSnapshots: MaterialCostSnapshotService,
+    private readonly designGuidance: DesignGuidanceService,
     private readonly materialIntelligenceService: MaterialIntelligenceService,
     private readonly databaseService: DatabaseService,
     private readonly exchangeRateService: ExchangeRateService,
@@ -159,10 +166,10 @@ export class BOMItemsController {
     @Query('location') location?: string,
     // Create BOM Item's process dropdown: a manual, disclosed family override
     // for when auto-detection gets it wrong or doesn't run at all. Passed
-    // through unvalidated -- cad-engine's own ALL_FAMILIES check (shared/
-    // memory_optimizer.py) is the single source of truth for which values are
-    // real and silently ignores anything else, so there is nothing to
-    // duplicate or fabricate here.
+    // through unvalidated -- cad-engine's own check (shared/memory_optimizer.py:
+    // a platform family, or the "machined" / "two_model" hints) is the single
+    // source of truth for which values are real and silently ignores anything
+    // else, so there is nothing to duplicate or fabricate here.
     @Body('familyHint') familyHint?: string,
   ): Promise<AutoFillResponseDto> {
     if (!file) {
@@ -309,6 +316,14 @@ export class BOMItemsController {
   }
 
   @OrgRole('viewer')
+  @Get(':id/design-guidance')
+  @ApiOperation({ summary: "The part's design guidance: its cost drivers (the DFM findings of its process), its material among the materials the process draws from, its walls against the staged limits, the mold tooling, the machining, the tolerances, the setups, and the hole and fillet sizes. A projection of the analysis, the reference data and the applied cost; a value none of them holds is null with its reason" })
+  @ApiResponse({ status: 200, description: 'The design guidance' })
+  async getDesignGuidance(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: User, @AccessToken() token: string): Promise<DesignGuidance> {
+    return this.designGuidance.forItem(await this.bomItemsService.findOne(id, user.id, token), token);
+  }
+
+  @OrgRole('viewer')
   @Get(':id/cost-table')
   @ApiOperation({ summary: "The part's applied cost as a table: cost objects (part, material, process groups, processes, logistics, procured parts, tooling) by column, in USD" })
   @ApiResponse({ status: 200, description: 'The cost table; a column the cost model has no data for is declared modelled: false with the reason' })
@@ -420,7 +435,8 @@ export class BOMItemsController {
     const keys = Object.fromEntries(Object.entries(body.keys ?? {})
       .map(([k, v]) => [k, Number(v)] as const)
       .filter(([, v]) => Number.isFinite(v)));
-    return this.bomItemsService.resolveMachiningCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize);
+    return this.costing.resolveMachiningCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize,
+      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined, body.process);
   }
 
   // Any reference calculator (Machining, Die Casting): its inputs for this
@@ -437,7 +453,8 @@ export class BOMItemsController {
     const keys = Object.fromEntries(Object.entries(body.keys ?? {})
       .map(([k, v]) => [k, Number(v)] as const)
       .filter(([, v]) => Number.isFinite(v)));
-    return this.bomItemsService.resolveCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize, body.runKey);
+    return this.costing.resolveCalculatorInputs(id, body.calculatorId, keys, user.id, token, body.location, body.batchSize, body.runKey,
+      body.machineId ? { id: body.machineId, liveTool: body.liveTool === true } : undefined);
   }
 
   // ── Required tolerances per feature instance (GD&T tab, migration 881) ────
@@ -493,7 +510,7 @@ export class BOMItemsController {
   @Get(':id/sand-dfm')
   @ApiOperation({ summary: "Design-for-casting checks of the item's sand casting analysis (severity, measured value, threshold, the rule's note, the faces); rules the analysis cannot measure are listed as not evaluated" })
   async getSandDfm(@Param('id') id: string, @CurrentUser() user: User, @AccessToken() token: string) {
-    return this.bomItemsService.getSandDfm(id, user.id, token);
+    return this.costing.getSandDfm(id, user.id, token);
   }
 
   @Put(':id/tolerance-policy')
@@ -512,6 +529,31 @@ export class BOMItemsController {
     if (process && chosen !== process) throw new BadRequestException(`process must be one of: ${MOLDING_PROCESS_NAMES.join(', ')}`);
     const item = await this.bomItemsService.findOne(id, user.id, token);
     return this.plasticDfm.evaluate({ featureGraph: item.featureGraph, grade: item.materialGrade ?? null, process: chosen, client: this.databaseService.getClient(token) });
+  }
+
+  @OrgRole('viewer')
+  @Get(':id/machining-dfm')
+  @ApiOperation({ summary: 'Design-for-machining checks of a part against the machining reference limits; findings carry the features and faces to highlight' })
+  @ApiResponse({ status: 200, description: 'The findings, and every check with its limit, source and status (passed, failed, or not evaluated with why)' })
+  async getMachiningDfm(@Param('id') id: string, @CurrentUser() user: User, @AccessToken() token: string) {
+    const item = await this.bomItemsService.findOne(id, user.id, token);
+    return this.machiningDfm.evaluate({
+      featureGraph: item.featureGraph, grade: item.materialGrade ?? null,
+      part: { dimensionsMm: [item.maxLength, item.maxWidth, item.maxHeight], weightKg: item.weight },
+    });
+  }
+
+  @OrgRole('viewer')
+  @Get(':id/forging-dfm')
+  @ApiOperation({ summary: 'Design-for-forging checks of a forged part against the forging reference rules (forging_manufacturabilitySeverity); findings carry the faces to highlight' })
+  @ApiResponse({ status: 200, description: 'The findings, and every check with its limit, source and status (passed, failed, or not evaluated with why)' })
+  async getForgingDfm(@Param('id') id: string, @CurrentUser() user: User, @AccessToken() token: string) {
+    const item = await this.bomItemsService.findOne(id, user.id, token);
+    const threads = ((item.drawingIntelligence as { threads?: Array<{ count?: unknown }> } | null)?.threads ?? []).reduce((n, t) => n + (Number(t.count) || 1), 0);
+    return this.forgingDfm.evaluate({
+      id, accessToken: token, client: this.databaseService.getClient(token),
+      featureGraph: item.featureGraph, grade: item.materialGrade ?? null, threads,
+    });
   }
 
   @OrgRole('viewer')
@@ -729,7 +771,7 @@ export class BOMItemsController {
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } }) // heavy: parses or analyses a file
   @Post(':id/files')
-  @ApiOperation({ summary: 'Upload 2D/3D/DXF files for BOM item' })
+  @ApiOperation({ summary: 'Upload 2D/3D/DXF files or a board set (Gerber, drill, Pick Place) for BOM item' })
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 200, description: 'Files uploaded successfully', type: BOMItemResponseDto })
   @UseInterceptors(
@@ -737,6 +779,8 @@ export class BOMItemsController {
       [
         { name: 'file2d', maxCount: 1 },
         { name: 'file3d', maxCount: 1 },
+        // The board set: one .zip, or its loose Gerber layers, drill file and report, Pick Place and BOM table.
+        { name: 'fileBoard', maxCount: MAX_BOARD_FILES },
         { name: 'fileDxf', maxCount: 1 },
       ],
       {
@@ -747,12 +791,12 @@ export class BOMItemsController {
   )
   async uploadFiles(
     @Param('id') id: string,
-    @UploadedFiles() files: { file2d?: any[]; file3d?: any[]; fileDxf?: any[] },
+    @UploadedFiles() files: { file2d?: any[]; file3d?: any[]; fileDxf?: any[]; fileBoard?: any[] },
     @CurrentUser() user: User,
     @AccessToken() token: string,
   ): Promise<BOMItemResponseDto> {
     // Validate files are provided before processing
-    if (!files?.file2d?.[0] && !files?.file3d?.[0] && !files?.fileDxf?.[0]) {
+    if (!files?.file2d?.[0] && !files?.file3d?.[0] && !files?.fileDxf?.[0] && !files?.fileBoard?.[0]) {
       throw new BadRequestException('No files provided');
     }
 
@@ -886,6 +930,20 @@ export class BOMItemsController {
         id,
       );
       updateData.fileDxfPath = uploadResult.storagePath;
+    }
+
+    // The board set, kept as one zip (packed here when its files came loose). It is measured when the part is analysed.
+    if (files.fileBoard?.length) {
+      const board = await prepareBoardUpload(files.fileBoard.map((f: { originalname: string; buffer: Buffer }) => ({ name: f.originalname, bytes: f.buffer })), bomItem.partNumber || bomItem.name || 'board');
+      if (!board.ok) throw new BadRequestException(board.message);
+      const uploadResult = await this.fileStorageService.uploadFile(
+        { fieldname: 'fileBoard', originalname: board.name, encoding: '7bit', mimetype: 'application/zip', size: board.bytes.length, buffer: board.bytes },
+        'board',
+        user.id,
+        projectId,
+        id,
+      );
+      updateData.fileBoardPath = uploadResult.storagePath;
     }
 
     // Update BOM item with file paths
@@ -1365,7 +1423,8 @@ export class BOMItemsController {
       );
     }
 
-    const cadAnalysis = await cadResponse.json();
+    // The CAD engine's analysis envelope: only `success` is read here (fetch's json() is typed unknown).
+    const cadAnalysis = (await cadResponse.json()) as { success?: boolean };
     if (!cadAnalysis.success) {
       throw new BadRequestException('CAD engine analysis returned unsuccessful result');
     }
@@ -1469,6 +1528,25 @@ export class BOMItemsController {
   }
 
   @OrgRole('viewer')
+  @Get(':id/material-usage')
+  @ApiOperation({ summary: "The part's net and gross material usage and scrap at a location and batch size, as Apply would record them, with the working behind each figure: the reference calculator that ran or the rule, and every value it read with where it came from. Nothing is written" })
+  @ApiResponse({ status: 200, description: 'The material usage with its justification (kg, %)' })
+  async getMaterialUsage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('batchSize') batchSize: string,
+    @Query('location') location: string,
+    @CurrentUser() user: User,
+    @AccessToken() token: string,
+  ): Promise<MaterialUsageExplanation> {
+    if (!location) throw new BadRequestException('location query param is required: the usage is read from the part costed at a digital factory location');
+    const [item, summary] = await Promise.all([
+      this.bomItemsService.findOne(id, user.id, token),
+      this.costing.getCostSummary(id, user.id, token, batchSize ? parseInt(batchSize, 10) : undefined, location),
+    ]);
+    return this.materialSnapshots.explain(item, summary.materialGrade ?? '', summary, user.id, token);
+  }
+
+  @OrgRole('viewer')
   @Get(':id/cost-summary')
   @ApiOperation({ summary: 'Deterministic cost breakdown — material + process lines, no LLM' })
   @ApiResponse({ status: 200, description: 'Cost summary returned' })
@@ -1484,7 +1562,7 @@ export class BOMItemsController {
     // No `?? 1` here any more: an absent batch size is passed through as
     // undefined so the canonical resolver (costing-inputs.ts) applies the one
     // default. A fallback here would be a second, competing default.
-    return this.bomItemsService.getCostSummary(
+    return this.costing.getCostSummary(
       id,
       user.id,
       token,
@@ -1562,7 +1640,7 @@ export class BOMItemsController {
     if (!sheetWidthMm || !sheetLengthMm) {
       throw new BadRequestException('sheetWidthMm and sheetLengthMm query params are required — pass the sheet already selected by the existing nesting/cost result');
     }
-    const { result, reason } = await this.bomItemsService.getTrueNest(
+    const { result, reason } = await this.nesting.getTrueNest(
       id,
       user.id,
       token,
@@ -1598,7 +1676,7 @@ export class BOMItemsController {
     // No `?? 1` here any more: an absent batch size is passed through as
     // undefined so the canonical resolver (costing-inputs.ts) applies the one
     // default. A fallback here would be a second, competing default.
-    return this.bomItemsService.getRouteComparison(
+    return this.costing.getRouteComparison(
       id,
       user.id,
       token,
@@ -1626,7 +1704,7 @@ export class BOMItemsController {
     // No `?? 1` here any more: an absent batch size is passed through as
     // undefined so the canonical resolver (costing-inputs.ts) applies the one
     // default. A fallback here would be a second, competing default.
-    return this.bomItemsService.getCandidateRoutes(
+    return this.costing.getCandidateRoutes(
       id,
       user.id,
       token,
@@ -1644,7 +1722,7 @@ export class BOMItemsController {
     @Param('id') id: string,
     @AccessToken() token: string,
   ) {
-    return this.bomItemsService.getGdtAnalysis(id, token);
+    return this.gdt.getGdtAnalysis(id, token);
   }
 
   @Post(':id/machine-override')
@@ -1659,7 +1737,7 @@ export class BOMItemsController {
     @AccessToken() token: string,
   ) {
     if (!dto.location) throw new BadRequestException('location is required in the request body — send the digital factory location');
-    return this.bomItemsService.setMachineOverride(
+    return this.overrides.setMachineOverride(
       id,
       user.id,
       token,
@@ -1681,7 +1759,7 @@ export class BOMItemsController {
     @AccessToken() token: string,
   ) {
     if (!dto.location) throw new BadRequestException('location is required in the request body — send the digital factory location');
-    return this.bomItemsService.setCostOverride(
+    return this.overrides.setCostOverride(
       id,
       user.id,
       token,

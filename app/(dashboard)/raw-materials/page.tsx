@@ -1,16 +1,29 @@
 'use client';
 
-import { StockPricesCard } from '@/components/features/raw-materials/StockPricesCard';
 import { useState, useRef } from 'react';
+import { toast } from 'sonner';
+
+import { RawMaterialEditForm } from '@/components/features/raw-materials/RawMaterialEditForm';
+import { RawMaterialPropertiesDialog } from '@/components/features/raw-materials/RawMaterialPropertiesDialog';
+import { StockPricesCard } from '@/components/features/raw-materials/StockPricesCard';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Plus, Upload, Search, ArrowUpDown, Download, Trash2, AlertTriangle, Pencil, FileSpreadsheet } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { TableSkeleton } from '@/components/ui/loading-skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { toast } from 'sonner';
-import { Plus, Upload, Search, ArrowUpDown, Download, Trash2, AlertTriangle, Pencil, FileSpreadsheet } from 'lucide-react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import {
   useRawMaterials,
   useRawMaterialFilterOptions,
@@ -21,9 +34,6 @@ import {
   useDeleteAllRawMaterials,
   type RawMaterial,
 } from '@/lib/api/hooks/useRawMaterials';
-import { RawMaterialEditForm } from '@/components/features/raw-materials/RawMaterialEditForm';
-import { RawMaterialPropertiesDialog } from '@/components/features/raw-materials/RawMaterialPropertiesDialog';
-import { useMaterialFilters } from '@/lib/hooks/useMaterialFilters';
 import {
   CURRENCY_SYMBOLS,
   COUNTRY_LABELS,
@@ -33,14 +43,7 @@ import {
   type MaterialShape,
   getCurrencyForCountry
 } from '@/lib/constants/materials';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { useMaterialFilters } from '@/lib/hooks/useMaterialFilters';
 
 export default function RawMaterialsPage() {
   // Enhanced filter system
@@ -448,8 +451,8 @@ export default function RawMaterialsPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 pt-4">
-            <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 p-4 border border-blue-200 dark:border-blue-900">
-              <p className="text-sm text-blue-900 dark:text-blue-100 mb-2">
+            <div className="rounded-lg bg-primary/10 dark:bg-primary/20 p-4 border border-primary/40 dark:border-primary/40">
+              <p className="text-sm text-primary dark:text-primary mb-2">
                 Need help with the format?
               </p>
               <Button
@@ -512,7 +515,7 @@ export default function RawMaterialsPage() {
           <div className="space-y-4 pt-4">
             <div className="rounded-lg bg-red-50 dark:bg-red-950/20 p-4 border border-red-200 dark:border-red-900">
               <p className="text-sm text-red-900 dark:text-red-100 font-semibold">
-                ⚠️ Warning: This will delete all {totalCount} materials
+                <AlertTriangle className="mr-1 inline h-4 w-4 align-[-3px]" /> Warning: This will delete all {totalCount} materials
               </p>
               <p className="text-xs text-red-800 dark:text-red-200 mt-1">
                 All material data will be permanently removed from the database.
@@ -668,8 +671,8 @@ export default function RawMaterialsPage() {
             </div>
 
             {/* Plastic Processing Parameters Section */}
-            <div className="space-y-4 p-4 bg-blue-50/30 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-800">
-                <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">Processing Parameters</h3>
+            <div className="space-y-4 p-4 bg-primary/30 dark:bg-primary/30 rounded-lg border border-primary/40 dark:border-primary/40">
+                <h3 className="text-sm font-semibold text-primary dark:text-primary">Processing Parameters</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Regrinding</label>
@@ -776,8 +779,8 @@ export default function RawMaterialsPage() {
               </div>
 
             {/* Mechanical Properties Section */}
-            <div className="space-y-4 p-4 bg-indigo-50/30 dark:bg-indigo-950/30 rounded-lg border border-indigo-200 dark:border-indigo-800">
-                <h3 className="text-sm font-semibold text-indigo-900 dark:text-indigo-100">Mechanical Properties</h3>
+            <div className="space-y-4 p-4 bg-primary/30 dark:bg-primary/30 rounded-lg border border-primary/40 dark:border-primary/40">
+                <h3 className="text-sm font-semibold text-primary dark:text-primary">Mechanical Properties</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Density (g/cm³)</label>
@@ -827,8 +830,8 @@ export default function RawMaterialsPage() {
               </div>
 
             {/* Material Standards Section */}
-            <div className="space-y-4 p-4 bg-brand-50/30 dark:bg-brand-950/30 rounded-lg border border-brand-200 dark:border-brand-800">
-                <h3 className="text-sm font-semibold text-brand-900 dark:text-brand-100">Material Standards</h3>
+            <div className="space-y-4 p-4 bg-primary/30 dark:bg-primary/30 rounded-lg border border-primary/40 dark:border-primary/40">
+                <h3 className="text-sm font-semibold text-primary dark:text-primary">Material Standards</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">ASTM Standard</label>
@@ -1020,23 +1023,22 @@ export default function RawMaterialsPage() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="h-6 w-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                    <span className="text-sm">Loading materials…</span>
-                  </div>
+                <TableCell colSpan={9} className="p-0">
+                  <TableSkeleton rows={6} columns={6} label="Loading materials…" />
                 </TableCell>
               </TableRow>
             ) : displayMaterials.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
-                  <div className="flex flex-col items-center gap-2">
-                    <FileSpreadsheet className="h-8 w-8 opacity-30" />
-                    <span className="text-sm">No materials found. Upload an Excel file to get started.</span>
+                <TableCell colSpan={9} className="p-0">
+                  <EmptyState
+                    icon={FileSpreadsheet}
+                    title="No materials found"
+                    description="Upload an Excel file to get started."
+                  >
                     <Button size="sm" variant="outline" onClick={() => setUploadDialogOpen(true)}>
                       <Upload className="h-3.5 w-3.5 mr-1.5" /> Import Excel
                     </Button>
-                  </div>
+                  </EmptyState>
                 </TableCell>
               </TableRow>
             ) : (
@@ -1072,7 +1074,7 @@ export default function RawMaterialsPage() {
                         variant="ghost"
                         size="icon"
                         onClick={() => handleEditMaterial(material)}
-                        className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                        className="h-7 w-7 text-primary hover:text-primary hover:bg-primary/10"
                         title="Edit"
                       >
                         <Pencil className="h-3 w-3" />

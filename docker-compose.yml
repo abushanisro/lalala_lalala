@@ -61,38 +61,6 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # Electronics design-file extraction (Gerber, drill, Pick Place)
-  ecad-engine:
-    build:
-      context: ./ecad-engine
-      dockerfile: Dockerfile
-    container_name: mithran-ecad-engine
-    environment:
-      PORT: 5100
-      ECAD_ENGINE_API_KEY: ${ECAD_ENGINE_API_KEY:?ECAD_ENGINE_API_KEY is required}
-      ECAD_MAX_FILE_MB: ${ECAD_MAX_FILE_MB:-25}
-      ECAD_RATE_LIMIT: ${ECAD_RATE_LIMIT:-30/minute}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    networks:
-      - backend-network
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5100/health')" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-
   # NestJS Backend API
   backend:
     build:
@@ -110,10 +78,6 @@ services:
       CAD_ENGINE_URL: http://cad-engine:5055
       # Shared secret between the backend and the engine; the engine refuses protected routes in production without it.
       CAD_ENGINE_API_KEY: ${CAD_ENGINE_API_KEY:?CAD_ENGINE_API_KEY is required}
-
-      # Electronics extraction engine
-      ECAD_ENGINE_URL: http://ecad-engine:5100
-      ECAD_ENGINE_API_KEY: ${ECAD_ENGINE_API_KEY:?ECAD_ENGINE_API_KEY is required}
 
       # Data, files and sign-in (backend/scripts/local-data.sh runs Postgres, PostgREST and the bucket; reach them from here through
       # host.docker.internal).
@@ -166,8 +130,6 @@ services:
       - backend-network
     depends_on:
       cad-engine:
-        condition: service_healthy
-      ecad-engine:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -255,7 +217,7 @@ networks:
       config:
         - subnet: 172.20.0.0/16
 
-  # Engines network (backend <-> cad-engine, ecad-engine)
+  # Engines network (backend <-> cad-engine)
   backend-network:
     driver: bridge
     # No route out, none in: the engines are reachable only from the backend (which also sits on frontend-network for egress).

@@ -43,7 +43,7 @@ export type { LocationElectricity } from '../../shared/location-electricity';
  * The energy price the route charges: the Cost Guide's for this part, else the location's sourced electricity price converted to USD, else
  * none (energy is then not charged, and each line says so). Never assumed.
  */
-function energyPrice(override: number | null, location: string | undefined, row: LocationElectricity | null | undefined, toUsd: (value: number, currency: string) => number | null, warnings: string[]): { usdPerKwh: number; source: string } | null {
+export function energyPrice(override: number | null, location: string | undefined, row: LocationElectricity | null | undefined, toUsd: (value: number, currency: string) => number | null, warnings: string[]): { usdPerKwh: number; source: string } | null {
   if (override != null) return { usdPerKwh: override, source: 'energy price set in the Cost Guide (USD/kWh)' };
   if (!row) return null;
   const priced = electricityUsd(row, location, toUsd);
@@ -150,6 +150,7 @@ export const SAND_MATERIAL_COLUMNS = [
 
 export function sandMaterialFromRow(row: Record<string, any>): SandMaterial {
   return {
+    id: String(row.id ?? ''),
     name: String(row.name ?? row.grade ?? ''), // migration 865: name was material_grade, grade was material
     materialType: row.material_type ? String(row.material_type) : null,
     columns: Object.fromEntries(SAND_MATERIAL_COLUMNS.map((k) => [k, num(row[k])])),
@@ -157,16 +158,25 @@ export function sandMaterialFromRow(row: Record<string, any>): SandMaterial {
 }
 
 /** One route cost in the location's currency (the route is built in USD, the units of HR Rates and the sand reference data). */
-export function sandRouteToLocal(route: SandRoute, usdToLocal: number): SandRoute {
-  if (usdToLocal === 1) return route;
-  const k = (v: number) => Math.round(v * usdToLocal * 100) / 100;
-  const line = (l: ProcessLineCost): ProcessLineCost => ({
+/** One route line in the location's currency (a casting route is built in USD, the units of HR Rates). */
+export function lineToLocal(l: ProcessLineCost, usdToLocal: number): ProcessLineCost {
+  return {
     ...l,
     setupCost: roundLineCost(l.setupCost * usdToLocal), runCost: roundLineCost(l.runCost * usdToLocal), totalCost: roundLineCost(l.totalCost * usdToLocal),
     hourlyRate: Math.round(l.hourlyRate * usdToLocal * 100) / 100,
     labourRate: l.labourRate != null ? Math.round(l.labourRate * usdToLocal * 100) / 100 : l.labourRate,
+    ...(l.machineCostPerPart != null ? { machineCostPerPart: roundPerPart(l.machineCostPerPart * usdToLocal) } : {}),
+    ...(l.laborCostPerPart != null ? { laborCostPerPart: roundPerPart(l.laborCostPerPart * usdToLocal) } : {}),
+    // The line's other charge in its own currency, beside the USD figure its detail text states (ProcessLineCost.otherCostPerPart).
+    ...(l.otherCostPerPartUsd != null ? { otherCostPerPart: roundPerPart(l.otherCostPerPartUsd * usdToLocal) } : {}),
     ...(l.machineChoice ? { machineChoice: { ...l.machineChoice, candidates: l.machineChoice.candidates.map((x) => ({ ...x, perPartCost: x.perPartCost != null ? roundPerPart(x.perPartCost * usdToLocal) : null })) } } : {}),
-  });
+  };
+}
+
+export function sandRouteToLocal(route: SandRoute, usdToLocal: number): SandRoute {
+  if (usdToLocal === 1) return route;
+  const k = (v: number) => Math.round(v * usdToLocal * 100) / 100;
+  const line = (l: ProcessLineCost) => lineToLocal(l, usdToLocal);
   return {
     ...route,
     lines: route.lines.map(line),

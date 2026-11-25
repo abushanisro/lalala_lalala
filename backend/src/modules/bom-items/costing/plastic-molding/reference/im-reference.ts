@@ -2,6 +2,7 @@
 // decision needs it. The CSVs are the one source; nest-cli.json ships them with the build. Each row keeps its confidence and source, so a
 // cost that uses one says how far it can be trusted.
 import { readFileSync } from 'fs';
+import { Logger } from '@nestjs/common';
 import { join } from 'path';
 
 /** RFC 4180: quoted fields, "" for a quote inside one. */
@@ -25,8 +26,26 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
+const logger = new Logger('InjectionMoldingReference');
+const reportedMissing = new Set<string>();
+
+/**
+ * A reference file's rows. A file that is not there (a build that did not copy the CSVs) gives no rows, so every value read from it is a named gap
+ * on the quote, and the error is logged once with the file: a missing data file never fails the whole cost summary.
+ */
 export function readReferenceCsv(file: string): Array<Record<string, string>> {
-  const [header, ...body] = parseCsv(readFileSync(join(__dirname, file), 'utf8'));
+  let text: string;
+  try {
+    text = readFileSync(join(__dirname, file), 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    if (!reportedMissing.has(file)) {
+      reportedMissing.add(file);
+      logger.error(`Reference file ${file} is not in the build (${join(__dirname, file)}): its values are gaps. Check nest-cli.json assets.`);
+    }
+    return [];
+  }
+  const [header, ...body] = parseCsv(text);
   return body.filter((r) => r.some((c) => c !== '')).map((r) => Object.fromEntries(header!.map((h, i) => [h, r[i] ?? ''])));
 }
 
@@ -54,6 +73,22 @@ export function weightCheckReference(
   };
 }
 export type WeightCheckReference = ReturnType<typeof weightCheckReference>;
+
+/** The insert pull test (quality-inspection-reference.csv insert_pull_test) and the economics its tester rate is derived with. */
+export function insertPullTestReference(
+  quality: ReadonlyArray<Record<string, string>> = readReferenceCsv('quality-inspection-reference.csv'),
+  economics: ReadonlyArray<Record<string, string>> = readReferenceCsv('equipment-economics-reference.csv'),
+) {
+  const q = (p: string) => referenceValue(quality, (r) => r['operation'] === 'insert_pull_test' && r['parameter'] === p, 'quality-inspection-reference.csv');
+  const e = (p: string) => referenceValue(economics, (r) => r['parameter'] === p, 'equipment-economics-reference.csv');
+  return {
+    sampleHandlingS: q('sample_handling_time'), insertSeatS: q('insert_seat_time'), pullDisplacementMm: q('pull_displacement'),
+    pullSpeedMmPerMin: q('pull_speed'), approachReturnS: q('approach_return_time'), recordS: q('record_time'), testerPriceUsd: q('tester_price'),
+    lifeYr: e('life'), maintenancePct: e('annual_maintenance_factor'), installationPct: e('installation_factor'), salvagePct: e('salvage_factor'),
+    uptimePct: e('uptime'), utilization: e('utilization'), scheduledHours: e('scheduled_hours'),
+  };
+}
+export type InsertPullTestReference = ReturnType<typeof insertPullTestReference>;
 
 export interface DryingCondition { material: string; grade: string; tempC: string; timeH: string; confidence: string; source: string }
 export interface DryerModel { model: string; throughputKgH: number; ratedKw: number | null; priceUsd: number | null; priceBasis: string; confidence: string; source: string }
@@ -99,6 +134,17 @@ export function equipmentEconomics(rows: ReadonlyArray<Record<string, string>> =
     lifeYr: e('life'), maintenancePct: e('annual_maintenance_factor'), installationPct: e('installation_factor'), salvagePct: e('salvage_factor'),
     uptimePct: e('uptime'), utilization: e('utilization'), scheduledHours: e('scheduled_hours'),
   };
+}
+
+/** The edge-gate width constant n of a material type (gate-sizing-reference.csv), with the row it came from; the "*" row for a type Pye does not list. */
+export function gateWidthConstant(
+  materialType: string | null | undefined, rows: ReadonlyArray<Record<string, string>> = readReferenceCsv('gate-sizing-reference.csv'),
+): { n: number; family: string; confidence: string; source: string } | null {
+  const type = (materialType ?? '').trim().toLowerCase();
+  const listed = (r: Record<string, string>) => (r['material_types'] ?? '').split(';').map((t) => t.trim().toLowerCase());
+  const row = (type ? rows.find((r) => listed(r).includes(type)) : undefined) ?? rows.find((r) => listed(r).includes('*'));
+  const n = Number(row?.['n']);
+  return row && Number.isFinite(n) && n > 0 ? { n, family: row['material_family']!, confidence: row['confidence']!, source: row['source_name']! } : null;
 }
 
 export interface SteelTreatment {

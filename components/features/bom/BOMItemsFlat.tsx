@@ -1,14 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { flushSync } from 'react-dom';
 
 const BOMItemThumbnail = dynamic(
   () => import('./BOMItemThumbnail').then((m) => m.BOMItemThumbnail),
   { ssr: false, loading: () => null }
 );
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,11 +20,24 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Edit2, Trash2, Plus, ChevronDown, ChevronUp, FileText, Box, GripVertical, Cpu } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Edit2, Trash2, Plus, ChevronDown, ChevronRight, FileText, Box, GripVertical, Cpu, Info, Layers, Layers3, Package, Search, StarGlyph, X } from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+
 // ✅ Fix 6133: Removed unused imports: ArrowRight, Move
-import { toast } from 'sonner';
+
+import { TableSkeleton } from '@/components/ui/loading-skeleton';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { useStarredBOMItems, useToggleBOMItemStar } from '@/lib/api/hooks/useBOMItemStars';
 import { useBOMItems, deleteBOMItem, updateBOMItem, updateBOMItemsSortOrder, type BOMItem } from '@/lib/api/hooks/useBOMItems';
+import { dropIntent, type DropIntent } from '@/lib/bom/drop-intent';
+import { rowFacts } from '@/lib/bom/row-summary';
+import { filterTree, highlightParts, matchesQuery, visibleTreeRows } from '@/lib/bom/tree-rows';
+
 import { useQueryClient } from '@tanstack/react-query';
+
 import { BOMItemType } from '@/lib/types/bom.types';
 
 // ---------------------------------------------------------------------------
@@ -35,6 +49,10 @@ interface BOMItemsFlatProps {
   onEditItem: (item: BOMItem) => void;
   onViewItem?: (item: BOMItem, viewType?: '2d' | '3d' | 'intelligence') => void;
   onAddChildItem?: (parentId: string, childType: BOMItemType) => void;
+  /** BOM totals exactly as the server reports them; shown in the fixed footer row. */
+  totalCost?: number;
+  /** The page's own buttons (add an item), shown at the right of the list's toolbar, as Gmail keeps its actions above the list. */
+  toolbarActions?: React.ReactNode;
 }
 
 interface TreeNode extends BOMItem {
@@ -77,6 +95,12 @@ function sortNodes(nodes: TreeNode[]): void {
   });
 }
 
+/** The BOM level a row shows: its own, or its type's default when it has none. */
+function levelOf(item: { bomLevel?: string; itemType: string }): string {
+  const own = item.bomLevel?.trim() ?? '';
+  return own.length > 0 ? own : getDefaultBomLevel(item.itemType);
+}
+
 function getDefaultBomLevel(itemType: string): string {
   switch (itemType) {
     case 'assembly':    return 'L0';
@@ -86,30 +110,43 @@ function getDefaultBomLevel(itemType: string): string {
   }
 }
 
-function getItemTypeBadge(type: string): React.ReactElement {
-  const typeConfig: Record<string, { label: string; className: string }> = {
-    assembly:     { label: 'Assembly',     className: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20' },
-    sub_assembly: { label: 'Sub-Assembly', className: 'bg-blue-500/10 text-blue-700 border-blue-500/20' },
-    child_part:   { label: 'Child Part',   className: 'bg-amber-500/10 text-amber-700 border-amber-500/20' },
+/**
+ * Each item type's colour: assembly green, sub-assembly blue, child part yellow. The row's left bar, its tree lines (an assembly's lines down
+ * to its sub-assemblies are green, a sub-assembly's down to its parts blue), a faint tint on the parent rows, the type's name (coloured text,
+ * no box; a shade darker in light mode, so it reads on white), the icon of a part with no file, and the legend's dot. Static class names: Tailwind
+ * cannot build them at runtime.
+ */
+interface TypeStyle {
+  label: string; Icon: React.ComponentType<{ className?: string }>;
+  accent: string; line: string; tint: string; badge: string; icon: string; dot: string;
+}
+const TYPE_STYLE: Record<string, TypeStyle> = {
+  assembly: {
+    label: 'Assembly', Icon: Layers, accent: 'border-l-4 border-l-emerald-500', line: 'border-emerald-500', tint: 'bg-emerald-500/[0.04]',
+    badge: 'text-emerald-700 dark:text-emerald-400', icon: 'text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-500',
+  },
+  sub_assembly: {
+    label: 'Sub-Assembly', Icon: Layers3, accent: 'border-l-4 border-l-blue-500', line: 'border-blue-500', tint: 'bg-blue-500/[0.04]',
+    badge: 'text-blue-700 dark:text-blue-400', icon: 'text-blue-600 dark:text-blue-400', dot: 'bg-blue-500',
+  },
+  child_part: {
+    label: 'Child Part', Icon: Box, accent: 'border-l-4 border-l-yellow-400', line: 'border-yellow-400', tint: '',
+    badge: 'text-yellow-800 dark:text-yellow-300', icon: 'text-yellow-600 dark:text-yellow-400', dot: 'bg-yellow-400',
+  },
+};
+const LEGEND_TYPES = ['assembly', 'sub_assembly', 'child_part'] as const;
+
+function typeStyleOf(type: string): TypeStyle {
+  return TYPE_STYLE[type] ?? {
+    label: type, Icon: Package, accent: 'border-l-4 border-l-border', line: 'border-border', tint: '',
+    badge: 'text-muted-foreground', icon: 'text-muted-foreground', dot: 'bg-muted-foreground',
   };
-
-  const config = typeConfig[type] ?? { label: type, className: 'bg-muted text-muted-foreground border-muted' };
-
-  return (
-    <Badge variant="outline" className={`font-medium text-xs ${config.className}`}>
-      {config.label}
-    </Badge>
-  );
 }
 
-function getBorderColor(type: string, depth: number = 0): string {
-  const intensity = Math.max(500 - depth * 100, 300);
-  switch (type) {
-    case 'assembly':    return depth === 0 ? 'border-l-emerald-500' : `border-l-emerald-${intensity}`;
-    case 'sub_assembly': return depth <= 1 ? 'border-l-blue-500'   : `border-l-blue-${intensity}`;
-    case 'child_part':  return depth <= 2 ? 'border-l-amber-500'   : `border-l-amber-${intensity}`;
-    default:            return 'border-l-gray-500';
-  }
+/** The item's type as a word in its type's colour: no box around it (the row's bar and tree lines already carry the colour). */
+function getItemTypeBadge(type: string): React.ReactElement {
+  const style = typeStyleOf(type);
+  return <span className={`shrink-0 text-[11px] font-medium leading-none ${style.badge}`}>{style.label}</span>;
 }
 
 function getChildType(parentType: string): BOMItemType | null {
@@ -133,7 +170,7 @@ function getErrorMessage(error: unknown): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: BOMItemsFlatProps) {
+export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, totalCost, toolbarActions }: BOMItemsFlatProps) {
   const { data, isLoading, refetch } = useBOMItems(bomId);
   const queryClient = useQueryClient();
 
@@ -142,8 +179,8 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
   const [expandedItems, setExpandedItems]       = useState<Set<string>>(new Set());
   const [draggedItem, setDraggedItem]           = useState<BOMItem | null>(null);
   const [dragOverItem, setDragOverItem]         = useState<string | null>(null);
-  const [isDragging, setIsDragging]             = useState(false);
   const [isUpdating, setIsUpdating]             = useState(false);
+  const [detailItem, setDetailItem]             = useState<BOMItem | null>(null);
 
   const items = data?.items ?? [];
 
@@ -195,6 +232,40 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
     ],
   );
 
+  // Search by name or part number: the matches with their ancestors (their place in the BOM), the branches to them opened.
+  const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const search = query.trim();
+  // Each person's own stars, as Gmail's: a star on every row, and "Starred" narrows the list to the starred items (each with its place in
+  // the BOM), together with the search when there is one.
+  const { data: starredIds } = useStarredBOMItems(bomId);
+  const starred = useMemo(() => new Set(starredIds ?? []), [starredIds]);
+  const toggleStar = useToggleBOMItemStar(bomId);
+  const [starredOnly, setStarredOnly] = useState(false);
+  const filtered = useMemo(
+    () => (search || starredOnly
+      ? filterTree(treeData, (n) => (!search || matchesQuery(search, n.name, n.partNumber)) && (!starredOnly || starred.has(n.id)))
+      : null),
+    [treeData, search, starredOnly, starred],
+  );
+  // "/" puts the cursor in the search box, unless one is already typing somewhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('keydown', onKey); };
+  }, []);
+  // The matched words, marked in a name or a part number.
+  const marked = (text: string): React.ReactNode =>
+    search
+      ? highlightParts(text, search).map(([part, hit], i) => (hit ? <mark key={i} className="rounded-sm bg-yellow-200 px-0.5 text-foreground dark:bg-yellow-500/40">{part}</mark> : part))
+      : text;
+
   // Auto-expand root assemblies on first load
   useEffect(() => {
     if (items.length === 0) return;
@@ -214,6 +285,12 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
   // -------------------------------------------------------------------------
   // UI actions
   // -------------------------------------------------------------------------
+
+  // Every item that has children, opened or closed at once: one button, "Collapse all" once every branch is open, else "Expand all".
+  const parentIds = new Set(items.map(i => i.parentItemId?.trim()).filter((id): id is string => !!id));
+  const branchIds = items.filter(i => parentIds.has(i.id)).map(i => i.id);
+  const allExpanded = branchIds.length > 0 && branchIds.every(id => expandedItems.has(id));
+  const toggleExpandAll = () => { setExpandedItems(allExpanded ? new Set() : new Set(branchIds)); };
 
   const toggleExpand = (itemId: string) => {
     setExpandedItems(prev => {
@@ -254,170 +331,91 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
   // Drag & Drop
   // -------------------------------------------------------------------------
 
-  const resetDrag = () => { setDraggedItem(null); setDragOverItem(null); setIsDragging(false); };
+  // The browser's own drag and drop, done properly: the image under the cursor is a small card of the dragged item (drawn below, off
+  // screen), not a snapshot of the whole table row; only the row under the cursor shows what dropping there does (lib/bom/drop-intent.ts),
+  // and a row where the move is not allowed is no drop target, so the browser shows its not-allowed cursor.
+  const dragCardRef = useRef<HTMLDivElement>(null);
+  const expandTimer = useRef<number | null>(null);
+  // A drop ends on a row; the click the browser may send after it must not open that row.
+  const lastDropAt  = useRef(0);
+  const isDragging  = draggedItem !== null;
+
+  const clearExpandTimer = () => {
+    if (expandTimer.current !== null) { window.clearTimeout(expandTimer.current); expandTimer.current = null; }
+  };
+  const resetDrag = () => { clearExpandTimer(); setDraggedItem(null); setDragOverItem(null); };
 
   const handleDragStart = (e: React.DragEvent, item: BOMItem) => {
+    if (isUpdating) { e.preventDefault(); return; }
     e.stopPropagation();
-    setDraggedItem(item);
-    setIsDragging(true);
+    // Draw the drag card for this item now, so the browser takes it (not the row) as the drag image, held where the cursor grabbed it.
+    flushSync(() => { setDraggedItem(item); setDragOverItem(null); });
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', item.id);
-
-    const el    = e.currentTarget as HTMLElement;
-    const clone = el.cloneNode(true) as HTMLElement;
-    clone.style.cssText = `opacity:0.8;transform:rotate(2deg);width:${el.offsetWidth}px`;
-    document.body.appendChild(clone);
-    e.dataTransfer.setDragImage(clone, el.offsetWidth / 2, 20);
-    setTimeout(() => document.body.contains(clone) && document.body.removeChild(clone), 0);
+    if (dragCardRef.current) e.dataTransfer.setDragImage(dragCardRef.current, 16, 16);
   };
 
-  const handleDragEnd   = () => resetDrag();
+  const handleDragEnd = () => { resetDrag(); };
 
-  const handleDragOver  = (e: React.DragEvent, targetItem: BOMItem) => {
+  const handleDragOver = (e: React.DragEvent, target: BOMItem) => {
+    if (!draggedItem) return;
+    const intent = dropIntent(draggedItem, target, items);
+    if (dragOverItem !== target.id) {
+      setDragOverItem(target.id);
+      clearExpandTimer();
+      // Resting on a closed parent it can go into opens it, so a part deeper down can be reached.
+      if (intent.kind === 'into' && !expandedItems.has(target.id) && items.some(c => c.parentItemId === target.id)) {
+        expandTimer.current = window.setTimeout(() => { setExpandedItems(prev => new Set(prev).add(target.id)); }, 700);
+      }
+    }
+    // Only a real move is a drop target; elsewhere the browser shows the not-allowed cursor and a drop does nothing.
+    if (intent.kind === 'none' || intent.kind === 'invalid') return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (draggedItem && draggedItem.id !== targetItem.id) setDragOverItem(targetItem.id);
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverItem(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, targetItem: BOMItem) => {
+  const handleDrop = async (e: React.DragEvent, target: BOMItem) => {
     e.preventDefault();
     e.stopPropagation();
+    lastDropAt.current = Date.now();
+    const dragged = draggedItem;
+    resetDrag();
+    if (!dragged || isUpdating || dragged.id !== e.dataTransfer.getData('text/plain')) return;
 
-    if (!draggedItem || draggedItem.id === targetItem.id || isUpdating) { resetDrag(); return; }
-    if (draggedItem.id !== e.dataTransfer.getData('text/plain'))        { resetDrag(); return; }
-
-    // Circular reference guard
-    const wouldCreateCircle = (currentId: string, searchId: string, visited = new Set<string>()): boolean => {
-      if (visited.has(currentId) || currentId === searchId) return currentId === searchId;
-      visited.add(currentId);
-      return items
-        .filter(i => i.parentItemId === currentId)
-        .some(child => child.id === searchId || wouldCreateCircle(child.id, searchId, new Set(visited)));
-    };
-
-    if (targetItem.itemType !== 'child_part' && wouldCreateCircle(draggedItem.id, targetItem.id)) {
-      toast.error('Invalid move', { description: 'Cannot move an item into its own sub-components', duration: 4000 });
-      resetDrag();
-      return;
-    }
-
-    const isSameParentReorder =
-      draggedItem.parentItemId === targetItem.parentItemId &&
-      draggedItem.itemType     === targetItem.itemType;
+    const intent: DropIntent = dropIntent(dragged, target, items);
+    if (intent.kind === 'none') return;
+    if (intent.kind === 'invalid') { toast.error('Not moved', { description: intent.label, duration: 4000 }); return; }
 
     try {
       setIsUpdating(true);
 
-      if (isSameParentReorder) {
-        // ── Same-parent reorder ──────────────────────────────────────────────
+      if (intent.kind === 'reorder') {
+        // Same parent, same type: the dragged item takes the target's place.
         const siblings = items
-          .filter(i => i.parentItemId === draggedItem.parentItemId && i.itemType === draggedItem.itemType)
+          .filter(i => i.parentItemId === dragged.parentItemId && i.itemType === dragged.itemType)
           .sort((a, b) => a.sortOrder - b.sortOrder);
-
-        const withoutDragged = siblings.filter(i => i.id !== draggedItem.id);
-        const targetIndex    = withoutDragged.findIndex(i => i.id === targetItem.id);
-        withoutDragged.splice(targetIndex, 0, draggedItem);
-
-        const updatePayloads = withoutDragged.map((item, index) => ({ id: item.id, sortOrder: index }));
-
-        if (typeof updateBOMItemsSortOrder === 'function') {
-          await updateBOMItemsSortOrder(updatePayloads);
-        } else {
-          for (const payload of updatePayloads) {
-            if (payload.sortOrder !== items.find(i => i.id === payload.id)?.sortOrder) {
-              await updateBOMItem(payload.id, { sortOrder: payload.sortOrder });
-            }
-          }
-        }
-
-        toast.success(`Reordered "${draggedItem.name}"`, { duration: 3000 });
-
+        const withoutDragged = siblings.filter(i => i.id !== dragged.id);
+        withoutDragged.splice(withoutDragged.findIndex(i => i.id === target.id), 0, dragged);
+        await updateBOMItemsSortOrder(withoutDragged.map((item, index) => ({ id: item.id, sortOrder: index })));
+        toast.success(`Reordered “${dragged.name}”`, { description: `now before “${target.name}”`, duration: 3000 });
+      } else if (intent.kind === 'swap') {
+        await updateBOMItem(dragged.id, { sortOrder: target.sortOrder });
+        await updateBOMItem(target.id,  { sortOrder: dragged.sortOrder });
+        toast.success('Assemblies reordered', { description: `${dragged.name} ↔ ${target.name}`, duration: 3000 });
       } else {
-        // ── Cross-hierarchy move ─────────────────────────────────────────────
-        const bothRootAssemblies =
-          draggedItem.itemType === 'assembly' && !draggedItem.parentItemId?.trim() &&
-          targetItem.itemType  === 'assembly' && !targetItem.parentItemId?.trim();
-
-        if (bothRootAssemblies) {
-          await updateBOMItem(draggedItem.id, { sortOrder: targetItem.sortOrder });
-          await updateBOMItem(targetItem.id,  { sortOrder: draggedItem.sortOrder });
-          toast.success('Assemblies reordered', { description: `${draggedItem.name} ↔ ${targetItem.name}`, duration: 3000 });
-
-        } else {
-          // Validate move legality
-          const isValidMove = (): boolean => {
-            const { itemType: d } = draggedItem;
-            const { itemType: t } = targetItem;
-            if (d === 'assembly' && (t === 'sub_assembly' || t === 'child_part')) return false;
-            if (d === 'sub_assembly' && t === 'child_part') return false;
-            if (d === 'child_part'   && (t === 'sub_assembly' || t === 'assembly')) return true;
-            if (d === 'sub_assembly' && t === 'assembly') return true;
-            return false;
-          };
-
-          if (!isValidMove()) {
-            toast.error('Invalid move', {
-              description: `Cannot move ${draggedItem.itemType.replace('_', ' ')} to ${targetItem.itemType.replace('_', ' ')}`,
-              duration: 4000,
-            });
-            resetDrag();
-            setIsUpdating(false);
-            return;
-          }
-
-          // Compute new parent & bomLevel for the dragged item
-          let newParentId: string | undefined;
-          let newBomLevel: string;
-
-          if (targetItem.itemType === 'assembly') {
-            newParentId = targetItem.id;
-            newBomLevel = draggedItem.itemType === 'sub_assembly' ? 'L1' : 'L2';
-          } else if (targetItem.itemType === 'sub_assembly') {
-            newParentId = targetItem.id;
-            newBomLevel = 'L2';
-          } else {
-            // child_part → become sibling
-            // ✅ Fix 2345: use `undefined` instead of `null` to match UpdateBOMItemDto
-            newParentId = targetItem.parentItemId ?? undefined;
-            newBomLevel = targetItem.bomLevel || 'L2';
-          }
-
-          const noChange =
-            draggedItem.parentItemId === (newParentId ?? null) &&
-            draggedItem.bomLevel     === newBomLevel           &&
-            draggedItem.itemType     === draggedItem.itemType;   // always same
-
-          if (!noChange) {
-            await updateBOMItem(draggedItem.id, {
-              parentItemId: newParentId,   // ✅ undefined, not null
-              bomLevel:     newBomLevel,
-              itemType:     draggedItem.itemType,
-            });
-
-            const desc =
-              targetItem.itemType === 'assembly'    ? `moved under assembly "${targetItem.name}"` :
-              targetItem.itemType === 'sub_assembly' ? `moved under sub-assembly "${targetItem.name}"` :
-              `moved to same level as "${targetItem.name}"`;
-
-            toast.success(`Moved "${draggedItem.name}"`, { description: desc, duration: 3000 });
-          }
-        }
+        await updateBOMItem(dragged.id, { parentItemId: intent.parentId, bomLevel: intent.bomLevel, itemType: dragged.itemType });
+        // Open the new parent, so the moved item is in view where it landed.
+        setExpandedItems(prev => new Set(prev).add(intent.parentId));
+        toast.success(`Moved “${dragged.name}”`, { description: `into “${target.name}”`, duration: 3000 });
       }
 
-      queryClient.invalidateQueries({ queryKey: ['bom-items'] });
+      void queryClient.invalidateQueries({ queryKey: ['bom-items'] });
       await refetch();
-
     } catch (error: unknown) {
-      // ✅ Fix 2339: getErrorMessage handles unknown type safely
       const msg = getErrorMessage(error);
       toast.error('Failed to move item', { description: msg || 'Please try again.', duration: 5000 });
     } finally {
       setIsUpdating(false);
-      resetDrag();
     }
   };
 
@@ -425,227 +423,267 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
   // Render helpers
   // -------------------------------------------------------------------------
 
-  const renderItem = (item: TreeNode, depth: number = 0): React.ReactElement => {
+  // Round icon buttons, as Gmail's; their hover a shade darker than the row's (the row is already the hover colour).
+  const actionButton = 'h-7 w-7 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground';
+  const formatCost = (cost: number | undefined): string =>
+    typeof cost === 'number' ? cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  // Gmail's hover: the row's actions take the place of its cost while the pointer is on the row (or a key has focus in it); a touch screen,
+  // with no hover, shows them all the time. Not while dragging: then the rows show where a drop would go.
+  const costHidden   = isDragging ? '' : 'group-hover:invisible group-focus-within:invisible pointer-coarse:invisible';
+  const actionsShown = isDragging
+    ? ''
+    : 'group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100';
+
+  /**
+   * One row of the tree. `guides`: for each ancestor level below the root, whether its line continues past this row (that ancestor has
+   * more children below); `isLast`: this row is the last of its parent's children, so its connector ends here (└) instead of going on (├).
+   */
+  const renderRow = (item: TreeNode, depth: number, guides: boolean[] = [], isLast = true, path: TreeNode[] = []): React.ReactElement => {
     const hasChildren    = item.children.length > 0;
     const isExpanded     = expandedItems.has(item.id);
     const isDraggedOver  = dragOverItem === item.id;
     const isBeingDragged = draggedItem?.id === item.id;
     const childType      = getChildType(item.itemType);
+    const style          = typeStyleOf(item.itemType);
+    const facts          = rowFacts(item, levelOf(item));
+    const isStarred      = starred.has(item.id);
+    // Every line takes the colour of the items it leads to: this row's connector its own type's (a child part's yellow, a sub-assembly's
+    // blue), a line running past it the colour of the branch it joins (path[i + 1], the ancestor whose next sibling it reaches), and the
+    // line down from an open parent its children's.
+    const lineOf         = (node: TreeNode | undefined) => typeStyleOf(node?.itemType ?? '').line;
+    // What dropping the dragged item here would do: shown on this row only, while it is under the cursor.
+    const overIntent     = isDraggedOver && draggedItem ? dropIntent(draggedItem, item, items) : null;
+    const dropClass      = !overIntent ? ''
+      : overIntent.kind === 'into' ? 'bg-primary/10 [&>td]:shadow-[inset_0_2px_0_0_hsl(var(--primary)),inset_0_-2px_0_0_hsl(var(--primary))]'
+      : overIntent.kind === 'reorder' || overIntent.kind === 'swap' ? '[&>td]:shadow-[inset_0_3px_0_0_hsl(var(--primary))]'
+      : overIntent.kind === 'invalid' ? 'bg-destructive/5 [&>td]:shadow-[inset_0_2px_0_0_hsl(var(--destructive)),inset_0_-2px_0_0_hsl(var(--destructive))]'
+      : '';
 
     return (
-      <div key={item.id} className="mb-2">
-        <div
-          style={{ marginLeft: `${depth * 20}px` }}
-          draggable
-          onDragStart={e  => handleDragStart(e, item)}
-          onDragEnd={handleDragEnd}
-          onDragOver={e   => handleDragOver(e, item)}
-          onDragLeave={handleDragLeave}
-          onDrop={e       => handleDrop(e, item)}
-          onClick={e      => {
-            if (isDragging) { e.preventDefault(); e.stopPropagation(); return; }
-            // Clicking the card opens Manufacturing Intelligence -- the same
-            // destination as the Cpu button in the action row.
-            //
-            // Anything inside an explicit control keeps its own meaning, so the
-            // check is on the control rather than on each handler: every action
-            // in this card (2D, 3D, Intelligence, Add, Edit, Delete, expand) is
-            // a real <button>, and the thumbnail stops its own click. Excluding
-            // by role here means a control added later is covered without
-            // having to remember to stop propagation in it.
-            if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return;
-            // A child's card is rendered inside its parent's card, so the click would bubble up and open the
-            // parent after the child. The card that was clicked is the only one that handles it.
-            e.stopPropagation();
-            onViewItem?.(item, 'intelligence');
-          }}
-          className={[
-            'rounded-md border bg-card text-card-foreground shadow-xs border-l-4 transition-all duration-200 relative',
-            getBorderColor(item.itemType, depth),
-            isBeingDragged  ? 'opacity-50'                                                              : '',
-            isDraggedOver   ? 'ring-2 ring-blue-500 ring-offset-2 bg-blue-50 dark:bg-blue-950/20'       : '',
-            isDragging && !isBeingDragged ? 'hover:ring-2 hover:ring-green-400'                         : '',
-            isUpdating      ? 'cursor-wait opacity-75'                                                   : 'cursor-move',
-          ].join(' ')}
-        >
-          {/* Depth indicator */}
-          {depth > 0 && (
-            <div
-              className="absolute left-0 top-0 bottom-0 w-0.5 bg-border"
-              style={{ left: `-${depth * 20 - 10}px` }}
-            />
-          )}
-
-          <div className="p-4">
-            <div className="flex flex-col md:flex-row items-start justify-between gap-3">
-
-              {/* Thumbnail */}
-              {(item.file3dPath || item.file2dPath) && (
+      <tr
+        key={item.id}
+        aria-level={depth + 1}
+        aria-expanded={hasChildren ? isExpanded : undefined}
+        draggable={!isUpdating}
+        onDragStart={e => { handleDragStart(e, item); }}
+        onDragEnd={handleDragEnd}
+        onDragOver={e => { handleDragOver(e, item); }}
+        onDrop={e => { void handleDrop(e, item); }}
+        onClick={e => {
+          if (isDragging || Date.now() - lastDropAt.current < 300) { e.preventDefault(); e.stopPropagation(); return; }
+          // Clicking a row opens Manufacturing Intelligence -- the same
+          // destination as the Cpu button. Explicit controls keep their own meaning.
+          if ((e.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return;
+          e.stopPropagation();
+          onViewItem?.(item, 'intelligence');
+        }}
+        className={[
+          'group border-b transition-colors',
+          // Gmail's hover: the row lifts (a soft shadow) in an opaque colour, so the actions shown over the end of its details (same colour)
+          // cover them cleanly.
+          isDragging ? '' : 'hover:relative hover:z-[1] hover:bg-accent hover:shadow-[inset_1px_0_0_hsl(var(--border)),inset_-1px_0_0_hsl(var(--border)),0_1px_2px_0_rgb(60_64_67/0.3),0_1px_3px_1px_rgb(60_64_67/0.15)]',
+          // The row being dragged stays in place, faded, so you see where it came from.
+          isBeingDragged ? 'bg-muted/40 opacity-40' : '',
+          dropClass,
+          isUpdating ? 'cursor-wait opacity-75' : 'cursor-pointer',
+          dropClass ? '' : style.tint,
+        ].join(' ')}
+      >
+        <td className={`p-0 ${style.accent}`}>
+          <div className="flex h-14 min-w-0 items-stretch pr-2">
+            {/* Drag handle: the whole row is draggable; the grip shows where to take it. */}
+            <span className="flex w-6 shrink-0 items-center justify-center">
+              <GripVertical
+                className={`h-3.5 w-3.5 cursor-grab active:cursor-grabbing transition-opacity ${
+                  isBeingDragged ? 'text-primary' : 'text-muted-foreground/60 opacity-0 group-hover:opacity-100'
+                }`}
+                aria-hidden="true"
+              />
+            </span>
+            {/* Gmail's star: grey outline, yellow and filled when starred; the person's own mark. */}
+            <span className="flex w-7 shrink-0 items-center justify-center">
+              <button
+                type="button"
+                aria-pressed={isStarred}
+                aria-label={isStarred ? `Unstar ${item.name}` : `Star ${item.name}`}
+                title={isStarred ? 'Starred' : 'Not starred'}
+                onClick={(e) => { e.stopPropagation(); toggleStar.mutate({ bomItemId: item.id, starred: !isStarred }); }}
+                className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <StarGlyph
+                  className={`h-[18px] w-[18px] ${isStarred ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground/50 group-hover:text-muted-foreground'}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </span>
+            {/* Tree guides: a line under each ancestor with more children below, then this row's connector (├ or └). */}
+            {guides.map((continues, i) => (
+              <span key={i} className="relative w-5 shrink-0" aria-hidden="true">
+                {continues && <span className={`absolute inset-y-0 left-1/2 border-l-2 ${lineOf(path[i + 1])}`} />}
+              </span>
+            ))}
+            {depth > 0 && (
+              <span className="relative w-5 shrink-0" aria-hidden="true">
+                <span className={`absolute left-1/2 top-0 border-l-2 ${style.line} ${isLast ? 'h-[calc(50%+1px)]' : 'h-full'}`} />
+                <span className={`absolute left-1/2 top-1/2 w-2.5 border-t-2 ${style.line}`} />
+              </span>
+            )}
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              {/* Expand / collapse, with the line down to the first child when open. */}
+              <span className="relative flex w-5 shrink-0 items-center justify-center self-stretch">
+                {hasChildren ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="relative z-[1] h-5 w-5 rounded-sm"
+                      aria-label={isExpanded ? `Collapse ${item.name}` : `Expand ${item.name}`}
+                      onClick={() => { toggleExpand(item.id); }}
+                    >
+                      {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    </Button>
+                    {isExpanded && <span className={`absolute bottom-0 left-1/2 top-[calc(50%+10px)] border-l-2 ${lineOf(item.children[0])}`} aria-hidden="true" />}
+                  </>
+                ) : null}
+              </span>
+              {(item.file3dPath || item.file2dPath) ? (
                 <BOMItemThumbnail
                   item={item}
+                  size="sm"
                   onClick={() => onViewItem?.(item, item.file3dPath ? '3d' : '2d')}
                 />
+              ) : (
+                <span className="flex h-12 w-16 shrink-0 items-center justify-center" aria-hidden="true">
+                  <style.Icon className={`h-5 w-5 ${style.icon}`} />
+                </span>
               )}
-
-              {/* Left: metadata */}
-              <div className="flex-1 min-w-0 w-full">
-                {/* Header row */}
-                <div className="flex flex-wrap items-center gap-2 mb-2">
-                  <div className="flex items-center gap-1">
-                    <GripVertical className={`h-4 w-4 transition-colors cursor-grab active:cursor-grabbing ${
-                      isBeingDragged ? 'text-blue-500' : isDraggedOver ? 'text-green-500' : 'text-muted-foreground hover:text-foreground'
-                    }`} />
-                    {hasChildren && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 p-0 rounded-full border"
-                        onClick={() => toggleExpand(item.id)}
-                      >
-                        {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                      </Button>
-                    )}
-                  </div>
-
-                  <h3 className="text-base font-semibold text-foreground truncate max-w-[200px] md:max-w-none">
-                    {item.name}
-                  </h3>
-
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-[13px] font-medium leading-5 text-foreground" title={item.name}>{marked(item.name)}</span>
                   {getItemTypeBadge(item.itemType)}
-
-                  {isDragging && !isBeingDragged && draggedItem && (
-                    <Badge variant="outline" className="text-xs bg-brand-50 dark:bg-brand-950/20 border-brand-300">
-                      Drop to Swap Positions ↔
-                    </Badge>
+                  {hasChildren && (
+                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                      {item.children.length} {item.children.length === 1 ? 'item' : 'items'}
+                    </span>
                   )}
-
-                  {/* Circular reference warning */}
+                  {overIntent && overIntent.kind !== 'none' && (
+                    <span
+                      role="status"
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium leading-none shadow-sm ${
+                        overIntent.kind === 'invalid' ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground'
+                      }`}
+                    >
+                      {overIntent.label}
+                    </span>
+                  )}
                   {item.parentItemId && items.some(o => o.id === item.parentItemId && o.parentItemId === item.id) && (
-                    <Badge variant="destructive" className="text-xs">Circular Ref</Badge>
+                    <Badge variant="destructive" className="h-4 shrink-0 px-1.5 text-[10px]">Circular Ref</Badge>
                   )}
                 </div>
-
-                {/* Detail grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-2 gap-y-1 text-xs">
-                  <div><span className="text-muted-foreground">Part No: </span><span className="font-medium">{item.partNumber || '—'}</span></div>
-                  <div><span className="text-muted-foreground">Qty: </span><span className="font-medium">{item.quantity}</span></div>
-                  <div><span className="text-muted-foreground">UOM: </span><span className="font-medium">{item.unit}</span></div>
-                  <div>
-                    <span className="text-muted-foreground">Level: </span>
-                    <Badge variant="outline" className="h-4 text-[10px] font-medium px-1">
-                      {item.bomLevel || getDefaultBomLevel(item.itemType)}
-                    </Badge>
-                  </div>
-                  <div><span className="text-muted-foreground">Volume: </span><span className="font-medium">{item.annualVolume?.toLocaleString() ?? '—'}</span></div>
-                  <div><span className="text-muted-foreground">Type: </span><span className="font-medium">{item.makeBuy === 'buy' ? 'Buy' : 'Make'}</span></div>
-
-                  <div className="col-span-2 sm:col-span-3 lg:col-span-2">
-                    <span className="text-muted-foreground">Description: </span>
-                    <span className="font-medium" title={item.description || ''}>{item.description || '—'}</span>
-                  </div>
-                  <div><span className="text-muted-foreground">Material: </span><span className="font-medium">{item.materialGrade || '—'}</span></div>
-                  <div>
-                    <span className="text-muted-foreground">Weight: </span>
-                    <span className="font-medium">{item.weight && item.weight > 0 ? `${item.weight.toFixed(3)} kg` : '—'}</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Dimensions: </span>
-                    <span className="font-medium">
-                      {(item.maxLength ?? 0) > 0 || (item.maxWidth ?? 0) > 0 || (item.maxHeight ?? 0) > 0
-                        ? `${item.maxLength || 0}×${item.maxWidth || 0}×${item.maxHeight || 0} mm`
-                        : '—'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Surface: </span>
-                    <span className="font-medium">
-                      {item.surfaceArea && item.surfaceArea > 0 ? `${(item.surfaceArea / 1000).toFixed(1)}k mm²` : '—'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right: action buttons */}
-              <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto justify-end mt-4 md:mt-0">
-                {item.file2dPath && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => onViewItem?.(item, '2d')}
-                    title="View 2D Drawing"
-                  >
-                    <FileText className="h-4 w-4" />
-                  </Button>
-                )}
-
-                {item.file3dPath && (
-                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => onViewItem?.(item, '3d')} title="View 3D Model">
-                    <Box className="h-4 w-4" />
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={(e) => { e.stopPropagation(); onViewItem?.(item, 'intelligence'); }}
-                  title="Manufacturing Intelligence"
-                >
-                  <Cpu className="h-4 w-4 text-brand-500" />
-                </Button>
-                {childType && (
-                  <Button variant="default" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleAddChild(item)} title="Add Component">
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                )}
-                <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => onEditItem(item)} title="Edit">
-                  <Edit2 className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  onClick={() => handleDeleteClick(item)}
-                  title="Delete"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
               </div>
             </div>
           </div>
-
-          {/* Nested children */}
-          {isExpanded && hasChildren && (
-            <div className="mt-2 space-y-1">
-              {item.children.map(child => renderItem(child, depth + 1))}
-            </div>
-          )}
-        </div>
-      </div>
+        </td>
+        {/* Gmail's subject and snippet: the part number, then the row's details in one line, cut short at the edge (all of it on hover). */}
+        <td className="max-w-0 px-2 py-0">
+          <div className="truncate text-[13px] leading-5" title={[item.partNumber, ...facts].filter(Boolean).join(' · ')}>
+            {item.partNumber && <span className="text-foreground">{marked(item.partNumber)}</span>}
+            {item.partNumber && facts.length > 0 && <span className="text-muted-foreground"> — </span>}
+            <span className="text-muted-foreground">{facts.join(' · ')}</span>
+          </div>
+        </td>
+        {/* Gmail's date: the unit cost, which the row's actions replace on hover. */}
+        <td className="relative whitespace-nowrap py-0 pl-2 pr-4 text-right">
+          <span className={`text-[13px] font-medium tabular-nums ${costHidden}`} title="Unit cost">{formatCost(item.unitCost)}</span>
+          <div className={`pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-accent pl-2 pr-2 opacity-0 transition-opacity pointer-coarse:bg-card ${actionsShown}`}>
+            {item.file2dPath && (
+              <Button variant="ghost" size="icon" className={actionButton} onClick={() => onViewItem?.(item, '2d')} title="View 2D Drawing" aria-label="View 2D Drawing">
+                <FileText className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            {item.file3dPath && (
+              <Button variant="ghost" size="icon" className={actionButton} onClick={() => onViewItem?.(item, '3d')} title="View 3D Model" aria-label="View 3D Model">
+                <Box className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button variant="ghost" size="icon" className={actionButton} onClick={() => { setDetailItem(item); }} title="Part details" aria-label="Part details">
+              <Info className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-full hover:bg-foreground/10"
+              onClick={(e) => { e.stopPropagation(); onViewItem?.(item, 'intelligence'); }}
+              title="Manufacturing Intelligence"
+              aria-label="Manufacturing Intelligence"
+            >
+              <Cpu className="h-3.5 w-3.5 text-primary" />
+            </Button>
+            {childType && (
+              <Button variant="ghost" size="icon" className={actionButton} onClick={() => { handleAddChild(item); }} title="Add Component" aria-label="Add Component">
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button variant="ghost" size="icon" className={actionButton} onClick={() => { onEditItem(item); }} title="Edit" aria-label="Edit">
+              <Edit2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => handleDeleteClick(item)}
+              title="Delete"
+              aria-label="Delete"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </td>
+      </tr>
     );
   };
+
+  // The rows currently visible, with the tree each draws (lib/bom/tree-rows.ts).
+  const visibleRows = (nodes: TreeNode[], expanded: ReadonlySet<string>): React.ReactElement[] =>
+    visibleTreeRows(nodes, expanded).map((r) => renderRow(r.node, r.depth, r.guides, r.isLast, r.path));
+  const rowsTree     = filtered ? filtered.nodes : treeData;
+  const rowsExpanded = filtered ? new Set([...expandedItems, ...filtered.expand]) : expandedItems;
 
   // -------------------------------------------------------------------------
   // Loading / empty states
   // -------------------------------------------------------------------------
 
+  // Gmail's toolbar: one flat row on top of the list (no box of its own: it is part of the page), the page's add buttons and the list's own
+  // tools at the left, the count and the total cost at the right, in line with the costs below (the same right padding, pr-4).
+  const toolbarClass = 'mb-3 flex flex-wrap items-center gap-1 border-b pb-2.5 pt-1.5 pr-4';
+  const actionsOnly  = toolbarActions
+    ? <div className={toolbarClass}><div className="flex flex-wrap items-center gap-1">{toolbarActions}</div></div>
+    : null;
+  const totalLabel   = formatCost(totalCost);
+
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-center border-2 border-dashed rounded-lg">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mb-4" />
-        <p className="text-muted-foreground">Loading BOM items...</p>
-      </div>
+      <>
+        {actionsOnly}
+        <div className="p-3">
+          <TableSkeleton rows={6} columns={5} label="Loading BOM items..." />
+        </div>
+      </>
     );
   }
 
   if (items.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-center border-2 border-dashed rounded-lg">
-        <h3 className="text-lg font-semibold mb-2">No items yet</h3>
-        <p className="text-muted-foreground max-w-md mb-4">
-          Start adding items to your BOM by clicking the "Add BOM" button above.
-        </p>
-      </div>
+      <>
+        {actionsOnly}
+        <div className="p-4">
+          <EmptyState
+            title="No items yet"
+            description={'Start adding items to your BOM by clicking the "Add BOM" button above.'}
+            className="rounded-lg border border-dashed"
+          />
+        </div>
+      </>
     );
   }
 
@@ -668,20 +706,163 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
 
   return (
     <>
-      <div className="space-y-2">
-        {treeData.map(item => renderItem(item, 0))}
-
-        {orphanedItems.length > 0 && (
-          <div className="mt-4 p-4 border border-orange-300 rounded-lg bg-orange-50 dark:bg-orange-950/20">
-            <h4 className="text-sm font-medium text-orange-800 dark:text-orange-200 mb-2">
-              Orphaned Items (Missing Parent Reference)
-            </h4>
-            <div className="space-y-2">
-              {orphanedItems.map(item => renderItem({ ...item, children: [], depth: 0 }, 0))}
-            </div>
-          </div>
+      {/*
+        One toolbar row: Gmail's search box (a soft pill, white with a shadow while typing; "/" puts the cursor in it), then the page's add
+        buttons, the whole tree opened or closed at once, and the count and total cost at the right (Gmail's "1–50 of 283").
+      */}
+      <div className={toolbarClass}>
+        <div className="relative w-full sm:w-auto sm:min-w-[14rem] sm:max-w-sm sm:flex-1">
+          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input
+            ref={searchRef}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); } }}
+            placeholder="Search part"
+            aria-label="Search the BOM by name or part number"
+            className="h-9 rounded-full border-transparent bg-muted pl-11 pr-14 text-sm shadow-none transition-shadow focus-visible:border-transparent focus-visible:bg-card focus-visible:shadow-md focus-visible:ring-0"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => { setQuery(''); searchRef.current?.focus(); }}
+              className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : (
+            <kbd className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 rounded border bg-card px-1.5 font-mono text-[10px] text-muted-foreground">/</kbd>
+          )}
+        </div>
+        {filtered && (
+          <span className="px-1 text-xs tabular-nums text-muted-foreground" aria-live="polite">
+            {filtered.matches.size} of {items.length} {items.length === 1 ? 'item' : 'items'}
+          </span>
         )}
+        <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
+        {toolbarActions && <div className="flex flex-wrap items-center gap-1">{toolbarActions}</div>}
+        {toolbarActions && <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />}
+        <Button variant="ghost" size="sm" className="h-9 gap-1 rounded-full px-3 text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={toggleExpandAll}>
+          {allExpanded
+            ? <><ChevronRight className="h-3.5 w-3.5" /> Collapse all</>
+            : <><ChevronDown className="h-3.5 w-3.5" /> Expand all</>}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={starredOnly}
+          className={`h-9 gap-1 rounded-full px-3 text-xs ${
+            starredOnly ? 'bg-yellow-400/15 text-yellow-800 hover:bg-yellow-400/25 dark:text-yellow-300' : 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground'
+          }`}
+          onClick={() => { setStarredOnly((on) => !on); }}
+        >
+          <StarGlyph className={`h-3.5 w-3.5 ${starredOnly ? 'fill-yellow-400 text-yellow-500' : ''}`} aria-hidden="true" /> Starred
+          <span className="tabular-nums opacity-70">{starred.size}</span>
+        </Button>
+        <span className="ml-auto whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+          {items.length} {items.length === 1 ? 'item' : 'items'} · Total cost <span className="font-semibold text-foreground">{totalLabel}</span>
+        </span>
       </div>
+      {/*
+        The drag image: a card of the item being dragged, drawn off screen for the browser to take under the cursor (handleDragStart). Only
+        while dragging, so no empty box is ever left on the page.
+      */}
+      {draggedItem && (() => {
+        const s = typeStyleOf(draggedItem.itemType);
+        return (
+          <div
+            ref={dragCardRef}
+            aria-hidden="true"
+            className={`pointer-events-none fixed left-0 top-[-1000px] flex w-72 items-center gap-2.5 rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-lg ${s.accent}`}
+          >
+            <s.Icon className={`h-4 w-4 shrink-0 ${s.icon}`} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{draggedItem.name}</span>
+              <span className="block truncate font-mono text-[11px] text-muted-foreground">{(draggedItem.partNumber ?? '') === '' ? s.label : draggedItem.partNumber}</span>
+            </span>
+            {getItemTypeBadge(draggedItem.itemType)}
+          </div>
+        );
+      })()}
+      {/*
+        No height or box of its own: the list is part of the page (one scroll, the page's). Three columns of fixed share, as Gmail's sender,
+        subject and date, so the list always fits the page's width (no sideways scroll); only a phone-narrow screen scrolls it sideways.
+      */}
+      <div
+        className="overflow-x-auto"
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOverItem(null); }}
+      >
+        <table role="treegrid" aria-label="BOM items" className="w-full min-w-[720px] table-fixed border-collapse text-sm">
+          <colgroup>
+            {/* The item (tree, thumbnail, name, type): wide enough for a long part name two levels down, so the details start close to it. */}
+            <col className="w-[42%]" />
+            <col />
+            <col className="w-32" />
+          </colgroup>
+          <thead className="sr-only">
+            <tr>
+              <th scope="col">Item</th>
+              <th scope="col">Part number and details</th>
+              <th scope="col">Unit cost and actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows(rowsTree, rowsExpanded)}
+            {filtered?.matches.size === 0 && (
+              <tr>
+                <td colSpan={3} className="px-3 py-6 text-center text-xs text-muted-foreground">
+                  {search ? (
+                    <>
+                      No {starredOnly ? 'starred ' : ''}item matches &ldquo;{search}&rdquo; by name or part number.{' '}
+                      <button type="button" className="font-medium text-primary hover:underline" onClick={() => { setQuery(''); }}>Clear search</button>
+                    </>
+                  ) : (
+                    <>
+                      No starred items yet: click the star on a row to star it.{' '}
+                      <button type="button" className="font-medium text-primary hover:underline" onClick={() => { setStarredOnly(false); }}>Show all items</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            )}
+            {orphanedItems.length > 0 && (
+              <>
+                <tr>
+                  <td colSpan={3} className="bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+                    Orphaned Items (Missing Parent Reference)
+                  </td>
+                </tr>
+                {orphanedItems.map(item => renderRow({ ...item, children: [], depth: 0 }, 0))}
+              </>
+            )}
+          </tbody>
+          {/* The total under the costs; the item types, as the rows colour them, with how many of each. */}
+          <tfoot>
+            <tr>
+              <td colSpan={2} className="border-t py-2.5 pl-3 pr-3 text-xs">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span className="font-medium">
+                    Total cost <span className="font-normal text-muted-foreground">· {items.length} {items.length === 1 ? 'item' : 'items'}</span>
+                  </span>
+                  {LEGEND_TYPES.map((t) => (
+                    <span key={t} className="inline-flex items-center gap-1.5 text-muted-foreground">
+                      <span className={`h-2 w-2 rounded-full ${typeStyleOf(t).dot}`} aria-hidden="true" />
+                      {typeStyleOf(t).label}
+                      <span className="tabular-nums text-muted-foreground/70">{items.filter((i) => i.itemType === t).length}</span>
+                    </span>
+                  ))}
+                </div>
+              </td>
+              <td className="whitespace-nowrap border-t py-2.5 pl-2 pr-4 text-right text-xs font-semibold tabular-nums">
+                {totalLabel}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <PartDetailSheet item={detailItem} onClose={() => { setDetailItem(null); }} />
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
@@ -703,5 +884,66 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem }: 
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+// ---------------------------------------------------------------------------
+// Part detail sheet: read-only view of fields already on the BOM item
+// ---------------------------------------------------------------------------
+
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-b py-2 text-sm last:border-0">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="text-right font-medium tabular-nums">{value || '—'}</dd>
+    </div>
+  );
+}
+
+function PartDetailSheet({ item, onClose }: { item: BOMItem | null; onClose: () => void }) {
+  const dims =
+    (item?.maxLength ?? 0) > 0 || (item?.maxWidth ?? 0) > 0 || (item?.maxHeight ?? 0) > 0
+      ? `${item?.maxLength || 0}×${item?.maxWidth || 0}×${item?.maxHeight || 0} mm`
+      : '';
+  return (
+    <Sheet open={item !== null} onOpenChange={open => { if (!open) onClose(); }}>
+      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+        {item && (
+          <>
+            <SheetHeader>
+              <SheetTitle>{item.name}</SheetTitle>
+              <SheetDescription>{item.partNumber || 'No part number'}</SheetDescription>
+            </SheetHeader>
+            <dl className="px-4 pb-4">
+              <DetailRow label="Type" value={getItemTypeBadge(item.itemType)} />
+              <DetailRow label="BOM level" value={(item.bomLevel ?? '') === '' ? getDefaultBomLevel(item.itemType) : item.bomLevel} />
+              <DetailRow label="Make / Buy" value={item.makeBuy === 'buy' ? 'Buy' : 'Make'} />
+              <DetailRow label="Description" value={item.description} />
+              <DetailRow label="Material" value={item.material} />
+              <DetailRow label="Material grade" value={item.materialGrade} />
+              <DetailRow label="Quantity" value={`${item.quantity}${item.unit ? ` ${item.unit}` : ''}`} />
+              <DetailRow label="Annual volume" value={item.annualVolume?.toLocaleString()} />
+              <DetailRow
+                label="Unit cost"
+                value={
+                  typeof item.unitCost === 'number'
+                    ? item.unitCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : ''
+                }
+              />
+              <DetailRow label="Weight" value={item.weight && item.weight > 0 ? `${item.weight.toFixed(3)} kg` : ''} />
+              <DetailRow label="Dimensions" value={dims} />
+              <DetailRow
+                label="Surface area"
+                value={item.surfaceArea && item.surfaceArea > 0 ? `${(item.surfaceArea / 1000).toFixed(1)}k mm²` : ''}
+              />
+              <DetailRow label="Revision" value={item.revision} />
+              <DetailRow label="Lead time" value={item.leadTime} />
+              <DetailRow label="Surface finish" value={item.surfaceFinish} />
+              <DetailRow label="Tolerance grade" value={item.toleranceGrade} />
+            </dl>
+          </>
+        )}
+      </SheetContent>
+    </Sheet>
   );
 }

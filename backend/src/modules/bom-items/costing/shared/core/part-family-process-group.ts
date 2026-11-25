@@ -1,3 +1,5 @@
+import { MACHINING_FAMILIES, isMachiningFamily } from '../../../../../domain/part-family';
+
 // A CAD-detected family (detect_part_family()'s literal output) is not a
 // process/route id anywhere else in this platform — it maps to the real
 // process_taxonomy.process_group it belongs to. One map for every consumer:
@@ -17,7 +19,148 @@ export const CAD_FAMILY_TO_PROCESS_GROUP: Readonly<Record<string, string>> = {
   // (cad-engine shared/part_family.py CASTING_FAMILY_DOMAIN).
   sand_cast: 'Sand Casting',
   investment_cast: 'Casting Investment',
+  // Closed-die forging: the cad-engine measures the part along its die direction (forging/feature_extractor.py).
+  forged: 'Forging',
+  // Press and sinter: measured along its press direction by the same die-direction measurements as a forging.
+  powder_metal: 'Powder Metal',
+  // A laid-up composite: the cad-engine measures it as a laminate on its tool (composites/feature_extractor.py).
+  composite: 'Composites',
+  // A finished part machined from a cast blank derived from its own model (memory/"2 Mold Molding"): analysed as a machined part
+  // (cad-engine family_hint two_model).
+  two_model: '2-Model Machining',
+  // Built layer by layer (DMLS, SLS, material jetting, SLA): measured for its build (cad-engine additive/feature_extractor.py).
+  additive: 'Additive Manufacturing',
+  // A length of bar, tube or profile, cut, punched, formed and bent (cad-engine bar_tube/feature_extractor.py: section, centreline, ends).
+  bar_tube: 'Bar and Tube Fabrication',
+  // A blow molded or rotomolded hollow shell (cad-engine roto_blow/feature_extractor.py: wall, inside, spout, parting line, envelope).
+  roto_blow: 'Roto & Blow Molding',
+  // An assembly's own work: its BOM children loaded and joined (costing/assembly). An assembly has no model of its own to analyse.
+  assembly: 'Assembly',
+  // A weldment's welding (memory/Part Assembly): its BOM children (or the part itself) loaded and welded by the Cost Guide's weld table
+  // (costing/part-assembly). Nothing of it is read from a model: no extractor analyses a part as one.
+  part_assembly: 'Part Assembly',
+  // A printed circuit board (memory/PCBA): measured from its board files by the CAD engine's board routes (feature_graph.summary.pcbGeometry)
+  // and completed by the Cost Guide; priced by costing/pcb. Its 3D model, if any, is not what it is costed from.
+  pcb: 'PCB',
 };
+
+/** An assembly's family: its own work (loading and joining its BOM children), costed by costing/assembly. */
+export const ASSEMBLY_FAMILY = 'assembly';
+
+/** A weldment's family: its welding (memory/Part Assembly), costed by costing/part-assembly. */
+export const PART_ASSEMBLY_FAMILY = 'part_assembly';
+
+/** A printed circuit board's family: its fabrication from its board files (costing/pcb). */
+export const PCB_FAMILY = 'pcb';
+
+/**
+ * The families costed without a 3D analysis of their own: an assembly and a weldment, from the BOM and the Cost Guide. No analysis is run as
+ * one. A printed circuit board has one: its board files are measured by the CAD engine's board routes and, when it has none, its 3D model by the
+ * pcb extractor (cad-engine pcb/feature_extractor.py).
+ */
+export const NO_CAD_EXTRACTOR_FAMILIES: ReadonlySet<string> = new Set([ASSEMBLY_FAMILY, PART_ASSEMBLY_FAMILY]);
+
+/** Insert molding (memory/Assembly molding): costed as a plastic molded part on the insert presses. */
+export const INSERT_MOLDING_PROCESS_GROUP = 'Assembly Molding';
+
+/** Multi-shot molding (memory/Assembly plastic molding): costed as a plastic molded part, each shot on a 2K/3K multi-shot press. */
+export const MULTI_SHOT_PROCESS_GROUP = 'Assembly Plastic Molding';
+
+/** Multi-spindle machining (memory/Multi-Spindle Maching, memory/Machining Simultaneous Turning): a turned part, made from bar on a CNC multi-spindle or twin-spindle turning center. */
+export const MULTI_SPINDLE_PROCESS_GROUP = 'Multi-Spindle Machining';
+
+/** Rapid prototyping (memory/Rapid prototyping): a part built layer by layer (laser sintering, 3D printing, stereolithography), priced by the additive engine in its own domain. */
+export const RAPID_PROTOTYPING_PROCESS_GROUP = 'Rapid Prototyping';
+
+/**
+ * Stock machining (memory/Stock Maching): a part machined from bar or plate, priced as its stock (Material Stock), the band saw that cuts it to
+ * pieces and the Machining route that cuts the part (costing/stock-machining).
+ */
+export const STOCK_MACHINING_PROCESS_GROUP = 'Stock Machining';
+
+/**
+ * The cad-engine family_hint for a machining process that is not one family (cad-engine shared/part_family.py MACHINED_HINT): the part is
+ * analysed as a machined part and the geometry picks milled, turned or mill-turn. Not a family: no analysis is stored as it.
+ */
+export const MACHINED_FAMILY_HINT = 'machined';
+
+/**
+ * The families a CAD analysis run with a family hint may store. A hint names an extractor, and the analysis stores that family, except the
+ * two hints that say only "machined": a 2-Model Machining part (two_model) and a part whose Process is a machining process of several
+ * families (machined). The cad-engine analyses either as the machined part it is (milled, turned or mill-turn; memory_optimizer.py), so
+ * its features are machining features under a machining family.
+ */
+export function familiesAnalysedForHint(hint: string): readonly string[] {
+  return hint === 'two_model' || hint === MACHINED_FAMILY_HINT ? MACHINING_FAMILIES : [hint];
+}
+
+/** The generic casting process: the part is analysed as a casting and priced by every casting process, the cheapest feasible one quoted. */
+export const CASTING_PROCESS_GROUP = 'Casting';
+/** A hydroformed part: a sheet-metal part (its CAD analysis is sheet metal's), priced by costing/hydroforming. */
+export const HYDROFORMING_PROCESS_GROUP = 'Sheet Metal - Hydroforming';
+/** A roll formed profile: a sheet-metal part (its CAD analysis is sheet metal's, which measures it as a profile), priced by costing/roll-forming. */
+export const ROLL_FORMING_PROCESS_GROUP = 'Sheet Metal Roll Forming';
+
+/**
+ * Process groups with no CAD family of their own, and the families they are costed as. A hydroformed part is a sheet-metal part. A Casting part
+ * is priced as each casting family (casting-process-choice.ts); the first is the one its CAD analysis runs as, die casting, whose feature
+ * catalog holds every feature type the sand catalog has, and slides.
+ */
+const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
+  [HYDROFORMING_PROCESS_GROUP]: ['sheet_metal'],
+  // Roll forming: a sheet-metal part measured as a profile (its strip, bends and punched features), priced on a coil line (roll-forming/).
+  [ROLL_FORMING_PROCESS_GROUP]: ['sheet_metal'],
+  [CASTING_PROCESS_GROUP]: ['die_cast', 'sand_cast', 'investment_cast'],
+  // Insert molding: a molded plastic part, analysed and priced as one, on the insert presses with its inserts loaded (plastic-molding/insert).
+  [INSERT_MOLDING_PROCESS_GROUP]: ['plastic_molded'],
+  // Multi-shot molding: a molded plastic part, each shot priced on a multi-shot press (plastic-molding/multi-shot).
+  [MULTI_SHOT_PROCESS_GROUP]: ['plastic_molded'],
+  // Multi-spindle machining: a turned part, its operations laid out over a multi-spindle's stations (multi-spindle/).
+  [MULTI_SPINDLE_PROCESS_GROUP]: ['turned'],
+  // Rapid prototyping: a part built layer by layer, analysed for its build as an additive part and priced in the Rapid Prototyping domain
+  // (additive/additive-domain.ts: its own machines, materials, reference data and per-feature cleaning).
+  [RAPID_PROTOTYPING_PROCESS_GROUP]: ['additive'],
+  // Stock machining: a machined part, analysed and cut as one; the geometry picks among the machining families, the general one (milled) first.
+  [STOCK_MACHINING_PROCESS_GROUP]: ['milled', 'turned', 'mill_turn'],
+};
+
+/**
+ * The CAD families a process group is costed as, the general one first (Machining: milled); empty when the group has no cost model (Forging,
+ * Powder Metal, ...): a part whose Process is one of those is not costed, never priced as another process.
+ */
+export function familiesOfProcessGroup(processGroup: string): string[] {
+  const own = Object.keys(CAD_FAMILY_TO_PROCESS_GROUP).filter((family) => CAD_FAMILY_TO_PROCESS_GROUP[family] === processGroup);
+  return own.length > 0 ? own : [...(COSTED_AS_FAMILIES[processGroup] ?? [])];
+}
+
+/**
+ * The cad-engine family_hint a chosen process group is analysed with, so the analysis and the costing can never disagree; undefined when
+ * the group has no cost model, or none of its families has a CAD extractor (Assembly, Part Assembly): the real classifier chain runs.
+ *   - a group costed as one family names it (Multi-Spindle Machining: turned; Sand Casting: sand_cast): that family's extractor is forced;
+ *   - a group costed as several families, all of them machining families (Machining), is "machined": the geometry picks the family, as the
+ *     costing does (material-resolution resolveEffectiveFamily). Naming the first one forced every such part, a shaft too, to milled;
+ *   - any other group costed as several families names the first, the one its CAD analysis runs as (Casting: die_cast).
+ */
+export function familyHintOfProcessGroup(processGroup: string | null | undefined): string | undefined {
+  if (!processGroup) return undefined;
+  const families = familiesOfProcessGroup(processGroup).filter((family) => !NO_CAD_EXTRACTOR_FAMILIES.has(family));
+  if (families.length > 1 && families.every((family) => isMachiningFamily(family))) return MACHINED_FAMILY_HINT;
+  return families[0];
+}
+
+/**
+ * The casting family a Casting part was applied as: the family of the process group its saved operations are in (Sand Casting, Die Casting,
+ * Casting Investment); null when none is. A Casting part is analysed as a die casting and quoted on the cheapest casting process, so what the
+ * part is made by is known only from what was applied.
+ */
+export function appliedCastingFamily(appliedGroups: readonly string[]): string | null {
+  return (COSTED_AS_FAMILIES[CASTING_PROCESS_GROUP] ?? []).find((family) => appliedGroups.includes(CAD_FAMILY_TO_PROCESS_GROUP[family]!)) ?? null;
+}
+
+/** The process groups that have a cost model, as the Process field names them. */
+export function costedProcessGroups(): string[] {
+  return [...new Set([...Object.values(CAD_FAMILY_TO_PROCESS_GROUP), ...Object.keys(COSTED_AS_FAMILIES)])].sort();
+}
 
 /**
  * When the process the user chose and the part's geometry disagree (cad-engine reports both: the family it analysed the

@@ -1,0 +1,225 @@
+// The holes and threads of a machined part as the CAD engine's machining recognizer reports them (cad-engine
+// machining/machining_feature_recognizer.py). Pure: the caller passes the features, and how a feature's faces map to the feature_graph_v2
+// occurrences its calculator inputs light.
+//
+// A bolt circle is one feature for all its holes: the recognizer absorbs the member holes into a SimpleHole of variant pcd_pattern whose
+// params give their diameter (hole_diameter_mm), number (hole_count) and depth (depth_mm) and, when every member is tapped, their thread
+// (tap_spec, hole_type "tapped"). Read like a single hole (diameter_mm, spec), such a pattern was neither drilled nor tapped.
+import { OFF_AXIS_MM } from './capability/live-tooling';
+
+import type { FeatureOccurrenceRef } from './feature-occurrences';
+
+/** A feature of machining_features.features. */
+export interface MachiningFeatureLike {
+  type?: unknown;
+  variant?: unknown;
+  params?: Record<string, unknown> | null;
+  face_ids?: unknown;
+}
+
+/** The faces of a feature as the occurrences they belong to (feature-occurrences.ts occurrencesOfFaces over the part's graph). */
+export type OccurrencesOf = (faceIds: readonly unknown[] | null | undefined) => FeatureOccurrenceRef[];
+
+export interface HoleGroup {
+  diameter_mm: number;
+  count: number;
+  depth_mm?: number;
+  occurrences?: FeatureOccurrenceRef[];
+}
+
+export interface ThreadEntry {
+  size: string;
+  count: number;
+  pitchMm?: number;
+  depthMm?: number;
+  isThrough?: boolean;
+  occurrences?: FeatureOccurrenceRef[];
+  /** Of `count`, the threads off the turning centreline: on a lathe they are tapped with a live (driven) tool. */
+  liveCount?: number;
+}
+
+/** A thread as the drawing or the CAD gives it: a drawing's may name its size `spec`, and its count may arrive as text. */
+export interface ThreadInput {
+  size?: string;
+  spec?: string;
+  count: number | string;
+  pitchMm?: number;
+  depthMm?: number;
+  isThrough?: boolean;
+  occurrences?: FeatureOccurrenceRef[];
+  liveCount?: number;
+}
+
+/**
+ * A thread callout as the drawing states it (cad-engine drawing_analyzer._extract_threads, stored in bom_items.drawing_intelligence.threads):
+ * its size and count, its pitch when written, and what it states of the thread: external or internal (threadKind, from its tolerance
+ * class or its words), the class itself, and its length. Absent where the callout (or a drawing analysed before these were read) has none.
+ */
+export interface DrawnThread {
+  size: string;
+  count: number;
+  pitchMm?: number;
+  /** False when the pitch above is the analyser's coarse-series default, not the drawing's ("M12" with no pitch written). */
+  pitchStated?: boolean;
+  threadKind?: 'internal' | 'external';
+  toleranceClass?: string;
+  lengthMm?: number;
+}
+
+/**
+ * The drawing's thread callouts (drawing_intelligence.threads), each as { size, count, pitchMm } with what it states of the thread. A
+ * callout may name its size `spec`, and its count may arrive as text; a count it does not give is 1.
+ */
+export function drawingThreadsOf(drawingIntelligence: unknown): DrawnThread[] {
+  const threads = (drawingIntelligence as { threads?: unknown } | null | undefined)?.threads;
+  return (Array.isArray(threads) ? threads : []).map((t: Record<string, unknown>) => {
+    const kind = t?.threadKind;
+    const cls = typeof t?.toleranceClass === 'string' ? t.toleranceClass.trim() : '';
+    return {
+      size: String(t?.size ?? t?.spec ?? '').trim(),
+      count: Number(t?.count) || 1,
+      ...(Number(t?.pitch) > 0 ? { pitchMm: Number(t.pitch) } : {}),
+      ...(typeof t?.pitchStated === 'boolean' ? { pitchStated: t.pitchStated } : {}),
+      ...(kind === 'internal' || kind === 'external' ? { threadKind: kind } : {}),
+      ...(cls ? { toleranceClass: cls } : {}),
+      ...(Number(t?.lengthMm) > 0 ? { lengthMm: Number(t.lengthMm) } : {}),
+    };
+  });
+}
+
+/** Hole variants drilled at their own diameter (a threaded hole at its tap drill, then tapped). */
+const DRILLED: ReadonlySet<string> = new Set(['through', 'blind', 'threaded', 'cross', 'pcd_pattern']);
+
+const isPattern = (f: MachiningFeatureLike) => f.variant === 'pcd_pattern';
+const holesOf = (f: MachiningFeatureLike) => (isPattern(f) ? Math.max(1, Number(f.params?.hole_count) || 1) : 1);
+const faceIdsOf = (f: MachiningFeatureLike): readonly unknown[] | undefined => (Array.isArray(f.face_ids) ? f.face_ids : undefined);
+const text = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+/** The drilled holes by diameter (to 0.1 mm): how many, the deepest, and the occurrences they light. */
+export function holeGroupsOfFeatures(features: readonly MachiningFeatureLike[], occurrencesOf: OccurrencesOf): HoleGroup[] {
+  const groups = new Map<number, HoleGroup>();
+  for (const f of features) {
+    if (f.type !== 'SimpleHole' || !DRILLED.has(String(f.variant))) continue;
+    const diameter = Number(isPattern(f) ? f.params?.hole_diameter_mm : f.params?.diameter_mm);
+    if (!(diameter > 0)) continue;
+    const key = Math.round(diameter * 10) / 10;
+    const depth = Number(f.params?.depth_mm);
+    const g = groups.get(key) ?? { diameter_mm: key, count: 0 };
+    g.count += holesOf(f);
+    if (depth > 0) g.depth_mm = Math.max(g.depth_mm ?? 0, depth);
+    const occ = occurrencesOf(faceIdsOf(f));
+    if (occ.length > 0) g.occurrences = [...(g.occurrences ?? []), ...occ];
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+/** A cross hole the recognizer found tapped: it stays variant cross (drilled radially) and carries its thread as params.spec. */
+const isTappedCross = (f: MachiningFeatureLike) => f.variant === 'cross' && text(f.params?.spec) !== '';
+
+/**
+ * The tapped holes, one entry per feature: a threaded hole, a tapped cross hole, or a tapped bolt circle. A bolt circle is always off the
+ * centreline and a cross hole is tapped radially, so on a lathe both take a live (driven) tool.
+ */
+export function tappedHolesOfFeatures(features: readonly MachiningFeatureLike[], occurrencesOf: OccurrencesOf): ThreadEntry[] {
+  return features
+    .filter((f) => f.type === 'SimpleHole' && (f.variant === 'threaded' || isTappedCross(f) || (isPattern(f) && f.params?.hole_type === 'tapped')))
+    .map((f) => {
+      const count = holesOf(f);
+      const depth = Number(f.params?.depth_mm) || 0;
+      const offAxis = isPattern(f) || isTappedCross(f) || (Number(f.params?.distance_from_axis_mm) || 0) > OFF_AXIS_MM;
+      return {
+        // No thread spec on the feature: the size is unknown, and tapping names it as a missing input rather than pricing an assumed one.
+        size: text(isPattern(f) ? f.params?.tap_spec : f.params?.spec),
+        count,
+        ...(depth > 0 ? { depthMm: depth } : {}),
+        isThrough: Boolean(f.params?.through),
+        occurrences: occurrencesOf(faceIdsOf(f)),
+        liveCount: offAxis ? count : 0,
+      };
+    });
+}
+
+/**
+ * The tapped holes of a part's own analysis (feature_graph_v2), for a part with no machining features: a casting, a forging, a sheet-metal
+ * part... The CAD engine checks every family's plain holes against the tap-drill table (shared.machining_geometry.annotate_hole_threads)
+ * and marks an occurrence tapped with its spec. One entry per feature and thread size, its count the occurrences (a pattern's hole_count
+ * holes), its depth the deepest, through when the feature is a through hole, the occurrences to light, and no live-tool count (these parts
+ * are not tapped on a lathe).
+ */
+export function tappedHolesOfGraph(features: unknown): ThreadEntry[] {
+  if (!Array.isArray(features)) return [];
+  const out: ThreadEntry[] = [];
+  for (const f of features as Array<Record<string, any>>) {
+    if (f?.feature_type !== 'SimpleHole' || typeof f.id !== 'string') continue;
+    const bySize = new Map<string, ThreadEntry>();
+    (Array.isArray(f.occurrences) ? f.occurrences : []).forEach((o: Record<string, any>, occurrenceIndex: number) => {
+      const size = text(o?.spec);
+      if (o?.tapped !== true || size === '') return;
+      const entry = bySize.get(size) ?? { size, count: 0, isThrough: f.variant === 'through', occurrences: [], liveCount: 0 };
+      entry.count += Number(o?.hole_count) > 0 ? Number(o.hole_count) : 1;
+      const depth = Number(o?.depth_mm);
+      if (depth > 0) entry.depthMm = Math.max(entry.depthMm ?? 0, depth);
+      entry.occurrences = [...(entry.occurrences ?? []), { featureId: f.id, occurrenceIndex }];
+      bySize.set(size, entry);
+    });
+    out.push(...bySize.values());
+  }
+  return out;
+}
+
+/**
+ * Threads by size: "M4×0.7" / "M4x0.7 - 6H" -> "M4", so the tapping lookups hit the size key instead of silently falling back to a default.
+ * Merges duplicate sizes: the count and the live-tool count add up, the depth is averaged, and through only when every merged hole is.
+ */
+export function normalizeThreadSpecs(threads: readonly ThreadInput[]): ThreadEntry[] {
+  interface Group { count: number; liveCount: number; pitchMm?: number; depthSum: number; depthCount: number; throughCount: number; occurrences: FeatureOccurrenceRef[] }
+  const groups: Record<string, Group> = {};
+  for (const t of threads) {
+    const raw = (t.size ?? t.spec ?? '').trim().toUpperCase();
+    // "M2×0.4": the pitch the CAD engine or the drawing wrote into the size itself.
+    const metric = /^M\s*(\d+(?:\.\d+)?)(?:\s*[×X*]\s*(\d+(?:\.\d+)?))?/.exec(raw);
+    const key = metric ? `M${metric[1]}` : (raw || 'size not given');
+    const count = Number(t.count) || 0;
+    if (count <= 0) continue;
+    const pitchMm = t.pitchMm ?? (metric?.[2] ? Number(metric[2]) : undefined);
+    const g: Group = groups[key] ?? { count: 0, liveCount: 0, pitchMm, depthSum: 0, depthCount: 0, throughCount: 0, occurrences: [] };
+    g.occurrences.push(...(t.occurrences ?? []));
+    g.count += count;
+    g.liveCount += Math.min(count, Math.max(0, t.liveCount ?? 0));
+    if (g.pitchMm == null && pitchMm != null) g.pitchMm = pitchMm;
+    if (t.depthMm != null) { g.depthSum += t.depthMm * count; g.depthCount += count; }
+    if (t.isThrough) g.throughCount += count;
+    groups[key] = g;
+  }
+  return Object.entries(groups).map(([size, g]) => ({
+    size,
+    count: g.count,
+    ...(g.pitchMm != null ? { pitchMm: g.pitchMm } : {}),
+    ...(g.depthCount > 0 ? { depthMm: Math.round((g.depthSum / g.depthCount) * 100) / 100 } : {}),
+    ...(g.depthCount > 0 ? { isThrough: g.throughCount === g.depthCount } : {}),
+    ...(g.occurrences.length > 0 ? { occurrences: g.occurrences } : {}),
+    ...(g.liveCount > 0 ? { liveCount: g.liveCount } : {}),
+  }));
+}
+
+/**
+ * The part's threads from its drawing and its CAD together, size by size. The drawing states a thread's size and pitch; the CAD states each
+ * tapped hole's size, depth, through flag and place. Neither alone is the part: a drawing's callout may count one where the CAD finds ten
+ * holes, carries no depth, and lists only what its text says (a drawn "M3" beside two M4 holes the CAD found). So, by size:
+ *   a size the CAD tapped:      the CAD's holes (count, depth, through, the holes to light), with the drawing's pitch where the CAD has none;
+ *   a size only the drawing:    the drawing's thread (its depth then the tapping calculator's engagement rule, computeTapCycle);
+ *   a size only the CAD:        the CAD's holes.
+ */
+export function mergeThreads(drawing: readonly ThreadInput[], cad: readonly ThreadInput[]): ThreadEntry[] {
+  const drawn = normalizeThreadSpecs(drawing);
+  const found = normalizeThreadSpecs(cad);
+  const bySize = new Map(found.map((t) => [t.size, t]));
+  const merged = drawn.map((d) => {
+    const c = bySize.get(d.size);
+    if (!c) return d;
+    bySize.delete(d.size);
+    return { ...c, ...(c.pitchMm == null && d.pitchMm != null ? { pitchMm: d.pitchMm } : {}) };
+  });
+  return [...merged, ...bySize.values()];
+}

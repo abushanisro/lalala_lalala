@@ -43,8 +43,12 @@ export interface PlasticFeature {
     stroke_mm?: number;
     /** LifterBundle / SlideBundle: small, medium or large, by the bundle width thresholds of the staged variables. */
     size_class?: string;
+    /** SlideBundle / LifterBundle: the features (holes, voids) the bundle's side action forms. */
+    member_ids?: ReadonlyArray<string>;
     /** Rib: each rib the CAD engine measured along the pull (height, length = wall area / height, thickness), mm. */
     ribs?: ReadonlyArray<{ height_mm: number; length_mm: number; thickness_mm: number }>;
+    /** Rib: the height along the pull of every rib the engine found (0: it does not stand along the pull), including those with no footprint. */
+    heights_mm?: ReadonlyArray<number>;
     /** PartingLine: through holes (internal cutouts). */
     internal_cutouts?: number;
     /** PartingLine: the measured parting line length, mm. */
@@ -71,11 +75,23 @@ export function resolvePlasticCatalogOperations(input: {
   const rules = input.rules ?? { maxNoCoreInsertDiameterMm: null, slideEpsilonDeg: null, lifterEpsilonDeg: null, autoManualFlashTrimming: null };
 
   const byType = new Map<string, Set<string>>();
+  const add = (pair: { operation: string; featureType: string }) => (byType.get(pair.featureType) ?? byType.set(pair.featureType, new Set()).get(pair.featureType)!).add(pair.operation);
   for (const raw of catalogRaw) {
-    const [top] = catalogPairs(raw);
+    const [top, inner] = catalogPairs(raw);
     if (!top) continue;
-    (byType.get(top.featureType) ?? byType.set(top.featureType, new Set()).get(top.featureType)!).add(top.operation);
+    add(top);
+    // A mold stage ("Multi-Shot//Stage" of multi-shot molding) holds the features molded in it: the feature right under it is the process's operation.
+    if (top.featureType === 'Stage' && inner) add(inner);
   }
+  // The side action that forms each hole or void a recognised bundle holds (its member_ids), by the bundle's id and type.
+  const formedBy = new Map<string, { id: string; type: string }>();
+  for (const f of features) {
+    if ((f.feature_type === 'SlideBundle' || f.feature_type === 'LifterBundle') && byType.has(f.feature_type)) {
+      for (const m of f.attributes?.member_ids ?? []) formedBy.set(m, { id: f.id, type: f.feature_type });
+    }
+  }
+  // Whether the process forms side features only with its stage's lifters or slides (multi-shot molding: no per-feature core operation).
+  const sideActions = byType.has('LifterBundle') || byType.has('SlideBundle');
 
   const results: CatalogOperation[] = [];
   for (const f of features) {
@@ -84,7 +100,7 @@ export function resolvePlasticCatalogOperations(input: {
     const candidates = [...all].filter((op) => op !== NO_COST).sort();
     if (candidates.length === 0) continue;
 
-    const decided = HOLE_TYPES.has(f.feature_type) || VOID_TYPES.has(f.feature_type) ? decideHole(f, candidates, rules)
+    const decided = HOLE_TYPES.has(f.feature_type) || VOID_TYPES.has(f.feature_type) ? decideHole(f, candidates, rules, { formedBy: formedBy.get(f.id) ?? null, sideActions })
       : f.feature_type === 'SlideBundle' || f.feature_type === 'LifterBundle' ? decideBundle(f, candidates, byType)
       : f.feature_type === 'PartingLine' ? decideParting(f, candidates, rules)
       : decideMolded(candidates);
@@ -101,7 +117,28 @@ export function resolvePlasticCatalogOperations(input: {
       ...(decided.reason ? { reason: decided.reason } : {}),
     });
   }
-  return results.sort((a, b) => a.featureType.localeCompare(b.featureType) || (a.diameterMm ?? 0) - (b.diameterMm ?? 0));
+  return groupAlike(results).sort((a, b) => a.featureType.localeCompare(b.featureType) || (a.diameterMm ?? 0) - (b.diameterMm ?? 0));
+}
+
+/**
+ * Features decided alike are one row: the same type, variant and diameter (to 0.1 mm, as the tree shows it), the same operation, status and reason.
+ * Seven Ø2.5 through holes formed by the mold halves read "SimpleHole Ø2.5 ×7", not seven rows of one; their ids stay, so each can still be highlighted.
+ */
+function groupAlike(results: readonly CatalogOperation[]): CatalogOperation[] {
+  const groups = new Map<string, CatalogOperation>();
+  for (const r of results) {
+    const key = [r.featureType, r.variant, r.diameterMm == null ? '' : r.diameterMm.toFixed(1), r.status, r.operations.join('|'), r.reason ?? ''].join('//');
+    const g = groups.get(key);
+    if (g && g.children.length === 0 && r.children.length === 0) {
+      g.count += r.count;
+      g.featureIds = [...g.featureIds, ...r.featureIds];
+    } else if (!g) {
+      groups.set(key, { ...r, featureIds: [...r.featureIds] });
+    } else {
+      groups.set(`${key}//${groups.size}`, r);
+    }
+  }
+  return [...groups.values()];
 }
 
 type Decision = { operations: string[]; status: CatalogOperation['status']; reason?: string };
@@ -119,7 +156,10 @@ function decideMolded(candidates: readonly string[]): Decision {
  */
 export const ALONG_PULL_MAX_DEG = 5;
 
-function decideHole(f: PlasticFeature, candidates: readonly string[], rules: FeatureRules): Decision {
+function decideHole(
+  f: PlasticFeature, candidates: readonly string[], rules: FeatureRules,
+  side: { formedBy: { id: string; type: string } | null; sideActions: boolean } = { formedBy: null, sideActions: false },
+): Decision {
   const angle = f.attributes?.angle_to_pull_deg ?? null;
   const isHole = HOLE_TYPES.has(f.feature_type);
   const undecided = (reason: string): Decision => ({ operations: [...candidates], status: 'undecided', reason });
@@ -146,6 +186,10 @@ function decideHole(f: PlasticFeature, candidates: readonly string[], rules: Fea
   const what = HOLE_TYPES.has(f.feature_type) ? 'hole' : 'region';
   const why = `The ${what}'s axis is ${angle.toFixed(1)}° from the pull, so the mold halves cannot form it`;
   if (!noCore && !sideCore && !lifter) {
+    // A process whose side actions are its stage's lifters and slides (multi-shot molding) forms the feature with one of them: the bundle that
+    // holds it when the CAD grouped it into one, else one not decided from the CAD.
+    if (side.formedBy) return { operations: [], status: 'resolved', reason: `${why}: formed by its ${side.formedBy.type} (${side.formedBy.id}).` };
+    if (side.sideActions) return { operations: [], status: 'undecided', reason: `${why}; this process forms it with one of its stage's lifters or slides, which one is not decided from the CAD.` };
     const others = candidates.filter((op) => op !== AS_MOLDED);
     if (others.length === 0) return { operations: [], status: 'infeasible', reason: `${why}, and this process's catalog has no core, lifter or insert operation for it.` };
     return { operations: others, status: 'undecided', reason: `${why}; this process's catalog offers only ${others.join(', ')} for it, and whether that applies is not decided from the CAD.` };

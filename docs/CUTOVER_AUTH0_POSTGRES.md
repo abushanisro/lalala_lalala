@@ -127,7 +127,7 @@ It takes effect on the person's next request (nothing is cached). Keep the list 
 - The QA security tests (DB-RLS-01, DB-RLS-19, DB-RPC-02) against the new stack.
 - Sign in, sign out, SSO sign-in, an uninvited account, 30 minutes idle (sign-out with the notice), a token without `sid` (refused).
 - Upload a ZIP assembly: runner claims it (`cad_uploads` row goes queued, running, analysed, done), items appear, 3D viewer loads through a signed URL, original deleted.
-- RFQ email with attachments; a drawing extraction; an electronics upload.
+- RFQ email with attachments; a drawing extraction; a PCB board-file upload.
 - Soak a few days. Then repeat 2 to 5 on production.
 
 ## 6. Rollback and what is one-way

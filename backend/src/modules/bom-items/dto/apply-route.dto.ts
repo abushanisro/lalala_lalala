@@ -1,3 +1,9 @@
+import { SAND_CASTING_ROUTE_ID } from '../costing/casting/sand/sand-route-comparison';
+import { INVESTMENT_CASTING_ROUTE_ID } from '../costing/casting/investment/investment-route-comparison';
+import { HYDROFORMING_ROUTE_IDS } from '../costing/hydroforming/hydroforming-route-comparison';
+import { ROLL_FORMING_ROUTE_IDS } from '../costing/roll-forming/roll-forming-route-comparison';
+import { POWDER_METAL_ROUTE_ID } from '../costing/powder-metal/powder-metal-route-comparison';
+import { TWO_MODEL_ROUTE_ID } from '../costing/two-model/two-model-route-comparison';
 import { OTHER_MOLDING_ROUTE_IDS } from '../costing/plastic-molding/molding-route-projection';
 import { IsString, IsOptional, IsInt, Min, IsIn, IsArray, ArrayMinSize, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -5,6 +11,17 @@ import type { RouteId } from './route-comparison.dto';
 import { getCuttingRouteIds, getFormingRouteIds, getMachiningRouteIds } from '../costing/shared/core/manufacturing-process-registry';
 import { LOCATION_INFO } from '../costing/shared/core/default-rates.constants';
 import { DIE_CASTING_PROCESSES, dieCastingRouteId } from '../costing/casting/die-casting-process-choice';
+import { FORGING_ROUTE_IDS } from '../costing/forging/forging-route-comparison';
+import { COMPOSITES_ROUTE_IDS } from '../costing/composites/composites-route-comparison';
+import { ADDITIVE_ROUTE_IDS } from '../costing/additive/additive-route-comparison';
+import { BAR_TUBE_ROUTE_IDS } from '../costing/bar-tube/bar-tube-route-comparison';
+import { ROTO_BLOW_ROUTE_IDS } from '../costing/roto-blow/roto-blow-route-comparison';
+import { PCB_ROUTE_IDS } from '../costing/pcb/pcb-route-comparison';
+import { ASSEMBLY_ROUTE_IDS } from '../costing/assembly/assembly-route-comparison';
+import { PART_ASSEMBLY_ROUTE_IDS } from '../costing/part-assembly/part-assembly-route-comparison';
+import { INSERT_MOLDING_ROUTE_IDS } from '../costing/plastic-molding/insert/insert-molding';
+import { MULTI_SHOT_ROUTE_IDS } from '../costing/plastic-molding/multi-shot/multi-shot';
+import { MULTI_SPINDLE_ROUTE_IDS } from '../costing/multi-spindle/multi-spindle-route-comparison';
 
 // The locations this system holds real rate and material-cost data for, taken
 // from LOCATION_INFO itself so the validator can never drift from the table
@@ -25,6 +42,30 @@ export const VALID_ROUTE_IDS: RouteId[] = [
   // The other molding processes, each priced by its own engine in the route comparison; apply still refuses one that is not feasible (material or process not compatible, no machine rate)
   ...OTHER_MOLDING_ROUTE_IDS,
   ...DIE_CASTING_PROCESSES.map(dieCastingRouteId),
+  // Each forging route, priced by the forging engine (forging-route-comparison.ts).
+  ...FORGING_ROUTE_IDS,
+  // Each composites layup route, priced by the composites engine (composites-route-comparison.ts).
+  ...COMPOSITES_ROUTE_IDS,
+  ...ADDITIVE_ROUTE_IDS,
+  // A bar or tube part's routes (saw and punch, tube laser), priced by the bar and tube engine (bar-tube-route-comparison.ts).
+  ...BAR_TUBE_ROUTE_IDS,
+  ...ROTO_BLOW_ROUTE_IDS,
+  ...PCB_ROUTE_IDS,
+  // A hydroformed part's routes (Deep Draw, Fluid Cell), priced by the hydroforming engine (hydroforming-route-comparison.ts).
+  ...HYDROFORMING_ROUTE_IDS,
+  // A roll formed part's routes (Scissor Cut-Off, Blade Cut-Off), priced by the roll forming engine (roll-forming-route-comparison.ts).
+  ...ROLL_FORMING_ROUTE_IDS,
+  // An assembly's routes (manual, robotic welding), priced by the assembly engine (assembly-route-comparison.ts).
+  ...ASSEMBLY_ROUTE_IDS,
+  ...PART_ASSEMBLY_ROUTE_IDS,
+  // An insert-molded part's load methods (manual, 3-axis, 6-axis), priced by the insert molding engine.
+  ...INSERT_MOLDING_ROUTE_IDS,
+  // A multi-shot part's press orientations (horizontal, vertical), priced by the multi-shot engine.
+  ...MULTI_SHOT_ROUTE_IDS,
+  // A multi-spindle part's routes (6-spindle, 8-spindle, twin-spindle turning center), priced by the multi-spindle engine.
+  ...MULTI_SPINDLE_ROUTE_IDS,
+  // The one-route processes: the cost summary as quoted, as one route (the Workflow Builder sets them like any complete route).
+  SAND_CASTING_ROUTE_ID, INVESTMENT_CASTING_ROUTE_ID, POWDER_METAL_ROUTE_ID, TWO_MODEL_ROUTE_ID,
 ];
 
 /**
@@ -69,6 +110,8 @@ export interface ApplyRouteResult {
   routeId: string;
   /** The route asked for, when it was no longer one of the part's routes and the recommendation was applied instead (fallbackToRecommended). */
   replacedRouteId?: string;
+  /** What the applied route could not make or cost, each written as a $0 No Cost Feature (engine-kernel NO_COST_FEATURE); absent when none. */
+  noCostFeatures?: string[];
 }
 
 // Custom, dynamically-assembled route from the Workflow Builder.

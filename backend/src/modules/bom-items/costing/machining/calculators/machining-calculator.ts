@@ -9,6 +9,7 @@ import {
   type CalcRun,
   type CalcSeed,
   type LookupMatch,
+  type ReferenceCalcRun,
   type ReferenceCalculatorDef,
   type ReferenceCalculatorField,
   type ReferenceCalculators,
@@ -24,6 +25,31 @@ export function runMachiningCalculator(
   calculators: MachiningCalculators | null | undefined,
   operation: string,
   seeds: Record<string, CalcSeed>,
-): CalcRun {
+): ReferenceCalcRun {
   return runReferenceCalculator(calculators, operation, seeds);
+}
+
+/**
+ * A calculator run an operation is timed by, kept with its inputs so it can be timed again on each route's machine: a workbook-form
+ * calculator caps its spindle at the machine's own limit, so one operation takes a different time on each machine. `lookupMissing`
+ * names the reference rows the plan could not read (they are reported with the run's own missing inputs).
+ */
+export interface PlannedRun {
+  operation: string;
+  seeds: Record<string, CalcSeed>;
+  /** The calculators the run's operation is in, when not the machining set (the Stock Machining perimeter cut's own). */
+  calculators?: MachiningCalculators;
+  /** The run's name among an operation's several (a stepped hole's "Step Ø6"). */
+  label?: string;
+  lookupMissing?: string[];
+}
+
+/** A planned run on a machine: its inputs, with the machine's (its spindle limit) laid over them. */
+export function runPlanned(
+  calculators: MachiningCalculators | null | undefined,
+  plan: PlannedRun,
+  machine: Record<string, CalcSeed> = {},
+): ReferenceCalcRun {
+  const run = runReferenceCalculator(plan.calculators ?? calculators, plan.operation, { ...plan.seeds, ...machine });
+  return run.missing.length > 0 && plan.lookupMissing?.length ? { ...run, missing: [...plan.lookupMissing, ...run.missing] } : run;
 }

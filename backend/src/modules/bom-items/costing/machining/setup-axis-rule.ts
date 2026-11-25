@@ -64,10 +64,17 @@ export function resolveSetupAxisRule(
 type Vec = [number, number, number];
 
 interface AxisFeatureLike {
+  id?: string;
   occurrences?: ReadonlyArray<{ tool_axis?: readonly number[] | null; tool_axis_bidirectional?: boolean | null }>;
 }
 
-const PRINCIPAL: Vec[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+/** One setup: the direction the part is approached from, whether it is one of the part's perpendicular directions, and the feature instances reached in it. */
+export interface PartSetup {
+  axis: [number, number, number];
+  principal: boolean;
+  members: Array<{ featureId: string | null; occurrenceIndex: number }>;
+}
+
 
 function unit(v: readonly number[]): Vec | null {
   if (v.length !== 3 || !v.every(Number.isFinite)) return null;
@@ -81,10 +88,66 @@ function angleDeg(a: Vec, b: Vec): number {
 }
 
 const neg = (v: Vec): Vec => [-v[0], -v[1], -v[2]];
+const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/**
+ * The part's own principal directions, read from its tool axes: the line most features are reached along, the
+ * commonest line square to it, and the line square to both. "Perpendicular" setups are perpendicular to each other,
+ * not to the axes the part happens to be modelled in: a part drawn tilted in its CAD file needs no oblique setup.
+ */
+function principalDirections(axes: Vec[], tolDeg: number): Vec[] {
+  const sameLine = (a: Vec, b: Vec) => angleDeg(a, b) <= tolDeg || angleDeg(a, neg(b)) <= tolDeg;
+  const lines: Array<{ dir: Vec; count: number }> = [];
+  for (const v of axes) {
+    const line = lines.find((l) => sameLine(l.dir, v));
+    if (line) line.count += 1; else lines.push({ dir: v, count: 1 });
+  }
+  const byCount = [...lines].sort((a, b) => b.count - a.count);
+  const first = byCount[0]?.dir;
+  if (!first) return [];
+  const second = byCount.find((l) => Math.abs(angleDeg(l.dir, first) - 90) <= tolDeg)?.dir;
+  const frame = second ? [first, second, unit(cross(first, second))!] : [first];
+  return frame.flatMap((d) => [d, neg(d)]);
+}
 
 /** The engine rounds tool_axis components to this step (feature contract). */
 const ENGINE_AXIS_ROUNDING = 1e-4;
 const ENGINE_ROUNDING_NOISE_DEG = (Math.sqrt(3) * ENGINE_AXIS_ROUNDING * 180) / Math.PI;
+
+/**
+ * The setups the features need, each with the feature instances reached in it. One-sided features open a setup along
+ * their approach; a two-sided feature joins any setup at +axis or -axis and opens its own only when neither exists.
+ * Features with no tool axis (surface regions, edges) belong to no setup and are not listed.
+ *
+ * Axes are collapsed with the rule's own angular tolerance, plus the angle the engine's own rounding can introduce:
+ * it rounds each component to 1e-4, so two roundings of one direction differ by at most sqrt(3) x 1e-4 rad. Without
+ * that an exact-match rule (0 deg) would split one direction in two.
+ */
+export function partSetups(features: ReadonlyArray<AxisFeatureLike> | null | undefined, rule: SetupAxisRule): PartSetup[] {
+  type Ref = { v: Vec; featureId: string | null; occurrenceIndex: number };
+  const one: Ref[] = [];
+  const both: Ref[] = [];
+  for (const f of features ?? []) {
+    (f.occurrences ?? []).forEach((o, occurrenceIndex) => {
+      const v = o.tool_axis ? unit(o.tool_axis) : null;
+      if (v) (o.tool_axis_bidirectional ? both : one).push({ v, featureId: f.id ?? null, occurrenceIndex });
+    });
+  }
+  const tol = rule.allowedAngleDeviationDeg + ENGINE_ROUNDING_NOISE_DEG;
+  const same = (a: Vec, b: Vec) => angleDeg(a, b) <= tol;
+  const setups: Array<{ axis: Vec; members: PartSetup['members'] }> = [];
+  const join = (r: Ref, fits: (axis: Vec) => boolean) => {
+    const setup = setups.find((s) => fits(s.axis));
+    const member = { featureId: r.featureId, occurrenceIndex: r.occurrenceIndex };
+    if (setup) setup.members.push(member); else setups.push({ axis: r.v, members: [member] });
+  };
+  for (const r of one) join(r, (axis) => same(axis, r.v));
+  for (const r of both) join(r, (axis) => same(axis, r.v) || same(axis, neg(r.v)));
+
+  const principal = principalDirections([...one, ...both].map((r) => r.v), tol);
+  // With one principal line only, a setup square to it is perpendicular too (it would have defined the second line).
+  return setups.map((s) => ({ axis: s.axis, principal: principal.some((p) => same(s.axis, p)), members: s.members }));
+}
 
 /**
  * Distinct setup directions the features need, then the least machine class
@@ -104,34 +167,17 @@ export function requiredMilledClassFromToolAxes(
   const none = (reason: string): RequiredMilledClass => ({ required: null, reason, principalSetups: 0, obliqueSetups: 0 });
   if (!rule) return none('Machine axis requirement not derived: the reference setup-axis variables are not staged.');
 
-  const one: Vec[] = [];
-  const both: Vec[] = [];
-  for (const f of features ?? []) {
-    for (const o of f.occurrences ?? []) {
-      const v = o.tool_axis ? unit(o.tool_axis) : null;
-      if (!v) continue;
-      (o.tool_axis_bidirectional ? both : one).push(v);
-    }
-  }
-  if (one.length === 0 && both.length === 0) {
+  const setups = partSetups(features, rule);
+  if (setups.length === 0) {
     return none('Machine axis requirement not derived: the CAD analysis carries no feature tool axes, so no mill class is excluded.');
   }
-
-  const tol = rule.allowedAngleDeviationDeg + ENGINE_ROUNDING_NOISE_DEG;
-  const same = (a: Vec, b: Vec) => angleDeg(a, b) <= tol;
-  const setups: Vec[] = [];
-  for (const v of one) if (!setups.some((s) => same(s, v))) setups.push(v);
-  // A two-sided feature shares any setup at +axis or -axis; only when neither
-  // exists does it need a setup of its own.
-  for (const v of both) if (!setups.some((s) => same(s, v) || same(s, neg(v)))) setups.push(v);
-
-  const principalSetups = setups.filter((s) => PRINCIPAL.some((p) => same(s, p))).length;
+  const principalSetups = setups.filter((s) => s.principal).length;
   const obliqueSetups = setups.length - principalSetups;
 
   if (obliqueSetups > rule.maxOblique4AMSetups) {
     return {
       required: '5_axis_mill', principalSetups, obliqueSetups,
-      reason: `${obliqueSetups} oblique setup${obliqueSetups === 1 ? '' : 's'} (a 4 axis mill takes at most ${rule.maxOblique4AMSetups}).`,
+      reason: `${obliqueSetups} oblique setup${obliqueSetups === 1 ? '' : 's'} (a 3 or 4 axis mill takes ${rule.maxOblique4AMSetups === 0 ? 'none' : `at most ${rule.maxOblique4AMSetups}`}).`,
     };
   }
   if (principalSetups > rule.perpendicularCountFor3AM) {

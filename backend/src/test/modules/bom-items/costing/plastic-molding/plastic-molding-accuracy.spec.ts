@@ -175,7 +175,7 @@ describe('cost summary: worked ABS part', () => {
     expect(r.processLines.every((l) => !l.physicsGap)).toBe(true);
   });
 
-  it('prices material 56.16 g x 3.046 = 0.171063, press and operator 20.69 s x (29.18 + 30) USD/h = 0.340125, visual inspection 0.04 m2 x 5 min/m2 = 12 s x 30 USD/h = 0.1, weight check 10 s / 1,000 parts x (30 + scale 0.0377) USD/h, total 0.611271: to the millionth, not to the cent', () => {
+  it('prices material 56.16 g x 3.046 = 0.171063, press and operator 20.69 s x (29.18 + 30) USD/h = 0.340125, visual inspection 0.04 m2 x 5 min/m2 = 12 s x 30 USD/h = 0.1, gate trimming 0.37 s x 30 USD/h = 0.003083: to the millionth, not to the cent; no weight check unless asked for', () => {
     expect(r.grossWeightKg).toBeCloseTo(0.05616, 6);
     expect(im.cycleTimeSec).toBe(20.69);
     const material = 0.05616 * 3.046;
@@ -185,20 +185,31 @@ describe('cost summary: worked ABS part', () => {
     // the bench rate (deburring, operator 30 USD/h): 40,000 mm2 = 0.04 m2 x 5 min/m2 (memory/Secondary process visualInspectTimeStandard) x 100 % = 12 s
     const inspect = (12 * 30) / 3600;
     expect(r.processLines.find((l) => l.process === 'Visual Inspection')?.totalCost).toBeCloseTo(inspect, 6);
+    // gate trimming (F-38): ABS takes n 0.7 (assumed), w = 0.7 x sqrt(40,000) / 30 = 4.667 mm, cut at 12.7 mm/s = 0.37 s x 30 USD/h
+    const trim = (0.37 * 30) / 3600;
+    expect(r.processLines.find((l) => l.process === 'Gate Trimming')?.totalCost).toBeCloseTo(trim, 6);
+    // The weight check is a secondary check the Cost Guide switches on (user decision 2026-11-25): not in the default quote.
+    expect(r.processLines.find((l) => l.process === 'Weight Check')).toBeUndefined();
+    expect(r.totalProcessCost).toBeCloseTo(run + inspect + trim, 6);
+    expect(r.totalCost).toBeCloseTo(material + run + inspect + trim, 5);
+  });
+
+  it('with the weight check switched on: 10 s every 1,000 parts x (30 + scale 0.0377) USD/h, total 0.614350 as before', () => {
+    const checked = computeInjectionMoldedCostSummary(absPart({ secondaryChecks: { insertPullTest: false, weightCheck: true } }));
     // weight check (F-35): 10 s every 1,000 parts by the operator (30 USD/h) on the OHAUS scale, its rate by the migration 580 pattern
     const scale = (1051.99 / 10 + 1051.99 * 0.05 + 1051.99 * 0.2 / 10) / (6240 * 0.8 * 0.95);
     const weigh = (10 / 1000) * (30 + scale) / 3600;
-    expect(r.processLines.find((l) => l.process === 'Weight Check')?.totalCost).toBeCloseTo(weigh, 6);
-    expect(r.totalProcessCost).toBeCloseTo(run + inspect + weigh, 6);
-    expect(r.totalCost).toBeCloseTo(material + run + inspect + weigh, 6);
+    expect(checked.processLines.find((l) => l.process === 'Weight Check')?.totalCost).toBeCloseTo(weigh, 6);
+    expect(checked.totalCost).toBe(0.61435);
   });
 
-  it('tooling, USA, 10,000/yr x 3 yr: BOM 2,140 + labour 2,398.67 + base steel 871.56 + cavity machining 1,122.14 + polish 1,843.44 + ejector pins 48.41 + sprue and ring 155 + try-out 2,765.16 + heat treatment 0 (P20, pre-hardened) + cooling 715.29 = 12,059.66, one mold, 0.4020 per part', () => {
-    // BOM (no undercut: no Hydraulic Cylinder / Side Lock; Ejector Pin has no quantity; Electrical has no cost):
-    //   Air Poppet 25x30 + Ejector Guide Pin Bushing 30x6 + Guide Bush 100x4 + Guide Pin 100x4 + Limit Switch 50x4 + Return Pin 35x6 = 2,140
+  it('tooling, USA, 10,000/yr x 3 yr: BOM 1,930 + labour 2,859.53 + base steel 871.56 + cavity machining 1,122.14 + polish 1,843.44 + ejector pins 48.41 + sprue and ring 155 + try-out 2,765.16 + heat treatment 0 (P20, pre-hardened) + cooling 715.29 + water baffles 1,351.54 = 13,662.06, one mold, 0.4554 per part', () => {
+    // BOM (no undercut: no Hydraulic Cylinder; Ejector Pin has no quantity; Electrical has no cost). The injection mold's own components
+    // (memory/Assembly plastic molding), the compression table for the rest:
+    //   Leader pins and bushings 45x6 + Return pins and bushings 35x6 + Ejector guide pins and bushings 30x6 + Side locks 160x2 + Air Poppet 25x30 + Limit Switch 50x4 = 1,930
     // design 3.24 h (area <= 59,253 mm2) x 64.73 = 209.73
     // machining 0.01 m2 / 0.32 x 2 + 4 setup h = 4.0625 h x 100.55 = 408.46
-    // assembly 0.006x30 + 2x6 + 1x4(pins 0.25x4) + 4 + 6 = 23.18 h x 76.81 = 1,780.48 (Guide Bush has no assembly time)
+    // assembly leader 1x6 + return 1x6 + ejector guide 2x6 + side locks 0.5x2 + air poppet 0.006x30 + limit switch 1x4 = 29.18 h x 76.81 = 2,241.32
     // base steel: 100 x 100 mm part, 1,300 kN press: edge borders 140 / 152 mm -> 380 x 404 mm -> standard base 396 x 446 mm;
     //   depth borders 4 in = 101.6 mm: A = B = max(85.725, 0.5 x 30 + 101.6) = 116.6 mm; stack 28.575 + 116.6 + 116.6 + 47.625 + 28.575 = 337.975 mm;
     //   396 x 446 x 337.975 mm = 59.69 dm3 x 7,850 kg/m3 = 468.58 kg x 1.86 USD/kg x 1.0 = 871.56
@@ -207,13 +218,14 @@ describe('cost summary: worked ABS part', () => {
     // ejector pins: ceil(10,000 / 7,903.21 mm2) = 2 x (5 + 0.25 h x 76.81) = 48.405; sprue bushing 70 + locating ring 85;
     // try-out: 12 h x 1 (press under 500 t) x 3 try-outs x 76.81 = 2,765.16
     // heat treatment: the tool steel is AISI P20, supplied pre-hardened (reference/mold-steel-treatment-reference.csv): none is charged
+    // water baffles (F-37): 2 x floor(446 / 76.2) = 10 x (8 + 0.15 h x 76.81) + (10 x 0.75 h + 4 h setup) x 100.55 = 195.22 + 1,156.33 = 1,351.54
     // cooling: floor(446 / (3 x 8 mm)) = 18 lines x 396 mm / 25.4 mm/min / 60 = 4.677 h x 100.55 = 470.29 + 18 x 2 x (1.25 + 2.50) + 2 x 55 = 715.29
     const t = computeInjectionMoldedCostSummary(absPart({ annualVolume: 10_000, productionLifeYears: 3 })).tooling!;
-    expect(t.moldBomSubtotalUsd).toBe(2140);
+    expect(t.moldBomSubtotalUsd).toBe(1930);
     expect(t.moldEstimatedDesignHrs).toBe(3.24);
     expect(t.moldEstimatedMachiningHrs).toBeCloseTo(4.0625, 6);
-    expect(t.moldEstimatedAssemblyHrs).toBeCloseTo(23.18, 6);
-    expect(t.moldLabourCostUsd).toBe(2398.67);
+    expect(t.moldEstimatedAssemblyHrs).toBeCloseTo(29.18, 6);
+    expect(t.moldLabourCostUsd).toBe(2859.53);
     expect(t.moldToolLifeShots).toBe(144_000);
     expect(t.moldsRequired).toBe(1);
     expect(t.moldBaseSteelUsd).toBeCloseTo(871.56, 2);
@@ -224,15 +236,15 @@ describe('cost summary: worked ABS part', () => {
     expect(t.moldTryoutUsd).toBeCloseTo(2765.16, 6);
     expect(t.moldHeatTreatmentUsd).toBe(0);
     expect(t.moldCoolingUsd).toBeCloseTo(715.29, 2);
-    expect(t.moldCostUsd).toBe(12059.66);
-    expect(t.moldCostPerPartUsd).toBe(0.402);
+    expect(t.moldCostUsd).toBe(13662.06);
+    expect(t.moldCostPerPartUsd).toBe(0.4554);
   });
 
-  it('wears out ceil(3,000,000 / 144,000) = 21 molds at 1,000,000/yr x 3 yr: 21 x 12,059.66 = 253,252.85 USD, 0.0844 per part (regression: not rounded to 0.08)', () => {
+  it('wears out ceil(3,000,000 / 144,000) = 21 molds at 1,000,000/yr x 3 yr: 21 x 13,662.06 = 286,903.25 USD, 0.0956 per part (regression: not rounded to 0.10)', () => {
     const t = computeInjectionMoldedCostSummary(absPart({ annualVolume: 1_000_000, productionLifeYears: 3 })).tooling!;
     expect(t.moldsRequired).toBe(21);
-    expect(t.moldCostUsd).toBe(253_252.85);
-    expect(t.moldCostPerPartUsd).toBe(0.0844);
+    expect(t.moldCostUsd).toBe(286_903.25);
+    expect(t.moldCostPerPartUsd).toBe(0.0956);
   });
 });
 
@@ -356,10 +368,12 @@ describe('characterization: what the mold cost depends on today', () => {
       expect(m.bom).toBe(one.bom); // the same purchased components for any number of cavities
       expect(m.perMold).toBeGreaterThanOrEqual(one.perMold); // a larger layout never needs a smaller base
     }
-    // 8 cavities of a 100 x 100 mm part in a row need a base over 1.6 m wide: no standard base holds it, so the tooling is a named gap, not a guess.
-    const eight = computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 8 }));
-    expect(eight.tooling).toBeUndefined();
-    expect(eight.warnings.join(' ')).toMatch(/Tooling not costed: .*no standard mold base.*custom base is not modelled/);
+    // 8 cavities of a 100 x 100 mm part fit a standard base laid out 2 x 4; 64 need a base no standard size holds, whatever the layout, so the
+    // tooling is a named gap, not a guess.
+    expect(computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 8 })).tooling).toBeDefined();
+    const many = computeInjectionMoldedCostSummary(absPart({ annualVolume: 100_000, productionLifeYears: 3, cavityCountOverride: 64 }));
+    expect(many.tooling).toBeUndefined();
+    expect(many.warnings.join(' ')).toMatch(/Tooling not costed: .*no standard mold base.*custom base is not modelled/);
     expect(mold({ cavityCountOverride: 4 }).molds).toBe(1);
     expect(mold({ cavityCountOverride: 4 }).total).toBeLessThan(one.total); // a 4-cavity tool is priced below a 1-cavity one only because fewer molds wear out
   });
@@ -382,7 +396,7 @@ describe('characterization: what the mold cost depends on today', () => {
   it('I-2: undercuts add the staged slide hardware (hydraulic cylinder, side lock) and raise the class; nothing else about the class is priced', () => {
     const plain = mold({}, { partingComplexity: 0.1 });
     const slides = mold({}, { partingComplexity: 0.9, undercutCount: 6, slideBundleCount: 2 });
-    expect(slides.bom! - plain.bom!).toBe(1400 + 640); // 4 hydraulic cylinders x 350 + 4 side locks x 160
+    expect(slides.bom! - plain.bom!).toBe(1400); // 4 hydraulic cylinders x 350; side locks are on every injection mold
     expect(slides.cls).toBe('Class102');
   });
 });
@@ -401,7 +415,7 @@ describe('slides and lifters in the mold (F-28)', () => {
       signals: { ...absPart().signals, sideActionBlocks: { slide: NONE, lifter: NONE, unsized: 2 } },
     }));
     expect(unsized.validation?.unsupported.map((u) => u.id)).toContain('G-03');
-    expect(unsized.warnings.join(' ')).toMatch(/slides and lifters \(the CAD bundles are not all recognised and sized\)/);
+    expect(unsized.warnings.join(" ")).toMatch(/Mold tooling excludes slides and lifters/);
   });
 });
 
@@ -421,19 +435,28 @@ describe('the slide movement in each shot (F-32)', () => {
   const NONE = { small: 0, medium: 0, large: 0 };
   const run = (signals: object) => computeInjectionMoldedCostSummary(absPart({ signals: { ...absPart().signals, undercutCount: 2, ...signals } }));
 
-  it('charges the slides moving out and back at the press rate: 2 x the longest stroke / slideCycleRate (100 mm/s), per part', () => {
+  it('adds the slides moving out and back to the molding line, at the press rate: 2 x the longest stroke / slideCycleRate (100 mm/s), per part', () => {
     const r = run({ slideBundleCount: 2, slideOrLifterBundleCount: 0, maxSlideStrokeMm: 30, sideActionBlocks: { slide: { ...NONE, small: 2 }, lifter: NONE, unsized: 0 } });
-    const line = r.processLines.find((l) => l.calculatorName === 'Injection Molding - Slide Movement');
-    expect(line?.process).toBe('Side Action (Slide/Lifter)');
+    const without = computeInjectionMoldedCostSummary(absPart());
+    // Part of the shot (user decision 2026-11-25): no process line of its own.
+    expect(r.processLines.some((l) => l.calculatorName === 'Injection Molding - Slide Movement' || l.process === 'Side Action (Slide/Lifter)')).toBe(false);
+    const molding = r.processLines[0]!;
     // 2 x 30 mm / 100 mm/s = 0.6 s per shot, one cavity
-    expect(line?.cycleTimeMin).toBeCloseTo(0.6 / 60, 9);
-    expect(line?.calculationTrace?.find((t) => t.fieldName === 'Slide Cycle Rate')?.value).toBe(100);
+    expect(molding.cycleTimeMin).toBeCloseTo(without.processLines[0]!.cycleTimeMin + 0.6 / 60, 6);
+    expect(molding.runCost).toBeCloseTo(without.processLines[0]!.runCost + (0.6 * (29.18 + 30)) / 3600, 6);
+    const rate = molding.calculationTrace?.find((t) => t.fieldName === 'Slide Movement · Slide Cycle Rate');
+    expect(rate).toMatchObject({ value: 100, group: 'Slide Movement', groupField: 'Slide Cycle Rate' });
     expect(r.warnings.join(' ')).not.toMatch(/Side Action \(Slide\/Lifter\) required/);
+  });
+
+  it('the slide stroke opens the slide bundle it was measured on', () => {
+    const r = run({ slideBundleCount: 1, slideOrLifterBundleCount: 0, maxSlideStrokeMm: 30, maxSlideStrokeBundleId: 'bundle-7', sideActionBlocks: { slide: { ...NONE, small: 1 }, lifter: NONE, unsized: 0 } });
+    expect(r.processLines[0]!.calculationTrace?.find((t) => t.fieldName === 'Slide Movement · Slide Stroke')?.ref).toEqual({ kind: 'features', label: 'slide bundle', features: [{ featureId: 'bundle-7' }] });
   });
 
   it('adds no time for lifters, and says so instead of calling the operation uncosted', () => {
     const r = run({ slideBundleCount: 0, slideOrLifterBundleCount: 4, sideActionBlocks: { slide: NONE, lifter: { ...NONE, small: 4 }, unsized: 0 } });
-    expect(r.processLines.some((l) => l.calculatorName === 'Injection Molding - Slide Movement')).toBe(false);
+    expect(r.processLines[0]!.calculationTrace?.some((t) => t.group === 'Slide Movement')).toBe(false);
     expect(r.warnings.join(' ')).toMatch(/4 side-action bundle\(s\) are costed as lifters, which ride on the ejector stroke and add no cycle time/);
     expect(r.warnings.join(' ')).not.toMatch(/Side Action \(Slide\/Lifter\) required/);
   });
@@ -447,18 +470,31 @@ describe('the slide movement in each shot (F-32)', () => {
 describe('material drying (F-36)', () => {
   const USA = { usdPerKwh: 0.0851, source: 'USA electricity price: 0.0851 USD/kWh (EIA)' };
 
-  it('charges the dryer hour with the press time per part: ABS 9.77 kg/h -> Bry-Air DRY-30 (12 kg/h, 2.43 kW), the used dX50 price, USA electricity', () => {
+  it('charges the dryer hour with the press time per part on the molding line: ABS 9.77 kg/h -> Bry-Air DRY-30 (12 kg/h, 2.43 kW), the used dX50 price, USA electricity', () => {
     const r = computeInjectionMoldedCostSummary(absPart({ electricity: USA }));
-    const line = r.processLines.find((l) => l.process === 'Material Drying');
+    const without = computeInjectionMoldedCostSummary(absPart());
+    // The dryer runs with the press (user decision 2026-11-25): no process line of its own, its cost is the molding line's other cost.
+    expect(r.processLines.some((l) => l.process === 'Material Drying')).toBe(false);
+    const line = r.processLines[0]!;
+    const step = (f: string) => line.calculationTrace?.find((t) => t.fieldName === `Material Drying · ${f}`);
     // demand 0.05616 kg x 3600 / 20.69 s = 9.77 kg/h; ownership (11,900 / 10 + 11,900 x 5 % + 11,900 x 20 % / 10) / (6,240 x 0.8 x 0.95)
     const ownership = (11900 / 10 + 11900 * 0.05 + 11900 * 0.2 / 10) / (6240 * 0.8 * 0.95);
     const hourly = ownership + 2.43 * 0.0851;
-    expect(line?.calculationTrace?.find((t) => t.fieldName === 'Dryer Throughput')?.value).toBe(12);
-    expect(line?.calculationTrace?.find((t) => t.fieldName === 'Dryer Hourly Cost')?.value).toBeCloseTo(hourly, 4); // the trace shows 4 decimals
-    expect(line?.totalCost).toBeCloseTo((hourly * 20.69) / 3600, 6);
-    expect(line?.laborCostPerPart).toBe(0);
-    expect(line?.calculationTrace?.find((t) => t.fieldName === 'Drying Temperature')?.source).toMatch(/ABS \(Lotte Chemical/);
+    expect(step('Dryer Throughput')?.value).toBe(12);
+    expect(step('Dryer Hourly Cost')?.value).toBeCloseTo(hourly, 4); // the trace shows 4 decimals
+    expect(line.otherCostPerPartUsd).toBeCloseTo((hourly * 20.69) / 3600, 6);
+    expect(line.totalCost).toBeCloseTo(without.processLines[0]!.totalCost + (hourly * 20.69) / 3600, 6);
+    expect(line.laborCostPerPart).toBe(without.processLines[0]!.laborCostPerPart);
+    expect(line.otherCostDetail).toMatch(/^material drying: the desiccant dryer runs with the press/);
+    expect(step('Drying Temperature')?.source).toMatch(/ABS \(Lotte Chemical/);
     expect(r.validation?.unsupported.map((u) => u.id)).not.toContain('G-11');
+  });
+
+  it('in rupees: the dryer\'s USD hour is converted with the line, so the drying costs the same in either currency', () => {
+    const usd = computeInjectionMoldedCostSummary(absPart({ electricity: USA })).processLines[0]!;
+    const inr = computeInjectionMoldedCostSummary(absPart({ electricity: USA, usdToLocal: 83 })).processLines[0]!;
+    expect(inr.otherCostPerPartUsd).toBeCloseTo(usd.otherCostPerPartUsd!, 9);
+    expect(inr.otherCostPerPart).toBeCloseTo(usd.otherCostPerPartUsd! * 83, 6);
   });
 
   it('with no electricity price, or a resin with no drying row, drying stays a named gap (G-11)', () => {
@@ -479,8 +515,20 @@ describe('operations the model does not cost', () => {
     expect(w).not.toMatch(/Side Action[^\n]*no sourced time\/rate data/);
   });
 
-  it('an operation with nothing in the reference still says there is no sourced data', () => {
-    expect(warn({}, 'Generic ABS')).toMatch(/Material Drying required[^\n]*no sourced time\/rate data exists/);
+  it('on an insert press the insert loading is its own costed line, so it is not also listed as not costed', () => {
+    const run = (machineClass: string) => computeInjectionMoldedCostSummary({
+      ...absPart(), signals: { ...absPart().signals, insertCount: 10 }, mhrRate: { ...absPart().mhrRate, machineClass },
+    }).warnings.join('\n');
+    expect(run('injection_molding')).toContain('Insert Loading (In-Mold) required (10 insert(s)): not costed');
+    expect(run('assembly_molding_insert_injection_molding')).not.toContain('Insert Loading (In-Mold)');
+  });
+
+  it('the dimensional inspection is the one-off first article inspection (F-39) and the insert pull test is costed (F-40): neither is a gap', () => {
+    const w = warn({ insertCount: 2 }, 'Generic ABS');
+    expect(w).not.toMatch(/Dimensional Inspection/);
+    expect(w).not.toMatch(/Insert Pull Test/);
+    // material drying is costed (F-36): without an electricity price it names that, and is never also called "no sourced data"
+    expect(warn({}, 'Generic ABS')).not.toMatch(/Material Drying required/);
   });
 });
 
@@ -501,7 +549,7 @@ describe('quote validation: how far the quote can be trusted', () => {
     expect(v.complete).toBe(false);
     // G-11: ABS is hygroscopic, so material drying is routed, and no data exists for it. The mold is a cold runner (no hot drops, G-08), an SPI class
     // tblSpiType builds without inserts (G-07) and the default texture None (G-05): only the gaps that apply are listed.
-    expect(v.unsupported.map((u) => u.id)).toEqual(['G-03', 'G-04', 'G-06', 'G-09', 'G-10', 'G-11']);
+    expect(v.unsupported.map((u) => u.id)).toEqual(['G-03', 'G-04', 'G-09', 'G-10', 'G-11']);
   });
 
   it('without a volume there is no mold: the mold formulas and gaps are left out, the cycle and period gaps remain', () => {

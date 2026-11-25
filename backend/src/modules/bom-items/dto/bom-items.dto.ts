@@ -164,6 +164,11 @@ export class CreateBOMItemDto {
   @IsString()
   fileDxfPath?: string;
 
+  @ApiPropertyOptional({ example: 'file-path-board-set.zip', description: 'The board set (Gerber layers, drill file, Pick Place) kept as one zip' })
+  @IsOptional()
+  @IsString()
+  fileBoardPath?: string;
+
   @ApiPropertyOptional({ example: 'material-uuid', description: 'Link to material from materials database' })
   @IsOptional()
   @IsUUID()

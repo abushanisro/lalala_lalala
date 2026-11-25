@@ -1,0 +1,192 @@
+import type { CalculationTraceStep, SourceRef } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import {
+  computeDrillCycle,
+  computeMillingCostSummary,
+  computeTurningCostSummary,
+  machineSpindleSeed,
+  spindleLimitSeed,
+  type MachineClassId,
+  type MachiningCostInput,
+} from '../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
+import { machineSourcedFields, specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
+import {
+  grindingLookupSeeds,
+  keywayBroachingLookupSeeds,
+  surfaceGrindingLookupSeeds,
+} from '../../../../../modules/bom-items/costing/machining/calculators/machining-lookup-seeds';
+import { flattenMachiningLookupTable } from '../../../../../modules/bom-items/costing/machining/lookup/machining-lookup-tables';
+import type { MHRRateInput } from '../../../../../modules/bom-items/costing/shared/core/cost-engine';
+import {
+  realCapabilityRules,
+  realGrindingParams,
+  realKeywayBroachReference,
+  realSurfaceGrindingParams,
+  } from './real-reference-tables';
+import { workbookFixture } from './workbook-fixture';
+
+// Every machining calculator input read from a table, a variable, a machine record or a calculation says which (SourceRef), so the
+// calculator dialog's eye opens it with the row outlined: a lookup through the `machining` reference domain (GET /processes/reference-lookup,
+// the table flattened as flattenMachiningLookupTable serves it), a variable by name, the machine's HR Rates record and column.
+const CALCS = specAsCalculators();
+const RULES = realCapabilityRules();
+const WORKBOOK = workbookFixture();
+// The test mill's own spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+const SPINDLE = { 'Max Spindle Speed': { value: 8000, source: 'Machine: Test VMC specs.spindle_speed_rpm (mhr_records)' } };
+
+function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInput {
+  return { rate: value, source: 'mhr_database', machineClass: '3_axis_mill', machineName: 'Test VMC', commodityCode: 'CNC-VMC-3AX', maxSpindleRpm: 8000, ...overrides };
+}
+
+// A steel bracket: one hole size, one thread size, sharp edges to deburr.
+const milled: MachiningCostInput = {
+  volume: 100_000, surfaceArea: 40_000, maxLength: 83, maxWidth: 62, maxHeight: 32,
+  holeCount: 4, holeGroups: [{ diameter_mm: 8, count: 4, depth_mm: 20 }], pocketCount: 0,
+  materialGrade: 'AISI 1045', materialCostPerKg: 90, materialDensityKgM3: 7850, materialSource: 'db',
+  threads: [{ size: 'M8', count: 2, depthMm: 12 }], tightestToleranceMm: 0.1, gdtFeatureCount: 0,
+  batchSize: 50, family: 'milled', finishedWeightKg: 0.7,
+  mhrRate: rate(900), tappingRate: rate(900, { machineClass: 'tapping' }), deburrRate: rate(300, { machineClass: 'deburring', machineName: null }),
+  inspectionRate: rate(450, { machineClass: 'cmm', machineName: null, commodityCode: null }),
+  surfaceTreatment: null, machiningCalculators: CALCS, capabilityRules: RULES, location: 'India',
+  workbook: workbookFixture(),
+  sharpEdgeLengthMm: 600, deburrLinearSpeedMmPerSec: 22.7,
+  deburrMatch: { table: 'tblDeburring', row: { material_cut_code_name: '1.0', deburr_type: 'Edge', tool_series: 'Virtual Debuiring Wire Wheel Brush' } },
+};
+const milling = computeMillingCostSummary(milled, '3_axis_mill' as MachineClassId);
+
+const traceOf = (process: string): CalculationTraceStep[] => {
+  const line = milling.processLines.find((l) => l.process === process);
+  if (!line) throw new Error(`no ${process} line (lines: ${milling.processLines.map((l) => l.process).join(', ')})`);
+  return line.calculationTrace ?? [];
+};
+const inputStep = (trace: CalculationTraceStep[], field: string) => trace.find((s) => s.kind === 'input' && s.fieldName === field);
+
+/** The rows of a flattened machining table a lookup ref's row identifies. */
+const rowsOf = (table: { rows: Array<Record<string, unknown>> }, ref: Extract<SourceRef, { kind: 'lookup' }>) =>
+  table.rows.filter((r) => Object.entries(ref.row ?? {}).every(([k, v]) => String(r[k]) === String(v)));
+
+describe('machining calculator inputs carry where they were read (SourceRef)', () => {
+  // A hole-size group's drilling run (the mill sums it into its own line; a turned part has a Drilling line of it).
+  const drill = computeDrillCycle(8, milled.materialGrade, 20, WORKBOOK, CALCS, 4, undefined, SPINDLE);
+  /** The workbook table's rows a lookup ref's row identifies. */
+  const workbookRows = (ref: Extract<SourceRef, { kind: 'lookup' }>) =>
+    (WORKBOOK.tables[ref.table] ?? []).filter((r: Record<string, unknown>) => Object.entries(ref.row ?? {}).every(([k, v]) => String(r[k]) === String(v)));
+
+  it('Drilling: its speed range and feed are one row of the workbook\'s drilling table (material, operation, the hole\'s diameter band)', () => {
+    for (const field of ['Speed Min', 'Speed Max', 'Feed']) {
+      const step = inputStep(drill.trace, field)!;
+      const ref = step.ref as Extract<SourceRef, { kind: 'lookup' }>;
+      expect(ref).toMatchObject({
+        kind: 'lookup', domain: 'machining', table: 'tblDrillReamData',
+        row: { WorkMaterial: 'STEEL-LOW & MEDIUM STRENGTH WROUGHT', Operation: 'Drilling', DiameterMinMm: 6 },
+      });
+      const rows = workbookRows(ref);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]![ref.column]).toBe(step.value);
+    }
+    expect(drill.lookups['Feed']?.table).toBe('tblDrillReamData');
+  });
+
+  it('Tapping: its speed range is the workbook\'s HSS tapping row for the material', () => {
+    const speed = inputStep(traceOf('Tapping'), 'Speed Min')!;
+    expect(speed.ref).toEqual({
+      kind: 'lookup', domain: 'machining', table: 'tblHssHoleSpeeds', column: 'SpeedMinMPerMin',
+      row: { WorkGroup: 'Mild steels', Operation: 'Tapping' },
+    });
+  });
+
+  it('Deburring: the edge speed is the tblDeburring row the speed came from', () => {
+    expect(inputStep(traceOf('Deburring'), 'Edge Speed')!.ref).toEqual({
+      kind: 'lookup', domain: 'machining', table: 'tblDeburring', column: 'linear_speed_mm_s',
+      row: { material_cut_code_name: '1.0', deburr_type: 'Edge', tool_series: 'Virtual Debuiring Wire Wheel Brush' },
+    });
+  });
+
+  it('gives no ref to a CAD measurement with no face set behind it: there is nothing to open', () => {
+    for (const field of ['Hole Diameter', 'Hole Depth', 'Holes']) expect(inputStep(drill.trace, field)!.ref).toBeUndefined();
+  });
+
+  it('Index Transfer: the multi-spindle times open the selected machine\'s HR Rates record at the column read', () => {
+    const turned = computeTurningCostSummary({
+      ...milled, family: 'turned', maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 20000, holeGroups: [], holeCount: 0, threads: [],
+      blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: Math.PI * 15 ** 2 * 100, utilizationPct: 50 },
+      mhrRate: rate(1000, {
+        machineClass: 'simultaneous_turning', machineName: 'Index MS32-6', mhrRecordId: 'mhr-ms32',
+        numberSpindles: 6, drumIndexTimeS: 0.7, transferTimeS: 1.0, stockFeedTimeS: 2.5, speedSynchronizationTimeS: 1.5,
+      }),
+    }, 'simultaneous_turning' as MachineClassId);
+    const trace = turned.processLines.find((l) => l.process === 'Index Transfer')!.calculationTrace!;
+    expect(inputStep(trace, 'Drum Index Time')!.ref).toEqual({
+      kind: 'machine', machineId: 'mhr-ms32', machineName: 'Index MS32-6', machineClass: 'simultaneous_turning', location: 'India', column: 'drum_index_time_s',
+    });
+    expect((inputStep(trace, 'Speed Synchronization Time')!.ref as { column: string }).column).toBe('speed_synchronization_time_s');
+  });
+});
+
+describe('machining lookup seeds: variables, multi-value rows and computed values', () => {
+  it('a grinding allowance is the machining variable by name; the grinding values name their table row and column', () => {
+    const { seeds } = grindingLookupSeeds({
+      matClass: 'mild_steel', capabilityRules: RULES, internalGrindingParams: realGrindingParams('tblInternalGrinding', '1.1'),
+    }, 'jig_grind', 'tblInternalGrinding');
+    expect(seeds['Grinding Allowance']!.ref).toEqual({ kind: 'variable', domain: 'machining', name: 'finishGrindingDepth' });
+    expect(seeds['Repetitions']!.ref).toEqual({
+      kind: 'lookup', domain: 'machining', table: 'tblGtolProcessCapabilities', column: 'Num Repetitions', row: { Process: 'Jig Grind', GtolCategory: 'positionTolerance' },
+    });
+    expect(seeds['Work Speed']!.ref).toEqual({
+      kind: 'lookup', domain: 'machining', table: 'tblInternalGrinding', column: 'Work Speed (m / min)', row: { 'Material Cut Code Name': 1.1 },
+    });
+  });
+
+  it('a surface-grinding crossfeed is the calculation over its row\'s crossfeed limits and the wheel width', () => {
+    const { seeds } = surfaceGrindingLookupSeeds({ matClass: 'mild_steel', capabilityRules: RULES, surfaceGrindingParams: realSurfaceGrindingParams('1.1') });
+    expect(seeds['Table Speed']!.ref).toMatchObject({ kind: 'lookup', table: 'tblReciprocatingSurfaceGrinding', column: 'TableSpeedMPerMin' });
+    const crossfeed = seeds['Crossfeed']!;
+    expect(crossfeed.ref).toMatchObject({ kind: 'calculation', name: 'Surface grinding crossfeed' });
+    const steps = (crossfeed.ref as Extract<SourceRef, { kind: 'calculation' }>).steps;
+    expect(steps.map((s) => (s.ref as { column?: string } | undefined)?.column)).toEqual(['AbsoluteCrossfeedMm', 'MaxFractionalCrossfeed', 'wheel_width_mm', undefined]);
+    expect(steps.at(-1)).toMatchObject({ kind: 'calculated', value: crossfeed.value });
+  });
+
+  it('a keyway broach: its teeth, pitch and speed name the broach row; the positioning time is its variable', () => {
+    const { seeds } = keywayBroachingLookupSeeds({ matClass: 'mild_steel', keywayBroach: realKeywayBroachReference() }, { 'Keyway Width': 4, 'Keyway Length': 20 });
+    const teeth = seeds['Broach Teeth']!.ref as Extract<SourceRef, { kind: 'lookup' }>;
+    expect(teeth).toMatchObject({ kind: 'lookup', domain: 'machining', column: 'Teeth', row: { Id: expect.any(Number), 'Material Cut Code Name': expect.anything() } });
+    expect(seeds['Cutting Speed']!.ref).toMatchObject({ table: teeth.table, column: 'Cutting Speed (m / min)', row: teeth.row });
+    expect(seeds['Positioning Time']!.ref).toMatchObject({ kind: 'variable', domain: 'machining' });
+    // Passes: the table's Passes column for a pull broach, or Shims + 1 for a shim broach.
+    const passes = seeds['Passes']!.ref!;
+    if (teeth.table === 'tblPullTypeKeywayBroach') expect(passes).toMatchObject({ kind: 'lookup', column: 'Passes' });
+    else expect(passes).toMatchObject({ kind: 'calculation', name: 'Shim keyway broach passes' });
+  });
+});
+
+describe('Max Spindle Speed is read from the machine the calculator runs on (mhr_records.specs, migration 1136)', () => {
+  const haas = { id: 'mhr-haas', name: 'Haas ST-20Y', machineClass: '3_axis_lathe', maxSpindleRpm: 4000, liveToolingMaxRpm: 4000 * 1.5 };
+
+  it('the spindle\'s top speed, with the machine record and column to open', () => {
+    expect(machineSpindleSeed(haas, 'USA')).toEqual({
+      'Max Spindle Speed': {
+        value: 4000, source: 'Machine: Haas ST-20Y specs.spindle_speed_rpm (mhr_records)',
+        ref: { kind: 'machine', machineId: 'mhr-haas', machineName: 'Haas ST-20Y', machineClass: '3_axis_lathe', location: 'USA', column: 'specs.spindle_speed_rpm' },
+      },
+    });
+  });
+
+  it('a lathe\'s live tool for milling on the lathe; nothing when the machine has no top speed on file', () => {
+    expect(machineSpindleSeed(haas, 'USA', true)['Max Spindle Speed']).toMatchObject({ value: 6000, ref: { column: 'specs.live_tooling_speed_rpm' } });
+    expect(machineSpindleSeed({ ...haas, maxSpindleRpm: null }, 'USA')).toEqual({});
+  });
+
+  it('the engine\'s rate is the same machine record', () => {
+    const r = rate(900, { mhrRecordId: 'mhr-vmc' });
+    expect(spindleLimitSeed(r, 'India')).toEqual(machineSpindleSeed(
+      { id: 'mhr-vmc', name: 'Test VMC', machineClass: '3_axis_mill', maxSpindleRpm: 8000, liveToolingMaxRpm: null }, 'India'));
+  });
+
+  it('the calculators that read it name it as a machine input, for the dialog to read from the machine chosen there', () => {
+    expect(machineSourcedFields('Machining - Rigid Tapping')).toEqual(['Max Spindle Speed']);
+    expect(machineSourcedFields('Machining - Drilling')).toEqual(['Max Spindle Speed']);
+    // A calculator that reads nothing from its machine.
+    expect(machineSourcedFields('Machining - Deburring')).toEqual([]);
+    expect(machineSourcedFields('no such calculator')).toEqual([]);
+  });
+});

@@ -1,5 +1,7 @@
 import { deriveAnalysisStatus } from '../../../modules/bom-items/analysis-status';
 import { AnalysisRunService } from '../../../modules/bom-items/services/analysis-run.service';
+import { familiesOfProcessGroup } from '../../../modules/bom-items/costing/shared/core/part-family-process-group';
+import { AutoFillService } from '../../../modules/bom-items/services/auto-fill.service';
 
 const V = 4;
 const graph = (family: string, version = V) => ({ classification: { family }, feature_graph_version: version });
@@ -19,8 +21,47 @@ describe('deriveAnalysisStatus: the chosen process against the analysed family',
     expect(s.missing).toEqual(['cad_features']);
   });
 
+  // R_M-0230-033 Carriage Mount: analysed as a die casting, its Process then set to Forging. The die-casting features carry no die direction,
+  // projected area or parting line, so the part must be analysed again as a forging before it can be costed.
+  it('a part analysed as a die casting whose Process is now Forging is analysed again as a forging', () => {
+    const hint = familiesOfProcessGroup('Forging')[0]; // AutoFillService.familyHintForProcessGroup
+    expect(hint).toBe('forged');
+    const s = deriveAnalysisStatus({ file3dPath: 'p.stl', featureGraph: graph('die_cast'), chosenFamilyHint: hint }, 'none', V);
+    expect(s).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+  });
+
   it('never asks for an analysis of a part with no 3D file', () => {
     expect(deriveAnalysisStatus({ file3dPath: null, featureGraph: null, chosenFamilyHint: 'die_cast' }, 'none', V).ready).toBe(true);
+  });
+});
+
+describe('the family hint a chosen Process sends the cad-engine', () => {
+  const hint = (group: string) => AutoFillService.prototype.familyHintForProcessGroup.call(null, group);
+
+  it('is the first family the Process is costed as; none for a Process with no cost model', () => {
+    expect(hint('Forging')).toBe('forged');
+    // Rapid Prototyping is analysed for its build as an additive part, and priced in its own domain.
+    expect(hint('Rapid Prototyping')).toBe('additive');
+    // A blow or roto molded part is measured as a hollow shell.
+    expect(hint('Roto & Blow Molding')).toBe('roto_blow');
+    expect(hint('Sheet Plastic')).toBeUndefined();
+  });
+
+  it('is "machined" for Machining, so the geometry picks the machining family; a process costed as one family still names it', () => {
+    expect(hint('Machining')).toBe('machined');
+    // Stock Machining is costed as the same three families, so it is analysed the same way.
+    expect(hint('Stock Machining')).toBe('machined');
+    expect(hint('Multi-Spindle Machining')).toBe('turned');
+    expect(hint('2-Model Machining')).toBe('two_model');
+    // A shaft analysed under it is stored as turned or mill-turn, and that is the Machining part's own analysis.
+    expect(deriveAnalysisStatus({ file3dPath: 'p.step', featureGraph: graph('mill_turn'), chosenFamilyHint: hint('Machining') }, 'none', V).cad).toBe('ready');
+  });
+
+  it('is none for Assembly and Part Assembly: each is costed from its BOM and the Cost Guide, and the cad-engine has no extractor to force for it', () => {
+    expect(familiesOfProcessGroup('Assembly')).toEqual(['assembly']);
+    expect(hint('Assembly')).toBeUndefined();
+    expect(familiesOfProcessGroup('Part Assembly')).toEqual(['part_assembly']);
+    expect(hint('Part Assembly')).toBeUndefined();
   });
 });
 

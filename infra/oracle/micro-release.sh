@@ -45,7 +45,7 @@ echo "running now: ${oldshort}; releasing ${short} ($ref); servers healthy, disk
 echo "== 2/6 build amd64 images from $short"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 git archive "$sha" | tar -x -C "$work"
-run bash -c "cd '$work' && DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -p $IP -f docker-compose.prod.yml -f docker-compose.data.yml --env-file '$ENV_FILE' build backend frontend ecad-engine cad-engine"
+run bash -c "cd '$work' && DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -p $IP -f docker-compose.prod.yml -f docker-compose.data.yml --env-file '$ENV_FILE' build backend frontend cad-engine"
 
 echo "== 3/6 migrations (the release's own files, through an encrypted SSH forward; each in its own transaction)"
 if [ "${DRY_RUN:-}" = 1 ]; then echo "DRY: forward 127.0.0.1:15432 -> $APP_HOST:5432, run migrate.ts --env prd from the export"; else
@@ -72,8 +72,8 @@ if [ "${DRY_RUN:-}" = 1 ]; then echo "DRY: tell PostgREST to reload its schema c
 fi
 
 echo "== 4/6 ship what changed; keep what runs now as good-$oldshort"
-for s in cad-engine ecad-engine backend frontend; do
-  case "$s" in cad-engine|ecad-engine) h="$ENGINE_HOST" ;; *) h="$APP_HOST" ;; esac
+for s in cad-engine backend frontend; do
+  case "$s" in cad-engine) h="$ENGINE_HOST" ;; *) h="$APP_HOST" ;; esac
   # By the contents of the layers: an image id changes on every rebuild (the config carries a timestamp) even when nothing in it did, and the CAD
   # image is 1.1 GB to send.
   new_id="$(docker image inspect "$IP-$s" --format '{{json .RootFS.Layers}}' 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
@@ -82,7 +82,7 @@ for s in cad-engine ecad-engine backend frontend; do
   echo "  $s: changed, shipping $(( $(docker image inspect "$IP-$s" --format '{{.Size}}' 2>/dev/null || echo 0) / 1000000 )) MB"
   run ssh_ "$h" "docker tag emithran-prd-$s:latest emithran-prd-$s:good-$oldshort 2>/dev/null || true"
   if [ "${DRY_RUN:-}" != 1 ]; then docker save "$IP-$s" | gzip -1 | ssh_ "$h" "gunzip | docker load >/dev/null && docker tag $IP-$s emithran-prd-$s:latest && docker image rm $IP-$s >/dev/null 2>&1 || true"; fi
-  case "$s" in cad-engine|ecad-engine) shipped_eng+=("$s") ;; *) shipped_app+=("$s") ;; esac
+  case "$s" in cad-engine) shipped_eng+=("$s") ;; *) shipped_app+=("$s") ;; esac
 done
 
 rollback() {

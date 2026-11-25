@@ -13,19 +13,21 @@ assertions, not guessed. Real face_ids are asserted non-empty everywhere a
 feature is checked, proving 3D-highlight data is actually produced.
 
 Known, disclosed gap surfaced while building this file (not fixed here --
-see the machining feature-extraction plan for the full writeup): a
-perpendicular-to-axis floor face (the real shape of a genuine "slot" on a
-milled part or Slot/radial on a turned part) never reaches
-_collect_prismatic_pockets' classification step at all -- that collector's
-own axis-alignment prefilter (dot_with_axis > 0.85) only ever admits
-axis-PARALLEL floor faces, so 'slot' (milled) and 'radial_slot' (turned) are
-effectively unreachable given the current collection filter, regardless of
-real geometry. Confirmed directly: a real full-height side notch on a milled
-box, and a real radial notch cut into a turned shaft's OD, both produce zero
-prismatic features. Not attempted here -- fixing it means broadening the
+see the machining feature-extraction plan for the full writeup): on a milled
+part, a perpendicular-to-axis floor face (the real shape of a genuine "slot")
+never reaches _collect_prismatic_pockets' classification step at all -- that
+collector's own axis-alignment prefilter (dot_with_axis > 0.85) only ever
+admits axis-PARALLEL floor faces, so 'slot' (milled) is effectively
+unreachable given the current collection filter, regardless of real geometry.
+Confirmed directly: a real full-height side notch on a milled box produces
+zero prismatic features. Not attempted here -- fixing it means broadening the
 collector to also gather perpendicular-normal candidates, which needs the
 same real containment/adjacency work Phase 3's face classification already
 requires, not a Phase 2 test-writing patch.
+
+Closed 2026-11-22 for turned and mill-turn parts: the collector also gathers
+the floors that face across the turning axis, so a keyway or a radial slot
+cut into a turned diameter or a bore is recognised (test_turned_keyway.py).
 """
 import math
 
@@ -68,9 +70,9 @@ def _by_type(tree, ftype, variant=None):
 
 
 def _stepped_shaft_with_holes():
-    """OD1 (D40, z0-40) fused to OD2 (D25, z40-80); a coaxial blind hole
-    (D6, depth 20) from the top; a radial cross hole (D5) through OD2,
-    axially clear of the blind hole's floor."""
+    """OD1 (D40, z0-40) fused to OD2 (D25, z40-80); a coaxial bore (D6, z40-60)
+    inside OD2; a radial cross hole (D5) through OD2 at z50, which the bore
+    cuts in two."""
     cyl_a = BRepPrimAPI_MakeCylinder(20.0, 40.0).Shape()
     ax_b = gp_Ax2(gp_Pnt(0, 0, 40.0), gp_Dir(0, 0, 1))
     cyl_b = BRepPrimAPI_MakeCylinder(ax_b, 12.5, 40.0).Shape()
@@ -183,12 +185,14 @@ def test_stepped_shaft_yields_real_blind_hole_not_tapped():
 
 
 def test_stepped_shaft_yields_real_cross_hole():
+    # The Ø5 hole across OD2 is cut in two by the Ø6 bore it crosses: two radial holes on one line, half a turn apart round the axis.
+    # Their angle is that of each wall (it was that of the cylinder's origin, the same for both), so they are a pattern of two.
     tree = _recognize(_stepped_shaft_with_holes(), "turned")
-    crosses = _by_type(tree, "SimpleHole", "cross")
-    assert len(crosses) >= 1, "real radial through-hole must be detected"
-    for f in crosses:
-        assert f.params["diameter_mm"] == 5.0
-        assert f.face_ids
+    (pattern,) = _by_type(tree, "SimpleHole", "pcd_pattern")
+    assert pattern.params["hole_count"] == 2
+    assert pattern.params["hole_diameter_mm"] == 5.0
+    assert len(pattern.face_ids) == 2
+    assert _by_type(tree, "SimpleHole", "cross") == []
 
 
 def test_sleeve_yields_real_through_hole():
@@ -267,6 +271,33 @@ def test_real_pcd_bolt_pattern_is_grouped_into_one_pattern_feature():
     assert _by_type(tree, "SimpleHole", "blind") == []
 
 
+def _stepped_shaft_with_radial_holes(n=4, hole_r=1.5, depth=4.0):
+    """The stepped shaft of _stepped_shaft_with_holes (OD1 D40 z0-40, OD2 D25 z40-80) with n blind radial holes, equally spaced round
+    OD1 at z20, each `depth` deep from its surface."""
+    cyl_a = BRepPrimAPI_MakeCylinder(20.0, 40.0).Shape()
+    ax_b = gp_Ax2(gp_Pnt(0, 0, 40.0), gp_Dir(0, 0, 1))
+    body = _unify(BRepAlgoAPI_Fuse(cyl_a, BRepPrimAPI_MakeCylinder(ax_b, 12.5, 40.0).Shape()).Shape())
+    for i in range(n):
+        ang = 2 * math.pi * i / n
+        dx, dy = math.cos(ang), math.sin(ang)
+        ax = gp_Ax2(gp_Pnt(21.0 * dx, 21.0 * dy, 20.0), gp_Dir(-dx, -dy, 0))
+        body = BRepAlgoAPI_Cut(body, BRepPrimAPI_MakeCylinder(ax, hole_r, depth + 1.0).Shape()).Shape()
+    return _unify(body)
+
+
+def test_real_radial_hole_pattern_carries_its_holes_depth():
+    # Holes along X and Y: their measured depth (the face's box along the hole axis) is exact there, so the pattern's is the 4 mm cut.
+    tree = _recognize(_stepped_shaft_with_radial_holes(n=4, depth=4.0), "turned")
+    patterns = _by_type(tree, "SimpleHole", "pcd_pattern")
+    assert len(patterns) == 1
+    p = patterns[0]
+    assert p.params["hole_count"] == 4
+    assert p.params["hole_diameter_mm"] == 3.0
+    # The radial holes are absorbed into the pattern: their depth must go with them, or costing has none to drill them to.
+    assert abs(p.params["depth_mm"] - 4.0) < 0.2
+    assert _by_type(tree, "SimpleHole", "cross") == []
+
+
 # ── Milled-path fixtures + tests ──────────────────────────────────────────
 
 
@@ -278,9 +309,8 @@ def _box_with_pocket():
 
 def _box_with_bounded_recess():
     """A rectangular recess elongated in-plane, bounded on all 4 in-plane
-    sides and by the box's own top/bottom -- the milled path's real,
-    observed classification for this shape is 'keyway' (see this file's own
-    module docstring for why 'slot' specifically is unreachable today)."""
+    ends and back and by the box's own top/bottom, open along its other
+    long side (the box's x=0 face)."""
     box = BRepPrimAPI_MakeBox(60.0, 50.0, 40.0).Shape()
     tool = BRepPrimAPI_MakeBox(gp_Pnt(-1.0, 10.0, 14.0), 7.0, 30.0, 6.0).Shape()
     return BRepAlgoAPI_Cut(box, tool).Shape()
@@ -296,11 +326,83 @@ def test_real_recessed_pocket_is_detected_and_boundary_faces_are_not():
     assert p.face_ids
 
 
-def test_real_elongated_bounded_recess_is_detected_as_keyway():
+def test_real_elongated_recess_open_along_one_long_side_is_a_pocket_not_a_keyway():
+    # The recess is walled at its back and two ends and open along its other long side: nothing confines a
+    # cutter across its 6 mm width, so it is a pocket (a keyway is a channel with a wall on both sides).
     tree = _recognize(_box_with_bounded_recess(), "milled")
-    keyways = _by_type(tree, "Keyway")
-    assert len(keyways) >= 1, "a real elongated bounded recess must be detected"
-    for f in keyways:
+    assert _by_type(tree, "Keyway") == []
+    pockets = _by_type(tree, "PocketV2")
+    assert len(pockets) >= 1, "a real elongated bounded recess must be detected"
+    for f in pockets:
         assert f.params["length_mm"] == 30.0
         assert f.params["width_mm"] == 6.0
+        assert f.params["width_confined"] is False
         assert f.face_ids
+
+
+# ── Distance of an axial bore from the turning axis ─────────────────────────
+# A lathe drills a hole on its centreline with a stationary tool; an axial hole off the centreline needs a live tool (C axis), like a cross
+# hole. Cross holes already carry distance_from_axis_mm; axial bores now do too, so costing can tell the two apart (backend live-tooling.ts).
+
+
+def _shaft_with_off_axis_hole(offset=8.0):
+    body = BRepPrimAPI_MakeCylinder(15.0, 40.0).Shape()
+    ax = gp_Ax2(gp_Pnt(offset, 0, 40.0), gp_Dir(0, 0, -1))
+    drill = BRepPrimAPI_MakeCylinder(ax, 2.0, 12.0).Shape()
+    return _unify(BRepAlgoAPI_Cut(body, drill).Shape())
+
+
+def test_coaxial_blind_hole_is_on_the_axis():
+    tree = _recognize(_stepped_shaft_with_holes(), "turned")
+    (blind,) = _by_type(tree, "SimpleHole", "blind")
+    assert blind.params["distance_from_axis_mm"] == 0.0
+
+
+def test_axial_hole_off_the_centreline_reports_its_distance():
+    tree = _recognize(_shaft_with_off_axis_hole(8.0), "turned")
+    holes = [f for f in _by_type(tree, "SimpleHole") if f.variant in ("blind", "through")]
+    assert len(holes) == 1
+    assert holes[0].params["diameter_mm"] == 4.0
+    assert abs(holes[0].params["distance_from_axis_mm"] - 8.0) < 0.01
+
+# ── Turned outer diameters, the signal the family classifier needs ──────────
+from shared.machining_geometry import turned_diameter_count  # noqa: E402
+
+
+def _rounded_block_with_coaxial_bores():
+    """A 30 x 30 x 30 block with rounded vertical edges, a Ø20 through bore and a Ø8 hole beside it, all along Z: holes along one axis,
+    no outer surface to turn (the lead nut housing's shape in miniature)."""
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopAbs import TopAbs_EDGE
+    from OCC.Core.TopoDS import topods
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+    from OCC.Core.GeomAbs import GeomAbs_Line
+    box = BRepPrimAPI_MakeBox(gp_Pnt(-15, -15, 0), 30.0, 30.0, 30.0).Shape()
+    fillet = BRepFilletAPI_MakeFillet(box)
+    exp = TopExp_Explorer(box, TopAbs_EDGE)
+    while exp.More():
+        e = topods.Edge(exp.Current())
+        c = BRepAdaptor_Curve(e)
+        if c.GetType() == GeomAbs_Line and abs(c.Line().Direction().Z()) > 0.99:
+            fillet.Add(3.0, e)
+        exp.Next()
+    body = fillet.Shape()
+    body = BRepAlgoAPI_Cut(body, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 10.0, 32.0).Shape()).Shape()
+    body = BRepAlgoAPI_Cut(body, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(11, 11, 10), gp_Dir(0, 0, 1)), 2.0, 21.0).Shape()).Shape()
+    return _unify(body)
+
+
+def test_a_rounded_block_with_coaxial_bores_has_no_turned_diameter():
+    assert turned_diameter_count(_rounded_block_with_coaxial_bores()) == 0
+
+
+def test_a_stepped_shaft_has_its_turned_diameters():
+    assert turned_diameter_count(_stepped_shaft_with_holes()) >= 2
+
+
+def test_a_part_with_no_cylinder_to_find_its_axis_by_is_not_measured():
+    # A plain box has no cylindrical face: its axis is unknown, so the count is None (not used), never 0 (which would rule out turning).
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+    assert turned_diameter_count(BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape()) is None

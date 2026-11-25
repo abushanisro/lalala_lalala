@@ -9,6 +9,9 @@ import {
   findRouteDataGaps, persistableCycleSec,
   isRouteDataComplete,
   selectRecommendedRoute,
+  selectAppliableRoute,
+  routesTakingSecondary,
+  lineDataGap,
   preferRealRate,
   type RankableRoute,
   type RouteDataGapLine,
@@ -682,5 +685,67 @@ describe('isAutoRoutable', () => {
 
   it('hard tooling with unknown annual volume is not auto-picked', () => {
     expect(isAutoRoutable('forming', hardToolingVolumeCapability('progressive_die_press', null, limits))).toBe(false);
+  });
+});
+
+/**
+ * Apply never fails (the user's decision 2026-11-20, memory failNotSupportedGcds false). With no route both feasible and fully costed, Apply writes the
+ * best route there is, and each of its operations that cannot be costed as a $0 No Cost Feature.
+ */
+describe('selectAppliableRoute: the route Apply writes when none is recommended', () => {
+  const route = (routeId: string, totalCost: number | null, over: Partial<RankableRoute> & { dataGaps?: unknown[] } = {}) => ({
+    routeId, totalCost, cycleTimes: { totalMin: 10 }, capability: { overallCapable: true }, dataComplete: false, isFeasible: true, dataGaps: [{}], ...over,
+  });
+
+  it('feasible and compatible before anything else, then the fewest operations not costed, then the cheapest', () => {
+    expect(selectAppliableRoute([route('infeasible', 1, { isFeasible: false }), route('feasible', 9)])?.routeId).toBe('feasible');
+    expect(selectAppliableRoute([route('incompatible', 1, { compatibility: { status: 'incompatible' } }), route('compatible', 9)])?.routeId).toBe('compatible');
+    expect(selectAppliableRoute([route('two-gaps', 1, { dataGaps: [{}, {}] }), route('one-gap', 9)])?.routeId).toBe('one-gap');
+    expect(selectAppliableRoute([route('dear', 9), route('cheap', 1)])?.routeId).toBe('cheap');
+  });
+
+  it('a route with no price ranks after a priced one, and the same inputs always give the same route', () => {
+    expect(selectAppliableRoute([route('unpriced', null), route('priced', 50)])?.routeId).toBe('priced');
+    expect(selectAppliableRoute([route('b', 1), route('a', 1)])?.routeId).toBe('a');
+  });
+
+  it('a route with no lines (one the part does not have, such as robotic welding for laser seams only) ranks after every route with lines', () => {
+    const missing = route('partassembly-robotic', null, { isFeasible: false, dataGaps: [], processLines: [] } as never);
+    const real = route('partassembly-manual', 12, { isFeasible: false, dataGaps: [{}], processLines: [{}] } as never);
+    expect(selectAppliableRoute([missing, real])?.routeId).toBe('partassembly-manual');
+    expect(selectAppliableRoute([real, missing])?.routeId).toBe('partassembly-manual');
+    // A caller that does not list a route's lines is ranked as before.
+    expect(selectAppliableRoute([route('two-gaps', 1, { dataGaps: [{}, {}] }), route('one-gap', 9)])?.routeId).toBe('one-gap');
+  });
+
+  it('every route ruled out still gives one (only no routes at all gives none)', () => {
+    expect(selectAppliableRoute([route('x', null, { isFeasible: false, capability: { overallCapable: false } })])?.routeId).toBe('x');
+    expect(selectAppliableRoute([])).toBeNull();
+  });
+});
+
+describe('routesTakingSecondary: the routes a part\'s secondary operations go on', () => {
+  const route = (lines: number) => ({ processLines: Array.from({ length: lines }, () => ({})) });
+
+  it('every route the part has; a route with no lines of its own stays empty, so it is never applied for a real one', () => {
+    const routes = [route(3), route(0), route(1)];
+    expect(routes.map(routesTakingSecondary(routes))).toEqual([true, false, true]);
+  });
+
+  it('all of them when none has lines of its own: nothing else would carry the part\'s secondary operations', () => {
+    const routes = [route(0), route(0)];
+    expect(routes.map(routesTakingSecondary(routes))).toEqual([true, true]);
+  });
+});
+
+describe('lineDataGap: the one rule for an operation that cannot be costed', () => {
+  const line = (over: Partial<RouteDataGapLine>): RouteDataGapLine => ({ process: 'Saw', machineClass: 'saw', cycleTimeMin: 1, setupTimeMin: 5, ...over });
+
+  it('is findRouteDataGaps for one line: a costed line has none, and each kind of gap says why', () => {
+    expect(lineDataGap(line({}))).toBeNull();
+    expect(lineDataGap(line({ cycleTimeMin: 0 }))?.reason).toBe('no cycle time was resolved for this operation, so it cannot be costed or persisted');
+    expect(lineDataGap(line({ physicsGap: { gapType: 'unsupported_operation', reason: 'not a bar' } }))).toEqual({ process: 'Saw', machineClass: 'saw', reason: 'not a bar' });
+    const lines = [line({}), line({ process: 'Punch', setupTimeMin: null })];
+    expect(findRouteDataGaps(lines)).toEqual(lines.map(lineDataGap).filter(Boolean));
   });
 });

@@ -26,7 +26,6 @@ logs
 # Other services have their own images and contexts; the frontend build needs none of them
 backend
 cad-engine
-ecad-engine
 memory
 database
 supabase

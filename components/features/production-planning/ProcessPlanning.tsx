@@ -1,14 +1,21 @@
 'use client';
 
-import { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState, useMemo } from 'react';
 import { toast } from 'sonner';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Settings,
   CheckCircle,
@@ -25,15 +32,10 @@ import {
   ChevronRight,
   Users,
   Package,
-} from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ListSkeleton } from '@/components/ui/loading-skeleton';
 import {
   Select,
   SelectContent,
@@ -41,7 +43,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
+import { Textarea } from '@/components/ui/textarea';
 import { apiClient } from '@/lib/api/client';
 import {
   useProductionProcesses,
@@ -199,12 +201,12 @@ export const ProcessPlanning = ({ lotId }: ProcessPlanningProps) => {
   // ── Helpers ───────────────────────────────────────────────────────────────────
 
   const getStatusColor = (status: string) => ({
-    PLANNED:     'bg-blue-100 text-blue-600',
+    PLANNED: 'bg-primary/10 text-primary',
     IN_PROGRESS: 'bg-yellow-100 text-yellow-600',
     COMPLETED:   'bg-green-100 text-green-600',
     BLOCKED:     'bg-red-100 text-red-600',
-    PENDING:     'bg-gray-100 text-gray-600',
-  }[status] ?? 'bg-gray-100 text-gray-600');
+    PENDING: 'bg-muted text-muted-foreground',
+  }[status] ?? 'bg-muted text-muted-foreground');
 
   const getStatusIcon = (status: string) => ({
     PLANNED:     <Calendar className="h-4 w-4" />,
@@ -216,12 +218,12 @@ export const ProcessPlanning = ({ lotId }: ProcessPlanningProps) => {
 
   const sectionBorder: Record<string, string> = {
     'Raw Material': 'border-l-blue-500',
-    'Process':      'border-l-brand-500',
+    'Process':      'border-l-primary/40',
     'Inspection':   'border-l-amber-500',
     'Packing':      'border-l-green-500',
   };
   const sectionNumBg: Record<string, string> = {
-    'Raw Material': 'bg-blue-500',
+    'Raw Material': 'bg-brand-500',
     'Process':      'bg-brand-500',
     'Inspection':   'bg-amber-500',
     'Packing':      'bg-green-500',
@@ -439,7 +441,7 @@ export const ProcessPlanning = ({ lotId }: ProcessPlanningProps) => {
               const bomCount = section.subTasks.reduce((s, t) => s + t.bomRequirements.length, 0);
 
               return (
-                <Card key={section.id} className={`border-l-4 ${sectionBorder[section.name] ?? 'border-l-gray-400'}`}>
+                <Card key={section.id} className={`border-l-4 ${sectionBorder[section.name] ?? 'border-l-border'}`}>
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
@@ -455,7 +457,7 @@ export const ProcessPlanning = ({ lotId }: ProcessPlanningProps) => {
                           {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                         </Button>
 
-                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${sectionNumBg[section.name] ?? 'bg-gray-500'}`}>
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-foreground text-xs font-bold shrink-0 ${sectionNumBg[section.name] ?? 'bg-muted-foreground/30'}`}>
                           {section.sequence}
                         </div>
 
@@ -496,10 +498,7 @@ export const ProcessPlanning = ({ lotId }: ProcessPlanningProps) => {
                     <CollapsibleContent>
                       <CardContent className="pt-0 space-y-4">
                         {processesLoading ? (
-                          <div className="text-center py-6 text-muted-foreground text-sm">
-                            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2" />
-                            Loading tasks…
-                          </div>
+                          <ListSkeleton rows={3} label="Loading tasks…" />
                         ) : section.subTasks.length === 0 ? (
                           <div className="text-center py-6 border-2 border-dashed rounded-lg text-muted-foreground">
                             <Users className="h-8 w-8 mx-auto mb-2 opacity-40" />

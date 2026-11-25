@@ -1,15 +1,14 @@
 'use client';
 
+import Link from 'next/link';
 import { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { toast } from 'sonner';
+
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import {
   Shield,
   Eye,
@@ -19,13 +18,16 @@ import {
   Clock,
   Package,
   ArrowLeft
-} from 'lucide-react';
-import { toast } from 'sonner';
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { bomApi, type BOM, type BOMItem } from '@/lib/api/bom';
 import { apiClient } from '@/lib/api/client';
 import { useProductionLots } from '@/lib/api/hooks/useProductionPlanning';
 import { useCreateQualityInspection } from '@/lib/api/hooks/useQualityControl';
-import Link from 'next/link';
+
 
 interface CreateQCInspectionDialogProps {
   projectId: string;
@@ -293,7 +295,7 @@ export default function CreateQCInspectionDialog({ projectId, onInspectionCreate
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="flex items-center gap-2 bg-linear-to-r from-gray-700 to-gray-800 hover:from-gray-800 hover:to-gray-900 text-white border-0 shadow-lg hover:shadow-xl transition-all duration-200">
+        <Button className="flex items-center gap-2 bg-linear-to-r from-muted to-muted hover:from-muted hover:to-muted text-white border-0 shadow-lg hover:shadow-xl transition-all duration-200">
           <Shield className="h-4 w-4" />
           Create QC Inspection
         </Button>
@@ -416,7 +418,7 @@ export default function CreateQCInspectionDialog({ projectId, onInspectionCreate
                       {loadingLots ? (
                         <div className="p-2 text-center text-muted-foreground">Loading lots...</div>
                       ) : lotsError ? (
-                        <div className="p-2 text-center text-muted-foreground text-red-500">Error: {lotsError.message}</div>
+                        <div className="p-2 text-center text-muted-foreground text-destructive">Error: {lotsError.message}</div>
                       ) : !filteredProductionLots || filteredProductionLots.length === 0 ? (
                         <div className="p-4 text-center space-y-3">
                           <div className="space-y-1">
@@ -427,7 +429,7 @@ export default function CreateQCInspectionDialog({ projectId, onInspectionCreate
                           </div>
                           <Link 
                             href={`/projects/${projectId}/production-planning`}
-                            className="inline-flex items-center gap-2 text-xs text-blue-600 hover:text-blue-800 underline"
+                            className="inline-flex items-center gap-2 text-xs text-primary hover:text-primary underline"
                             onClick={(e) => {
                               e.stopPropagation();
                               window.open(`/projects/${projectId}/production-planning`, '_blank');

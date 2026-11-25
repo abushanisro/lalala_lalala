@@ -8,6 +8,22 @@ updates:
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    # ESLint 10 removed SourceCode#getTokenOrCommentAfter, which eslint-plugin-import (2.32, peer eslint up to ^9) calls: every lint
+    # crashed. ESLint 10 also brought minimatch 10.2.6 (GHSA-g3hv-75wg-m249); 9.x uses minimatch 3, outside the advisory. Lift this when
+    # eslint-plugin-import supports ESLint 10.
+    ignore:
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 (the native Go port) has no JavaScript compiler API: scripts/check-frontend-boundary.ts uses ts.preProcessFile.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # @types/node follows the runtime (.nvmrc, Node 24), not the newest Node.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # react-resizable-panels 4 is a new API (PanelGroup -> Group, PanelResizeHandle -> Separator, no order prop): moving the Manufacturing
+      # Intelligence and Electronics layouts to it is a UI change to make and check on screen, not a weekly bump.
+      - dependency-name: "react-resizable-panels"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch: { update-types: [minor, patch] }
 
@@ -21,7 +37,32 @@ updates:
     ignore:
       - dependency-name: "@nestjs/*"
         update-types: ["version-update:semver-major"]
+      # @types/node describes one Node major: it follows the runtime (.nvmrc, Node 24), not the newest release. @types/node 26 on Node 24
+      # type-checks APIs Node 24 does not have, and it dropped the Array.at declaration the backend's lib setting had leaned on.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # ESM-only from these majors (uuid 12+, snake-case/camel-case 4+/5+ of change-case 5); the backend compiles to CommonJS and Jest
+      # cannot load them ("Must use import to load ES Module"). Moving the backend to ESM is the deliberate step that lifts this.
+      - dependency-name: "uuid"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "snake-case"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "camel-case"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 turns strict on by default: 1,390 errors across the backend (strictPropertyInitialization on every DTO, unknown in
+      # catch and json()). Adopting it is a deliberate migration, not a weekly bump.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # ESLint 10 is a major: the flat config and its plugins move together, a deliberate upgrade, not a weekly bump.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      # jose 6 is ESM-only and dropped the KeyLike type: the backend (CommonJS) and Jest cannot load the token verifier.
+      - dependency-name: "jose"
+        update-types: ["version-update:semver-major"]
     groups:
+      # OpenTelemetry's stable packages are released together and sdk-node pins them to one version: one major moved alone (#564,
+      # #567) left core/resources on 3 and sdk-trace/sdk-metrics on 2, two copies of the tracing SDK in one process.
+      opentelemetry: { patterns: ["@opentelemetry/*"] }
       minor-and-patch: { update-types: [minor, patch] }
 
   - package-ecosystem: github-actions
@@ -44,22 +85,19 @@ updates:
     target-branch: develop
     directory: /cad-engine
     schedule: { interval: weekly }
-  - package-ecosystem: docker
-    target-branch: develop
-    directory: /ecad-engine
-    schedule: { interval: weekly }
 
   # The cloudflared image pinned in docker-compose.prod.yml
   - package-ecosystem: docker-compose
     target-branch: develop
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # A new Postgres major version cannot open the data volume the old one wrote (it needs pg_upgrade, and from 18 a different
+      # volume path), so it is a planned data migration, not an image bump. Minor and patch updates still come.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     target-branch: develop
     directory: /cad-engine
-    schedule: { interval: weekly }
-  - package-ecosystem: pip
-    target-branch: develop
-    directory: /ecad-engine
     schedule: { interval: weekly }

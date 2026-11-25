@@ -33,6 +33,86 @@ describe('deriveAnalysisStatus', () => {
     expect(deriveAnalysisStatus(part({ featureGraph: { classification: { family: 'milled' } } }), 'none', CURRENT).cad).toBe('stale');
   });
 
+  it('features from another process\'s extractor are stale; a 2-Model Machining part analysed as machined is its own analysis', () => {
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'die_cast' }), 'none', CURRENT).cad).toBe('stale');
+    // Cannula Holder Left: Process 2-Model Machining (hint two_model), stored as milled. It was stale for ever: Refresh analysis said the
+    // features could not be extracted and Apply was blocked.
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'two_model' }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'two_model', featureGraph: analysed('turned') }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'two_model', featureGraph: analysed('sand_cast') }), 'none', CURRENT).cad).toBe('stale');
+  });
+
+  it('a Machining part (hint machined) analysed as any machining family is its own analysis; analysed as another process it is stale', () => {
+    // Lead Screw side shaft: Process Machining, analysed as the mill-turn part it is. With the hint "milled" it read as another extractor's
+    // analysis and was analysed again, forced to milled.
+    for (const family of ['milled', 'turned', 'mill_turn']) {
+      expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed(family) }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    }
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed('sheet_metal') }), 'none', CURRENT)).toMatchObject({ cad: 'stale', missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'machined', featureGraph: analysed('die_cast') }), 'none', CURRENT).cad).toBe('stale');
+    // A process costed as one machining family still needs that family (Multi-Spindle Machining: turned).
+    expect(deriveAnalysisStatus(part({ chosenFamilyHint: 'turned', featureGraph: analysed('milled') }), 'none', CURRENT).cad).toBe('stale');
+  });
+
+  it('a part set to a process priced from a measurement its analysis predates is stale until Refresh analysis measures it', () => {
+    // Cannula Holder bottom: Process Sheet Metal - Hydroforming, analysed as sheet metal (feature graph v4) before the hydroform measurement
+    // existed. It was taken as analysed: Apply wrote $0 "press Refresh analysis" lines and the page never asked for the refresh.
+    const sheet = (summary: Record<string, unknown> | undefined) => ({ ...analysed('sheet_metal'), ...(summary ? { summary } : {}) });
+    const hydro = (summary: Record<string, unknown> | undefined) => part({ featureGraph: sheet(summary), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal - Hydroforming' });
+    expect(deriveAnalysisStatus(hydro({ bendCount: 6 }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(hydro(undefined), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(hydro({ hydroformGeometry: { extractionVersion: 'hf_v0' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(hydro({ hydroformGeometry: { extractionVersion: 'hf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // The current engine found no sheet to measure: analysing again gives the same, so it is current (the quote says what is missing).
+    expect(deriveAnalysisStatus(hydro({ hydroformGeometry: null }), 'none', CURRENT).cad).toBe('ready');
+    // A plain sheet-metal part (or no Process) needs no such measurement.
+    expect(deriveAnalysisStatus(part({ featureGraph: sheet({ bendCount: 6 }), chosenProcessGroup: 'Sheet Metal' }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(part({ featureGraph: sheet({ bendCount: 6 }) }), 'none', CURRENT).cad).toBe('ready');
+  });
+
+  it('a part set to Sheet Metal Roll Forming is stale until Refresh analysis measures it for roll forming (rf_v3)', () => {
+    const sheet = (summary: Record<string, unknown> | undefined) => ({ ...analysed('sheet_metal'), ...(summary ? { summary } : {}) });
+    const rolled = (summary: Record<string, unknown> | undefined) => part({ featureGraph: sheet(summary), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal Roll Forming' });
+    // Analysed as sheet metal before the roll-forming measurement existed (it has the hydroforming one, not this).
+    expect(deriveAnalysisStatus(rolled({ hydroformGeometry: { extractionVersion: 'hf_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(rolled(undefined), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v0' } }), 'none', CURRENT).cad).toBe('stale');
+    // rf_v1 measured neither sharp-cornered profiles nor round tubes: analysed again, such a part is measured.
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v1' } }), 'none', CURRENT).cad).toBe('stale');
+    // rf_v2 took the widest flat for the web (a channel deeper than its web read levels [1, 2]) and had no fold directions.
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v2' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: { extractionVersion: 'rf_v3' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // The current engine found the part is not a profile: analysing again gives the same, so it is current (the quote says why).
+    expect(deriveAnalysisStatus(rolled({ rollFormGeometry: null }), 'none', CURRENT).cad).toBe('ready');
+    // The hydroforming measurement does not stand in for it, nor it for the hydroforming one.
+    const hydro = part({ featureGraph: sheet({ rollFormGeometry: { extractionVersion: 'rf_v3' } }), chosenFamilyHint: 'sheet_metal', chosenProcessGroup: 'Sheet Metal - Hydroforming' });
+    expect(deriveAnalysisStatus(hydro, 'none', CURRENT).cad).toBe('stale');
+  });
+
+  it('a part set to Stock Machining is stale until Refresh analysis measures its stock (stk_v1)', () => {
+    const machined = (family: string, summary: Record<string, unknown> | undefined) => ({ ...analysed(family), ...(summary ? { summary } : {}) });
+    const stock = (summary: Record<string, unknown> | undefined, family = 'milled') => part({ featureGraph: machined(family, summary), chosenProcessGroup: 'Stock Machining' });
+    // Analysed as a machined part before the stock envelope existed.
+    expect(deriveAnalysisStatus(stock({ holeCount: 4 }), 'none', CURRENT)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    expect(deriveAnalysisStatus(stock(undefined), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v0' } }), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v1' } }), 'none', CURRENT)).toMatchObject({ cad: 'ready', ready: true });
+    // Whichever machining family the geometry read: a shaft's stock is measured as a block's is.
+    expect(deriveAnalysisStatus(stock({ holeCount: 4 }, 'mill_turn'), 'none', CURRENT).cad).toBe('stale');
+    expect(deriveAnalysisStatus(stock({ machiningStock: { extractionVersion: 'stk_v1' } }, 'turned'), 'none', CURRENT).cad).toBe('ready');
+    // The current engine could not measure the stock: analysing again gives the same, so it is current (the quote says what is missing).
+    expect(deriveAnalysisStatus(stock({ machiningStock: null }), 'none', CURRENT).cad).toBe('ready');
+    // An analysis as another family carries no stock envelope, and analysing it again as that family would not measure one: it does not
+    // predate the measurement (it was stale for ever otherwise). Whether to analyse it as a machined part is the family hint's question.
+    expect(deriveAnalysisStatus(stock({ bendCount: 2 }, 'sheet_metal'), 'none', CURRENT).cad).toBe('ready');
+    // With the hint a machining process is analysed with, it is: stale by the family, then measured as the machined part it becomes.
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('sheet_metal', { bendCount: 2 }), chosenProcessGroup: 'Stock Machining', chosenFamilyHint: 'machined' }), 'none', CURRENT).cad).toBe('stale');
+    // A plain Machining part (or no Process) needs no stock envelope, and the sheet-metal measurements do not stand in for it.
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }), chosenProcessGroup: 'Machining' }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(part({ featureGraph: machined('milled', { holeCount: 4 }) }), 'none', CURRENT).cad).toBe('ready');
+    expect(deriveAnalysisStatus(stock({ rollFormGeometry: { extractionVersion: 'rf_v3' } }), 'none', CURRENT).cad).toBe('stale');
+  });
+
   it('a part with no 3D file is not blocked: there is nothing to extract', () => {
     expect(deriveAnalysisStatus({ file3dPath: null, featureGraph: null }, 'none', CURRENT)).toMatchObject({ cad: 'not_required', ready: true });
   });
@@ -78,6 +158,24 @@ describe('deriveAnalysisStatus', () => {
   it('the drawing is informational: a missing intelligence never blocks', () => {
     expect(deriveAnalysisStatus(part({ file2dPath: 'org/p.pdf' }), 'none', CURRENT)).toMatchObject({ drawing: 'none', ready: true });
     expect(deriveAnalysisStatus(part({ file2dPath: 'org/p.pdf', drawingIntelligence: { material: 'x' } }), 'none', CURRENT).drawing).toBe('ready');
+  });
+});
+
+describe('deriveAnalysisStatus: a part with board files', () => {
+  const measured = (extractionVersion: string) => ({ summary: { pcbGeometry: { extractionVersion } } });
+  const board = 'u/p/bom-items/item/board/1_set.zip';
+
+  it('is analysed only when its board set is measured at the current version, with or without a 3D model', () => {
+    expect(deriveAnalysisStatus({ fileBoardPath: board }, 'none', 4).cad).toBe('none');
+    expect(deriveAnalysisStatus({ fileBoardPath: board, featureGraph: measured('pcb_v1') }, 'none', 4)).toMatchObject({ cad: 'ready', ready: true });
+    expect(deriveAnalysisStatus({ fileBoardPath: board, featureGraph: measured('pcb_v0') }, 'none', 4)).toMatchObject({ cad: 'stale', ready: false, missing: ['cad_features'] });
+    const modelOnly = { file3dPath: 'x.stl', fileBoardPath: board, featureGraph: { classification: { family: 'sheet_metal' }, feature_graph_version: 4, summary: {} } };
+    expect(deriveAnalysisStatus(modelOnly, 'none', 4).cad).toBe('stale');
+    expect(deriveAnalysisStatus({ ...modelOnly, featureGraph: { ...modelOnly.featureGraph, summary: { pcbGeometry: { extractionVersion: 'pcb_v1' } } } }, 'none', 4).cad).toBe('ready');
+  });
+
+  it('needs nothing of a part with neither a model nor board files', () => {
+    expect(deriveAnalysisStatus({}, 'none', 4)).toMatchObject({ cad: 'not_required', ready: true });
   });
 });
 

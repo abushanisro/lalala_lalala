@@ -1,9 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Eye, EyeOff } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Eye, EyeOff } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -39,7 +39,7 @@ interface CalculatorInputFieldProps {
 }
 
 // A value that came from a real source is tinted; the calculator's own default and a hand-typed value are not.
-const REAL_VALUE_CLASS = 'border-blue-400 bg-blue-50 text-blue-900 dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-200';
+const REAL_VALUE_CLASS = 'border-primary/40 bg-primary/10 text-primary dark:border-primary/40 dark:bg-primary/30 dark:text-primary';
 
 /**
  * One input row of the calculator form. Memoized: typing in one input re-renders that row only,
@@ -59,7 +59,12 @@ export const CalculatorInputField = React.memo(function CalculatorInputField({
       type="number"
       step="0.01"
       value={inputValue}
-      onChange={(e) => { onChange(field.fieldName, parseFloat(e.target.value) || 0); }}
+      // A cleared box is empty ('' : no value, named as missing when calculated), never 0: a 0 speed made every time it divided infinite.
+      onChange={(e) => {
+        const typed = e.target.value;
+        const n = parseFloat(typed);
+        onChange(field.fieldName, typed.trim() === '' ? '' : Number.isFinite(n) ? n : typed);
+      }}
       onBlur={() => { onBlur(field.fieldName); }}
       placeholder={`Enter ${label}`}
       className={`flex-1 ${isRealSourcedValue ? REAL_VALUE_CLASS : ''}`}
@@ -123,7 +128,7 @@ export const CalculatorInputField = React.memo(function CalculatorInputField({
 
       {provenance && <div className="text-xs text-muted-foreground">Why: {provenance}</div>}
       {gap && (value ?? '') === '' && (
-        <div className="text-xs text-amber-600 dark:text-amber-400">Missing: {gap}</div>
+        <div className="text-xs text-warning">Missing: {gap}</div>
       )}
       {tonnageCheck && <TonnageCheckNote check={tonnageCheck} />}
     </div>
@@ -140,7 +145,7 @@ function TonnageCheckNote({ check: { required, theoretical, selected } }: { chec
         <span className="font-semibold text-foreground">Recommended {required.toFixed(2)} T</span>
       </div>
       {ok !== null && (
-        <div className={`font-medium ${ok ? 'text-emerald-600' : 'text-destructive'}`}>
+        <div className={`font-medium ${ok ? 'text-success' : 'text-destructive'}`}>
           Required {required.toFixed(2)} T (Recommended Force) {ok ? '≤' : '>'} selected {selected.toFixed(1)} T
           {ok ? ' — machine has enough capacity' : ' — machine is undersized for this bend'}
         </div>

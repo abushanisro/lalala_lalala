@@ -1,25 +1,35 @@
-import { RATES_SOURCE_LABEL, INSPECTION_SAMPLING_DEFAULT, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate, type InspectionStagePolicy } from '../../shared/core/default-rates.constants';
-import { resolveSetupMinutes, type SetupTimeResolution } from '../../shared/core/engine-kernel';
+import { latheMillingLines, type LatheMillingOp } from './lathe-milling';
+import { prefixTrace, sumRuns, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
+import { cylindersToTurn, ringLabel, type TurnedCylinder, type TurnedRing } from './turned-diameters';
+import type { ExternalThread, KnurlOp } from '../external-threads';
+import { RATES_SOURCE_LABEL, isoCoarsePitchMm, HOLE_OP_UNLOAD_SEC, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, MACHINE_REGISTRY, type SurfaceTreatmentDbRate } from '../../shared/core/default-rates.constants';
+import { findRouteDataGaps, persistableCycleSec, resolveSetupMinutes, type RankableRoute, type RouteCompatibilityVerdict, type RouteDataGap, type SetupTimeResolution } from '../../shared/core/engine-kernel';
 import type { DeepHoleCandidate } from '../operation/deep-hole-routing';
 import { isRealHeatTreatmentCallout } from '../operation/wire-edm-routing';
-import { deriveGdtSeverity } from '../../shared/physics/gdt-severity';
 import {
   checkMachineCapability,
   type PartGeometryForCapability,
 } from '../../shared/capability/machine-capability';
 import type { MachineCapability } from '../../shared/capability/machine-selection/seed-registry';
+import { liveToolingVerdict, type LiveToolWork } from '../capability/live-tooling';
 import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
-import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
-import type { DrillingTable } from '../lookup/drilling-table';
+import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 import type { MachiningCapabilityRules } from '../capability-rules';
-import { prefixTrace, traceCalc, traceHasAssumption, traceInput } from './machining-trace';
+import { variableSeed } from '../calculators/machining-source-refs';
+import type { StockFacing } from '../../stock/stock-facing';
+import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
-import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../calculators/machining-calculator';
+import type { OperationLine } from '../operation/operation-sequencer';
+import type { TurnedGroove } from '../operation/turned-grooves';
+import { timeOperations } from '../operation/time-operations';
+import { runMachiningCalculator, runPlanned, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
+import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
+import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator-spec';
 import {
-  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, drillingLookupSeeds, finishTurningLookupSeeds, tappingLookupSeeds,
-  grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds, reamingLookupSeeds,
-  rechuckLookupSeeds, roughTurningLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
+  keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, isWorkbookField, specLookupSeeds,
+  grindingLookupSeeds, gunDrillingLookupSeeds, surfaceGrindingLookupSeeds, hobbingLookupSeeds, shavingLookupSeeds, rotaryBroachingLookupSeeds, jigBoringLookupSeeds, partingLookupSeeds,
+  groovingLookupSeeds, rechuckLookupSeeds, wireEdmLookupSeeds, type LookupSeeds, type KeywayBroachReference, type SurfaceGrindingParams, type HobbingReference, type RotaryBroachReference,
 } from '../calculators/machining-lookup-seeds';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -77,7 +87,8 @@ export interface MachiningCostInput {
   // depth_mm: the group's real CAD hole depth (the deepest occurrence), when
   // the part's machining features carry one; absent for parts analysed
   // without it, where drilling discloses its depth assumption instead.
-  holeGroups: Array<{ diameter_mm: number; count: number; depth_mm?: number }>;
+  /** Drilled holes by diameter; `occurrences` = the feature_graph_v2 occurrences counted (feature-occurrences.ts), what their inputs light. */
+  holeGroups: Array<{ diameter_mm: number; count: number; depth_mm?: number; occurrences?: FeatureOccurrenceRef[] }>;
   pocketCount: number;
   materialGrade: string | null;
   materialCostPerKg: number;
@@ -87,7 +98,16 @@ export interface MachiningCostInput {
   // (CAD-detected tapped_hole.depth_mm, or a drawing-OCR'd pitch) that
   // bom-items.service.ts's resolveThreads() already resolves and passes
   // here. See tapThreadGroups below.
-  threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; isThrough?: boolean }>;
+  /** Threads by size; `occurrences` = the tapped holes' feature_graph_v2 occurrences when they come from the CAD (not from a drawing). */
+  /** liveCount: of count, the threads off the turning centreline, tapped with a live tool (feature-holes.ts). */
+  threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; isThrough?: boolean; occurrences?: FeatureOccurrenceRef[]; liveCount?: number }>;
+  /**
+   * The drawing's external threads, each turned on its Ring (external-threads.ts splitExternalThreads): the Thread Turning line. Turned
+   * families only; their callouts are not in `threads` (which a lathe taps).
+   */
+  externalThreads?: ExternalThread[];
+  /** The drawing's knurls, each on its Ring (external-threads.ts knurlsOnRings): the Knurling line. Turned families only. */
+  knurls?: KnurlOp[];
   tightestToleranceMm: number | null;
   gdtFeatureCount: number;
   batchSize: number;
@@ -97,52 +117,99 @@ export interface MachiningCostInput {
   tappingRate: MHRRateInput;
   deburrRate: MHRRateInput;
   inspectionRate: MHRRateInput; // CMM / inspection station — carries amortized MHR when a DB record exists
+  /**
+   * The XRF analyzer that checks each raw material lot's composition (class xrf_analyzer, migration 1145): the RM Composition Analysis
+   * line. Absent: a caller that quotes no raw material lot of its own (a sheet metal part's inspection), and no such line.
+   */
+  xrfRate?: MHRRateInput;
   // Surface treatment callout from the drawing / coating field ("Type III Hardcoat
   // Black Anodize"); null when the part has none.
   surfaceTreatment: string | null;
-  // Resolved quality plan (DB quality_plans row or code default). When unset,
-  // INSPECTION_SAMPLING_DEFAULT applies.
-  samplingPolicy?: InspectionStagePolicy;
-  // Legacy per-item in-process override (1 = full measurement on every part);
-  // wins over samplingPolicy.inProcessPerN. FAI and final stages still apply.
-  samplingPerN?: number;
-  // GD&T callouts for per-feature inspection time. timeMin is pre-resolved from
-  // the inspection_rules table when available; the code matrix is the fallback.
-  gdtFeatures?: Array<{ symbol: string; tolerance: number; timeMin?: number }>;
   // Digital Factory location — localizes fixture/tooling cost. Defaults to the
   // shared costing default so a missing value never silently prices in the wrong country.
   location?: string;
-  // Blank optimizer result — when provided, overrides the bounding-box billet volume.
-  // Improves material utilization from ~17% (raw bbox) to 55–65% (near-net stock).
   // Turned part geometry from CAD (BOMItemsService.resolveTurnedGeometry):
-  // the turned outer diameter and the length along the turning axis, each
-  // with the CAD source it came from. Absent for non-turned families.
+  // the largest turned outer diameter and the length along the turning axis,
+  // each with the CAD source it came from, and every turned outer diameter the
+  // analysis recognised (rings: each is turned from the bar on its own diameter
+  // and length; none = an analysis without them, turned as that one cylinder).
+  // Absent for non-turned families.
   turnedGeometry?: {
     diameterMm: number;
     lengthMm: number;
     diameterSource: string;
     lengthSource: string;
+    rings?: TurnedRing[];
   } | null;
   // Real tblVirtualPartoffInsertCutData rows (MachiningLookupService.getPartoffTable()).
   partoffTable?: any[] | null;
+  /**
+   * The part's turned grooves (Ring:groove, operation/turned-grooves.ts), by size: a lathe plunges each with a grooving insert (the Plunging
+   * line, timed by the Machining - Plunging calculator on tblGrooving). Absent or empty: none. A mill route mills them instead (the
+   * sequencer's Groove Milling).
+   */
+  turnedGrooves?: readonly TurnedGroove[];
+  // Real tblGrooving rows (MachiningLookupService.getGroovingTable()): the grooving inserts a groove is plunged with.
+  groovingTable?: any[] | null;
+  /**
+   * The stock the part is cut from: a machined part's is the stock model's choice (costing/stock, stock-machining-cost-summary.ts
+   * stockBlankResult), a multi-spindle's its own bar. Absent: no stock is chosen. The engine then prices no material and turns, parts and
+   * loads nothing from a size of its own making: each is a named gap.
+   */
   blankResult?: {
-    form: string;          // 'round_bar' | 'rectangular_bar' | 'billet'
+    form: string;          // 'round_bar' | 'rectangular_bar' | 'billet' | ...
     sizeLabel: string;
-    billetVolMm3: number;  // pre-computed optimized blank volume
+    billetVolMm3: number;  // the piece the machine starts from
     utilizationPct: number | null;
-    barDiameterMm?: number; // real stock_profiles round-bar diameter
+    barDiameterMm?: number; // the circle round a bar's corners: what a lathe turns down from
+    /**
+     * The stock bought per part (mm³), when it is more than the piece the machine starts from: the piece's share of a whole bar or plate,
+     * with the bar's end, the cuts and the nest's gaps (costing/stock). The material is priced on it; what is machined away, and the bar
+     * a lathe turns down from, stay the piece's. Absent: the piece is what is bought.
+     */
+    purchasedVolMm3?: number;
+    /** What chose the stock, for a calculation's source text. */
+    sizeSource?: string;
+    /** The stock left on each end of the piece (the stock model's end allowance): what End Facing takes off each face. */
+    endAllowanceMm?: number;
+    /** A tube's bore: its part-off cuts the wall, not to the centre. */
+    tubeIdMm?: number;
+    /** What a mill faces off the piece before the part's features (stock/stock-facing.ts). Absent: nothing to face. */
+    facing?: StockFacing;
   };
-  // Per-side machining stock allowance from the reference rule
-  // (costing/machining/stock-allowance.ts, via BlankOptimizerService
-  // .stockAllowanceFor). Used only for the bounding-box billet when no
-  // blankResult is supplied; null = rule not staged (no allowance added).
-  stockAllowancePerSideMm?: number | null;
+  /**
+   * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = it is loaded as a piece cut to
+   * length, so the turning engine prices no Parting; 'parting' = the lathe parts it off the bar. Absent: the engine's own rule (a lathe
+   * always parts off).
+   */
+  stockCutOff?: 'saw' | 'parting';
   // machinability_rating from raw_materials DB (75 = mild steel baseline).
   // Scales MRR: Al 6061 ≈ 150 → 2× faster; SS316 ≈ 35 → 0.47× slower.
   machinabilityRating?: number;
-  // Feature volumes from feature_graph_v2 — enables per-feature cycle time instead
-  // of (billetVol − partVol) / MRR. When absent, falls back to the bbox formula.
-  featureOps?: Array<{ name: string; timeSec: number; source: string }>;
+  /**
+   * Loading, unloading and reorienting each part (the reference's individual part setup): the componentLoadTime rows,
+   * the reference adjustment factor and repetitions, and the number of setups the part's tool axes need (null = not
+   * derived, costed as one setup). Unset = the caller does not price it (no line).
+   */
+  partSetup?: { loadTable: any[] | null; adjustmentFactor: number | null; repetitions: number | null; setups: number | null } | null;
+  /** The material's milling removal rate (tblMillingRemovalRate, mm^3/min); null or unset = not on file. */
+  millingRemovalRateMm3PerMin?: number | null;
+  /**
+   * The machining variables' rapidTransferDistanceFactor (memory/machining/variables.csv, migration 639): x the part's box length, the
+   * typical distance of a rapid move between the features the mill cuts. Null = not on file: the milling line's rapids are a named gap.
+   */
+  rapidTransferDistanceFactor?: number | null;
+  // The part's sequenced operations (feature_graph_v2, operation-sequencer.ts): each feature's own, and on a milled route the
+  // Bulk Milling of the stock around the part (stock-excess.ts). When absent, the whole stock-to-part volume is one Bulk Milling
+  // operation ((stock volume − part volume) / MRR).
+  /** The part's sequenced operations, planned before the machine is chosen: each route times them on its own machine (timeOperations). */
+  featureOps?: OperationLine[];
+  /**
+   * The sequenced operations on the features a lathe mills with a live tool: the part's keyways that are not broached, and its slots
+   * (lathe-milling.ts). The turning engine prices each operation name as a line of the lathe; the milling engine does not read it
+   * (featureOps holds them there). Unset or empty = the part has none.
+   */
+  latheMilling?: LatheMillingOp[];
   // The drawing callout costed by the reference surface-treatment engine
   // (BomItemsService.resolveSurfaceTreatmentDbRate). Null = the callout names no
   // reference process: no line, a warning.
@@ -159,22 +226,8 @@ export interface MachiningCostInput {
   // previously uncited flat 0.5 constant when present; falls back to it,
   // disclosed as a fallback, when the real rate isn't available.
   deburrLinearSpeedMmPerSec?: number | null;
-  // Material cut code of the tblDeburring row that speed came from.
-  deburrMaterialCutCode?: string | null;
-  // Real tblReaming rows (MachiningLookupService.getReamTable()), fetched
-  // once by the async caller — reaming is a genuinely new operation (had
-  // ZERO implementation before), triggered when tightestToleranceMm is at
-  // or below TIGHT_TOLERANCE_REAM_THRESHOLD_MM (same real, already-
-  // established threshold default-rates.constants.ts uses for Sheet
-  // Metal's own reaming trigger), applied to the smallest real hole group
-  // on the part (tight-tolerance requirements concentrate on precision
-  // dowel/locating holes, typically the smallest on a part — a disclosed
-  // part-level approximation, same tier as estimateBurlDiameterMm
-  // elsewhere in this codebase, not a per-hole tolerance linkage this data
-  // model doesn't have). Matched per real diameter+hardness inside this
-  // file (a pure function — no DB calls — receiving already-fetched rows),
-  // same pattern operation-sequencer.ts's Counterbore wiring uses.
-  reamTable?: any[] | null;
+  // The tblDeburring row that speed came from.
+  deburrMatch?: { table: string; row: Record<string, string | number> } | null;
   // Gear/spline teeth the cad-engine recognised (machining_features AxiGroove):
   // tooth count, tip/root diameter and face width, all measured from the B-Rep.
   toothForms?: Array<{ tooth_count: number; tip_diameter_mm: number; root_diameter_mm?: number; face_width_mm: number }>;
@@ -195,8 +248,10 @@ export interface MachiningCostInput {
   rotaryBroach?: RotaryBroachReference | null;
   // Real sharp-edge length of the part, measured by the cad-engine from the
   // B-Rep (machining_features.edges.sharp_edge_length_mm, shared/edge_length.py).
+  // sharpEdgeFaceIds: the faces meeting at those edges (edges.sharp_edge_face_ids), lit for the deburring line; absent for older analyses.
   // Absent for parts analysed before that measurement existed.
   sharpEdgeLengthMm?: number | null;
+  sharpEdgeFaceIds?: number[] | null;
   // The machining calculators (calculators / calculator_fields, mapped per
   // operation in process_calculator_mappings), keyed by operation name. Every
   // machining cycle time is evaluated from these stored formulas; the engine
@@ -204,11 +259,6 @@ export interface MachiningCostInput {
   machiningCalculators?: MachiningCalculators | null;
   // Real tblInstallingTurningWorkholders rows (MachiningLookupService.getWorkholderTable()).
   workholderTable?: Array<{ Name?: string; 'Install And Remove Time (min)'?: number }> | null;
-  // Real tblDrilling (MachiningLookupService.getDrillingTable()) — speed/feed
-  // for every drilled hole, matched per real diameter inside this pure file.
-  drillingTable?: DrillingTable | null;
-  // tblTapping rows (migration 809) — the Tapping calculator's cutting speed.
-  tappingTable?: any[] | null;
   // Deep-hole routing (Gun Drilling / Deep Bore Machine) -- new; see
   // deep-hole-routing.ts for the real L/D>5 threshold and the real,
   // disjoint diameter split (gun_drill: 3-50mm, deep_bore_machine: 50-
@@ -256,6 +306,8 @@ export interface MachiningCostInput {
   // = not staged: no grinding / jig line is added and capabilityRulesMissing
   // names what is absent.
   capabilityRules?: MachiningCapabilityRules | null;
+  /** The occurrences the inspection covers (inspectedFeatures over the part's feature_graph_v2): listed and lit on the inspection line. */
+  inspectedFeatures?: Array<{ featureId: string; occurrenceIndex: number }>;
   capabilityRulesMissing?: string[];
   // Jig Grind (new) -- shares Jig Boring's real tolerance ceiling, routed
   // by a real, disclosed heat-treat-callout classifier instead (see
@@ -301,17 +353,8 @@ export interface MachiningCostInput {
     roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean; materialCutCode?: string; toolType?: string;
   } | null;
   wireEdmRate?: MHRRateInput;
-  // General OD Turning depth-of-cut (new) -- real per-material rough/finish
-  // cut_depth_mm/cutting_speed_m_min/feed_rate_mm_rev from tblGeneralTurning
-  // (MachiningLookupService.getTurningParams), replacing TURNING_MRR's flat
-  // table + x1.2 fudge factor with a genuine pass-count model. Falls back
-  // to the disclosed TURNING_MRR estimate (with a warning) only if this
-  // real data genuinely isn't resolvable.
-  turningParams?: {
-    roughCutDepthMm: number; roughCuttingSpeedMPerMin: number; roughFeedMmPerRev: number;
-    finishCutDepthMm: number; finishCuttingSpeedMPerMin: number; finishFeedMmPerRev: number;
-    dataFound: boolean; materialCutCode?: string; toolType?: string;
-  } | null;
+  /** The machining workbook's cutting data and tool prices, for the workbook-form calculators (migration 1137). */
+  workbook?: MachiningWorkbookInput | null;
   // Real, distinct operation names per machine class (new) --
   // BOMItemsService.resolveMachiningOperationCategories, queried from
   // process_taxonomy_operations (migration 754, real
@@ -352,22 +395,6 @@ export function detectMaterialClass(grade: string | null): MaterialClass {
   return 'mild_steel';
 }
 
-// ── MRR tables (mm³/min, carbide tooling) ────────────────────────────────────
-
-// Exported so operation-sequencer.ts's feature-driven path shares this exact
-// table instead of keeping its own separately hand-maintained copy (that
-// duplicate — MRR_MM3_PER_MIN — used to require a comment begging both
-// tables be kept in sync by hand; single source of truth now).
-export const MILLING_MRR: Record<MaterialClass, number> = {
-  aluminum:     60_000,
-  mild_steel:   12_000,
-  stainless:     5_000,
-  titanium:      3_000,
-  copper_alloy: 40_000,
-  tool_steel:    3_000,
-  plastic:      150_000,  // Engineering plastics (POM/Delrin) cut ~2.5× faster than aluminum
-};
-
 // Real ops that buildOperationSequence() emits into the milling bucket's own
 // featureOps array but that are billed as their OWN dedicated process line at
 // their OWN dedicated rate elsewhere (Tapping at tappingRate, Deburring at
@@ -378,6 +405,12 @@ export const MILLING_MRR: Record<MaterialClass, number> = {
 // the exact same real set instead of an independently hand-kept copy that can
 // (and did) drift from this one.
 export const MILLING_DOUBLE_BILLED_ELSEWHERE = new Set(['Tapping', 'Deburr']);
+
+// The drilling a mill does (operation-sequencer.ts names): a line of its own on the mill, "Drilling", beside the milling line, as Tapping is.
+// Its time is taken out of the milling line, never added on top: both lines are the same station calculator ("Machining - Milling") run on
+// their own operations, so their tool changes and rapid moves are each operation's own and the two add up to the one line they were.
+// Exported so the service's per-operation breakdown puts each operation under the line that times it.
+export const MILLING_DRILLING_OPERATIONS = new Set(['Center Drilling', 'Drilling', 'Step Drilling']);
 
 // The real process name for a machine class, per memory/machining/
 // processes.csv's own 43-process catalog (e.g. "3 Axis Mill", "5 Axis Mill",
@@ -393,6 +426,99 @@ export const MILLING_DOUBLE_BILLED_ELSEWHERE = new Set(['Tapping', 'Deburr']);
 function realProcessName(machineClass: MachineClassId): string {
   const entry = (MACHINE_REGISTRY as Record<string, { machineClassKeywords: readonly string[] }>)[machineClass as unknown as string];
   return entry?.machineClassKeywords?.[0] ?? (machineClass as unknown as string);
+}
+
+// The "Machining - Milling" calculator input each sequenced operation counts toward (operation-sequencer.ts
+// names, which are the reference catalog's). An operation not listed is "Other Operations Time".
+const MILLING_TIME_INPUT: Record<string, string> = {
+  'Facing': 'Facing Time',
+  'Rough Milling': 'Rough Milling Time', 'Bulk Milling': 'Rough Milling Time',
+  'Fine Finish Milling': 'Finish Milling Time',
+  'Contouring': 'Contouring Time', 'Perimeter Milling': 'Contouring Time',
+  'Slot Milling': 'Slot and Groove Milling Time', 'Groove Milling': 'Slot and Groove Milling Time', 'Obround Slot Milling': 'Slot and Groove Milling Time',
+  'Center Drilling': 'Hole Making Time', 'Drilling': 'Hole Making Time', 'Step Drilling': 'Hole Making Time', 'Boring': 'Hole Making Time',
+  'Countersinking': 'Hole Making Time',
+  'Chamfering': 'Edge Treatment Time', 'Filleting': 'Edge Treatment Time', 'Concave Fillet Milling': 'Edge Treatment Time',
+};
+
+/** What the milling line's moves between operations are timed on: the machine, and the part's size for its rapid moves. */
+export interface MillingMoves {
+  mhrRate: MHRRateInput;
+  location?: string | null;
+  /** The part's box length (mm): the rapid transfer distance is rapidTransferDistanceFactor x it. */
+  partBoxLengthMm: number | null;
+  rapidTransferDistanceFactor: number | null;
+}
+
+/** The operations one tool makes at every size (their runs time each hole at its own diameter). */
+const ONE_TOOL_OPERATIONS: ReadonlySet<string> = new Set(['Center Drilling', 'Countersinking']);
+
+// The cutter size an operation's calculator run states, by the field each calculator names it.
+const CUTTER_FIELDS = ['Cutter Diameter', 'Tool Diameter', 'Hole Diameter', 'Step Diameter', 'Thread Diameter', 'Keyway Width', 'Initial Diameter', 'Final Diameter'];
+
+/**
+ * The cutters an operation uses: one per calculator run, by the operation and the cutter size the run states (a Ø6 and a Ø8 drill are two).
+ * A run that states no cutter size uses one tool whatever the feature's size: one spot drill centres every hole, one chamfer mill breaks
+ * every edge. An operation with no calculator run is told apart by its feature's diameter, the only size it carries.
+ */
+function cuttersOf(o: NonNullable<MachiningCostInput['featureOps']>[number]): string[] {
+  // A spot drill and a 90 degree countersink are one tool for every hole: their runs state the hole's size for the speed, not a tool's.
+  if (ONE_TOOL_OPERATIONS.has(o.name)) return [`${o.name}|`];
+  if (!o.plan?.length) return [`${o.name}|${o.diameterMm ?? ''}`];
+  return o.plan.map((p) => {
+    const field = CUTTER_FIELDS.find((f) => p.seeds[f] != null);
+    return `${o.name}|${field ? p.seeds[field]!.value : ''}`;
+  });
+}
+
+/** The selected machine's rapid traverse rate (mhr_records.specs, migration 1141): the milling line's rapid moves are at it. */
+export function rapidTraverseSeed(rate: MHRRateInput, location: string | null | undefined): Record<string, CalcSeed> {
+  if (rate.rapidTraverseMmPerMin == null) return {};
+  const column = 'specs.rapid_traverse_mm_per_min';
+  const machineId = machineRecordId(rate);
+  return {
+    'Rapid Traverse Rate': {
+      value: rate.rapidTraverseMmPerMin, source: `Machine: ${rate.machineName ?? 'selected machine'} ${column} (mhr_records)`,
+      ...(machineId ? { ref: { kind: 'machine' as const, machineId, machineName: rate.machineName ?? '', machineClass: rate.machineClass, location: location ?? null, column } } : {}),
+    },
+  };
+}
+
+/**
+ * The milling calculator's inputs: the part's sequenced operation times by group, with the operations behind each; then the moves
+ * between them: the cutters the operations use (a tool change each), the features they cut (a rapid move to each), the part's box length
+ * and the machining variable that make the rapid distance, and the machine's rapid traverse rate.
+ */
+function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>, moves: MillingMoves): Record<string, CalcSeed> {
+  const groups = new Map<string, { sec: number; ops: Set<string>; featureIds: Set<string> }>(
+    [...new Set(Object.values(MILLING_TIME_INPUT)), 'Other Operations Time'].map((g) => [g, { sec: 0, ops: new Set<string>(), featureIds: new Set<string>() }]),
+  );
+  for (const o of featureOps) {
+    if (MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name)) continue;
+    const g = groups.get(MILLING_TIME_INPUT[o.name] ?? 'Other Operations Time')!;
+    g.sec += o.timeSec;
+    g.ops.add(o.name);
+    for (const id of o.featureIds ?? []) g.featureIds.add(id);
+  }
+  const groupSeeds = Object.fromEntries([...groups].map(([field, g]) => [field, {
+    value: g.sec,
+    source: g.ops.size > 0 ? `CAD features: ${[...g.ops].join(', ')} (operation sequence)` : 'CAD features: none of this group on the part',
+    // The features the time was computed on: the calculator input shows them on the model.
+    ...(g.featureIds.size > 0 ? { ref: { kind: 'features' as const, label: field, features: [...g.featureIds].map((featureId) => ({ featureId })) } } : {}),
+  }]));
+  // The moves: only an operation that cuts (has a time) changes to its cutter and moves to its features.
+  const cutting = featureOps.filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && o.timeSec > 0);
+  const tools = new Set(cutting.flatMap(cuttersOf));
+  const visits = cutting.reduce((n, o) => n + (o.count ?? 1), 0);
+  return {
+    ...groupSeeds,
+    'Tools': { value: tools.size, source: `Operation sequence: the cutters of ${[...new Set(cutting.map((o) => o.name))].join(', ') || 'no operation'}, one per operation and cutter size` },
+    'Feature Visits': { value: visits, source: 'Operation sequence: the features the operations cut' },
+    ...(moves.partBoxLengthMm != null && moves.partBoxLengthMm > 0 ? { 'Part Box Length': { value: moves.partBoxLengthMm, source: 'CAD: the part\'s bounding box length' } } : {}),
+    ...(moves.rapidTransferDistanceFactor != null && moves.rapidTransferDistanceFactor > 0
+      ? { 'Rapid Transfer Distance Factor': variableSeed(moves.rapidTransferDistanceFactor, 'rapidTransferDistanceFactor') } : {}),
+    ...rapidTraverseSeed(moves.mhrRate, moves.location),
+  };
 }
 
 // ── Drill cycle time (real, material-aware physics) ──────────────────────────
@@ -441,11 +567,15 @@ export function computeRotaryCycleSec(
 interface DrillCycle {
   /** Seconds for the holes; null when a real input or the calculator is missing. */
   sec: number | null;
+  /** The calculator run, with its inputs, to time the holes again on a route's machine (timeOperations). Absent when nothing could be planned. */
+  plan?: PlannedRun;
   trace: CalculationTraceStep[];
   missing: string[];
   calculatorId: string | null;
   calculatorVersion: number | null;
   lookups: CalcRun['lookups'];
+  /** The calculator's outputs (its Tool Cost per Part, INR, among them); absent when it did not run. */
+  outputs?: Record<string, number>;
 }
 
 /**
@@ -458,15 +588,58 @@ export function computeDrillCycle(
   diameterMm: number,
   materialGrade: string | null | undefined,
   depthMm: number | null | undefined,
-  drillingTable: DrillingTable | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
   holes = 1,
+  occurrences?: readonly FeatureOccurrenceRef[],
+  /** The machine the holes are drilled on (its spindle limit); none when they are planned before the machine is chosen. */
+  machine: Record<string, CalcSeed> = {},
 ): DrillCycle {
-  const matClass = detectMaterialClass(materialGrade ?? null);
-  const lookup = drillingLookupSeeds({ matClass, drillingTable }, { 'Hole Diameter': diameterMm });
-  const run = runMachiningCalculator(calculators, 'Drilling', { ...holeSeeds(diameterMm, depthMm, holes), ...lookup.seeds });
-  const missing = run.missing.length > 0 ? [...lookup.missing, ...run.missing] : run.missing;
-  return { sec: run.sec, trace: run.trace, missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups };
+  return workbookCycle('Drilling', workbook, calculators, detectMaterialClass(materialGrade ?? null), holeSeeds(diameterMm, depthMm, holes, occurrences), machine);
+}
+
+/** A workbook-form calculator run (hole making: Drilling, Reaming, Step Drilling, Boring; milling: Facing, Rough, Slot and Plunge Milling) on the workbook's data for the material, planned and run. */
+export function workbookCycle(
+  operation: string, workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined,
+  matClass: MaterialClass, seeds: Record<string, CalcSeed>, machine: Record<string, CalcSeed>,
+): DrillCycle {
+  const lookup = workbookSeeds(workbook, operation, null, matClass, seeds);
+  const plan: PlannedRun = { operation, seeds: { ...seeds, ...lookup.seeds }, ...(lookup.missing.length > 0 ? { lookupMissing: lookup.missing } : {}) };
+  return cycleOf(runPlanned(calculators, plan, machine), plan);
+}
+
+/** The largest hole the workbook's drills reach for the material (its drilling table's top band); null when it has none for it. */
+export function largestDrillMm(workbook: MachiningWorkbookInput | null | undefined, matClass: MaterialClass): number | null {
+  const groups = (workbook?.tables.tblCuttingMaterialGroup ?? []) as Array<{ MaterialClass?: string; DrillReamMaterial?: string }>;
+  const group = groups.find((r) => r.MaterialClass === matClass)?.DrillReamMaterial;
+  const rows = (workbook?.tables.tblDrillReamData ?? []) as Array<{ WorkMaterial?: string; Operation?: string; DiameterMaxMm?: number | string }>;
+  const bands = rows.filter((r) => r.WorkMaterial === group && r.Operation === 'Drilling').map((r) => Number(r.DiameterMaxMm)).filter(Number.isFinite);
+  return bands.length > 0 ? Math.max(...bands) : null;
+}
+
+/**
+ * Boring a hole the drills do not reach, from the largest drilled diameter to the hole's (Internal Boring on a lathe, Boring on a
+ * mill: the workbook's Internal Boring sheet).
+ */
+export function computeBoreCycle(
+  operation: 'ID Turning' | 'Boring', initialMm: number, finalMm: number, lengthMm: number | null | undefined, bores: number,
+  matClass: MaterialClass, workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined,
+  occurrences?: readonly FeatureOccurrenceRef[], machine: Record<string, CalcSeed> = {},
+): DrillCycle {
+  const ref = featuresRef(`Ø${finalMm} holes`, occurrences);
+  const withRef = (seed: CalcSeed): CalcSeed => (ref ? { ...seed, ref } : seed);
+  const seeds: Record<string, CalcSeed> = {
+    'Initial Diameter': { value: initialMm, source: `The largest drill of the workbook's drilling table for the material (Ø${initialMm} mm)` },
+    'Final Diameter': withRef({ value: finalMm, source: 'CAD: hole diameter' }),
+    'Bores': withRef({ value: bores, source: 'CAD: holes of this diameter' }),
+    ...(lengthMm != null && lengthMm > 0 ? { 'Bore Length': withRef({ value: lengthMm, source: 'CAD: hole depth' }) } : {}),
+  };
+  return workbookCycle(operation, workbook, calculators, matClass, seeds, machine);
+}
+
+/** A planned run's result as a hole cycle: its time, steps, missing inputs and calculator, with the plan to time it again. */
+function cycleOf(run: CalcRun & { outputs?: Record<string, number> }, plan: PlannedRun): DrillCycle {
+  return { sec: run.sec, trace: run.trace, missing: run.missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups, plan, ...(run.outputs ? { outputs: run.outputs } : {}) };
 }
 
 /**
@@ -474,25 +647,34 @@ export function computeDrillCycle(
  * hole-diameter group. Groups without real inputs are left unpriced and named.
  */
 function drillHoleGroups(
-  holeGroups: Array<{ diameter_mm: number; count: number; depth_mm?: number }>,
+  holeGroups: Array<{ diameter_mm: number; count: number; depth_mm?: number; occurrences?: FeatureOccurrenceRef[] }>,
   holeCount: number,
   materialGrade: string | null | undefined,
-  drillingTable: DrillingTable | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
-): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups'] } {
+  machine: Record<string, CalcSeed>,
+): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; outputs: Record<string, number>; oversize: HoleGroup[]; largestDrillMm: number | null; rows: FeatureOp[] } {
   const trace: CalculationTraceStep[] = [];
+  // One row per hole size drilled, naming the holes and lighting exactly them (the line's breakdown in the process tree and the feature card).
+  const rows: FeatureOp[] = [];
   const missing: string[] = [];
   const lookups: CalcRun['lookups'] = {};
   let totalSec = 0;
   let calculatorId: string | null = null;
   let calculatorVersion: number | null = null;
+  const largest = largestDrillMm(workbook, detectMaterialClass(materialGrade ?? null));
+  const oversize = largest == null ? [] : holeGroups.filter((g) => g.diameter_mm > largest);
+  let toolInr = 0;
   if (holeGroups.length === 0) {
     if (holeCount > 0) missing.push(`per-diameter CAD hole data (${holeCount} hole${holeCount === 1 ? '' : 's'} counted, no diameters/depths)`);
-    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups };
+    return { min: 0, trace, missing, calculatorId, calculatorVersion, lookups, outputs: {}, oversize, largestDrillMm: largest, rows };
   }
   const multi = holeGroups.length > 1;
   for (const g of holeGroups) {
-    const cycle = computeDrillCycle(g.diameter_mm, materialGrade, g.depth_mm, drillingTable, calculators, g.count);
+    // A hole the drills do not reach is drilled at the largest of them (and bored to size on its own line).
+    const drillMm = oversize.includes(g) ? largest! : g.diameter_mm;
+    const cycle = computeDrillCycle(drillMm, materialGrade, g.depth_mm, workbook, calculators, g.count, g.occurrences, machine);
+    toolInr += cycle.outputs?.['Tool Cost per Part'] ?? 0;
     calculatorId = cycle.calculatorId ?? calculatorId;
     calculatorVersion = cycle.calculatorVersion ?? calculatorVersion;
     Object.assign(lookups, cycle.lookups);
@@ -502,9 +684,32 @@ function drillHoleGroups(
     }
     totalSec += cycle.sec;
     trace.push(...(multi ? prefixTrace(`Ø${g.diameter_mm} mm ·`, cycle.trace) : cycle.trace));
+    if (cycle.sec > 0) {
+      const refs = g.occurrences ?? [];
+      rows.push({
+        name: `Drilling // Hole Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec, featureType: 'drill', count: g.count,
+        ...(refs.length > 0 ? { featureIds: [...new Set(refs.map((o) => o.featureId))], occurrenceRefs: refs.map((o) => ({ ...o })) } : {}),
+      });
+    }
   }
   if (multi && trace.length > 0) trace.push(traceCalc('Drilling cycle time', totalSec, 's', 'Sum of every hole-diameter group Cycle Time'));
-  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups };
+  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {}, oversize, largestDrillMm: largest, rows };
+}
+
+/** The holes the drills do not reach, bored from the largest drill to size (Internal Boring on a lathe, Boring on a mill): one run per diameter. */
+function boreHoleGroups(
+  operation: 'ID Turning' | 'Boring', groups: readonly HoleGroup[], largestDrillMm: number, matClass: MaterialClass,
+  workbook: MachiningWorkbookInput | null | undefined, calculators: MachiningCalculators | null | undefined, machine: Record<string, CalcSeed>,
+): { run: CalcRun & { outputs: Record<string, number> }; rows: FeatureOp[] } {
+  const runs = groups.map((g) => ({ g, cycle: computeBoreCycle(operation, largestDrillMm, g.diameter_mm, g.depth_mm, g.count, matClass, workbook, calculators, g.occurrences, machine) }));
+  const summed = sumRuns(runs.map(({ g, cycle }) => ({ label: `Ø${g.diameter_mm} mm`, run: cycle })), `${operation} cycle time`);
+  const toolInr = runs.reduce((t, { cycle }) => t + (cycle.outputs?.['Tool Cost per Part'] ?? 0), 0);
+  const rows: FeatureOp[] = runs.filter(({ cycle }) => cycle.sec != null && cycle.sec > 0).map(({ g, cycle }) => ({
+    name: `${operation} // Hole Ø${g.diameter_mm} mm ×${g.count}`, timeSec: cycle.sec!, featureType: 'boring', count: g.count,
+    ...((g.occurrences ?? []).length > 0
+      ? { featureIds: [...new Set(g.occurrences!.map((o) => o.featureId))], occurrenceRefs: g.occurrences!.map((o) => ({ ...o })) } : {}),
+  }));
+  return { run: { ...summed, outputs: toolInr > 0 ? { 'Tool Cost per Part': toolInr } : {} }, rows };
 }
 
 // Same disclosed depth-to-diameter assumption as drilling (DRILL_DEPTH_TO_DIAMETER_RATIO)
@@ -512,7 +717,7 @@ function drillHoleGroups(
 export { DRILL_DEPTH_TO_DIAMETER_RATIO };
 
 type Identity = Record<string, { processGroup: string; processRoute: string; operation: string }> | undefined;
-type HoleGroup = { diameter_mm: number; count: number; depth_mm?: number };
+type HoleGroup = { diameter_mm: number; count: number; depth_mm?: number; occurrences?: FeatureOccurrenceRef[] };
 type GrindingParams = { workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number; roughAxialFeedRevMm: number; finishAxialFeedRevMm: number; dataFound: boolean; materialCutCode?: string; match?: { table: string; row: Record<string, string | number> } };
 
 const smallestGroup = (groups: HoleGroup[]): HoleGroup =>
@@ -531,44 +736,30 @@ function secondaryLine(
   warnings: string[],
   identity: Identity,
   extraMissing: string[] = [],
-  // false: the operation runs on a machine whose setup another line already
-  // charges (rotary broaching on the part's own machine) — no second setup.
+  // false: the operation runs on the part's own machine (rotary broaching, the
+  // part's loading and unloading), which is set up once — no second setup.
   ownSetup = true,
+  // With ownSetup false: that machine's setup, taken by this line when it is
+  // the machine's first with a cycle time (machineSetupOnce).
+  hostSetup?: TakeMachineSetup,
 ): ProcessLineCost {
   const gap = [...extraMissing, ...run.missing];
   if (gap.length > 0) warnings.push(`${process} not priced — missing real input: ${gap.join('; ')}.`);
   const runMin = (run.sec ?? 0) / 60;
   if (!ownSetup) {
-    return withRun(makeLine(process, 0, r2((runMin / 60) * rate.rate), runMin, rate, identity), run, [], extraMissing);
+    const setup = hostSetup?.(runMin) ?? null;
+    return withRun(makeLine(process, setup?.cost ?? 0, (runMin / 60) * rate.rate, runMin, rate, identity, setup?.disclosure), run, [], extraMissing);
   }
   const setupResolution = resolveSetupMinutes({
     process, machineSetupTimeHr: rate.setupTimeHr, machineName: rate.machineName,
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
-  const setupCost = r2((setupResolution.setupMin / Math.max(batchSize, 1) / 60) * rate.rate);
-  const runCost = r2((runMin / 60) * rate.rate);
+  const setupCost = (setupResolution.setupMin / Math.max(batchSize, 1) / 60) * rate.rate;
+  const runCost = (runMin / 60) * rate.rate;
   return withRun(
     makeLine(process, setupCost, runCost, runMin, rate, identity, { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source }),
     run, setupTraceSteps(setupResolution, rate.machineName, batchSize), extraMissing,
   );
-}
-
-/** Sums several calculator runs of one operation (one per real occurrence group). */
-function sumRuns(runs: Array<{ label: string; run: CalcRun }>, total: string): CalcRun {
-  if (runs.length === 1) return runs[0]!.run;
-  const trace: CalculationTraceStep[] = [];
-  const missing: string[] = [];
-  let sec = 0;
-  let anyPriced = false;
-  for (const { label, run } of runs) {
-    trace.push(...prefixTrace(`${label} ·`, run.trace));
-    missing.push(...run.missing.map((m) => `${m} (${label})`));
-    if (run.sec != null) { sec += run.sec; anyPriced = true; }
-  }
-  if (anyPriced) trace.push(traceCalc(total, sec, 's', 'Sum of every group Cycle Time'));
-  const first = runs.find((r) => r.run.calculatorId)?.run;
-  const lookups = Object.assign({}, ...runs.map((r) => r.run.lookups));
-  return { sec: anyPriced ? sec : null, trace, missing, calculatorId: first?.calculatorId ?? null, calculatorVersion: first?.calculatorVersion ?? null, lookups };
 }
 
 function grindingSeeds(
@@ -592,22 +783,24 @@ function computeReamingLine(
   calculators: MachiningCalculators | null | undefined,
   holeGroups: HoleGroup[],
   matClass: MaterialClass,
-  reamTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   rate: MHRRateInput,
   batchSize: number,
   warnings: string[],
   identity: Identity,
+  hostSetup?: TakeMachineSetup,
+  location?: string | null,
 ): ProcessLineCost {
   const g = smallestGroup(holeGroups);
-  const seeds = { ...holeSeeds(g.diameter_mm, g.depth_mm, g.count), ...reamingLookupSeeds({ matClass, reamTable }, { 'Hole Diameter': g.diameter_mm }).seeds };
-  const run = runMachiningCalculator(calculators, 'Reaming', seeds);
+  const run = workbookCycle('Reaming', workbook, calculators, matClass, holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), spindleLimitSeed(rate, location));
   const gap = run.missing;
   if (gap.length > 0) warnings.push(`Reaming not priced — missing real input: ${gap.join('; ')}.`);
   const min = (run.sec ?? 0) / 60;
-  // Reaming runs on the part's primary machine (rate), whose real setup is
-  // already charged on that machine's own line — no separate coded reamer
-  // setup is added.
-  return withRun(makeLine('Reaming', 0, r2((min / 60) * rate.rate), min, rate, identity), run, []);
+  // Reaming runs on the part's primary machine (rate), which is set up once:
+  // no reamer setup of its own is added, and on a mill it carries the
+  // machine's setup when it is its first line with a cycle time (hostSetup).
+  const setup = hostSetup?.(min) ?? null;
+  return withRun(makeLine('Reaming', setup?.cost ?? 0, (min / 60) * rate.rate, min, rate, identity, setup?.disclosure), run, []);
 }
 
 // The finishing-process rules (capability-rules.ts), or null with one
@@ -638,7 +831,7 @@ function computeJigBoreLine(
   if (tightestToleranceMm == null || tightestToleranceMm <= 0 || tightestToleranceMm > rules.jigBorePositionToleranceMm) return null;
   if (holeGroups.length === 0 || !rate) return null;
   const g = smallestGroup(holeGroups);
-  const seeds = { ...holeSeeds(g.diameter_mm, g.depth_mm, g.count), ...jigBoringLookupSeeds({ matClass, finishBoringTable, capabilityRules: rules }, { 'Hole Diameter': g.diameter_mm }).seeds };
+  const seeds = { ...holeSeeds(g.diameter_mm, g.depth_mm, g.count, g.occurrences), ...jigBoringLookupSeeds({ matClass, finishBoringTable, capabilityRules: rules }, { 'Hole Diameter': g.diameter_mm }).seeds };
   return secondaryLine('Jig Boring', runMachiningCalculator(calculators, 'Jig Boring', seeds), rate, batchSize, warnings, identity);
 }
 
@@ -722,6 +915,7 @@ function computeRotaryBroachingLine(
   machineClass: string,
   matClass: MaterialClass,
   warnings: string[],
+  hostSetup?: TakeMachineSetup,
 ): ProcessLineCost | null {
   const polygons = input.polygons ?? [];
   for (const p of polygons.filter((x) => x.kind === 'boss')) {
@@ -738,7 +932,7 @@ function computeRotaryBroachingLine(
       out.push({ label: `${label} pilot hole`, run: { sec: null, trace: [], calculatorId: null, calculatorVersion: null, lookups: {},
         missing: [`a pilot-hole ratio for a ${p.sides}-sided polygon (variables give hex and square only)`] } });
     } else {
-      const pilot = computeDrillCycle(p.acrossFlatsMm * diaRatio, input.materialGrade, p.depthMm * ref.pilotLengthRatio, input.drillingTable, input.machiningCalculators, p.count);
+      const pilot = computeDrillCycle(p.acrossFlatsMm * diaRatio, input.materialGrade, p.depthMm * ref.pilotLengthRatio, input.workbook, input.machiningCalculators, p.count, undefined, spindleLimitSeed(input.mhrRate, input.location));
       out.push({ label: `${label} pilot Ø${(p.acrossFlatsMm * diaRatio).toFixed(2)} x ${(p.depthMm * ref.pilotLengthRatio).toFixed(2)} mm`,
         run: { sec: pilot.sec, trace: pilot.trace, missing: pilot.missing, calculatorId: pilot.calculatorId, calculatorVersion: pilot.calculatorVersion, lookups: pilot.lookups } });
     }
@@ -752,7 +946,7 @@ function computeRotaryBroachingLine(
     out.push({ label: `${label} broach`, run });
     return out;
   });
-  return secondaryLine('Rotary Broaching', sumRuns(runs, 'Rotary broaching cycle time'), { ...input.mhrRate, machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, [], false);
+  return secondaryLine('Rotary Broaching', sumRuns(runs, 'Rotary broaching cycle time'), { ...input.mhrRate, machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, [], false, hostSetup);
 }
 
 // ── Surface Grinding — every CAD planar face, same Ra trigger as the other
@@ -927,6 +1121,9 @@ const MACHINE_ENVELOPE: Record<string, { l: number; w: number; h: number; maxWei
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// For minutes, percentages, weights and text only, never money. A line's money is per part and can be legitimately sub-cent
+// (a 0.4 s turning pass): rounded to cents it read $0.00, and lines rounded one by one did not add up to the part's cost.
+// Money is kept at full precision here, persisted at the columns' own precision, and rounded only where it is shown.
 function r2(n: number): number { return Math.round(n * 100) / 100; }
 function r3(n: number): number { return Math.round(n * 1000) / 1000; }
 
@@ -968,6 +1165,45 @@ export function resolveOperationName(
  * travelled at the real tblDeburring edge speed for this material. Either
  * missing → the line reports the gap; nothing is estimated in its place.
  */
+/** The componentLoadTime row for a part: the lightest, then smallest, row that holds its weight and its longest dimension. */
+export function componentLoadRow(rows: any[] | null | undefined, weightKg: number, maxDimMm: number): any | null {
+  return [...(rows ?? [])]
+    .filter((r) => Number(r.weight_kg) >= weightKg && Number(r.part_max_dimension_mm) >= maxDimMm)
+    .sort((a, b) => Number(a.weight_kg) - Number(b.weight_kg) || Number(a.part_max_dimension_mm) - Number(b.part_max_dimension_mm))[0] ?? null;
+}
+
+/**
+ * The time the operator spends on each part at the machine besides cutting: loading the stock, unloading the part,
+ * and turning it over between setups (the "Part Setup" calculator). Billed at the machine's rate, in its setup.
+ * The row is chosen by the stock weight, the heavier of what is loaded and unloaded.
+ */
+function computePartSetupLine(
+  input: MachiningCostInput, rate: MHRRateInput, stockWeightKg: number, warnings: string[], hostSetup: TakeMachineSetup,
+): ProcessLineCost | null {
+  const ps = input.partSetup;
+  if (!ps) return null;
+  const maxDim = Math.max(input.maxLength, input.maxWidth, input.maxHeight);
+  const row = stockWeightKg > 0 && maxDim > 0 ? componentLoadRow(ps.loadTable, stockWeightKg, maxDim) : null;
+  const seeds: Record<string, CalcSeed> = {
+    'Setups': ps.setups != null && ps.setups > 0
+      ? { value: ps.setups, source: 'CAD: setups the feature tool axes need' }
+      : { value: 1, source: 'Assumption: one setup (the CAD analysis carries no feature tool axes)' },
+  };
+  if (row) {
+    const src = `componentLoadTime: ${row.equipment === 'None' ? 'by hand' : row.equipment}, up to ${row.weight_kg} kg and ${row.part_max_dimension_mm} mm (stock ${r3(stockWeightKg)} kg, ${r2(maxDim)} mm)`;
+    const match = { table: 'componentLoadTime', row: { equipment: row.equipment, weight_kg: row.weight_kg, part_max_dimension_mm: row.part_max_dimension_mm } };
+    seeds['Load Time'] = { value: Number(row.load_time_s), source: src, lookup: true, match };
+    seeds['Unload Time'] = { value: Number(row.unload_time_s), source: src, lookup: true, match };
+    seeds['Reorientation Time'] = { value: Number(row.reorientation_time_s), source: src, lookup: true, match };
+  }
+  if (ps.adjustmentFactor != null) seeds['Adjustment Factor'] = { value: ps.adjustmentFactor, source: 'variables: partSetupTimeAdjustmentFactor', lookup: true };
+  if (ps.repetitions != null) seeds['Repetitions'] = { value: ps.repetitions, source: 'variables: repetitionsOfIndividualPartSetup', lookup: true };
+  const run = runMachiningCalculator(input.machiningCalculators, 'Part Setup', seeds);
+  const extraMissing = row ? [] : [`a componentLoadTime row for a ${r3(stockWeightKg)} kg, ${r2(maxDim)} mm part`];
+  // On the part's own machine: no second setup, and the line is named for the operation, not the station.
+  return secondaryLine('Part Setup', run, { ...rate, hostMachineClass: rate.hostMachineClass ?? rate.machineClass }, input.batchSize, warnings, input.processIdentityByMachineClass, extraMissing, false, hostSetup);
+}
+
 function computeDeburringLine(
   input: MachiningCostInput,
   deburrRate: MHRRateInput,
@@ -975,13 +1211,18 @@ function computeDeburringLine(
   warnings: string[],
 ): ProcessLineCost | null {
   const seeds: Record<string, CalcSeed> = {};
+  // The faces meeting at those edges (cad-engine edge_length.sharp_edge_faces): what the edge length lights on the model.
+  const edgeFaces = input.sharpEdgeFaceIds?.length ? [...input.sharpEdgeFaceIds] : null;
   if (input.sharpEdgeLengthMm != null && input.sharpEdgeLengthMm > 0) {
-    seeds['Sharp Edge Length'] = { value: input.sharpEdgeLengthMm, source: 'CAD: total length of sharp B-Rep edges (seams and tangent edges excluded)' };
+    seeds['Sharp Edge Length'] = {
+      value: input.sharpEdgeLengthMm, source: 'CAD: total length of sharp B-Rep edges (seams and tangent edges excluded)',
+      ...(edgeFaces ? { ref: { kind: 'faces' as const, label: 'sharp edges', faceIds: edgeFaces } } : {}),
+    };
   }
   Object.assign(seeds, deburringLookupSeeds({
     matClass,
     deburrParams: input.deburrLinearSpeedMmPerSec != null
-      ? { linearSpeedMmPerSec: input.deburrLinearSpeedMmPerSec, dataFound: true, materialCutCode: input.deburrMaterialCutCode ?? undefined }
+      ? { linearSpeedMmPerSec: input.deburrLinearSpeedMmPerSec, dataFound: true, match: input.deburrMatch ?? undefined }
       : null,
   }).seeds);
   const run = runMachiningCalculator(input.machiningCalculators, 'Deburring', seeds);
@@ -991,18 +1232,33 @@ function computeDeburringLine(
   const missing = run.sec == null ? (why.length ? why : run.missing) : [];
   if (missing.length > 0) warnings.push(`Deburring not priced — missing real input: ${missing.join('; ')}.`);
   const min = (run.sec ?? 0) / 60;
-  return withRun(
-    makeLine('Deburring', 0, r2((min / 60) * deburrRate.rate), min, deburrRate, input.processIdentityByMachineClass),
-    { ...run, missing },
+  // Deburring is its own station: its own setup, resolved as Inspection's is.
+  const setup = resolveSetupMinutes({ process: 'Deburring', machineSetupTimeHr: deburrRate.setupTimeHr, machineName: deburrRate.machineName });
+  if (setup.warning) warnings.push(setup.warning);
+  const setupCost = (setup.setupMin / 60) * deburrRate.rate / Math.max(input.batchSize, 1);
+  const line = withRun(
+    makeLine('Deburring', setupCost, (min / 60) * deburrRate.rate, min, deburrRate, input.processIdentityByMachineClass,
+      { setupTimeMin: setup.setupMin, setupTimeSource: setup.source }),
+    { ...run, missing }, setup.setupMin > 0 ? setupTraceSteps(setup, deburrRate.machineName, input.batchSize) : [],
   );
+  // The sharp edges deburred, for the Process tree: a row that lights the faces they lie between when the analysis recorded them
+  // (edges.sharp_edge_face_ids); an analysis before that still lists the row, without a highlight, until it is refreshed.
+  return run.sec != null && input.sharpEdgeLengthMm != null && input.sharpEdgeLengthMm > 0
+    ? withFeatureGroups(line, [{
+      name: `Sharp edges (${Math.round(input.sharpEdgeLengthMm)} mm)`, timeSec: run.sec, featureType: 'deburring', count: 1, ...(edgeFaces ? { faceIds: edgeFaces } : {}),
+    }])
+    : line;
 }
 
 const EMPTY_RUN: CalcRun = { sec: null, trace: [], missing: [], calculatorId: null, calculatorVersion: null, lookups: {} };
 
+/** What a line keeps of the calculation that timed it: one calculator run, or several summed (drillHoleGroups, tapThreadGroups). */
+type LineRun = Pick<CalcRun, 'trace' | 'missing' | 'calculatorId' | 'calculatorVersion'> & { lookups?: CalcRun['lookups'] };
+
 /** Attaches a calculator run (trace, gap, calculator identity) to a line. */
 function withRun(
   line: ProcessLineCost,
-  run: Pick<CalcRun, 'trace' | 'missing' | 'calculatorId' | 'calculatorVersion'> & { lookups?: CalcRun['lookups'] },
+  run: LineRun,
   extraTrace: CalculationTraceStep[] = [],
   extraMissing: string[] = [],
 ): ProcessLineCost {
@@ -1015,14 +1271,186 @@ function withRun(
   return out;
 }
 
-/** CAD hole diameter / depth / count as calculator seeds (depth omitted when CAD has none). */
-function holeSeeds(diameterMm: number, depthMm: number | null | undefined, count: number): Record<string, CalcSeed> {
-  const seeds: Record<string, CalcSeed> = {
-    'Hole Diameter': { value: diameterMm, source: 'CAD: hole diameter' },
-    'Holes': { value: count, source: 'CAD: holes of this diameter' },
+/** The HR Rates record (mhr_records.id) a rate was read from: the machine the selector chose, else the record the rate names; null for none. */
+function machineRecordId(rate: MHRRateInput): string | null {
+  return rate.selection?.balanced?.candidate?.machineId ?? rate.mhrRecordId ?? null;
+}
+
+/** A line with the features it acts on (FeatureOp rows the Process tree lists and lights); unchanged when there are none. */
+function withFeatureGroups(line: ProcessLineCost, groups: readonly FeatureOp[]): ProcessLineCost {
+  return groups.length > 0 ? { ...line, featureBreakdown: [...(line.featureBreakdown ?? []), ...groups] } : line;
+}
+
+/** A turned cylinder's diameter and length as calculator seeds; a Ring's open its faces on the model. */
+function turnedCylinderSeeds(cylinder: TurnedCylinder): Record<string, CalcSeed> {
+  const faceIds = cylinder.ring?.faceIds ?? [];
+  const ref = faceIds.length > 0 ? { ref: { kind: 'faces' as const, label: cylinder.label, faceIds: [...faceIds] } } : {};
+  return {
+    'Turned Diameter': { value: cylinder.diameterMm, source: cylinder.diameterSource, ...ref },
+    'Turned Length': { value: cylinder.lengthMm, source: cylinder.lengthSource, ...ref },
   };
-  if (depthMm != null && depthMm > 0) seeds['Hole Depth'] = { value: depthMm, source: 'CAD: hole depth' };
+}
+
+/**
+ * The approach and overrun a turning calculator adds to each pass, seeded with where it comes from: the value is the calculator's own
+ * stored one (the Machining calculator workbook's Turning sheet times a cut over its length plus 10 mm). An allowance, not a measurement,
+ * so it is stated as an assumption. Nothing when the calculator has no such field.
+ */
+function approachSeed(calculators: MachiningCalculators | null | undefined, operation: string): Record<string, CalcSeed> {
+  const mm = Number(calculators?.[operation]?.fields.find((f) => f.field_name === 'Approach Length')?.default_value);
+  if (!(mm > 0)) return {};
+  return {
+    'Approach Length': {
+      value: mm,
+      source: `Assumption: the tool's approach and overrun on each pass (Machining calculator workbook: length of cut + ${mm} mm)`,
+    },
+  };
+}
+
+/** The machining workbook's data (migration 1137) for its calculators, and the rupee rates its tool prices are converted with. */
+export interface MachiningWorkbookInput {
+  tables: Record<string, any[] | null | undefined>;
+  /** The line's currency per rupee, and US dollars per rupee: the workbook prices its tools in INR. Null when the rate is not on file. */
+  inrToLocal: number | null;
+  inrToUsd: number | null;
+}
+
+/**
+ * The inputs a workbook-form calculator reads from the workbook's tables (its spec fields with a material group, a band or a `where`),
+ * picked by the material's group and by its other inputs: the depth of cut picks the band its speed and feed are read from. Its default
+ * inputs count as given (Rough Depth of Cut 2 mm), the seeds override them.
+ */
+export function workbookSeeds(
+  workbook: MachiningWorkbookInput | null | undefined, operation: string, machineClass: string | null, matClass: MaterialClass,
+  seeds: Record<string, CalcSeed | undefined>,
+): LookupSeeds {
+  const calc = loadMachiningCalculatorSpec().calculators.find((c) => c.operation === operation && (machineClass == null || c.machineClasses.includes(machineClass)));
+  const fields = (calc?.fields ?? []).filter(isWorkbookField);
+  if (fields.length === 0) return { seeds: {}, missing: [] };
+  const keys: Record<string, number> = {};
+  for (const f of calc!.fields) if (typeof f.default === 'number') keys[f.name] = f.default;
+  for (const [name, s] of Object.entries(seeds)) if (s) keys[name] = s.value;
+  return specLookupSeeds(fields, { matClass, tables: workbook?.tables ?? {}, variables: {}, cutCode: null }, keys);
+}
+
+/** A machine record's top speeds, as mhr_records.specs holds them (migration 1136). */
+export interface SpindleMachine {
+  id: string | null;
+  name: string | null;
+  machineClass: string;
+  maxSpindleRpm: number | null;
+  liveToolingMaxRpm: number | null;
+}
+
+/** The mhr_records.specs column a cutting calculator's spindle cap reads: a lathe's live tool for milling on the lathe, else the spindle. */
+export const spindleColumn = (liveTool: boolean) => liveTool ? 'specs.live_tooling_speed_rpm' : 'specs.spindle_speed_rpm';
+
+/** A machine's top spindle speed, which a cutting calculator caps its spindle at, read from the machine's own record. */
+export function machineSpindleSeed(machine: SpindleMachine, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+  const value = liveTool ? machine.liveToolingMaxRpm : machine.maxSpindleRpm;
+  if (value == null) return {};
+  const column = spindleColumn(liveTool);
+  return {
+    'Max Spindle Speed': {
+      value, source: `Machine: ${machine.name ?? 'selected machine'} ${column} (mhr_records)`,
+      ...(machine.id ? { ref: { kind: 'machine' as const, machineId: machine.id, machineName: machine.name ?? '', machineClass: machine.machineClass, location: location ?? null, column } } : {}),
+    },
+  };
+}
+
+/** The selected machine's top spindle speed (mhr_records.specs, migration 1136), which a cutting calculator caps its spindle at. */
+export function spindleLimitSeed(rate: MHRRateInput, location: string | null | undefined, liveTool = false): Record<string, CalcSeed> {
+  return machineSpindleSeed({
+    id: machineRecordId(rate), name: rate.machineName ?? null, machineClass: rate.machineClass,
+    maxSpindleRpm: rate.maxSpindleRpm ?? null, liveToolingMaxRpm: rate.liveToolingMaxRpm ?? null,
+  }, location, liveTool);
+}
+
+/**
+ * A line's tool wear: the run's Tool Cost per Part (the workbook's tool price over its tool life, in rupees), in the line's currency on
+ * its run and total cost, and in USD as the line's other cost. A run with none is the line as it was; a rate not on file is named.
+ */
+function withToolCost(line: ProcessLineCost, run: { outputs?: Record<string, number> }, workbook: MachiningWorkbookInput | null | undefined, warnings: string[]): ProcessLineCost {
+  const inr = run.outputs?.['Tool Cost per Part'];
+  if (inr == null || !(inr > 0)) return line;
+  if (workbook?.inrToLocal == null || workbook.inrToUsd == null) {
+    warnings.push(`${line.process}: tool cost (Rs ${inr.toFixed(2)} per part) not costed, no INR exchange rate on file.`);
+    return line;
+  }
+  const local = inr * workbook.inrToLocal;
+  return {
+    ...line,
+    runCost: line.runCost + local,
+    totalCost: line.totalCost + local,
+    otherCostPerPart: local,
+    otherCostPerPartUsd: inr * workbook.inrToUsd,
+    // The tool's price and life are the line's own calculator inputs (shown in its steps); this names the charge they make.
+    otherCostDetail: `tool wear Rs ${inr.toFixed(2)} per part`,
+  };
+}
+
+/**
+ * One turning line's work, from the calculator run of each cylinder the bar leaves to turn: the cylinders the operation cuts (a run with a
+ * time) or cannot time (a run lacking an input), summed into the line's run, and each Ring cut as a row the Process tree lists and lights.
+ * A cylinder the operation has nothing to do on (no rough pass on 0.2 mm of stock) is not part of the line.
+ */
+function turningWork(operation: string, runs: readonly { cylinder: TurnedCylinder; run: CalcRun }[]): { run: CalcRun; rings: FeatureOp[] } {
+  const hasTime = (run: CalcRun): run is CalcRun & { sec: number } => run.sec != null && run.sec > 0;
+  const worked = runs.filter(({ run }) => hasTime(run) || run.missing.length > 0);
+  return {
+    run: worked.length > 0 ? sumRuns(worked.map(({ cylinder, run }) => ({ label: cylinder.label, run })), `${operation} cycle time`) : EMPTY_RUN,
+    rings: worked.flatMap(({ cylinder: { ring, label }, run }) => (ring && hasTime(run) ? [{
+      name: `${operation} // ${label}`, timeSec: run.sec, featureType: 'Ring', count: 1,
+      ...(ring.faceIds.length > 0 ? { faceIds: [...ring.faceIds] } : {}),
+    }] : [])),
+  };
+}
+
+/**
+ * CAD hole diameter / depth / count as calculator seeds (depth omitted when CAD has none). With the holes' feature_graph_v2 occurrences,
+ * each input opens exactly those holes on the model (a 'features' ref); without them the inputs carry no ref.
+ */
+function holeSeeds(diameterMm: number, depthMm: number | null | undefined, count: number, occurrences?: readonly FeatureOccurrenceRef[]): Record<string, CalcSeed> {
+  const ref = featuresRef(`Ø${diameterMm} holes`, occurrences);
+  const withRef = (seed: CalcSeed): CalcSeed => (ref ? { ...seed, ref } : seed);
+  const seeds: Record<string, CalcSeed> = {
+    'Hole Diameter': withRef({ value: diameterMm, source: 'CAD: hole diameter' }),
+    'Holes': withRef({ value: count, source: 'CAD: holes of this diameter' }),
+  };
+  if (depthMm != null && depthMm > 0) seeds['Hole Depth'] = withRef({ value: depthMm, source: 'CAD: hole depth' });
   return seeds;
+}
+
+/** A machine's setup as the line that carries it is charged it: its cost per part, and the setup time the line states. */
+interface MachineSetup {
+  cost: number;
+  disclosure: { setupTimeMin: number; setupTimeSource: SetupTimeResolution['source'] };
+}
+
+/**
+ * A line's request for its machine's setup: given its cycle time, it gets the
+ * setup when it is the machine's first line with one, and null otherwise.
+ */
+type TakeMachineSetup = (cycleMin: number, evenWithoutTime?: boolean) => MachineSetup | null;
+
+/**
+ * A machine is set up once for the batch, and the setup is charged on the first
+ * of its lines that has a cycle time: a line with no work does not carry it (a
+ * line of 0 s reads as "no cycle time was resolved" and the route as not fully
+ * costed). `evenWithoutTime` is for the line that stays on the route as a named
+ * gap: what cannot be priced still carries the setup. Lines ask in the order
+ * they are built; `charged` tells whether any took it.
+ */
+function machineSetupOnce(setup: MachineSetup): { take: TakeMachineSetup; charged: () => boolean } {
+  let charged = false;
+  return {
+    take: (cycleMin, evenWithoutTime = false) => {
+      if (charged || !(cycleMin > 0 || evenWithoutTime)) return null;
+      charged = true;
+      return setup;
+    },
+    charged: () => charged,
+  };
 }
 
 /** Where a resolved setup time came from, as trace steps (see resolveSetupMinutes). */
@@ -1075,13 +1503,13 @@ function makeLine(
   cycleTimeMin: number,
   rate: MHRRateInput,
   processIdentityByMachineClass?: Record<string, { processGroup: string; processRoute: string; operation: string }>,
-  // Raw, un-amortised setup minutes + which resolveSetupMinutes() tier they
-  // came from — only passed by call sites that actually resolved a real
-  // setup (the 'Setup' and 'Inspection' lines); every other line has no
-  // setup component and correctly leaves these unset, matching
-  // ProcessLineCost.setupTimeMin's own "optional, not every producer
-  // populates it" contract.
-  setupDisclosure?: { setupTimeMin: number; setupTimeSource: SetupTimeResolution['source'] },
+  // Un-amortised setup minutes and the resolveSetupMinutes() tier they came
+  // from. A line with no setup of its own (an operation on a machine whose
+  // setup another line of the route already charges: finish turning after
+  // rough turning, rigid tapping on the mill) states exactly that: 0 minutes,
+  // source 'none'. Left unset it read as "setup not resolved" and the whole
+  // route was refused as not fully costed.
+  setupDisclosure: { setupTimeMin: number; setupTimeSource: SetupTimeResolution['source'] } = { setupTimeMin: 0, setupTimeSource: 'none' },
 ): ProcessLineCost {
   // An operation run on another machine (rate.hostMachineClass) takes that
   // machine's Process/Category, and its own name as the Operation — never the
@@ -1092,24 +1520,45 @@ function makeLine(
   const identity = hostClass
     ? (hostIdentity ? { processGroup: hostIdentity.processGroup, processRoute: hostIdentity.processRoute, operation: process } : undefined)
     : processIdentityByMachineClass?.[rate.machineClass];
+  // The callers time the line at the machine's hour rate (rate.rate: its direct and indirect overhead). The operators who run the machine are charged on top, for
+  // the same minutes: the machine's own labour rate times its own operator count (HR Rates). A machine with no operator count or no labour rate on file charges
+  // no labour, and missingOperatorLabourWarnings() says so; a count is never assumed.
+  const labourPerHr = rate.operators != null && rate.labourRate != null ? rate.labourRate * rate.operators : 0;
+  // The labour is the machine's minutes again, read back from its unrounded cost: from a cost already rounded to cents it was rounded twice.
+  const setupLabour = rate.rate > 0 ? (setupCost / rate.rate) * labourPerHr : 0;
+  const runLabour = rate.rate > 0 ? (runCost / rate.rate) * labourPerHr : 0;
   return {
     process,
     ...(identity ? { processGroup: identity.processGroup, processRoute: identity.processRoute, operation: identity.operation } : {}),
     ...(hostClass ? { hostMachineClass: hostClass } : {}),
-    setupCost: r2(setupCost),
-    runCost: r2(runCost),
-    totalCost: r2(setupCost + runCost),
-    // Four decimals (0.006 s): two decimals of a minute is 0.6 s, which turned
-    // a real 2.63 s drilling cycle into a displayed 2.4 s.
-    cycleTimeMin: Math.round(cycleTimeMin * 10000) / 10000,
+    // Unrounded (see r2): the route's total is the sum of these, and Apply stores them as they are.
+    setupCost: setupCost + setupLabour,
+    runCost: runCost + runLabour,
+    totalCost: setupCost + setupLabour + runCost + runLabour,
+    // The cycle's two parts, kept apart so the cost table need not guess the split.
+    machineCostPerPart: runCost,
+    laborCostPerPart: runLabour,
+    operators: rate.operators ?? null,
+    // The cycle at the precision it is stored at (process_cost_records.cycle_time, seconds to four decimals): four decimals of a minute
+    // (0.006 s) turned a 0.0024 s a part XRF lot check (60 s over a 25 000 batch) into 0, a line "with no cycle time" saved as not costed.
+    cycleTimeMin: persistableCycleSec(cycleTimeMin) / 60,
     hourlyRate: rate.rate,
     rateSource: rate.source,
     machineClass: rate.machineClass,
     machineName: rate.machineName,
     commodityCode: rate.commodityCode,
     labourRate: rate.labourRate ?? null,
-    ...(setupDisclosure ? { setupTimeMin: setupDisclosure.setupTimeMin, setupTimeSource: setupDisclosure.setupTimeSource } : {}),
+    setupTimeMin: setupDisclosure.setupTimeMin,
+    setupTimeSource: setupDisclosure.setupTimeSource,
   };
+}
+
+/** One sentence per machine whose lines carry no operator labour because HR Rates has no operator count or no labour rate for it. */
+function missingOperatorLabourWarnings(lines: readonly ProcessLineCost[]): string[] {
+  const machines = new Set(lines
+    .filter((l) => l.rateSource === 'mhr_database' && l.totalCost > 0 && (l.operators == null || l.labourRate == null))
+    .map((l) => `${l.machineName ?? l.machineClass}: no ${l.operators == null ? 'operator count' : 'labour rate'} on file`));
+  return [...machines].map((m) => `${m}, operator labour not costed on its lines.`);
 }
 
 /**
@@ -1120,48 +1569,72 @@ function makeLine(
  * with no depth is left unpriced and named — never an assumed value.
  */
 export function computeTapCycle(
-  thread: { size: string; count: number; pitchMm?: number; depthMm?: number },
+  thread: { size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] },
   matClass: MaterialClass,
-  tappingTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
+  machine: Record<string, CalcSeed> = {},
 ): DrillCycle {
   const none = (missing: string[]): DrillCycle => ({ sec: null, trace: [], missing, calculatorId: null, calculatorVersion: null, lookups: {} });
   const m = /^M\s*(\d+(?:\.\d+)?)/i.exec(String(thread.size ?? '').trim());
   if (!m) return none([`a metric thread size (got "${thread.size}")`]);
   const diameterMm = Number(m[1]);
   const pitchMm = thread.pitchMm != null && thread.pitchMm > 0 ? thread.pitchMm : isoCoarsePitchMm(diameterMm);
+  // The tapped holes on the model, when the threads came from the CAD: their inputs light exactly those holes.
+  const holesRef = featuresRef(`${thread.size} tapped holes`, thread.occurrences);
   const seeds: Record<string, CalcSeed> = {
-    'Thread Diameter': { value: diameterMm, source: `Thread size ${thread.size}` },
-    'Threads': { value: thread.count, source: 'CAD/drawing: threads of this size' },
+    'Thread Diameter': { value: diameterMm, source: `Thread size ${thread.size}`, ...(holesRef ? { ref: holesRef } : {}) },
+    'Threads': { value: thread.count, source: 'CAD/drawing: threads of this size', ...(holesRef ? { ref: holesRef } : {}) },
   };
   if (pitchMm != null) {
     seeds['Thread Pitch'] = thread.pitchMm != null && thread.pitchMm > 0
       ? { value: pitchMm, source: 'CAD/drawing: thread pitch' }
       : { value: pitchMm, source: `ISO 261 coarse pitch of M${diameterMm}` };
   }
-  if (thread.depthMm != null && thread.depthMm > 0) seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth' };
-  const lookup = pitchMm != null ? tappingLookupSeeds({ matClass, tappingTable }, { 'Thread Pitch': pitchMm }) : { seeds: {}, missing: [`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`] };
-  const run = runMachiningCalculator(calculators, 'Tapping', { ...seeds, ...lookup.seeds });
-  const missing = run.missing.length > 0 ? [...lookup.missing, ...run.missing] : run.missing;
-  return { sec: run.sec, trace: run.trace, missing, calculatorId: run.calculatorId, calculatorVersion: run.calculatorVersion, lookups: run.lookups };
+  if (thread.depthMm != null && thread.depthMm > 0) {
+    seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
+  } else {
+    // No depth on file (a thread the drawing names and the CAD did not find tapped): the thread engagement a tapped hole is cut for, by
+    // the material it is tapped in.
+    const factor = THREAD_ENGAGEMENT[matClass];
+    seeds['Thread Depth'] = {
+      value: Math.round(factor * diameterMm * 1000) / 1000,
+      source: `Thread engagement rule: ${factor} x the ${diameterMm} mm nominal diameter in ${matClass.replace('_', ' ')} (${THREAD_ENGAGEMENT_SOURCE}); no tapped hole of this size in the CAD`,
+    };
+  }
+  if (pitchMm == null) return none([`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`]);
+  return workbookCycle('Tapping', workbook, calculators, matClass, seeds, machine);
 }
+
+/**
+ * The thread engagement a tapped hole is cut for, as a multiple of the nominal diameter, by the material it is tapped in: the common
+ * engineering rule of 1 x D in steel, 1.5 x D in cast iron and brass, 2 x D in aluminium (the softer the parent metal, the longer the
+ * engagement that holds the screw). Titanium and the tool and stainless steels are at least as strong as steel; a plastic is softer than
+ * aluminium and takes its 2 x D. Used only for a thread with no depth on file.
+ */
+export const THREAD_ENGAGEMENT: Readonly<Record<MaterialClass, number>> = {
+  mild_steel: 1, stainless: 1, tool_steel: 1, titanium: 1, copper_alloy: 1.5, aluminum: 2, plastic: 2,
+};
+export const THREAD_ENGAGEMENT_SOURCE = 'Project Materials, Thread engagement; Tameson, Thread engagement chart: 1 x D steel, 1.5 x D cast iron and brass, 2 x D aluminium';
 
 /** Tapping time for every thread on the part: one calculator run per thread-size group. */
 function tapThreadGroups(
-  threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number }>,
+  threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: FeatureOccurrenceRef[] }>,
   matClass: MaterialClass,
-  tappingTable: any[] | null | undefined,
+  workbook: MachiningWorkbookInput | null | undefined,
   calculators: MachiningCalculators | null | undefined,
-): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups'] } {
+  machine: Record<string, CalcSeed>,
+): { min: number; trace: CalculationTraceStep[]; missing: string[]; calculatorId: string | null; calculatorVersion: number | null; lookups: CalcRun['lookups']; groups: FeatureOp[] } {
   const trace: CalculationTraceStep[] = [];
   const missing: string[] = [];
   const lookups: CalcRun['lookups'] = {};
+  const groups: FeatureOp[] = [];
   let totalSec = 0;
   let calculatorId: string | null = null;
   let calculatorVersion: number | null = null;
   const multi = threads.length > 1;
   for (const t of threads) {
-    const cycle = computeTapCycle(t, matClass, tappingTable, calculators);
+    const cycle = computeTapCycle(t, matClass, workbook, calculators, machine);
     calculatorId = cycle.calculatorId ?? calculatorId;
     calculatorVersion = cycle.calculatorVersion ?? calculatorVersion;
     Object.assign(lookups, cycle.lookups);
@@ -1171,84 +1644,93 @@ function tapThreadGroups(
     }
     totalSec += cycle.sec;
     trace.push(...(multi ? prefixTrace(`${t.size} ·`, cycle.trace) : cycle.trace));
+    // The tapped holes of this size, for the Process tree (only when the threads came from the CAD, so they name real holes).
+    if (t.occurrences?.length) {
+      groups.push({
+        name: `${t.size} tapped ×${t.count}`, timeSec: cycle.sec, featureType: 'tapping', count: t.count,
+        featureIds: [...new Set(t.occurrences.map((o) => o.featureId))], occurrenceRefs: t.occurrences.map((o) => ({ ...o })),
+      });
+    }
   }
   if (multi && trace.length > 0) trace.push(traceCalc('Tapping cycle time', totalSec, 's', 'Sum of every thread-size group Cycle Time'));
-  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups };
+  return { min: totalSec / 60, trace, missing, calculatorId, calculatorVersion, lookups, groups };
 }
 
-/**
- * GD&T inspection minutes (up to 5 callouts): the inspection_rules time per
- * callout when resolved, else the coded severity matrix — with the source that
- * applied. gdtFeatures and the part's GD&T count come from the same resolver
- * (resolveGdtCallouts), so there is no count without callouts to time.
- */
-function gdtInspectionTime(
-  gdtFeatures?: Array<{ symbol: string; tolerance: number; timeMin?: number }>,
-): CalcSeed {
-  if (gdtFeatures && gdtFeatures.length > 0) {
-    const used = gdtFeatures.slice(0, 5);
-    const fromRules = used.every((g) => g.timeMin != null);
-    return {
-      value: used.reduce((sum, g) => sum + (g.timeMin ?? deriveGdtSeverity(g.symbol, g.tolerance).inspectionTimeMin), 0),
-      source: fromRules
-        ? `inspection_rules: ${used.map((g) => `${g.symbol} ${g.tolerance}`).join(', ')}`
-        : 'Assumption: coded GD&T severity matrix for callouts without an inspection_rules row',
-    };
-  }
-  return { value: 0, source: 'No GD&T callouts (STEP model PMI or drawing)' };
-}
 
-// ── Inspection line (three-stage sampling, CMM-amortized) ────────────────────
-// Cost per part = (setup + FAI + in-process samples + final checks) / batchSize.
-//   FAI:        first article, full per-piece measurement, once per batch
-//   in-process: 1 of every N parts (samplingPerN override), full measurement
-//   final:      1 of every finalPerN parts, short visual/gauge check
-// The rate carries CMM equipment amortization when an MHR record exists — the
-// MHR engine already prices depreciation/interest/maintenance per effective hour.
+// ── Inspection line (the machining workbook's Inspection sheet) ────────────────
+// A batch is inspected by sample: 60 s a batch for its 5 sampled parts of every 50 it starts (the whole batch when smaller than its
+// sample), the time shared over the parts the batch makes (user decision 2026-11-25; migration 1151). The holes the part has that are
+// inspected (Special Inspection: Feature Inspection) are listed on the line for the Process tree and lit on the model.
 function computeInspectionLine(
-  holes: number,
-  threadCount: number,
-  tightestToleranceMm: number | null,
-  gdtFeatureCount: number,
-  gdtFeatures: Array<{ symbol: string; tolerance: number; timeMin?: number }> | undefined,
+  inspected: ReadonlyArray<{ featureId: string; occurrenceIndex: number }>,
   inspectionRate: MHRRateInput,
   batchSize: number,
-  samplingPerN: number | undefined,
-  samplingPolicy: InspectionStagePolicy | undefined,
   calculators: MachiningCalculators | null | undefined,
   warnings: string[],
   processIdentityByMachineClass?: Record<string, { processGroup: string; processRoute: string; operation: string }>,
+  /** The machining workbook's tables: the inspection gauge's price and life (tblCuttingToolCost), the line's tool cost. */
+  workbook?: MachiningWorkbookInput | null,
+  matClass: MaterialClass = 'mild_steel',
 ): ProcessLineCost {
-  const policy = samplingPolicy ?? INSPECTION_SAMPLING_DEFAULT;
-  const policySource = samplingPolicy ? 'Sampling policy: inspection_rules' : 'Assumption: default sampling policy (coded)';
   const batch = Math.max(batchSize, 1);
-  const run = runMachiningCalculator(calculators, 'Inspection', {
-    'Holes': { value: holes, source: 'CAD: drilled holes' },
-    'Threads': { value: threadCount, source: 'Drawing/CAD: threads' },
-    'Tightest Tolerance': tightestToleranceMm != null && tightestToleranceMm > 0
-      ? { value: tightestToleranceMm, source: 'Drawing: tightest tolerance' }
-      : { value: 0, source: 'Drawing: no tolerance callout' },
-    'GDT Time': gdtInspectionTime(gdtFeatures),
-    'Batch Size': { value: batch, source: 'BOM: batch size' },
-    'First Article Pieces': { value: policy.fai ? 1 : 0, source: policySource },
-    'In-process 1 in N': { value: Math.max(samplingPerN ?? policy.inProcessPerN, 1), source: samplingPerN != null ? 'Scenario: sampling override' : policySource },
-    'Final Check 1 in N': { value: Math.max(policy.finalPerN, 1), source: policySource },
-    'Final Check Time': { value: policy.finalCheckMin, source: policySource },
-  });
+  const seeds: Record<string, CalcSeed> = {
+    'Batch Size': { value: batch, source: 'BOM: the batch size, the batch the sample is taken from' },
+  };
+  // The gauge's price and life, from the workbook's tool table (the same for every material).
+  const gauge = workbookSeeds(workbook, 'Inspection', null, matClass, seeds);
+  const run = runMachiningCalculator(calculators, 'Inspection', { ...seeds, ...gauge.seeds });
+  if (run.missing.length > 0) warnings.push(`Inspection not priced — missing real input: ${run.missing.join('; ')}.`);
   const cycleMin = (run.sec ?? 0) / 60;
   // Real per-CMM mhr_records.setup_time_hr first, then the cited class
   // constant — see resolveSetupMinutes().
   const setupResolution = resolveSetupMinutes({
     process: 'Inspection',
+    // The inspection station's reference record states its setup, and states 0: a recorded zero, not a gap.
+    referenceSetupTimeHr: inspectionRate.referenceSetupTimeHr,
     machineSetupTimeHr: inspectionRate.setupTimeHr,
     machineName: inspectionRate.machineName,
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
-  const setupCost = r2((setupResolution.setupMin / 60) * inspectionRate.rate / batch);
-  const runCost = r2((cycleMin / 60) * inspectionRate.rate);
-  return withRun(makeLine('Inspection', setupCost, runCost, cycleMin, inspectionRate, processIdentityByMachineClass, {
+  const setupCost = (setupResolution.setupMin / 60) * inspectionRate.rate / batch;
+  const runCost = (cycleMin / 60) * inspectionRate.rate;
+  const line = withRun(makeLine('Inspection', setupCost, runCost, cycleMin, inspectionRate, processIdentityByMachineClass, {
     setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source,
   }), run, setupTraceSteps(setupResolution, inspectionRate.machineName, batchSize));
+  // The holes inspected (Special Inspection: Feature Inspection), for the Process tree: the batch's sample inspection covers them all.
+  if (inspected.length > 0) {
+    line.featureBreakdown = [{
+      name: `Feature Inspection ×${inspected.length}`,
+      timeSec: run.sec ?? 0,
+      featureType: 'inspection',
+      count: inspected.length,
+      featureIds: [...new Set(inspected.map((o) => o.featureId))],
+      occurrenceRefs: [...inspected],
+    }];
+  }
+  // The inspection gauge's wear (the workbook's Rs 3500 over 10 000 parts), on the line as every workbook tool's.
+  return run.sec != null ? withToolCost(line, run, workbook, warnings) : line;
+}
+
+// ── RM Composition Analysis (the machining workbook's sheet of that name) ─────
+// Each raw material lot's composition checked on an XRF analyzer: 60 s a lot, shared over the parts the lot makes. The lot is the batch.
+// On the XRF work centre of HR Rates (class xrf_analyzer, migration 1145), its machine and labour rate; no setup of its own.
+function computeRmCompositionLine(
+  xrfRate: MHRRateInput,
+  batchSize: number,
+  calculators: MachiningCalculators | null | undefined,
+  warnings: string[],
+  processIdentityByMachineClass?: Record<string, { processGroup: string; processRoute: string; operation: string }>,
+): ProcessLineCost {
+  const batch = Math.max(batchSize, 1);
+  const run = runMachiningCalculator(calculators, 'RM Composition Analysis', {
+    'Lot Size': { value: batch, source: 'BOM: the batch size, one raw material lot (the workbook\'s lot is its part volume)' },
+  });
+  if (run.missing.length > 0) warnings.push(`RM Composition Analysis not priced — missing real input: ${run.missing.join('; ')}.`);
+  const cycleMin = (run.sec ?? 0) / 60;
+  const line = makeLine('RM Composition Analysis', 0, (cycleMin / 60) * xrfRate.rate, cycleMin, xrfRate, processIdentityByMachineClass, {
+    setupTimeMin: 0, setupTimeSource: 'none',
+  });
+  return withRun(line, run, []);
 }
 
 // Surface treatment is now in its own module to avoid circular dep with cost-engine.ts.
@@ -1367,12 +1849,61 @@ export function checkMachiningCapability(
   return { overallCapable: warnings.length === 0, machineCapabilityWarnings: warnings };
 }
 
+export interface LatheCapabilityResult extends MachiningCapabilityResult {
+  /** The live-tool part of the warnings: what the machine cannot make, or that its live tooling is not on file. */
+  liveToolWarnings: string[];
+}
+
+/**
+ * Whether a lathe can make the part: the part within the machine's envelope (checkMachiningCapability) and, when the part needs a live
+ * tool (cross and off-axis holes, milled keyways, slots and flats: live-tooling.ts), the machine having one. ONE definition for the cost summary
+ * and the route comparison, so the route the Cost tab quotes is one the comparison calls capable.
+ */
+export function checkLatheCapability(
+  machineClass: MachineClassId,
+  part: { maxLength: number; maxWidth: number; maxHeight: number; weightKg: number; liveTool: LiveToolWork },
+  machine: { name: string; capability?: MachineCapability | null; capabilitySource?: 'imported' | 'seed' | 'default_class' },
+): LatheCapabilityResult {
+  const envelope = checkMachiningCapability(
+    machineClass, part.maxLength, part.maxWidth, part.maxHeight, part.weightKg, machine.capability, machine.capabilitySource,
+  );
+  const liveTooling = liveToolingVerdict(part.liveTool, machine.capability, machine.name);
+  return {
+    overallCapable: envelope.overallCapable && liveTooling.capable,
+    machineCapabilityWarnings: [...envelope.machineCapabilityWarnings, ...liveTooling.warnings],
+    liveToolWarnings: liveTooling.warnings,
+  };
+}
+
+/**
+ * What milling operations cost on a mill, as its line prices them: the station's "Machining - Milling" calculator on their times, with a
+ * tool change for each cutter and a rapid move to each feature they cut, at the machine's rate with its operators' labour. Null when the
+ * station's calculator is not on file or cannot time them.
+ */
+export function millingOperationsCost(
+  machiningCalculators: MachiningCostInput['machiningCalculators'], machineClass: MachineClassId, ops: NonNullable<MachiningCostInput['featureOps']>,
+  moves: MillingMoves,
+): number | null {
+  const { mhrRate } = moves;
+  const run = runMachiningCalculator(machiningCalculators, realProcessName(machineClass), millingSeeds(ops, moves));
+  if (run.sec == null) return null;
+  const minutes = run.sec / 60;
+  return makeLine(realProcessName(machineClass), 0, (minutes / 60) * mhrRate.rate, minutes, mhrRate).runCost;
+}
+
+/** Said on a quote whose part has no stock (input.blankResult): the engine prices no material and sizes no stock of its own. */
+export const NO_STOCK_WARNING = 'No stock is chosen for the part: its material is not costed, and nothing is estimated in its place.';
+
 // ── Milled cost summary ──────────────────────────────────────────────────
 
 export function computeMillingCostSummary(
-  input: MachiningCostInput,
+  given: MachiningCostInput,
   machineClass: MachineClassId,
 ): CostSummaryDto {
+  // The part's operations timed on this route's machine: a calculator caps its spindle at the machine's own limit.
+  const input: MachiningCostInput = given.featureOps
+    ? { ...given, featureOps: timeOperations(given.featureOps, given.machiningCalculators, spindleLimitSeed(given.mhrRate, given.location)) }
+    : given;
   const {
     volume, surfaceArea, maxLength, maxWidth, maxHeight,
     holeCount, holeGroups, materialGrade, materialCostPerKg,
@@ -1386,32 +1917,26 @@ export function computeMillingCostSummary(
   const matClass = detectMaterialClass(materialGrade);
   const location = input.location ?? '__default__';
 
-  // ── Billet ────────────────────────────────────────────────────────────────
-  // Prefer blank optimizer result (round bar / rectangular bar selected from stock
-  // profiles table) over the raw bounding-box billet. The optimizer raises material
-  // utilization from ~17% to 55–65% for typical prismatic/turned parts. Falls back
-  // to bbox + the reference per-side stock allowance when the optimizer was not called.
-  const allow = 2 * (input.stockAllowancePerSideMm ?? 0);
-  if (!input.blankResult && input.stockAllowancePerSideMm == null) {
-    warnings.push('Stock allowance not applied to the billet — the reference rule (percentStockAllowance / minStockAllowance / maxStockAllowance, memory/Stock Maching) is not staged.');
-  }
-  const rawBilletVol =
-    maxLength > 0 && maxWidth > 0 && maxHeight > 0
-      ? (maxLength + allow) * (maxWidth + allow) * (maxHeight + allow)
-      : 0;
-  const billetVolMm3 = input.blankResult?.billetVolMm3 ?? rawBilletVol;
+  // ── Stock ─────────────────────────────────────────────────────────────────
+  // The piece the mill starts from is the stock chosen for the part (input.blankResult). With none, nothing is estimated in its place:
+  // the material is not costed, and the quote says so.
+  const billetVolMm3 = input.blankResult?.billetVolMm3 ?? 0;
   const billetWeightKg = r3((billetVolMm3 / 1e9) * materialDensityKgM3);
+  // The stock bought per part: the piece itself, or its share of the whole bar or plate when the stock model states one.
+  const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : billetWeightKg;
   // Stock weight x cost/kg. No markup: the reference has none, and its only
   // scrap adjustment (per-material Scrap Cost Percent) is a resale CREDIT,
   // applied only when enableScrapMaterialCredit is true — false in
   // memory/Machining, Stock Maching and Multi-Spindle Maching.
-  const materialCost = r2(billetWeightKg * materialCostPerKg);
+  // The weight is to the gram, as shown and as Apply writes it on the material record (grossWeightKg), so the record and the quote price the
+  // same weight; the money is not rounded (see r2).
+  const materialCost = stockWeightKg * materialCostPerKg;
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
-  if (billetVolMm3 === 0) warnings.push('Bounding box is zero — billet cost may be inaccurate');
+  if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
   if (volume > 0 && billetVolMm3 > 0 && volume > billetVolMm3) {
     warnings.push(
-      'CAD part volume exceeds the bounding-box billet — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
+      'CAD part volume exceeds the stock it is cut from — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
     );
   }
 
@@ -1422,7 +1947,8 @@ export function computeMillingCostSummary(
   // the whole job, real but not a distinct process step. Showing it as its
   // own peer row in the Manufacturing Process tree (with the same machine
   // repeated on every row) misrepresented it as a 44th operation. Folded
-  // into the first real line this machine produces (CNC Milling) instead —
+  // into the first line this machine produces that has a cycle time (CNC
+  // Milling, when it mills anything) instead —
   // the same convention every engine built later this session already uses
   // (Jig Boring/Cylindrical Grinding/Keyway Broaching/etc. each carry their
   // own setupCost + runCost on ONE line, never a separate "Setup" line).
@@ -1437,22 +1963,41 @@ export function computeMillingCostSummary(
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
   const setupMin = setupResolution.setupMin / Math.max(batchSize, 1);
-  const fixtureCost = r2((input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1));
-  const setupCostVal = r2((setupMin / 60) * mhrRate.rate) + fixtureCost;
-  const setupDisclosure = { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source };
+  const fixtureCost = (input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1);
+  const setupCostVal = (setupMin / 60) * mhrRate.rate + fixtureCost;
+  // The mill's lines ask for its setup in the order they are built: the
+  // milling line, the part's loading and unloading (Part Setup), then the
+  // tapping, rotary broaching and reaming the mill does. The first with a
+  // cycle time carries it; milling that cannot be priced keeps its line as a
+  // named gap, which carries it (machineSetupOnce).
+  const millSetup = machineSetupOnce({ cost: setupCostVal, disclosure: { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source } });
 
   // ── CNC Milling (roughing + all hole operations on the same machine) ─────
   // When feature_graph_v2 data is available (featureOps), use per-feature cycle
   // times from the operation sequencer — this is Fix 3 + Fix 4. The sequencer
   // already breaks out Drill, Tap, Pocket Rough/Finish per occurrence so we sum
-  // all machining ops and bill them against the VMC rate.
-  // Fallback: (billetVol − partVol) / MRR × 1.3 for parts without feature data.
+  // all machining ops and bill them against the VMC rate. The stock the feature operations leave around the part is in the
+  // sequence too, as one Bulk Milling operation (stock-excess.ts), so the whole piece is machined down to the part.
+  // Without feature data: one Bulk Milling operation on the stock volume less the part volume.
   //
   // machinabilityRating scales MRR: Al 6061 ≈ 150 (2× mild steel baseline of 75).
   const machinabilityFactor = (input.machinabilityRating ?? 75) / 75;
-  const mrr = MILLING_MRR[matClass] * machinabilityFactor;
 
   let cncMillingMin = 0;
+  let millRun: CalcRun | null = null;
+  // The drilling line (MILLING_DRILLING_OPERATIONS): its time, run, steps, what it lacks and its tool wear.
+  let drillingLineMin = 0;
+  let drillingRun: CalcRun | null = null;
+  let drillingSteps: CalculationTraceStep[] = [];
+  let drillingLacks: string[] = [];
+  let drillingToolInr = 0;
+  // Without feature data: the Drilling calculator's rows, one per hole size (with feature data the service attaches the operations).
+  let drillingRows: FeatureOp[] = [];
+  // Without feature data: what the bulk milling and the drilling lack of their real inputs.
+  const unpricedWithoutFeatures: string[] = [];
+  // Without feature data: the steps and the tool wear of the operations the line times (Facing, Bulk Milling, Drilling, Boring).
+  let fallbackSteps: CalculationTraceStep[] = [];
+  let fallbackToolInr = 0;
   if (Array.isArray(input.featureOps) && input.featureOps.length > 0) {
     // Root-caused live (2026-09-18): buildOperationSequence() (the feature
     // sequencer) emits its OWN "Tapping" entry for every tapped hole (real
@@ -1464,25 +2009,97 @@ export function computeMillingCostSummary(
     // process line at its OWN dedicated rate (tappingRate/deburrRate, not
     // mhrRate) — see MILLING_DOUBLE_BILLED_ELSEWHERE's own doc comment
     // above for why this exact set and why it's shared, not local.
-    // 15% rapids/ATC overhead added on top of pure cutting time.
-    const totalFeatureSec = input.featureOps
-      .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
-      .reduce((s, o) => s + o.timeSec, 0);
-    cncMillingMin = (totalFeatureSec / 60) * 1.15;
+    // The line's time is the "Machining - Milling" calculator of this machine's station: each catalog
+    // operation group's time on the part's features, then a tool change for each cutter and a rapid move to
+    // each feature, at this machine's rapid traverse rate.
+    // The drilling operations are timed on the Drilling line, by the same station calculator on them alone (MILLING_DRILLING_OPERATIONS).
+    const moves = { mhrRate, location: input.location, partBoxLengthMm: input.maxLength, rapidTransferDistanceFactor: input.rapidTransferDistanceFactor ?? null };
+    const millOps = input.featureOps.filter((o) => !MILLING_DRILLING_OPERATIONS.has(o.name));
+    const drillOps = input.featureOps.filter((o) => MILLING_DRILLING_OPERATIONS.has(o.name));
+    millRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(millOps, moves));
+    cncMillingMin = (millRun.sec ?? 0) / 60;
+    if (drillOps.length > 0) {
+      drillingRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(drillOps, moves));
+      drillingLineMin = (drillingRun.sec ?? 0) / 60;
+      drillingSteps = drillOps.flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
+      drillingLacks = [...new Set(drillOps.filter((o) => o.missing).map((o) => o.missing!))];
+      drillingToolInr = drillOps.reduce((t, o) => t + (o.toolCostInr ?? 0), 0);
+    }
   } else {
-    // Bbox-subtraction fallback (used when CAD engine did not return feature_graph_v2)
-    const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume);
-    const roughingMin = materialRemovalMm3 > 0 ? (materialRemovalMm3 / mrr) * 1.3 : 0;
+    // No feature graph (the CAD engine did not return feature_graph_v2): the stock piece's faces faced as the sequenced route faces them
+    // (the stock model's facing, stock/stock-facing.ts), the rest of the stock-to-part volume one Bulk Milling operation, the holes drilled
+    // and a hole the drills do not reach bored to size, each timed by its calculator on this mill's spindle.
+    const machine = spindleLimitSeed(mhrRate, input.location);
+    const facing = input.blankResult?.facing;
+    const faced = facing ? workbookCycle('Facing', input.workbook, input.machiningCalculators, matClass, {
+      'Face Length': { value: facing.lengthMm, source: `Stock: ${facing.basis}` },
+      'Face Width': { value: facing.widthMm, source: `Stock: ${facing.basis}` },
+      'Stock Depth': { value: facing.depthMm, source: `Stock: ${facing.basis}` },
+      'Faces': { value: facing.faces, source: `Stock: ${facing.basis}` },
+    }, machine) : null;
+    const facingMin = (faced?.sec ?? 0) / 60;
+    const facingMissing = faced && faced.sec == null ? faced.missing : [];
+    if (facingMissing.length > 0) warnings.push(`Facing not priced — missing real input: ${facingMissing.join('; ')}.`);
+    // What Facing takes off the piece is not milled again in bulk.
+    const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume - (facing?.volumeMm3 ?? 0));
+    const rate = input.millingRemovalRateMm3PerMin;
+    const bulk = runMachiningCalculator(input.machiningCalculators, 'Bulk Milling', {
+      'Removed Volume': { value: materialRemovalMm3, source: 'Stock volume less the CAD part volume' },
+      ...(rate != null && rate > 0 ? { 'Material Removal Rate': {
+        value: rate * machinabilityFactor, lookup: true,
+        source: `tblMillingRemovalRate: ${matClass} ${rate} mm^3/min x machinability factor ${machinabilityFactor}`,
+        match: { table: 'tblMillingRemovalRate', row: { MaterialClass: matClass } },
+      } } : {}),
+    });
+    const bulkMissing = !input.blankResult ? ['the stock the part is cut from'] : materialRemovalMm3 > 0 ? bulk.missing : [];
+    if (bulkMissing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulkMissing.join('; ')}.`);
+    const roughingMin = materialRemovalMm3 > 0 ? (bulk.sec ?? 0) / 60 : 0;
 
-    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.drillingTable, input.machiningCalculators);
+    const drilling = drillHoleGroups(holeGroups, holeCount, materialGrade, input.workbook, input.machiningCalculators, machine);
     const drillingMin = drilling.min;
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
+    // A hole the drills do not reach: drilled at the largest of them (above), then bored to size on the mill.
+    const bores = drilling.oversize.length > 0 && drilling.largestDrillMm != null
+      ? boreHoleGroups('Boring', drilling.oversize, drilling.largestDrillMm, matClass, input.workbook, input.machiningCalculators, machine)
+      : null;
+    const boringMin = (bores?.run.sec ?? 0) / 60;
+    const boringMissing = bores ? bores.run.missing : [];
+    if (boringMissing.length > 0) warnings.push(`Boring not priced for: ${boringMissing.join('; ')}.`);
 
-    cncMillingMin = roughingMin + drillingMin;
+    // The holes are drilled on the Drilling line (as with feature data); the milling line faces, mills in bulk and bores.
+    cncMillingMin = facingMin + roughingMin + boringMin;
+    unpricedWithoutFeatures.push(...facingMissing, ...bulkMissing, ...boringMissing);
+    fallbackSteps = [
+      ...(faced ? prefixTrace('Facing ·', faced.trace) : []),
+      ...(materialRemovalMm3 > 0 ? prefixTrace('Bulk Milling ·', bulk.trace) : []),
+      ...(bores ? prefixTrace('Boring ·', bores.run.trace) : []),
+      traceCalc(`${realProcessName(machineClass)} cycle time`, cncMillingMin * 60, 's', 'Facing + Bulk Milling + Boring'),
+    ];
+    fallbackToolInr = bores?.run.outputs['Tool Cost per Part'] ?? 0;
+    drillingLineMin = drillingMin;
+    drillingSteps = [
+      ...prefixTrace('Drilling ·', drilling.trace),
+      traceCalc('Drilling cycle time', drillingMin * 60, 's', 'Each hole group drilled by the Drilling calculator'),
+    ];
+    drillingLacks = [...drilling.missing];
+    drillingToolInr = drilling.outputs['Tool Cost per Part'] ?? 0;
+    drillingRows = drilling.rows;
   }
-  // Setup always folds into this line (even when cncMillingMin itself is 0
-  // and volume data is genuinely unavailable) so the real setup cost is
-  // never silently dropped — see setupDisclosure's own doc comment above.
+  // An operation the sequencer could not price leaves the line short of its time: the line is a named gap, so the
+  // route is not fully costed and cannot be applied at a total that silently leaves the operation out.
+  const unpricedOperations = [...new Set((input.featureOps ?? [])
+    .filter((o) => o.missing && !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && !MILLING_DRILLING_OPERATIONS.has(o.name))
+    .map((o) => o.missing!))];
+  // Each operation this machine could not time, named once (its time is 0, never an estimate).
+  for (const o of input.featureOps ?? []) {
+    if (o.missing) warnings.push(`${o.name} not priced — missing real input: ${o.missing}.`);
+  }
+  // What a line with no time at all lacks: the station's calculator or an operation's input; without feature data, the stock or the
+  // cutting data. A mill with nothing to mill (stock that holds no more than the part, no holes) lacks nothing.
+  const millLacks = cncMillingMin > 0 ? [] : [...(millRun?.missing ?? []), ...unpricedOperations, ...unpricedWithoutFeatures];
+  // The line is on the route when it has a time or names what it lacks: an unpriced mill line stays as a named gap,
+  // never dropped, and carries the setup; a mill with nothing to mill has no milling line, and its setup goes to the
+  // next of its lines that has a cycle time (it was charged on a line of 0 s, which read as a cycle time not resolved).
   // Named after the real, class-specific process (realProcessName — "3 Axis
   // Mill"/"4 Axis Mill"/"5 Axis Mill", per memory/machining/processes.csv),
   // not run through resolveOperationName -- it deliberately sums roughing +
@@ -1490,37 +2107,72 @@ export function computeMillingCostSummary(
   // Finish Milling split needs the power-limited MRR model, staged
   // variables.json + tblEngagementLengthPower, not yet built — a disclosed,
   // known-generic gap, not a fabricated name).
-  if (cncMillingMin > 0 || setupCostVal > 0) {
-    processLines.push(makeLine(
-      realProcessName(machineClass), setupCostVal, r2((cncMillingMin / 60) * mhrRate.rate), cncMillingMin, mhrRate,
-      input.processIdentityByMachineClass, setupDisclosure,
-    ));
+  if (cncMillingMin > 0 || millLacks.length > 0) {
+    const setup = millSetup.take(cncMillingMin, true);
+    const millLine = makeLine(
+      realProcessName(machineClass), setup?.cost ?? 0, (cncMillingMin / 60) * mhrRate.rate, cncMillingMin, mhrRate,
+      input.processIdentityByMachineClass, setup?.disclosure,
+    );
+    if (millRun?.missing.length) warnings.push(`${millLine.process} not priced — missing real input: ${millRun.missing.join('; ')}.`);
+    // The line's own steps (the operation groups), then each sequenced operation's calculator steps under its name.
+    const operationSteps = (input.featureOps ?? [])
+      .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && !MILLING_DRILLING_OPERATIONS.has(o.name))
+      .flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
+    // The tool wear of the operations the mill line times (the workbook's drills, step drills and boring bars), on the mill line.
+    const millToolInr = millRun
+      ? (input.featureOps ?? []).filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && !MILLING_DRILLING_OPERATIONS.has(o.name))
+        .reduce((t, o) => t + (o.toolCostInr ?? 0), 0)
+      : fallbackToolInr;
+    const millLineCosted = millRun ? withRun(millLine, millRun, operationSteps, unpricedOperations) : withTrace(millLine, fallbackSteps, millLacks);
+    processLines.push(withToolCost(millLineCosted, { outputs: { 'Tool Cost per Part': millToolInr } }, input.workbook, warnings));
   }
-  if (cncMillingMin <= 0) {
+  // ── Drilling (on the mill, a line of its own: its time is out of the milling line above, not added to it) ──
+  if (drillingLineMin > 0 || drillingLacks.length > 0) {
+    // On this machine: Machining > the mill > Drilling, as Tapping on the mill is. It shares the machine's setup: it carries it only
+    // when the milling line has no time of its own.
+    const drillRate = { ...mhrRate, hostMachineClass: mhrRate.hostMachineClass ?? mhrRate.machineClass };
+    const setup = millSetup.take(drillingLineMin);
+    const drillLine = makeLine(
+      resolveOperationName(machineClass, 'Drilling', input.realOperationCategories, warnings),
+      setup?.cost ?? 0, (drillingLineMin / 60) * mhrRate.rate, drillingLineMin, drillRate, input.processIdentityByMachineClass, setup?.disclosure,
+    );
+    if (drillingLacks.length > 0) warnings.push(`${drillLine.process} not priced — missing real input: ${drillingLacks.join('; ')}.`);
+    const drillCosted = drillingRun ? withRun(drillLine, drillingRun, drillingSteps, drillingLacks) : withTrace(drillLine, drillingSteps, drillingLacks);
+    processLines.push(withFeatureGroups(withToolCost(drillCosted, { outputs: { 'Tool Cost per Part': drillingToolInr } }, input.workbook, warnings), drillingRows));
+  }
+  if (cncMillingMin <= 0 && drillingLineMin <= 0) {
     warnings.push('Volume data unavailable — milling time estimated at 0');
   }
 
+  // ── Part Setup (load, unload, reorient: on the machine, in its setup) ─────
+  const partSetupLine = computePartSetupLine(input, mhrRate, billetWeightKg, warnings, millSetup.take);
+  if (partSetupLine) processLines.push(partSetupLine);
+
   // ── Tapping ───────────────────────────────────────────────────────────────
   const threadCount = threads.reduce((s, t) => s + t.count, 0);
-  const tapping = tapThreadGroups(threads, matClass, input.tappingTable, input.machiningCalculators);
+  // Tapped on the route's machine, or a tapping machine of its own: its spindle limit (the host's when the tapping rate has none).
+  const tapping = tapThreadGroups(threads, matClass, input.workbook, input.machiningCalculators,
+    spindleLimitSeed(tappingRate.maxSpindleRpm != null ? tappingRate : mhrRate, input.location));
   const tappingMin = tapping.min;
   if (tapping.missing.length > 0) warnings.push(`Tapping not priced for: ${tapping.missing.join('; ')}.`);
   if (tappingMin > 0 || tapping.missing.length > 0) {
     // Tapping on the machining centre (hostMachineClass) shares that machine's
-    // setup, already charged on its own line. A dedicated tapping machine uses
-    // its own real setup_time_hr, or none — never a coded constant.
+    // setup: it carries it only when it is the machine's first line with a
+    // cycle time. A dedicated tapping machine uses its own real setup_time_hr,
+    // or none — never a coded constant.
+    const hostSetup = tappingRate.hostMachineClass ? millSetup.take(tappingMin) : null;
     const tapSetupResolution = tappingRate.hostMachineClass
       ? null
       : resolveSetupMinutes({ process: 'Tapping', machineSetupTimeHr: tappingRate.setupTimeHr, machineName: tappingRate.machineName });
     if (tapSetupResolution?.warning) warnings.push(tapSetupResolution.warning);
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
-    const tapSetup = r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
-    const tapRun = r2((tappingMin / 60) * tappingRate.rate);
-    processLines.push(withRun(makeLine(
+    const tapSetup = hostSetup ? hostSetup.cost : (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
+    const tapRun = (tappingMin / 60) * tappingRate.rate;
+    processLines.push(withFeatureGroups(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
-      tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
-    ), tapping));
+      hostSetup ? hostSetup.disclosure : tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
+    ), tapping), tapping.groups));
   }
 
   // ── Deburring ────────────────────────────────────────────────────────────
@@ -1559,7 +2211,7 @@ export function computeMillingCostSummary(
     batchSize, warnings, input.processIdentityByMachineClass,
   );
   if (surfaceGrindingLine) processLines.push(surfaceGrindingLine);
-  const rotaryBroachingLine = computeRotaryBroachingLine(input, machineClass, matClass, warnings);
+  const rotaryBroachingLine = computeRotaryBroachingLine(input, machineClass, matClass, warnings, millSetup.take);
   if (rotaryBroachingLine) processLines.push(rotaryBroachingLine);
 
   // ── Reaming (see computeReamCycleSec's own doc comment for why this is
@@ -1574,8 +2226,13 @@ export function computeMillingCostSummary(
     holeGroups.length > 0
   ) {
     processLines.push(computeReamingLine(
-      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
+      input.machiningCalculators, holeGroups, matClass, input.workbook, mhrRate, batchSize, warnings, input.processIdentityByMachineClass, millSetup.take, input.location,
     ));
+  }
+  // Nothing on the mill has a cycle time (nothing to mill, load, tap, broach or ream): no line carries its setup, so it is
+  // not charged, and the quote says so.
+  if (!millSetup.charged() && setupCostVal > 0) {
+    warnings.push(`${realProcessName(machineClass)}: setup not charged — nothing on the machine has a cycle time for this part.`);
   }
 
   // ── Gun Drilling / Deep Bore Machine (new — see deep-hole-routing.ts) ────
@@ -1615,12 +2272,16 @@ export function computeMillingCostSummary(
 
   // ── Inspection (batch-sampled; CMM amortization rides on the MHR rate) ───
   processLines.push(computeInspectionLine(
-    holeCount, threadCount, tightestToleranceMm, gdtFeatureCount, input.gdtFeatures, inspectionRate, batchSize,
-    input.samplingPerN, input.samplingPolicy, input.machiningCalculators, warnings, input.processIdentityByMachineClass,
+    input.inspectedFeatures ?? [], inspectionRate, batchSize,
+    input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
+  // ── The raw material lot's composition check (XRF) ─────────────────────────
+  if (input.xrfRate) processLines.push(computeRmCompositionLine(input.xrfRate, batchSize, input.machiningCalculators, warnings, input.processIdentityByMachineClass));
 
-  const totalProcessCost = r2(processLines.reduce((s, l) => s + l.totalCost, 0));
-  const totalCost = r2(materialCost + totalProcessCost);
+  warnings.push(...missingOperatorLabourWarnings(processLines));
+  // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
+  const totalProcessCost = processLines.reduce((s, l) => s + l.totalCost, 0);
+  const totalCost = materialCost + totalProcessCost;
   const totalMin = r2(processLines.reduce((s, l) => s + l.cycleTimeMin, 0));
 
   // Clamp to [0, 100]: >100% is physically impossible (billet smaller than part —
@@ -1637,13 +2298,13 @@ export function computeMillingCostSummary(
   }
 
   const sustainability = computeSustainability(
-    materialGrade, materialCostPerKg, finishedWeightKg, billetWeightKg, batchSize, processLines,
+    materialGrade, materialCostPerKg, finishedWeightKg, stockWeightKg, batchSize, processLines,
   );
 
   return {
     materialCost,
     materialGrade: materialGrade ?? 'Unknown',
-    grossWeightKg: billetWeightKg,
+    grossWeightKg: stockWeightKg,
     materialCostPerKg,
     materialSource,
     processLines,
@@ -1708,18 +2369,17 @@ export function computeTurningCostSummary(
   const location = input.location ?? '__default__';
 
   // ── Bar stock ────────────────────────────────────────────────────────────
-  // Prefer blank optimizer result when available (Fix 2). For turned parts the
-  // optimizer selects a round bar that fits the part's cross-section with 3%
-  // clearance. Fallback: inscribed circle × 1.1 (original heuristic).
-  const fallbackDiamMm = Math.max(maxWidth, maxHeight) * 1.1;
-  const fallbackBarLenMm = maxLength * 1.1;
-  const fallbackBarVolMm3 = Math.PI * (fallbackDiamMm / 2) ** 2 * fallbackBarLenMm;
-  const barVolMm3 = input.blankResult?.billetVolMm3 ?? fallbackBarVolMm3;
+  // The piece the lathe starts from is the stock chosen for the part (input.blankResult). With none, nothing is estimated in its place:
+  // the material is not costed, turning and parting name the missing bar, and the quote says so.
+  const barVolMm3 = input.blankResult?.billetVolMm3 ?? 0;
   const barWeightKg = r3((barVolMm3 / 1e9) * materialDensityKgM3);
+  // The stock bought per part: the piece itself, or its share of the whole bar when the stock model states one.
+  const stockWeightKg = input.blankResult?.purchasedVolMm3 != null ? r3((input.blankResult.purchasedVolMm3 / 1e9) * materialDensityKgM3) : barWeightKg;
   // Stock weight x cost/kg — no markup (see the milling billet above).
-  const materialCost = r2(barWeightKg * materialCostPerKg);
+  const materialCost = stockWeightKg * materialCostPerKg;
 
   if (!materialGrade) warnings.push('Material grade not set — default mild steel rates applied');
+  if (!input.blankResult) warnings.push(NO_STOCK_WARNING);
   if (volume > 0 && barVolMm3 > 0 && volume > barVolMm3) {
     warnings.push(
       'CAD part volume exceeds the bar-stock volume — geometry or unit data is inconsistent; material cost and chip loss are unreliable until the model is re-analysed.',
@@ -1739,60 +2399,72 @@ export function computeTurningCostSummary(
   });
   if (setupResolution.warning) warnings.push(setupResolution.warning);
   const setupMin = setupResolution.setupMin / Math.max(batchSize, 1);
-  const fixtureCost = r2((input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1));
-  const setupCostVal = r2((setupMin / 60) * mhrRate.rate) + fixtureCost;
+  const fixtureCost = (input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1);
+  const setupCostVal = (setupMin / 60) * mhrRate.rate + fixtureCost;
   const setupDisclosure = { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source };
   const setupTrace = setupTraceSteps(setupResolution, mhrRate.machineName, batchSize);
 
   // ── OD Turning ───────────────────────────────────────────────────────────
-  // Real per-pass physics only (computeTurningCycleSec): the turned diameter
-  // and axial length come from CAD (input.turnedGeometry), the bar diameter
-  // from the real stock size the blank optimizer chose, and depth of cut /
-  // speed / feed from tblGeneralTurning. With no real turning data there is
-  // no estimate: the line reports the gap.
+  // Real per-pass physics only (the Rough Turning and Finish Turning
+  // calculators), run once per turned diameter: each Ring the CAD analysis
+  // recognised (input.turnedGeometry.rings) is turned from the bar on its own
+  // diameter and length, so a step below the part's largest diameter is
+  // roughed for its own radial stock. Both calculators time a cut as the
+  // Machining calculator workbook's Turning sheet does: spindle speed from the
+  // diameter the cut starts at, the turned length plus the approach per pass.
+  // The bar diameter is the real stock size chosen for the part; depth of cut
+  // / speed / feed come from tblGeneralTurning. With no real turning data
+  // there is no estimate: the line reports the gap.
   const materialRemovalMm3 = Math.max(0, barVolMm3 - volume);
   const turned = input.turnedGeometry;
   const partDiameterMm = turned?.diameterMm ?? Math.max(maxWidth, maxHeight);
   const partLengthMm = turned?.lengthMm ?? maxLength;
   const partDiameterSource = turned?.diameterSource ?? 'CAD: bounding-box cross-section';
   const partLengthSource = turned?.lengthSource ?? 'CAD: bounding-box length';
-  // The real round-bar diameter the blank optimizer chose from stock_profiles.
-  // A non-round blank (billet, rectangular bar) has no bar diameter to turn
-  // from: turning and parting report that gap rather than inventing one.
+  // The diameter the lathe turns down from: the circle round the chosen bar's corners. A plate or a billet has none, and a part with no
+  // stock has no bar at all: turning and parting report that gap rather than inventing a diameter.
   const barDiameterMm = input.blankResult?.barDiameterMm ?? 0;
-  const barDiameterSource = `Blank optimizer: ${input.blankResult?.sizeLabel ?? 'none'} (stock_profiles)`;
+  // What chose the stock (sizeSource), for the source text of a calculation that reads its size.
+  const barDiameterSource = `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: ${input.blankResult?.sizeLabel ?? 'none'}`;
   const barMissing = barDiameterMm > 0 ? null
-    : `round-bar stock for this part (blank optimizer chose ${input.blankResult?.sizeLabel ?? 'no blank'}, not a round bar)`;
-  const radialStockMm = Math.max(0, (barDiameterMm - partDiameterMm) / 2);
+    : input.blankResult
+      ? `bar stock for this part (the stock chosen is ${input.blankResult.sizeLabel}, which a lathe does not turn from)`
+      : 'bar stock for this part (no stock is chosen)';
+  // What the bar leaves to turn: every Ring smaller than the bar, or the one
+  // fallback cylinder of a part analysed without Rings. A Ring at the bar's
+  // own diameter is left as supplied (turned-diameters.ts).
+  const cylinders = barMissing ? [] : cylindersToTurn(
+    { diameterMm: partDiameterMm, lengthMm: partLengthMm, diameterSource: partDiameterSource, lengthSource: partLengthSource, rings: turned?.rings },
+    barDiameterMm,
+  );
 
-  let roughTurningMin = 0;
-  let finishTurningMin = 0;
-  let roughRun: CalcRun = EMPTY_RUN;
-  let finishRun: CalcRun = EMPTY_RUN;
   const roughExtraTrace: CalculationTraceStep[] = [];
   const turningMissing: string[] = [];
-  const tp = input.turningParams?.dataFound ? input.turningParams : null;
-  if (barMissing) {
-    turningMissing.push(barMissing);
-  } else if (radialStockMm > 0 && !tp) {
-    turningMissing.push(`tblGeneralTurning cutting data for ${matClass}`);
-  } else if (radialStockMm > 0 && tp) {
-    const geometry: Record<string, CalcSeed> = {
-      'Turned Diameter': { value: partDiameterMm, source: partDiameterSource },
-      'Turned Length': { value: partLengthMm, source: partLengthSource },
+  if (barMissing) turningMissing.push(barMissing);
+  // Each turning calculator in the workbook's form: its speed and feed from the workbook's Turning cutting conditions (the band holding
+  // its depth of cut), its spindle capped at this machine's. A material the workbook has no row for is the run's named gap.
+  const lathe = { ...spindleLimitSeed(mhrRate, input.location) };
+  const bar: Record<string, CalcSeed> = { 'Bar Diameter': { value: barDiameterMm, source: barDiameterSource } };
+  const workbookRun = (operation: string, seeds: Record<string, CalcSeed>) => {
+    const all = { ...seeds, ...lathe, ...approachSeed(input.machiningCalculators, operation) };
+    const lookups = workbookSeeds(input.workbook, operation, machineClass, matClass, all);
+    const run = runMachiningCalculator(input.machiningCalculators, operation, { ...all, ...lookups.seeds });
+    return lookups.missing.length > 0 ? { ...run, sec: null, missing: [...new Set([...lookups.missing, ...run.missing])] } : run;
+  };
+  const turnedRuns = cylinders.map((cylinder) => {
+    const geometry = turnedCylinderSeeds(cylinder);
+    return {
+      cylinder,
+      rough: workbookRun('Rough Turning', { ...geometry, ...bar }),
+      finish: workbookRun('Finish Turning', { ...geometry, ...bar }),
     };
-    roughRun = runMachiningCalculator(input.machiningCalculators, 'Rough Turning', {
-      ...geometry,
-      'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-      ...roughTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-    });
-    finishRun = runMachiningCalculator(input.machiningCalculators, 'Finish Turning', {
-      ...geometry,
-      ...finishTurningLookupSeeds({ matClass, turningParams: tp }).seeds,
-    });
-    roughTurningMin = (roughRun.sec ?? 0) / 60;
-    finishTurningMin = (finishRun.sec ?? 0) / 60;
-  }
+  });
+  const rough = turningWork('Rough Turning', turnedRuns.map((r) => ({ cylinder: r.cylinder, run: r.rough })));
+  const finish = turningWork('Finish Turning', turnedRuns.map((r) => ({ cylinder: r.cylinder, run: r.finish })));
+  let roughTurningMin = (rough.run.sec ?? 0) / 60;
+  const finishTurningMin = (finish.run.sec ?? 0) / 60;
+  // The stations a multi-spindle shares the rough turning over (1 = not split).
+  let roughStations = 1;
 
   // ── Multi-spindle station split (Simultaneous Turning only) ───────────────
   // Real, gated on the resolved machine's own real capability
@@ -1818,6 +2490,7 @@ export function computeTurningCostSummary(
     if (input.roughTurningOpSplit.thresholdRatio != null && removalRatio >= input.roughTurningOpSplit.thresholdRatio) {
       const n = input.roughTurningOpSplit.numberOfOperations;
       if (n > 1) {
+        roughStations = n;
         roughTurningMin = roughTurningMin / n;
         roughExtraTrace.push(
           traceInput('Stations sharing the rough turning', n, null,
@@ -1835,8 +2508,15 @@ export function computeTurningCostSummary(
   // Turning machine (mhrRate.numberSpindles set); every other class leaves
   // these null and this line is skipped entirely, not zeroed.
   if (mhrRate.numberSpindles != null) {
+    // Read from the selected machine's HR Rates record: the ref opens that record among its class's machines, at the column read.
+    const machineId = machineRecordId(mhrRate);
     const machineSeed = (value: number | null | undefined, field: string): CalcSeed | undefined =>
-      value != null ? { value, source: `Machine: ${mhrRate.machineName ?? 'selected machine'} ${field} (mhr_records)` } : undefined;
+      value != null ? {
+        value, source: `Machine: ${mhrRate.machineName ?? 'selected machine'} ${field} (mhr_records)`,
+        ...(machineId ? {
+          ref: { kind: 'machine' as const, machineId, machineName: mhrRate.machineName ?? '', machineClass: mhrRate.machineClass, location: input.location ?? null, column: field },
+        } : {}),
+      } : undefined;
     const indexSeeds = Object.fromEntries(Object.entries({
       'Drum Index Time': machineSeed(mhrRate.drumIndexTimeS, 'drum_index_time_s'),
       'Transfer Time': machineSeed(mhrRate.transferTimeS, 'transfer_time_s'),
@@ -1848,26 +2528,135 @@ export function computeTurningCostSummary(
       const indexCycleMin = (run.sec ?? 0) / 60;
       processLines.push(withRun(makeLine(
         resolveOperationName(machineClass, 'Index Transfer', input.realOperationCategories, warnings),
-        0, r2((indexCycleMin / 60) * mhrRate.rate), indexCycleMin, mhrRate, input.processIdentityByMachineClass,
+        0, (indexCycleMin / 60) * mhrRate.rate, indexCycleMin, mhrRate, input.processIdentityByMachineClass,
       ), run));
     }
   }
-  // Setup always folds into the first real turning line (even when its own
-  // run time is 0) so the real setup cost is never silently dropped.
-  if (turningMissing.length > 0) warnings.push(`Turning not priced — missing real input: ${turningMissing.join('; ')}.`);
-  if (roughTurningMin > 0 || setupCostVal > 0 || turningMissing.length > 0) {
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Rough Turning', input.realOperationCategories, warnings),
-      setupCostVal, r2((roughTurningMin / 60) * mhrRate.rate), roughTurningMin, mhrRate,
-      input.processIdentityByMachineClass, setupDisclosure,
-    ), roughRun, [...roughExtraTrace, ...setupTrace], turningMissing));
+  // The lathe's setup is charged once, on the first of its operations that
+  // has a cycle time: rough turning, else finish turning, else drilling,
+  // milling or parting (a bar that needs no roughing is still set up). A
+  // turning line is emitted only when it has a time or names what it lacks:
+  // no roughing to do is not missing data. Turning that cannot be priced
+  // keeps its Rough Turning gap line, which carries the setup.
+  const latheSetup = machineSetupOnce({ cost: setupCostVal, disclosure: setupDisclosure });
+  const latheLine = (
+    operation: string, min: number, run: LineRun,
+    extraTrace: CalculationTraceStep[] = [], extraMissing: string[] = [], setupEvenWithoutTime = false,
+  ): ProcessLineCost => {
+    const setup = latheSetup.take(min, setupEvenWithoutTime);
+    return withRun(makeLine(
+      resolveOperationName(machineClass, operation, input.realOperationCategories, warnings),
+      setup?.cost ?? 0, (min / 60) * mhrRate.rate, min, mhrRate,
+      input.processIdentityByMachineClass, setup?.disclosure,
+    ), run, setup ? [...extraTrace, ...setupTrace] : extraTrace, extraMissing);
+  };
+  // ── End facing ────────────────────────────────────────────────────────────
+  // Both ends of the part faced square (catalog "End Machining//End"), as the workbook's Facing sheet times it: across the bar's radius,
+  // in passes over the end allowance the stock model left on each end of the piece. With no bar, the turning gap above says why.
+  if (!barMissing) {
+    const endAllowance = input.blankResult?.endAllowanceMm;
+    const facing = workbookRun('End Machining', {
+      ...bar,
+      ...(endAllowance != null ? { 'Facing Stock': { value: endAllowance, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the end allowance left on each end of the piece` } } : {}),
+      'Faces': { value: 2, source: 'Both ends of the part (Machining calculator workbook, Facing sheet: No of uses 2)' },
+    });
+    const facingMin = (facing.sec ?? 0) / 60;
+    if (facing.missing.length > 0) warnings.push(`End facing not priced — missing real input: ${facing.missing.join('; ')}.`);
+    processLines.push(withToolCost(latheLine('End Machining', facingMin, facing), facing, input.workbook, warnings));
   }
-  if (finishTurningMin > 0) {
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Finish Turning', input.realOperationCategories, warnings),
-      0, r2((finishTurningMin / 60) * mhrRate.rate), finishTurningMin, mhrRate,
-      input.processIdentityByMachineClass,
-    ), finishRun));
+
+  // Every turning gap once, whether the bar or a workbook input (a material with no turning row, a table not read, no spindle limit).
+  const turningGaps = [...new Set([...turningMissing, ...rough.run.missing, ...finish.run.missing])];
+  if (turningGaps.length > 0) warnings.push(`Turning not priced — missing real input: ${turningGaps.join('; ')}.`);
+  if (roughTurningMin > 0 || turningMissing.length > 0 || rough.run.missing.length > 0) {
+    processLines.push(withFeatureGroups(
+      latheLine('Rough Turning', roughTurningMin, rough.run, roughExtraTrace, turningMissing, true),
+      rough.rings.map((ring) => ({ ...ring, timeSec: ring.timeSec / roughStations })),
+    ));
+  }
+  if (finishTurningMin > 0 || finish.run.missing.length > 0) {
+    processLines.push(withFeatureGroups(latheLine('Finish Turning', finishTurningMin, finish.run), finish.rings));
+  }
+
+  // ── Plunging ──────────────────────────────────────────────────────────────
+  // The part's turned grooves (Ring:groove: "Plunging//Ring"), each plunged with a grooving insert as wide as the groove (the Machining -
+  // Plunging calculator, the workbook's Cutoff sheet form), its speed and feed the material's tblGrooving rows, on this lathe's spindle.
+  // One run per groove size; a groove whose depth, width or diameter the CAD does not state (a part analysed before geo_v89), or a material
+  // with no grooving row, is a named gap on the line.
+  if ((input.turnedGrooves ?? []).length > 0) {
+    const mm = (v: number | null) => (v == null ? '?' : String(Math.round(v * 1000) / 1000));
+    const runs = (input.turnedGrooves ?? []).map((g) => {
+      const label = `Ø${mm(g.diameterMm)} groove ${mm(g.widthMm)} x ${mm(g.depthMm)} mm`;
+      const ref = g.faceIds.length > 0 ? { ref: { kind: 'faces' as const, label, faceIds: [...g.faceIds] } } : {};
+      if (g.lacks.length > 0) {
+        const run: CalcRun = {
+          ...EMPTY_RUN,
+          missing: [`the CAD ${g.lacks.join(' and ')} of ${g.grooves > 1 ? `${g.grooves} grooves` : 'the groove'} (an analysis before geo_v89 has none: re-analyse the part)`],
+        };
+        return { g, label, run };
+      }
+      const seeds: Record<string, CalcSeed> = {
+        'Groove Diameter': { value: g.diameterMm!, source: 'CAD: the groove\'s major diameter (the circle its round profile runs round)', ...ref },
+        'Groove Depth': { value: g.depthMm!, source: 'CAD: the depth of the groove\'s round profile', ...ref },
+        'Groove Width': { value: g.widthMm!, source: 'CAD: the chord width of the groove\'s round profile', ...ref },
+        'Grooves': { value: g.grooves, source: 'CAD: grooves of this size' },
+      };
+      const lookup = groovingLookupSeeds({ matClass, groovingTable: input.groovingTable }, { 'Groove Width': g.widthMm!, 'Groove Depth': g.depthMm! });
+      const run = workbookRun('Plunging', { ...seeds, ...lookup.seeds });
+      return { g, label, run: lookup.missing.length > 0 ? { ...run, sec: null, missing: [...lookup.missing, ...run.missing.filter((m) => !m.startsWith('Plunging:'))] } : run };
+    });
+    const summed = sumRuns(runs.map(({ label, run }) => ({ label, run })), 'Plunging cycle time');
+    if (summed.missing.length > 0) warnings.push(`Plunging not priced — missing real input: ${summed.missing.join('; ')}.`);
+    const toolInr = runs.reduce((t, { run }) => t + ((run as { outputs?: Record<string, number> }).outputs?.['Tool Cost per Part'] ?? 0), 0);
+    const rows: FeatureOp[] = runs.flatMap(({ g, label, run }) => (run.sec != null && run.sec > 0 ? [{
+      name: `Plunging // ${label}`, timeSec: run.sec, featureType: 'Ring', count: g.grooves,
+      ...(g.featureIds.length > 0 ? { featureIds: [...g.featureIds] } : {}),
+      ...(g.faceIds.length > 0 ? { faceIds: [...g.faceIds] } : {}),
+    }] : []));
+    const line = latheLine('Plunging', (summed.sec ?? 0) / 60, summed);
+    processLines.push(withFeatureGroups(withToolCost(line, { outputs: { 'Tool Cost per Part': toolInr } }, input.workbook, warnings), rows));
+  }
+
+  // ── Thread turning and knurling ───────────────────────────────────────────
+  // The drawing's external threads, single-point turned on their Rings, and its knurls, rolled on theirs (external-threads.ts), each a run
+  // of its workbook calculator (the Threading and Knurling sheets, migration 1138) on this lathe's spindle: one line per operation, each
+  // run under its Ring's name, each Ring cut a row the Process tree lists and lights. With no bar the turning gap above says why.
+  if (!barMissing) {
+    const ringRef = (ring: TurnedRing | null) => (ring && ring.faceIds.length > 0
+      ? { ref: { kind: 'faces' as const, label: ringLabel(ring), faceIds: [...ring.faceIds] } } : {});
+    /** A run whose op names what it lacks: those names (with any workbook row it lacks), not the calculator's bare field names. */
+    const withNamedGaps = (operation: string, run: CalcRun & { outputs?: Record<string, number> }, missing: readonly string[]) =>
+      (missing.length > 0 ? { ...run, sec: null, missing: [...missing, ...run.missing.filter((m) => !m.startsWith(`${operation}:`))] } : run);
+    const ringOpLine = (operation: string, runs: ReadonlyArray<{ label: string; ring: TurnedRing | null; count: number; run: CalcRun & { outputs?: Record<string, number> } }>) => {
+      if (runs.length === 0) return;
+      const summed = sumRuns(runs.map(({ label, run }) => ({ label, run })), `${operation} cycle time`);
+      if (summed.missing.length > 0) warnings.push(`${operation} not priced — missing real input: ${summed.missing.join('; ')}.`);
+      const toolInr = runs.reduce((t, { run }) => t + (run.outputs?.['Tool Cost per Part'] ?? 0), 0);
+      const rows: FeatureOp[] = runs.flatMap(({ ring, count, run }) => (ring && run.sec != null && run.sec > 0 ? [{
+        name: `${operation} // ${ringLabel(ring)}`, timeSec: run.sec, featureType: 'Ring', count,
+        ...(ring.faceIds.length > 0 ? { faceIds: [...ring.faceIds] } : {}),
+      }] : []));
+      const line = latheLine(operation, (summed.sec ?? 0) / 60, summed);
+      processLines.push(withFeatureGroups(withToolCost(line, { outputs: { 'Tool Cost per Part': toolInr } }, input.workbook, warnings), rows));
+    };
+    ringOpLine('Thread Turning', (input.externalThreads ?? []).map((t) => {
+      const ref = ringRef(t.ring);
+      const seeds: Record<string, CalcSeed> = {
+        'Thread Diameter': { value: t.diameterMm, source: t.diameterSource, ...ref },
+        'Threads': { value: t.threads, source: t.threadsSource },
+        ...(t.lengthMm != null ? { 'Thread Length': { value: t.lengthMm, source: t.lengthSource, ...ref } } : {}),
+        ...(t.pitchMm != null ? { 'Pitch': { value: t.pitchMm, source: t.pitchSource } } : {}),
+      };
+      return { label: t.label, ring: t.ring, count: t.threads, run: withNamedGaps('Thread Turning', workbookRun('Thread Turning', seeds), t.missing) };
+    }));
+    ringOpLine('Knurling', (input.knurls ?? []).map((k) => {
+      const ref = ringRef(k.ring);
+      const seeds: Record<string, CalcSeed> = {
+        ...(k.diameterMm != null ? { 'Knurl Diameter': { value: k.diameterMm, source: k.diameterSource, ...ref } } : {}),
+        ...(k.lengthMm != null ? { 'Knurl Length': { value: k.lengthMm, source: k.lengthSource, ...ref } } : {}),
+      };
+      return { label: k.label, ring: k.ring, count: 1, run: withNamedGaps('Knurling', workbookRun('Knurling', seeds), k.missing) };
+    }));
   }
 
   // ── Drilling ──────────────────────────────────────────────────────────────
@@ -1878,19 +2667,44 @@ export function computeTurningCostSummary(
   // string; this function only implements drill physics, not a distinct
   // boring model (real boring-tolerance work is handled by the separate
   // Jig Boring/Reaming tiers elsewhere in this function).
-  const drilling = drillHoleGroups(holeGroups, drilledHoleCount, materialGrade, input.drillingTable, input.machiningCalculators);
+  const drilling = drillHoleGroups(holeGroups, drilledHoleCount, materialGrade, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
   const boringMin = drilling.min;
   if (boringMin > 0 || drilling.missing.length > 0) {
     if (drilling.missing.length > 0) warnings.push(`Drilling not priced for: ${drilling.missing.join('; ')}.`);
-    processLines.push(withRun(makeLine(
-      resolveOperationName(machineClass, 'Drilling', input.realOperationCategories, warnings),
-      0, r2((boringMin / 60) * mhrRate.rate), boringMin, mhrRate, input.processIdentityByMachineClass,
-    ), drilling));
+    processLines.push(withFeatureGroups(withToolCost(latheLine('Drilling', boringMin, drilling), drilling, input.workbook, warnings), drilling.rows));
+  }
+  // The holes the drills do not reach, bored on the lathe from the largest drill to size (catalog "ID Turning").
+  if (drilling.oversize.length > 0 && drilling.largestDrillMm != null) {
+    const bores = boreHoleGroups('ID Turning', drilling.oversize, drilling.largestDrillMm, matClass, input.workbook, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location));
+    if (bores.run.missing.length > 0) warnings.push(`ID Turning not priced — missing real input: ${bores.run.missing.join('; ')}.`);
+    processLines.push(withFeatureGroups(withToolCost(latheLine('ID Turning', (bores.run.sec ?? 0) / 60, bores.run), bores.run, input.workbook, warnings), bores.rows));
+  }
+
+  // ── Live-tool milling ─────────────────────────────────────────────────────
+  // The part's keyways that are not broached, its slots and its flats: each
+  // sequenced operation ("Obround Slot Milling" of a keyway; "Slot Milling"
+  // of a slot; "Rough Milling" of a flat) is a line of the
+  // lathe, timed by that operation's own calculator, with the features it
+  // mills as its rows (lathe-milling.ts).
+  // Whether this lathe has the live tool for them is the route's capability
+  // (checkLatheCapability), not a cost. An operation the sequencer could not
+  // time is a named gap on its line.
+  // Timed on this lathe's driven-tool spindle (its live tooling speed limit), the spindle a lathe mills with.
+  const latheMilled = input.latheMilling
+    ? (timeOperations(input.latheMilling, input.machiningCalculators, spindleLimitSeed(mhrRate, input.location, true)) as LatheMillingOp[])
+    : input.latheMilling;
+  for (const milling of latheMillingLines(latheMilled)) {
+    if (milling.run.missing.length > 0) warnings.push(`${milling.operation} not priced — missing real input: ${milling.run.missing.join('; ')}.`);
+    // The end mills' wear (the workbook's price over life), on the line as the mill line charges it.
+    const milled = withToolCost(latheLine(milling.operation, (milling.run.sec ?? 0) / 60, milling.run), { outputs: { 'Tool Cost per Part': milling.toolCostInr } }, input.workbook, warnings);
+    processLines.push(withFeatureGroups(milled, milling.rows));
   }
 
   // ── Tapping ───────────────────────────────────────────────────────────────
   const threadCount = threads.reduce((s, t) => s + t.count, 0);
-  const tapping = tapThreadGroups(threads, matClass, input.tappingTable, input.machiningCalculators);
+  // Tapped on the route's machine, or a tapping machine of its own: its spindle limit (the host's when the tapping rate has none).
+  const tapping = tapThreadGroups(threads, matClass, input.workbook, input.machiningCalculators,
+    spindleLimitSeed(tappingRate.maxSpindleRpm != null ? tappingRate : mhrRate, input.location));
   const tappingMin = tapping.min;
   if (tapping.missing.length > 0) warnings.push(`Tapping not priced for: ${tapping.missing.join('; ')}.`);
   if (tappingMin > 0 || tapping.missing.length > 0) {
@@ -1902,13 +2716,13 @@ export function computeTurningCostSummary(
       : resolveSetupMinutes({ process: 'Tapping', machineSetupTimeHr: tappingRate.setupTimeHr, machineName: tappingRate.machineName });
     if (tapSetupResolution?.warning) warnings.push(tapSetupResolution.warning);
     const tapSetupMin = tapSetupResolution?.setupMin ?? 0;
-    const tapSetup = r2((tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1));
-    const tapRun = r2((tappingMin / 60) * tappingRate.rate);
-    processLines.push(withRun(makeLine(
+    const tapSetup = (tapSetupMin / 60) * tappingRate.rate / Math.max(batchSize, 1);
+    const tapRun = (tappingMin / 60) * tappingRate.rate;
+    processLines.push(withFeatureGroups(withRun(makeLine(
       resolveOperationName(tappingRate.hostMachineClass ?? tappingRate.machineClass, 'Tapping', input.realOperationCategories, warnings),
       tapSetup, tapRun, tappingMin, tappingRate, input.processIdentityByMachineClass,
       tapSetupResolution ? { setupTimeMin: tapSetupMin, setupTimeSource: tapSetupResolution.source } : undefined,
-    ), tapping));
+    ), tapping), tapping.groups));
   }
 
   // ── Secondary setup / rechucking (2-axis lathe only) ─────────────────────
@@ -1927,7 +2741,7 @@ export function computeTurningCostSummary(
     const run = runMachiningCalculator(input.machiningCalculators, 'Secondary Setup (Rechuck)', seeds);
     const rechuckMin = (run.sec ?? 0) / 60;
     processLines.push(withRun(
-      makeLine('Secondary Setup (Rechuck)', 0, r2((rechuckMin / 60) * mhrRate.rate), rechuckMin, mhrRate, input.processIdentityByMachineClass),
+      makeLine('Secondary Setup (Rechuck)', 0, (rechuckMin / 60) * mhrRate.rate, rechuckMin, mhrRate, input.processIdentityByMachineClass),
       run,
     ));
   }
@@ -1938,27 +2752,35 @@ export function computeTurningCostSummary(
   // bar radius. Insert, cutting speed and feed come from the real
   // tblVirtualPartoffInsertCutData row (resolvePartoffParams: this material,
   // narrowest insert whose DepthMaxMm reaches the cut). No real insert → gap.
-  const partingMissing: string[] = [];
-  let partingRun: CalcRun = EMPTY_RUN;
-  let partingMin = 0;
-  const partoff = barMissing ? null : partingLookupSeeds({ matClass, partoffTable: input.partoffTable }, { 'Bar Diameter': barDiameterMm });
-  if (barMissing) {
-    partingMissing.push(barMissing);
-  } else if (partoff && partoff.missing.length > 0) {
-    partingMissing.push(...partoff.missing);
-  } else if (partoff) {
-    partingRun = runMachiningCalculator(input.machiningCalculators, 'Parting', {
-      'Bar Diameter': { value: barDiameterMm, source: barDiameterSource },
-      ...partoff.seeds,
-    });
-    partingMin = (partingRun.sec ?? 0) / 60;
+  // A piece a band saw cut off its stock (stockCutOff 'saw') is not parted: the saw's own line prices that cut.
+  if (input.stockCutOff !== 'saw') {
+    const partingMissing: string[] = [];
+    let partingRun: CalcRun & { outputs?: Record<string, number> } = EMPTY_RUN;
+    let partingMin = 0;
+    const partoff = barMissing ? null : partingLookupSeeds({ matClass, partoffTable: input.partoffTable }, { 'Bar Diameter': barDiameterMm });
+    if (barMissing) {
+      partingMissing.push(barMissing);
+    } else if (partoff && partoff.missing.length > 0) {
+      partingMissing.push(...partoff.missing);
+    } else if (partoff) {
+      const tubeId = input.blankResult?.tubeIdMm;
+      partingRun = workbookRun('Parting', {
+        ...bar,
+        ...(tubeId != null ? { 'Bore Diameter': { value: tubeId, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the tube's bore (the part-off cuts its wall)` } } : {}),
+        ...partoff.seeds,
+      });
+      partingMin = (partingRun.sec ?? 0) / 60;
+    }
+    const partingGap = [...partingMissing, ...partingRun.missing];
+    if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
+    processLines.push(withToolCost(latheLine('Parting', partingMin, partingRun, [], partingMissing), partingRun, input.workbook, warnings));
   }
-  const partingGap = [...partingMissing, ...partingRun.missing];
-  if (partingGap.length > 0) warnings.push(`Parting not priced — missing real input: ${partingGap.join('; ')}.`);
-  processLines.push(withRun(makeLine(
-    resolveOperationName(machineClass, 'Parting', input.realOperationCategories, warnings),
-    0, r2((partingMin / 60) * mhrRate.rate), partingMin, mhrRate, input.processIdentityByMachineClass,
-  ), partingRun, [], partingMissing));
+  // Nothing is turned, drilled or parted on the machine (a bar at the part's
+  // own diameter, cut off by a saw): no line of these carries the setup, so
+  // it is not charged, and the quote says so.
+  if (!latheSetup.charged() && setupCostVal > 0) {
+    warnings.push(`${realProcessName(machineClass)}: setup not charged — no turning, drilling or parting on the machine has a cycle time for this part.`);
+  }
 
   // ── Gear/spline teeth (AxiGroove → Hobbing) ────────────────────────────
   // One Hobbing calculator run per recognised tooth form. Module = tip
@@ -1971,13 +2793,29 @@ export function computeTurningCostSummary(
   }
   const gearSeeds = (t: (typeof toothForms)[number]) => {
     const module = t.tip_diameter_mm / (t.tooth_count + 2);
+    const teeth: CalcSeed = { value: t.tooth_count, source: 'CAD: AxiGroove rotational symmetry order' };
+    const tip: CalcSeed = { value: t.tip_diameter_mm, source: 'CAD: tooth form tip diameter' };
+    // Module and tooth depth are computed from the CAD tooth form: their source is that calculation, step by step.
     const seeds: Record<string, CalcSeed> = {
-      'Teeth': { value: t.tooth_count, source: 'CAD: AxiGroove rotational symmetry order' },
+      'Teeth': teeth,
       'Face Width': { value: t.face_width_mm, source: 'CAD: tooth face length along the axis' },
-      'Module': { value: module, source: `CAD: tip diameter ${t.tip_diameter_mm} mm / (${t.tooth_count} teeth + 2)` },
+      'Module': {
+        value: module, source: `CAD: tip diameter ${t.tip_diameter_mm} mm / (${t.tooth_count} teeth + 2)`,
+        ref: calculationRef('Gear module (full-depth tooth)', [
+          seedStep('Tip Diameter', 'mm', tip), seedStep('Teeth', null, teeth), resultStep('Module', 'mm', module, '{Tip Diameter} / ({Teeth} + 2)'),
+        ]),
+      },
     };
     if (t.root_diameter_mm != null && t.root_diameter_mm < t.tip_diameter_mm) {
-      seeds['Tooth Depth'] = { value: (t.tip_diameter_mm - t.root_diameter_mm) / 2, source: `CAD: (tip ${t.tip_diameter_mm} - root ${t.root_diameter_mm}) / 2` };
+      const depth = (t.tip_diameter_mm - t.root_diameter_mm) / 2;
+      seeds['Tooth Depth'] = {
+        value: depth, source: `CAD: (tip ${t.tip_diameter_mm} - root ${t.root_diameter_mm}) / 2`,
+        ref: calculationRef('Gear tooth depth', [
+          seedStep('Tip Diameter', 'mm', tip),
+          seedStep('Root Diameter', 'mm', { value: t.root_diameter_mm, source: 'CAD: tooth form root diameter' }),
+          resultStep('Tooth Depth', 'mm', depth, '({Tip Diameter} - {Root Diameter}) / 2'),
+        ]),
+      };
     }
     return { module, seeds };
   };
@@ -2062,7 +2900,7 @@ export function computeTurningCostSummary(
     holeGroups.length > 0
   ) {
     processLines.push(computeReamingLine(
-      input.machiningCalculators, holeGroups, matClass, input.reamTable, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
+      input.machiningCalculators, holeGroups, matClass, input.workbook, mhrRate, batchSize, warnings, input.processIdentityByMachineClass,
     ));
   }
 
@@ -2102,12 +2940,16 @@ export function computeTurningCostSummary(
   // drilledHoleCount, not raw holeCount — the raw count includes OD steps/grooves
   // and would inflate the hole-sampling time for turned parts.
   processLines.push(computeInspectionLine(
-    drilledHoleCount, threadCount, tightestToleranceMm, gdtFeatureCount, input.gdtFeatures, inspectionRate, batchSize,
-    input.samplingPerN, input.samplingPolicy, input.machiningCalculators, warnings, input.processIdentityByMachineClass,
+    input.inspectedFeatures ?? [], inspectionRate, batchSize,
+    input.machiningCalculators, warnings, input.processIdentityByMachineClass, input.workbook, matClass,
   ));
+  // ── The raw material lot's composition check (XRF) ─────────────────────────
+  if (input.xrfRate) processLines.push(computeRmCompositionLine(input.xrfRate, batchSize, input.machiningCalculators, warnings, input.processIdentityByMachineClass));
 
-  const totalProcessCost = r2(processLines.reduce((s, l) => s + l.totalCost, 0));
-  const totalCost = r2(materialCost + totalProcessCost);
+  warnings.push(...missingOperatorLabourWarnings(processLines));
+  // The sum of the unrounded lines (see r2). The minutes keep two decimals, the cost summary's time contract (applyPersistedRouteToSummary).
+  const totalProcessCost = processLines.reduce((s, l) => s + l.totalCost, 0);
+  const totalCost = materialCost + totalProcessCost;
   const totalMin = r2(processLines.reduce((s, l) => s + l.cycleTimeMin, 0));
 
   // Clamped for the same reason as the milled engine: >100% = impossible data
@@ -2116,13 +2958,13 @@ export function computeTurningCostSummary(
   );
 
   const sustainability = computeSustainability(
-    materialGrade, materialCostPerKg, finishedWeightKg, barWeightKg, batchSize, processLines,
+    materialGrade, materialCostPerKg, finishedWeightKg, stockWeightKg, batchSize, processLines,
   );
 
   return {
     materialCost,
     materialGrade: materialGrade ?? 'Unknown',
-    grossWeightKg: barWeightKg,
+    grossWeightKg: stockWeightKg,
     materialCostPerKg,
     materialSource,
     processLines,
@@ -2162,8 +3004,14 @@ export function computeTurningCostSummary(
 
 // ── Route recommendation (single source of truth) ─────────────────────────────
 // Cost Summary and Route Comparison MUST agree on which machine class a part is
-// quoted on. Both call these two functions; neither carries its own heuristic.
-// Divergence here is a P0 — it reads as two different prices for the same part.
+// quoted on. Divergence here is a P0 — it reads as two different prices for the
+// same part. Neither carries a rule of its own: each states every route it
+// priced by the same facts (machiningRouteStanding, below), and the route is
+// chosen by the comparison's rule (engine-kernel selectRecommendedRoute; the
+// Cost tab through selectQuotedRoute, which adds the route Apply writes when
+// none is recommended). pickRecommendedRoute was here: the Cost tab's own rule
+// (the cheapest capable class, ties to fewer setups), which did not ask that
+// the route be fully costed and broke ties another way than the comparison.
 
 // The minimum milled machine class comes from the features' tool axes and the
 // reference setup rule: requiredMilledClassFromToolAxes (../setup-axis-rule).
@@ -2186,16 +3034,53 @@ export function meetsRequiredMilledClass(
   return rank >= requiredRank;
 }
 
-// Recommended route = lowest total cost among capable candidates; ties break to
-// fewer setups (less repositioning error), then to the earlier (simpler) class.
-// Falls back to the first candidate when nothing is capable — the caller is
-// expected to surface capability warnings alongside.
-export function pickRecommendedRoute<T extends { totalCost: number; capable: boolean; setupCount: number }>(
-  candidates: T[],
-): T {
-  const pool = candidates.filter((c) => c.capable);
-  const ranked = (pool.length > 0 ? pool : candidates).slice().sort(
-    (a, b) => a.totalCost - b.totalCost || a.setupCount - b.setupCount,
-  );
-  return ranked[0];
+/**
+ * True when HR Rates holds a machine of the class at the location. A class with
+ * none is priced at 0 per hour: it must never be the cheapest by that artefact
+ * (the live $0.00 quote of 2026-09-18), so it is not a route the part can be
+ * quoted on, in the Cost tab and in the comparison alike.
+ */
+export function hasMachineRate(rate: MHRRateInput): boolean {
+  return rate.source !== 'no_db_rate';
+}
+
+/** A machining route as the route ranking reads it (engine-kernel RankableRoute), with the gaps and lines the ranking of an unrecommended route reads. */
+export interface MachiningRouteStanding extends RankableRoute {
+  totalCost: number;
+  dataGaps: RouteDataGap[];
+  processLines: ProcessLineCost[];
+}
+
+/**
+ * What the route ranking reads of a machining route priced on one machine
+ * class. The Cost tab's candidates and the comparison's routes are both stated
+ * through this, so a route is judged on the same facts wherever it is ranked:
+ *
+ *   capable       the caller's verdict that the machine can make the part: its
+ *                 envelope, the live tool or the milled class the features
+ *                 need, a rate on file (hasMachineRate). It is the route's
+ *                 feasibility too: a machining route has no other.
+ *   fully costed  no line of the route is a data gap (findRouteDataGaps), on
+ *                 the lines as quoted (the stock's lines included).
+ *   compatible    what the operation catalog says of the machine for the part,
+ *                 where the caller reads it.
+ */
+export function machiningRouteStanding(
+  routeId: string,
+  cost: Pick<CostSummaryDto, 'processLines' | 'totalCost' | 'cycleTimes'>,
+  capable: boolean,
+  compatibility?: RouteCompatibilityVerdict | null,
+): MachiningRouteStanding {
+  const dataGaps = findRouteDataGaps(cost.processLines);
+  return {
+    routeId,
+    totalCost: cost.totalCost,
+    cycleTimes: { totalMin: cost.cycleTimes.totalMin },
+    capability: { overallCapable: capable },
+    isFeasible: capable,
+    dataComplete: dataGaps.length === 0,
+    dataGaps,
+    processLines: cost.processLines,
+    ...(compatibility !== undefined ? { compatibility } : {}),
+  };
 }

@@ -5,6 +5,7 @@ import {
   resolveStoredProcessLines,
   totalStoredProcessCost,
   selectProcessTotal,
+  isMaterialSettled,
   type StoredProcessRow,
   type EngineLineLite,
 } from '@/lib/costing/stored-process-lines';
@@ -51,6 +52,14 @@ describe('resolveStoredProcessLines — arithmetic preserved from the Cost Guide
     // cyclePerPart = (cycleSec/3600 * (machineRate + laborRate*heads)) / partsPerCycle
     expect(line!.cyclePerPart).toBeCloseTo((10 / 3600) * (19.83 + 47 * 1) / 1, 12);
     expect(line!.totalPerPart).toBeCloseTo(line!.setupPerPart + line!.cyclePerPart, 12);
+  });
+
+  it('a machine that runs unattended (no crew, a printer or an oven) charges no labour; a row stating no crew is one operator', () => {
+    const [unattended] = resolveStoredProcessLines([row({ heads: 0, setupManning: 0 })], [], EFFECTIVE);
+    expect(unattended!.cyclePerPart).toBeCloseTo((10 / 3600) * 19.83, 12);
+    expect(unattended!.setupPerPart).toBeCloseTo((45 / 60) * 19.83 / 100_000, 12);
+    const [unstated] = resolveStoredProcessLines([row({ heads: null, setupManning: null })], [], EFFECTIVE);
+    expect(unstated!.cyclePerPart).toBeCloseTo((10 / 3600) * (19.83 + 47), 12);
   });
 
   it('applies scrap as a multiplier on the combined per-part cost', () => {
@@ -144,6 +153,16 @@ describe('resolveStoredProcessLines — the setup denominator follows the effect
     expect(at1k.setupPerPart / at10k.setupPerPart).toBeCloseTo(10, 9);
     // Cycle cost is per-part and must NOT move with batch size.
     expect(at1k.cyclePerPart).toBeCloseTo(at10k.cyclePerPart, 12);
+  });
+});
+
+describe('isMaterialSettled — when a part\'s saved process costs count', () => {
+  it('with a material record; or, with none, when its material is its parts\' (an assembly or a weldment of BOM children)', () => {
+    expect(isMaterialSettled(1, {})).toBe(true);
+    expect(isMaterialSettled(0, { materialOfParts: true })).toBe(true);
+    expect(isMaterialSettled(0, { materialOfParts: false })).toBe(false);
+    expect(isMaterialSettled(0, {})).toBe(false);
+    expect(isMaterialSettled(0, undefined)).toBe(false);
   });
 });
 
@@ -269,5 +288,14 @@ describe('resolveStoredProcessLines — per-part charge rows', () => {
     const [line] = resolveStoredProcessLines([melting], [], EFFECTIVE);
     expect(line!.setupPerPart).toBe(0);
     expect(line!.totalPerPart).toBeCloseTo(0.1873, 12);
+  });
+});
+
+describe('resolveStoredProcessLines — rows that share a machine class and operation', () => {
+  it('the n-th row pairs with the n-th live line of that operation (an assembly\'s three screw sizes), not the first line three times', () => {
+    const mech = (id: string) => row({ id, machineClass: 'mechanical_assembly', category: undefined, operation: 'Mechanical Assembly' } as Partial<StoredProcessRow>);
+    const lines: EngineLineLite[] = [49.02, 29.4, 19.62].map((sec) => ({ machineClass: 'mechanical_assembly', process: 'Mechanical Assembly', cycleTimeMin: sec / 60 }) as EngineLineLite);
+    const resolved = resolveStoredProcessLines([mech('a'), mech('b'), mech('c')], lines, EFFECTIVE);
+    expect(resolved.map((r) => Math.round(r.cycleSec * 100) / 100)).toEqual([49.02, 29.4, 19.62]);
   });
 });

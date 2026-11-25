@@ -1,20 +1,22 @@
 'use client';
 
-import { useState } from 'react';
-import { Loader2, RefreshCw, Calculator, Sparkles, ChevronDown } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { useMemo, useState } from 'react';
+import {
+  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  ReferenceLine, Cell, CartesianGrid, BarChart, PieChart, Pie, DefaultZIndexes,
+} from 'recharts';
+import { toast } from 'sonner';
+
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  ReferenceLine, Cell, CartesianGrid, BarChart, PieChart, Pie,
-} from 'recharts';
+import { Loader2, RefreshCw, Calculator, Sparkles, ChevronDown, BarChart3 } from '@/components/ui/icons';
 import { useVaveBom, useVaveShouldCosts, useUpsertShouldCost } from '@/lib/api/hooks/useVave';
 import { vaveApi, type VaveBomItem, type CostAnalysisResult } from '@/lib/api/vave';
-import { toast } from 'sonner';
+
 
 interface Props { projectId: string }
 
@@ -30,7 +32,7 @@ const ANALYSIS_OPTIONS: { value: AnalysisView; label: string; description: strin
 
 const QFD_WEIGHT: Record<string, { label: string; bg: string; text: string }> = {
   Strong: { label: '●●●', bg: 'bg-primary/20',  text: 'text-primary'         },
-  Medium: { label: '●●○', bg: 'bg-amber-500/15', text: 'text-amber-400'       },
+  Medium: { label: '●●○', bg: 'bg-warning/15', text: 'text-warning'       },
   Weak:   { label: '●○○', bg: 'bg-muted/60',     text: 'text-muted-foreground' },
   None:   { label: '—',   bg: '',               text: 'text-muted-foreground/30' },
 };
@@ -84,11 +86,18 @@ function buildSupplierData(items: VaveBomItem[]) {
 
 // ── Chart tooltip style ────────────────────────────────────────────────────────
 const TOOLTIP_STYLE = {
-  contentStyle: { background: 'hsl(220 18% 10%)', border: '1px solid hsl(220 15% 18%)', borderRadius: 8, fontSize: 12 },
-  labelStyle: { color: 'hsl(210 20% 95%)' },
+  contentStyle: { background: 'hsl(var(--popover))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 },
+  labelStyle: { color: 'hsl(var(--foreground))' },
 };
-const AXIS_TICK = { fontSize: 10, fill: 'hsl(215 15% 55%)' };
-const GRID_STROKE = 'hsl(220 15% 18%)';
+const AXIS_TICK = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
+const GRID_STROKE = 'hsl(var(--border))';
+// recharts 3 sorts tooltip rows by name; a constant key keeps them in the order the series are declared.
+const keepSeriesOrder = () => 0;
+// recharts 3 draws the hover line and the axes over the series; recharts 2 drew both behind them, so the line did not cut
+// through the hovered Pareto bar.
+const ABOVE_HOVER_LINE = DefaultZIndexes.cursorLine + 1;
+
+const PIE_COLORS = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)', 'hsl(0 72% 51%)', 'hsl(200 90% 50%)'];
 
 // ── Sub-views ──────────────────────────────────────────────────────────────────
 
@@ -107,18 +116,18 @@ function ParetoView({ items }: { items: VaveBomItem[] }) {
         <Pill color="muted" label={`${items.length} parts`} />
       </div>
       <ResponsiveContainer width="100%" height={300}>
-        <ComposedChart data={data} margin={{ top: 8, right: 40, bottom: 64, left: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+        <ComposedChart accessibilityLayer={false} data={data} margin={{ top: 8, right: 40, bottom: 64, left: 20 }}>
+          <CartesianGrid yAxisId="left" strokeDasharray="3 3" stroke={GRID_STROKE} />
           <XAxis dataKey="name" tick={AXIS_TICK} angle={-40} textAnchor="end" interval={0} />
           <YAxis yAxisId="left" tickFormatter={fmtUSD} tick={AXIS_TICK} />
           <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${v.toFixed(0)}%`} tick={AXIS_TICK} domain={[0, 100]} />
-          <Tooltip {...TOOLTIP_STYLE} formatter={(v: any, n: string) => n === 'spend' ? [fmtUSD(v), 'Annual Spend'] : [`${Number(v).toFixed(1)}%`, 'Cumulative %']} />
-          <ReferenceLine yAxisId="right" y={80} stroke="hsl(0 72% 51%)" strokeDasharray="5 3"
-            label={{ value: '80%', position: 'insideTopRight', fontSize: 10, fill: 'hsl(0 72% 51%)' }} />
-          <Bar yAxisId="left" dataKey="spend" maxBarSize={40} radius={[4, 4, 0, 0]}>
-            {data.map((entry, i) => <Cell key={i} fill={entry.isTop ? 'hsl(0 72% 51%)' : 'hsl(220 15% 30%)'} />)}
+          <Tooltip {...TOOLTIP_STYLE} itemSorter={keepSeriesOrder} formatter={(v: any, n) => n === 'spend' ? [fmtUSD(v), 'Annual Spend'] : [`${Number(v).toFixed(1)}%`, 'Cumulative %']} />
+          <ReferenceLine yAxisId="right" y={80} stroke="hsl(var(--destructive))" strokeDasharray="5 3" zIndex={DefaultZIndexes.axis + 1}
+            label={{ value: '80%', position: 'insideTopRight', fontSize: 10, fill: 'hsl(var(--destructive))' }} />
+          <Bar yAxisId="left" dataKey="spend" maxBarSize={40} radius={[4, 4, 0, 0]} zIndex={ABOVE_HOVER_LINE}>
+            {data.map((entry, i) => <Cell key={i} fill={entry.isTop ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground) / 0.5)'} />)}
           </Bar>
-          <Line yAxisId="right" type="monotone" dataKey="cumPct" stroke="hsl(187 100% 42%)" dot={false} strokeWidth={2} />
+          <Line yAxisId="right" type="monotone" dataKey="cumPct" stroke="hsl(175 84% 32%)" dot={false} strokeWidth={2} zIndex={ABOVE_HOVER_LINE + 1} />
         </ComposedChart>
       </ResponsiveContainer>
       <Legend3 />
@@ -137,15 +146,17 @@ function WaterfallView({ items }: { items: VaveBomItem[] }) {
         <Pill color="muted" label={`${data.length} BOM levels`} />
       </div>
       <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={data} margin={{ top: 8, right: 20, bottom: 24, left: 20 }}>
+        <BarChart accessibilityLayer={false} data={data} margin={{ top: 8, right: 20, bottom: 24, left: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
           <XAxis dataKey="name" tick={AXIS_TICK} />
           <YAxis tickFormatter={fmtUSD} tick={AXIS_TICK} />
           <Tooltip {...TOOLTIP_STYLE} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
-          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]}>
+          {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+          <Bar dataKey="spend" maxBarSize={80} radius={[6, 6, 0, 0]} zIndex={DefaultZIndexes.axis + 1}>
             {data.map((_, i) => {
-              const colors = ['hsl(187 100% 42%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)'];
-              return <Cell key={i} fill={colors[i % colors.length]} />;
+              const colors = ['hsl(175 84% 32%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)'];
+              // The index is always inside the palette; recharts 3 no longer takes an undefined fill.
+              return <Cell key={i} fill={colors[i % colors.length] ?? ''} />;
             })}
           </Bar>
         </BarChart>
@@ -175,10 +186,24 @@ function WaterfallView({ items }: { items: VaveBomItem[] }) {
 }
 
 function SupplierView({ items }: { items: VaveBomItem[] }) {
-  const { suppliers, tailThreshold, total } = buildSupplierData(items);
-  const PIE_COLORS = ['hsl(187 100% 42%)', 'hsl(21 89% 54%)', 'hsl(38 92% 50%)', 'hsl(160 70% 45%)', 'hsl(0 72% 51%)', 'hsl(200 90% 50%)'];
+  const { suppliers, tailThreshold, total } = useMemo(() => buildSupplierData(items), [items]);
   const tail = suppliers.filter((s) => s.spend < tailThreshold);
-  const top = suppliers.filter((s) => s.spend >= tailThreshold);
+  const top = useMemo(() => suppliers.filter((s) => s.spend >= tailThreshold), [suppliers, tailThreshold]);
+  // recharts 3 replays a pie's animation, hiding its labels meanwhile, every time the chart re-renders; recharts 2 kept them
+  // in place. The chart element is therefore reused until the suppliers change.
+  const supplierPie = useMemo(() => (
+    <PieChart accessibilityLayer={false}>
+      <Pie data={top.slice(0, 6).map((s) => ({ name: s.name, value: s.spend }))}
+        cx="50%" cy="50%" outerRadius={100} dataKey="value"
+        label={({ name, pct }: any) => `${name} ${(pct * 100).toFixed(0)}%`}
+        labelLine={false}
+      >
+        {top.slice(0, 6).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length] ?? ''} />)}
+      </Pie>
+      {/* recharts 3 colours a pie's tooltip row like its slice; it was black before. */}
+      <Tooltip {...TOOLTIP_STYLE} itemStyle={{ color: '#000' }} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
+    </PieChart>
+  ), [top]);
 
   if (!items.length) return <EmptyState message="Import BOM items to see supplier spend" />;
   return (
@@ -191,16 +216,7 @@ function SupplierView({ items }: { items: VaveBomItem[] }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ResponsiveContainer width="100%" height={280}>
-          <PieChart>
-            <Pie data={top.slice(0, 6).map((s) => ({ name: s.name, value: s.spend }))}
-              cx="50%" cy="50%" outerRadius={100} dataKey="value"
-              label={({ name, pct }: any) => `${name} ${(pct * 100).toFixed(0)}%`}
-              labelLine={false}
-            >
-              {top.slice(0, 6).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-            </Pie>
-            <Tooltip {...TOOLTIP_STYLE} formatter={(v: any) => [fmtUSD(v), 'Annual Spend']} />
-          </PieChart>
+          {supplierPie}
         </ResponsiveContainer>
 
         <div className="overflow-y-auto max-h-[280px]">
@@ -222,7 +238,7 @@ function SupplierView({ items }: { items: VaveBomItem[] }) {
                   <td className="px-2 py-1.5 text-right text-xs text-muted-foreground">{s.pct.toFixed(1)}%</td>
                   <td className="px-2 py-1.5">
                     {s.spend < tailThreshold
-                      ? <Badge variant="outline" className="text-[9px] bg-amber-500/10 text-amber-400 border-amber-500/30">Tail</Badge>
+                      ? <Badge variant="outline" className="text-[9px] bg-warning/10 text-warning border-warning/30">Tail</Badge>
                       : i < 3 ? <Badge variant="outline" className="text-[9px] bg-primary/10 text-primary border-primary/30">Top</Badge>
                       : null}
                   </td>
@@ -234,10 +250,10 @@ function SupplierView({ items }: { items: VaveBomItem[] }) {
       </div>
 
       {tail.length > 0 && (
-        <Card className="bg-amber-500/10 border-amber-500/30">
+        <Card className="bg-warning/10 border-warning/30">
           <CardContent className="pt-3 pb-3">
-            <p className="text-xs font-semibold text-amber-400 mb-1">Consolidation Opportunity</p>
-            <p className="text-xs text-amber-300/80">
+            <p className="text-xs font-semibold text-warning mb-1">Consolidation Opportunity</p>
+            <p className="text-xs text-warning/80">
               {tail.length} tail-spend supplier{tail.length !== 1 ? 's' : ''} ({tail.map((s) => s.name).join(', ')}) account for
               &lt;3% of spend each — consider consolidating to reduce supplier management overhead.
             </p>
@@ -253,13 +269,13 @@ function AffinityView({ result }: { result: CostAnalysisResult | null }) {
   return (
     <div className="space-y-4">
       {(result.focusAreas?.length ?? 0) > 0 && (
-        <Card className="bg-amber-500/10 border-amber-500/30">
+        <Card className="bg-warning/10 border-warning/30">
           <CardContent className="pt-3 pb-3">
-            <p className="text-xs font-semibold text-amber-400 mb-2">AI-Identified Focus Areas</p>
+            <p className="text-xs font-semibold text-warning mb-2">AI-Identified Focus Areas</p>
             <ul className="space-y-1">
               {result.focusAreas.map((area, i) => (
-                <li key={i} className="text-xs text-amber-300/80 flex gap-2">
-                  <span className="text-amber-500 shrink-0">→</span>{area}
+                <li key={i} className="text-xs text-warning/80 flex gap-2">
+                  <span className="text-warning shrink-0">→</span>{area}
                 </li>
               ))}
             </ul>
@@ -301,7 +317,7 @@ function QFDView({ result }: { result: CostAnalysisResult | null }) {
       <p className="text-xs text-muted-foreground">
         Relationship strength between customer requirements and part functional groups.
         <span className="ml-2 text-primary font-medium">●●●</span> Strong &nbsp;
-        <span className="text-amber-400 font-medium">●●○</span> Medium &nbsp;
+        <span className="text-warning font-medium">●●○</span> Medium &nbsp;
         <span className="text-muted-foreground font-medium">●○○</span> Weak
       </p>
       <div className="overflow-x-auto">
@@ -345,7 +361,7 @@ function QFDView({ result }: { result: CostAnalysisResult | null }) {
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
-      <div className="h-8 w-8 opacity-30 text-3xl">📊</div>
+      <BarChart3 className="h-8 w-8 opacity-40" />
       <p className="text-sm">{message}</p>
     </div>
   );
@@ -361,12 +377,12 @@ function AIEmptyState() {
 }
 
 function Pill({ color, label }: { color: 'red' | 'amber' | 'muted'; label: string }) {
-  const cls = color === 'red' ? 'bg-red-500/10 border-red-500/25 text-red-400'
-    : color === 'amber' ? 'bg-amber-500/10 border-amber-500/25 text-amber-400'
+  const cls = color === 'red' ? 'bg-destructive/10 border-destructive/25 text-destructive'
+    : color === 'amber' ? 'bg-warning/10 border-warning/25 text-warning'
     : 'bg-muted/50 border-border text-muted-foreground';
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium ${cls}`}>
-      {color === 'red' && <span className="h-2 w-2 rounded-full bg-red-500" />}
+      {color === 'red' && <span className="h-2 w-2 rounded-full bg-destructive/100" />}
       {label}
     </div>
   );
@@ -375,7 +391,7 @@ function Pill({ color, label }: { color: 'red' | 'amber' | 'muted'; label: strin
 function Legend3() {
   return (
     <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
-      <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-red-500" />Top cost drivers</span>
+      <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-destructive/100" />Top cost drivers</span>
       <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-muted-foreground/40" />Remaining</span>
       <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-primary" />Cumulative %</span>
     </div>
@@ -679,7 +695,7 @@ export function CostAnalysis({ projectId }: Props) {
                         </td>
                         <td className="px-3 py-2 text-right">
                           {cost ? (
-                            <span className={cost.delta > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                            <span className={cost.delta > 0 ? 'text-destructive' : 'text-success'}>
                               {cost.delta > 0 ? '+' : ''}${cost.delta.toFixed(2)}
                             </span>
                           ) : <span className="text-muted-foreground">—</span>}
@@ -687,8 +703,8 @@ export function CostAnalysis({ projectId }: Props) {
                         <td className="px-3 py-2 text-right">
                           {cost?.deltaPct != null ? (
                             <Badge variant="outline" className={`text-xs ${cost.deltaPct > 0
-                              ? 'bg-red-500/10 text-red-400 border-red-500/30'
-                              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'}`}>
+                              ? 'bg-destructive/10 text-destructive border-destructive/30'
+                              : 'bg-success/10 text-success border-success/30'}`}>
                               {cost.deltaPct > 0 ? '+' : ''}{cost.deltaPct.toFixed(1)}%
                             </Badge>
                           ) : <span className="text-muted-foreground">—</span>}

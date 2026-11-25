@@ -18,9 +18,17 @@ export interface MoldabilityMaterial {
   moldTempC: number | null;
   densityOfMeltKgM3: number | null;
   cureTimeMin: number | null;
+  /** raw_materials.material_type, e.g. "ABS", "Nylon", "Aluminum", "Stainless Steel"; null when not recorded. */
+  materialType?: string | null;
 }
 
-export type MoldabilityKind = 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data';
+export type MoldabilityKind = 'metal' | 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data';
+
+/** The metal material types of the catalog (raw_materials.material_type): Aluminum, Steel, Stainless Steel, Copper, Brass, Gray Iron, Inconel, ... */
+const METAL_TYPE = /\b(alumin(i)?um|steel|iron|copper|brass|bronze|magnesium|zinc|titanium|inconel|nickel|cobalt|lead|tin|tungsten|manganese|super alloys?)\b/i;
+
+/** Whether a material type is a metal: a part of it is molded only in plastic, so a metal grade is a wrong grade, not missing data. */
+export const isMetalType = (materialType: string | null | undefined): boolean => METAL_TYPE.test(materialType ?? '');
 
 export interface MoldabilityGap {
   kind: MoldabilityKind;
@@ -69,6 +77,13 @@ export function missingInjectionData(m: MoldabilityMaterial): string[] {
  */
 export function injectionMoldabilityGap(m: MoldabilityMaterial, isLsr = false): MoldabilityGap | null {
   const label = m.grade ? `"${m.grade}"` : 'This material';
+  if (isMetalType(m.materialType)) {
+    return {
+      kind: 'metal',
+      reason: `${label} is a metal (${m.materialType}), not a moldable plastic: injection and insert molding mold plastics. Choose a plastic grade in Material Grade.`,
+      missing: [],
+    };
+  }
   const form = [m.stockForm, m.matlState].filter((s): s is string => !!s && s.trim() !== '').join(', ');
   if (isAdditiveFeedstock(m.stockForm, m.matlState)) {
     return {
@@ -119,4 +134,6 @@ export function moldingCostableFilter(): string {
  * The process groups whose picker offers only molding feedstock (see moldingFeedstockFilter). Their material group (Plastic & Rubber) also holds
  * 3D-printing resins and powders and stock shapes, which no molding route can use.
  */
-export const MOLDING_PROCESS_GROUPS: ReadonlySet<string> = new Set(['Plastic Molding']);
+// Assembly Molding (insert molding) is injection molding on insert presses: it molds the same feedstock, from the same material group.
+// Assembly Plastic Molding (multi-shot) molds them too, one material per shot.
+export const MOLDING_PROCESS_GROUPS: ReadonlySet<string> = new Set(['Plastic Molding', 'Assembly Molding', 'Assembly Plastic Molding']);

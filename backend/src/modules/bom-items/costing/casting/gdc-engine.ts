@@ -32,8 +32,8 @@ import { selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-
 import type { MachineChoiceDto } from '../../dto/cost-breakdown.dto';
 import { machineChoice, type ChoiceEval } from './machine-choice';
 import { resolveHpdcCavities, type CastingGeometry, type HpdcCavities, type HpdcResult, type TraceStep } from './hpdc-engine';
-import { runReferenceCalculator, type ReferenceCalculators } from '../shared/calculators/reference-calculator';
-import { castingSeed, runOnLine, SeedSet } from './casting-calculator-seeds';
+import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
+import { castingSeed, SeedSet } from './casting-calculator-seeds';
 
 export const GDC_PROCESS = 'Gravity Die Casting';
 export const GDC_MACHINE_CLASS_ID = 'die_casting_gravity_die_casting';
@@ -75,7 +75,7 @@ export function computeGdc(input: {
       physicsGap: { gapType: 'unsupported_operation', process: GDC_PROCESS, machineClass: GDC_MACHINE_CLASS_ID, reason },
       ...(choice ? { machineChoice: choice } : {}),
     }],
-    requiredClampKn: null, machineChecks, shotVolumeMm3: null, cavities,
+    requiredClampKn: null, machineChecks, shotVolumeMm3: null, shotVolumeRun: null, cavities,
     yieldLossFactor: input.material?.yieldLossFactor ?? null, machine: null,
     calculatorRuns: {}, trace, warnings: [...warnings, reason],
   });
@@ -132,8 +132,8 @@ export function computeGdc(input: {
   const pos = (x: number | null | undefined) => (x != null && x > 0 ? x : null);
   const seeds = new SeedSet()
     .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace), 'cavities')
-    .put('Projected Area', pos(g.projectedAreaMm2), (x) => castingSeed.cad(x, 'projected area on the parting plane (mm²)'), 'measured projected area')
-    .put('Part Volume', pos(vol), (x) => castingSeed.cad(x, 'part volume (mm³)'), 'part volume')
+    .put('Projected Area', pos(g.projectedAreaMm2), (x) => castingSeed.cad(x, 'projected area on the parting plane (mm²)', 'projected_area'), 'measured projected area')
+    .put('Part Volume', pos(vol), (x) => castingSeed.cad(x, 'part volume (mm³)', 'part_volume'), 'part volume')
     .put('Wall Max', pos(g.wallMaxMm), (x) => castingSeed.cad(x, 'thickest wall (mm)'), 'measured maximum wall thickness')
     .put('Core Count', input.coreCount != null ? input.coreCount * n : null,
       (x) => castingSeed.cad(x, `sand cores loaded per shot: ${input.coreCount} (trapped regions no die half reaches) x ${n} cavit${n === 1 ? 'y' : 'ies'}`),
@@ -154,8 +154,8 @@ export function computeGdc(input: {
   const runs = selection.capable
     .filter((m) => m.dryCycleTimeS != null && m.moldEfficiency != null && m.moldEfficiency > 0)
     .map((m) => ({ m, run: runReferenceCalculator(input.calculators, GDC_CALCULATOR, seeds.with({
-      'Dry Cycle Time': castingSeed.machine(m.name, 'Dry Cycle Time (s)', m.dryCycleTimeS!),
-      'Mold Efficiency': castingSeed.machine(m.name, 'Mold Efficiency', m.moldEfficiency!),
+      'Dry Cycle Time': castingSeed.machine(m, 'dry_cycle_time_s', 'Dry Cycle Time (s)', m.dryCycleTimeS!),
+      'Mold Efficiency': castingSeed.machine(m, 'mold_efficiency', 'Mold Efficiency', m.moldEfficiency!),
     })) }));
   if (runs.length > 0 && runs.every((r) => r.run.value == null)) {
     return gapLine(`Gravity Die Casting cycle time not derivable: ${runs[0]!.run.missing.join('; ')}.`, selection.capable[0]);
@@ -210,6 +210,6 @@ export function computeGdc(input: {
       ],
       ...runOnLine(best.run),
     }],
-    requiredClampKn: null, machineChecks, shotVolumeMm3, cavities, yieldLossFactor: mat.yieldLossFactor, machine: best.m, calculatorRuns: {}, trace, warnings,
+    requiredClampKn: null, machineChecks, shotVolumeMm3, shotVolumeRun: { name: GDC_CALCULATOR, trace: best.run.trace }, cavities, yieldLossFactor: mat.yieldLossFactor, machine: best.m, calculatorRuns: {}, trace, warnings,
   };
 }

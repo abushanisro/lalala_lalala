@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { checkAgainstInput, resolveFieldHighlight } from '@/lib/features/field-highlight';
+import { cachedFeaturesHighlight, checkAgainstInput, featuresHighlight, highlightableGraph, resolveFieldHighlight } from '@/lib/features/field-highlight';
 import type { FeatureGraphV2 } from '@/lib/types/manufacturing';
 
 const graph: FeatureGraphV2 = {
@@ -170,5 +170,88 @@ describe('bend line length', () => {
     expect(h.node.occurrences.flatMap((o) => o.face_ids)).toEqual([3, 4]);
     expect(h.measured.value).toBe(66);
     expect(resolveFieldHighlight('bend_line_length', { metadata: { face_map: [] }, features: [] })).toBeNull();
+  });
+});
+
+describe('whole-part evidence (a casting\'s volume or surface on a graph without measurements)', () => {
+  const casting: FeatureGraphV2 = {
+    metadata: { face_map: [0, 1, 2].map((face_id) => ({ face_id, tri_start: face_id * 4, tri_count: 4 })) },
+    features: [],
+  };
+
+  it('the part volume lights every face of the part, says so, and is never compared with the input', () => {
+    const h = resolveFieldHighlight('part_volume', casting)!;
+    expect(faces(h.node)).toEqual([0, 1, 2]);
+    expect(h.measured).toBeNull();
+    expect(h.wholePart).toEqual({ faces: 3, label: 'part volume' });
+    expect(checkAgainstInput(h, 0.08)).toBe(h);
+  });
+
+  it('the part surface lights every face too', () => {
+    expect(faces(resolveFieldHighlight('part_surface', casting)!.node)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('featuresHighlight (a SourceRef naming particular features)', () => {
+  const part: FeatureGraphV2 = {
+    metadata: { face_map: [] },
+    features: [
+      { id: 'hole_d4', feature_type: 'SimpleHole', diameter_mm: 4, occurrences: [{ centroid: [0, 0, 0], face_ids: [1, 2] }, { centroid: [1, 0, 0], face_ids: [3, 4] }] },
+      { id: 'hole_d2', feature_type: 'SimpleHole', diameter_mm: 2, occurrences: [{ centroid: [2, 0, 0], face_ids: [5] }] },
+      { id: 'pocket', feature_type: 'PocketV2', occurrences: [{ centroid: [3, 0, 0], face_ids: [9] }] },
+    ],
+  };
+
+  it('lights every instance of the named features and nothing else, counting them', () => {
+    const h = featuresHighlight({ label: 'holes', features: [{ featureId: 'hole_d4' }, { featureId: 'hole_d2' }] }, part)!;
+    expect(faces(h.node)).toEqual([1, 2, 3, 4, 5]);
+    expect(h.measured).toEqual({ value: 3, unit: 'count', label: 'holes' });
+    expect(checkAgainstInput(h, 3).reconciles).toBe(true);
+    expect(checkAgainstInput(h, 5).reconciles).toBe(false);
+  });
+
+  it('lights only the named instance when an occurrence is given', () => {
+    expect(faces(featuresHighlight({ label: 'one hole', features: [{ featureId: 'hole_d4', occurrenceIndex: 1 }] }, part)!.node)).toEqual([3, 4]);
+  });
+
+  it('is null when none of the features is on this graph (re-analysed since): nothing is guessed', () => {
+    expect(featuresHighlight({ label: 'gone', features: [{ featureId: 'hole_d9' }] }, part)).toBeNull();
+  });
+
+  it('returns the same object for the same graph and ref (memoized dialog rows)', () => {
+    const ref = { label: 'holes', features: [{ featureId: 'hole_d2' }] };
+    expect(cachedFeaturesHighlight(ref, part)).toBe(cachedFeaturesHighlight(ref, part));
+  });
+});
+
+describe('featuresHighlight for named faces (a SourceRef of kind faces)', () => {
+  const g: FeatureGraphV2 = { metadata: { face_map: [] }, features: [] };
+
+  it('lights exactly those faces, says how many, and is not compared with the input (a length is not a face count)', () => {
+    const h = featuresHighlight({ label: 'sharp edges', faceIds: [3, 5, 8] }, g)!;
+    expect(faces(h.node)).toEqual([3, 5, 8]);
+    expect(h.measured).toBeNull();
+    expect(h.faceSet).toEqual({ faces: 3, label: 'sharp edges' });
+    expect(checkAgainstInput(h, 1442.7)).toBe(h);
+  });
+
+  it('is null for an empty face list', () => {
+    expect(featuresHighlight({ label: 'none', faceIds: [] }, g)).toBeNull();
+  });
+});
+
+describe('highlightableGraph (feature_graph_v2 plus a plastic part\'s recognised features)', () => {
+  it('a features ref can name a plastic bundle: its faces light like a feature_graph_v2 entry\'s', () => {
+    const stored = {
+      feature_graph_v2: { metadata: { face_map: [] }, features: [] } as FeatureGraphV2,
+      summary: { plasticFeatureGraph: { items: [{ id: 'bundle-2', feature_type: 'LifterBundle', occurrences: [{ centroid: [1, 2, 3], face_ids: [40, 41] }] }] } },
+    };
+    const g = highlightableGraph(stored)!;
+    expect(faces(featuresHighlight({ label: 'lifter bundles', features: [{ featureId: 'bundle-2' }] }, g)!.node)).toEqual([40, 41]);
+    expect(highlightableGraph(stored)).toBe(g);
+  });
+
+  it('is null with no stored graph', () => {
+    expect(highlightableGraph(null)).toBeNull();
   });
 });

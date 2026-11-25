@@ -4,7 +4,10 @@ import { RawMaterialsService } from '../../raw-materials/raw-materials.service';
 import { RawMaterialCostService } from '../../raw-materials/services/raw-material-cost.service';
 import type { BOMItemResponseDto } from '../dto/bom-item-response.dto';
 import type { CostSummaryResponseDto } from '../dto/cost-breakdown.dto';
-import { deriveMaterialUsage, type MaterialUsage } from '../costing/shared/material-usage';
+import { deriveMaterialUsage, type DeriveMaterialUsageInput, type MaterialUsage } from '../costing/shared/material-usage';
+import { explainMaterialUsage, type MaterialUsageExplanation } from '../costing/shared/material-usage-explanation';
+import { CAD_FAMILY_TO_PROCESS_GROUP } from '../costing/shared/core/part-family-process-group';
+import { TWO_MODEL_FAMILY } from '../costing/two-model/two-model-cost';
 
 export interface MaterialSnapshotInput {
   item: BOMItemResponseDto;
@@ -23,6 +26,9 @@ export interface MaterialSnapshotResult {
   recordId: string | null;
   usage: MaterialUsage | null;
 }
+
+/** The material record's name for a source component: what the Cost tab lists as the part's material. */
+export const sourceComponentMaterialName = (sourceName: string) => `Source component: ${sourceName}`;
 
 /** A stored usage that differs from the engine's live one by more than this share means the record is stale. */
 const STALE_RELATIVE_DIFFERENCE = 0.01;
@@ -47,12 +53,39 @@ export class MaterialCostSnapshotService {
     private readonly materials: RawMaterialsService,
   ) {}
 
+  /**
+   * Retires the part's active material records and writes none: an assembly's or a weldment's material is its parts' (each part's record is in
+   * the BOM roll-up), so one of its own would count it twice. Returns how many were retired.
+   */
+  async retireOwnMaterial(itemId: string, userId: string, token: string): Promise<number> {
+    const { records } = await this.costRecords.findAll({ bomItemId: itemId, isActive: true, page: 1, limit: 10 }, userId, token);
+    await this.retire(records, userId, token);
+    return records.length;
+  }
+
+  /** Retires records; one that cannot be retired stops the apply, so a second active record never doubles the material cost. */
+  private async retire(records: readonly { id: string }[], userId: string, token: string): Promise<void> {
+    for (const r of records) {
+      try {
+        await this.costRecords.update(r.id, { isActive: false }, userId, token);
+      } catch (e: unknown) {
+        throw new InternalServerErrorException(`Could not retire the existing material cost record ${r.id}: ${e instanceof Error ? e.message : String(e)}. Nothing was added, to avoid a duplicate.`);
+      }
+    }
+  }
+
   async ensure(input: MaterialSnapshotInput): Promise<MaterialSnapshotResult> {
     const { item, grade, location, summary, userId, organizationId, token } = input;
-    const liveGross = (summary.grossWeightKg ?? 0) > 0 ? summary.grossWeightKg : null;
-    const liveNet = (summary.blankSpec?.netWeightKg ?? 0) > 0 ? summary.blankSpec!.netWeightKg : null;
+    const { liveGross, liveNet } = liveWeights(summary);
 
     const active = (await this.costRecords.findAll({ bomItemId: item.id, isActive: true, page: 1, limit: 10 } as never, userId, token)).records ?? [];
+
+    // 2-Model Machining: the material is the source component, one piece at its cost, never the grade's stock by the kg (the summary's weights are
+    // the source's mass, so a stock record would price a casting as raw metal). A 2-Model part that could not be costed (no source linked) gets
+    // no record at all: the Apply is refused at its route, and a stock record would put the bar stock back in the part's total.
+    if (summary.family === TWO_MODEL_FAMILY) {
+      return summary.sourceComponent ? this.ensureSourceComponent(input, active) : { action: 'kept', recordId: null, usage: null };
+    }
 
     const existing = active.find((r) => (r.totalCost ?? 0) > 0 && r.materialName === grade);
     const staleAgainstNesting = !!existing && (
@@ -61,31 +94,20 @@ export class MaterialCostSnapshotService {
     );
     // The geometry does not change with the Digital Factory, the price per kg does.
     const staleAgainstLocation = !!existing && (existing.country ?? '') !== location;
-    if (existing && !staleAgainstNesting && !staleAgainstLocation) return { action: 'kept', recordId: existing.id, usage: null };
-
-    // Retire every active record first; one that cannot be retired stops the apply (a second active record doubles the material cost).
-    for (const r of active) {
-      try {
-        await this.costRecords.update(r.id, { isActive: false } as never, userId, token);
-      } catch (e: unknown) {
-        throw new InternalServerErrorException(`Could not retire the existing material cost record ${r.id}: ${e instanceof Error ? e.message : String(e)}. Nothing was added, to avoid a duplicate.`);
-      }
+    // The blank the engine sized, as it describes it ("59×50×49 billet"): what the Part Summary shows as the stock. A Stock Machining part's
+    // is its stock with the piece and the yield (5/8" round bar, 33.59 mm piece, 172 per 6096 mm bar).
+    const stockLabel = summary.stockMachining?.stockLabel?.trim() || summary.blankSpec?.sizeLabel?.trim() || undefined;
+    if (existing && !staleAgainstNesting && !staleAgainstLocation) {
+      // A kept record written before the stock was recorded, or for a blank since resized within tolerance, takes the current label.
+      if (stockLabel && existing.stockLabel !== stockLabel) await this.costRecords.update(existing.id, { stockLabel } as never, userId, token);
+      return { action: 'kept', recordId: existing.id, usage: null };
     }
 
-    const material = await this.findMaterial(grade, userId, token);
-    const featureGraph = item.featureGraph as { classification?: { family?: string } } | null | undefined;
-    const isSheetMetal = featureGraph?.classification?.family === 'sheet_metal'
-      || Number((featureGraph as { summary?: { sheetThicknessMm?: number } } | null | undefined)?.summary?.sheetThicknessMm ?? 0) > 0;
-    const usage = deriveMaterialUsage({
-      blankSpec: summary.blankSpec,
-      isSheetMetal,
-      engineGrossKg: liveGross,
-      engineNetKg: liveNet,
-      itemVolumeMm3: item.volume,
-      densityKgM3: material?.densityKgM3 ?? null,
-      cadWeightKg: typeof item.weight === 'number' && item.weight > 0 ? item.weight : null,
-      castingMetal: summary.castingMetal ?? null,
-    });
+    // Retire every active record first; one that cannot be retired stops the apply (a second active record doubles the material cost).
+    await this.retire(active, userId, token);
+
+    const material = await this.findMaterial(grade, processGroupOf(item, summary), userId, token);
+    const usage = deriveMaterialUsage(usageInput(item, summary, material?.densityKgM3 ?? null));
 
     // unitCost 0 asks the cost-record service for the grade's price at the location (see its create()).
     const created = await this.costRecords.create(
@@ -96,6 +118,7 @@ export class MaterialCostSnapshotService {
         materialGroup: material?.materialGroup,
         materialType: material?.materialType,
         materialDescription: material?.materialDescription,
+        ...(stockLabel ? { stockLabel } : {}),
         country: location,
         netUsage: usage.netUsage,
         grossUsage: usage.grossUsage,
@@ -110,31 +133,125 @@ export class MaterialCostSnapshotService {
       organizationId,
     );
 
-    // No price for the grade in raw_materials: the engine priced the part anyway (its own tables), and that is the figure the record carries.
-    if (!(created.unitCost > 0)) {
-      const usdPerKg = (summary.materialCostPerKg ?? 0) / (summary.usdToDisplayRate ?? 1);
-      if (usdPerKg > 0) {
-        this.logger.log(`No raw_materials price for "${grade}" at ${location}: the record carries the engine's ${usdPerKg.toFixed(4)} USD/kg`);
-        // The service noted that it found no price and defaulted to 0: say what the record carries now.
-        await this.costRecords.update(
-          created.id,
-          { unitCost: usdPerKg, notes: `No raw_materials price for "${grade}" at ${location}: the unit cost is the cost engine's price per kg (${usdPerKg.toFixed(4)} USD).` } as never,
-          userId,
-          token,
-        );
-      }
+    // The record carries the engine's own price per kg: the price the quote was built on, so the applied material cost is the quoted one, and
+    // declares it USD: without a price column for the location (an India grade with no cost_india) the record was left undeclared
+    // (legacy_unverified) although the engine's price is a USD figure (material_stock_prices).
+    // An engine prices a bar, tube or sheet at its stock form's price (material_stock_prices) and a casting at its alloy's; the service's
+    // lookup takes the grade's base price from the first row of that name in any process group (a Bar and Tube part's rectangular bar at
+    // 7.011 USD/kg was recorded at 5.38, the Die Casting row's, so the applied total was not the quote). The looked-up price stays when the
+    // engine has none, or took only a default; with no looked-up price the engine's is used whatever its source.
+    const usdPerKg = (summary.materialCostPerKg ?? 0) / (summary.usdToDisplayRate ?? 1);
+    const looked = created.unitCost > 0;
+    const differs = Math.abs(usdPerKg - created.unitCost) > 1e-6 * Math.max(usdPerKg, 1e-9);
+    if (usdPerKg > 0 && differs && (!looked || summary.materialSource === 'db')) {
+      const notes = looked
+        ? `The unit cost is the cost engine's price per kg (${usdPerKg.toFixed(4)} USD), the price the quote used; raw_materials lists ${created.unitCost.toFixed(4)} USD for "${grade}" at ${location}.`
+        : `No raw_materials price for "${grade}" at ${location}: the unit cost is the cost engine's price per kg (${usdPerKg.toFixed(4)} USD).`;
+      this.logger.log(`Material record for "${grade}" at ${location}: the engine's ${usdPerKg.toFixed(4)} USD/kg${looked ? ` (raw_materials ${created.unitCost.toFixed(4)})` : ''}`);
+      await this.costRecords.update(created.id, { unitCost: usdPerKg, notes } as never, userId, token, 'USD');
     }
     return { action: 'replaced', recordId: created.id, usage };
   }
 
-  /** The raw_materials row of the grade: the exact name or grade, else the ranked search's unambiguous best (the ranker the costing engine resolves with). */
-  private async findMaterial(grade: string, userId: string, token: string) {
-    try {
-      const { items } = await this.materials.findAll({ search: grade, limit: 10 } as never, userId, token);
-      const exact = (m: { material?: string; materialGrade?: string }) => m.materialGrade === grade || m.material === grade || `${m.material ?? ''} ${m.materialGrade ?? ''}`.trim() === grade;
+  /**
+   * The part's material record when it is machined from a source component: one piece (uom PC) of it, at its cost in USD (the summary's money is in
+   * the display currency: usdToDisplayRate), no scrap, overhead or reclaim (they are inside the source's own cost). Kept when the active record is
+   * this source at this cost and location; otherwise every active record is retired first, as for stock.
+   */
+  private async ensureSourceComponent(input: MaterialSnapshotInput, active: Array<{ id: string; materialName?: string | null; totalCost?: number | null; country?: string | null }>): Promise<MaterialSnapshotResult> {
+    const { item, location, summary, userId, organizationId, token } = input;
+    const source = summary.sourceComponent!;
+    const usd = source.totalCost / (summary.usdToDisplayRate ?? 1);
+    const name = sourceComponentMaterialName(source.name);
+    const existing = active.find((r) => r.materialName === name && (r.country ?? '') === location && Math.abs((r.totalCost ?? 0) - usd) <= Math.max(0.005, usd * STALE_RELATIVE_DIFFERENCE));
+    if (existing && active.length === 1) return { action: 'kept', recordId: existing.id, usage: null };
+    for (const r of active) {
+      try {
+        await this.costRecords.update(r.id, { isActive: false } as never, userId, token);
+      } catch (e: unknown) {
+        throw new InternalServerErrorException(`Could not retire the existing material cost record ${r.id}: ${e instanceof Error ? e.message : String(e)}. Nothing was added, to avoid a duplicate.`);
+      }
+    }
+    const created = await this.costRecords.create(
+      {
+        bomItemId: item.id,
+        materialName: name,
+        materialDescription: `2-Model Machining: machined from ${source.name}, at its ${source.basis === 'fully_burdened' ? 'fully burdened' : 'piece part'} cost (material ${source.materialCost.toFixed(2)}, process ${source.processCost.toFixed(2)}, tooling ${source.toolingCost.toFixed(2)}).`,
+        country: location,
+        uom: 'PC',
+        netUsage: 1,
+        grossUsage: 1,
+        scrap: 0,
+        overhead: 0,
+        reclaimRate: 0,
+        unitCost: usd,
+        isActive: true,
+      } as never,
+      userId,
+      token,
+      organizationId,
+    );
+    return { action: 'replaced', recordId: created.id, usage: null };
+  }
+
+  /**
+   * The usage Apply would record for the part at this cost summary, with the working behind each figure (the calculator that ran, or the rule, and every
+   * value it read). Nothing is written: the Raw Material dialog shows it and fills its fields from it.
+   */
+  async explain(item: BOMItemResponseDto, grade: string, summary: CostSummaryResponseDto, userId: string, token: string): Promise<MaterialUsageExplanation> {
+    const material = grade ? await this.findMaterial(grade, processGroupOf(item, summary), userId, token) : null;
+    return explainMaterialUsage({ ...usageInput(item, summary, material?.densityKgM3 ?? null), calculatorRuns: summary.calculatorRuns ?? null, runnerSystem: summary.injectionMolding?.runnerSystemType ?? null });
+  }
+
+  /**
+   * The raw_materials row of the grade: the exact name or grade, else the ranked search's unambiguous best (the ranker the costing engine resolves
+   * with), among the materials of the part's process first (process_material_groups, as the engine prices them), else of any process. A name is a
+   * row in several material groups ("Aluminum, ANSI 6061" in nine): the first of them in any group linked a Multi-Spindle part's record to the
+   * Forging row, and its price was then derived from that row.
+   */
+  private async findMaterial(grade: string, processGroup: string | null, userId: string, token: string) {
+    const exact = (m: { material?: string; materialGrade?: string }) => m.materialGrade === grade || m.material === grade || `${m.material ?? ''} ${m.materialGrade ?? ''}`.trim() === grade;
+    const search = async (group: string | null) => {
+      const { items } = await this.materials.findAll({ search: grade, limit: 10, ...(group ? { processGroup: group } : {}) } as never, userId, token);
       return items.find(exact) ?? items.find((m) => m.matchIsBest) ?? null;
+    };
+    try {
+      return (processGroup ? await search(processGroup) : null) ?? await search(null);
     } catch {
       return null; // a failed lookup leaves the record without links, and priced by the service from the name
     }
   }
+}
+
+/** The process the part is priced as: the Process chosen for it, else the process group of the family the engine priced it as. */
+function processGroupOf(item: BOMItemResponseDto, summary: CostSummaryResponseDto): string | null {
+  const chosen = (item.scenarioOverrides as Record<string, unknown> | null | undefined)?.['processGroup'];
+  if (typeof chosen === 'string' && chosen.trim()) return chosen.trim();
+  return summary.family ? CAD_FAMILY_TO_PROCESS_GROUP[summary.family] ?? null : null;
+}
+
+/** The engine's live per-part weights; null where it reported none. */
+function liveWeights(summary: CostSummaryResponseDto): { liveGross: number | null; liveNet: number | null } {
+  return {
+    liveGross: (summary.grossWeightKg ?? 0) > 0 ? summary.grossWeightKg : null,
+    liveNet: (summary.blankSpec?.netWeightKg ?? 0) > 0 ? summary.blankSpec!.netWeightKg : null,
+  };
+}
+
+/** What the usage of a part is derived from: the engine's results in the cost summary, the part's geometry and the material's density. */
+function usageInput(item: BOMItemResponseDto, summary: CostSummaryResponseDto, densityKgM3: number | null): DeriveMaterialUsageInput {
+  const { liveGross, liveNet } = liveWeights(summary);
+  const featureGraph = item.featureGraph as { classification?: { family?: string }; summary?: { sheetThicknessMm?: number } } | null | undefined;
+  const family = summary.family ?? featureGraph?.classification?.family;
+  return {
+    blankSpec: summary.blankSpec,
+    isSheetMetal: featureGraph?.classification?.family === 'sheet_metal' || Number(featureGraph?.summary?.sheetThicknessMm ?? 0) > 0,
+    engineGrossKg: liveGross,
+    engineNetKg: liveNet,
+    itemVolumeMm3: item.volume,
+    densityKgM3,
+    cadWeightKg: typeof item.weight === 'number' && item.weight > 0 ? item.weight : null,
+    castingMetal: summary.castingMetal ?? null,
+    moldingGrossKg: family === 'plastic_molded' ? liveGross : null,
+  };
 }

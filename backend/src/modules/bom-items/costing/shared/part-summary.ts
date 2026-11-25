@@ -80,7 +80,7 @@ const CATEGORY_LABELS: Record<CostCategoryKey, string> = {
 const NOT_MODELLED = {
   secondaryFactory: 'The cost model records one Digital Factory per part: no secondary factory is on file.',
   toolshop: 'The cost model does not record a toolshop for the part.',
-  stock: 'The material row in the library has no stock form.',
+  stock: 'No stock was recorded when the cost was applied (apply the scenario again), and the material row in the library has no stock form.',
   fullyBurdenedCost: 'Not modelled: the period costs (indirect overhead, SG&A, margin) have no authoritative formula in the reference data, so a fully burdened cost would be an estimate.',
   targetCost: 'Not modelled: no target cost is on file.',
   targetMass: 'Not modelled: no target mass is on file.',
@@ -125,7 +125,11 @@ export function buildPartSummary(input: PartSummaryInput): PartSummary {
 
   const processRows = (table?.rows ?? []).filter((r) => r.kind === 'process');
   const processTotal = processRows.reduce((s, r) => s + processCostOf(r), 0);
-  const costByProcess = processRows.map((r) => ({ process: r.name, usd: r4(processCostOf(r)), pct: pct(processCostOf(r), processTotal) }));
+  // Cost by process: one row per process, in route order. A process can run on several lines (an assembly screws in three sizes on one
+  // bench, loads and unloads its part): their costs are that process's, summed.
+  const byProcess = new Map<string, number>();
+  for (const r of processRows) byProcess.set(r.name, (byProcess.get(r.name) ?? 0) + processCostOf(r));
+  const costByProcess = [...byProcess].map(([process, usd]) => ({ process, usd: r4(usd), pct: pct(usd, processTotal) }));
 
   const annualVolume = positive(inputs.annualVolume);
   const life = positive(inputs.productionLifeYears);

@@ -19,6 +19,8 @@ import { caCertificate, databaseClientConfig } from '../src/common/migrations/db
 import { checksumOf, migrationNumber, planMigrations, targetProblems, trackingTableProblem, type Baseline } from '../src/common/migrations/migration-plan';
 
 const ADVISORY_LOCK = 727_001; // one runner at a time per database
+/** Not a numbered migration (the planner ignores it): run before any pending migration, on every run. */
+const RESYNC_ID_SEQUENCES = 'resync-id-sequences.sql';
 const NO_TRANSACTION = /^--\s*migrate:\s*no-transaction/m;
 
 function option(name: string): string | undefined {
@@ -92,7 +94,12 @@ async function main(): Promise<void> {
 
     console.log(`${env}: ${applied.length} applied, ${plan.pending.length} pending${dryRun ? ' (dry run)' : ''}`);
     for (const m of plan.pending) console.log(`  ${dryRun ? 'would apply' : 'applying'} ${m.name}`);
-    if (dryRun || plan.pending.length === 0) return;
+    if (dryRun) return;
+    // Every id sequence at least its table's highest id before anything is inserted (resync-id-sequences.sql: a database loaded from a
+    // baseline had sequences behind their rows, and migration 1036's insert collided). Idempotent; a sequence is never lowered.
+    client.on('notice', (n) => { if (n.message?.startsWith('resync-id-sequences:')) console.log(`  ${n.message}`); });
+    await client.query(fs.readFileSync(path.join(dir, RESYNC_ID_SEQUENCES), 'utf8'));
+    if (plan.pending.length === 0) return;
 
     for (const m of plan.pending) {
       const sql = fs.readFileSync(path.join(dir, m.name), 'utf8');
@@ -102,6 +109,11 @@ async function main(): Promise<void> {
         await client.query(sql);
         await client.query('INSERT INTO public.schema_migrations (name, checksum) VALUES ($1, $2)', [m.name, m.checksum]);
         if (transactional) await client.query('COMMIT');
+        // The API (PostgREST) answers from a cached copy of the schema. A column a migration adds is unknown
+        // to it until it reloads, and every write naming that column is refused. Reloading here, after each
+        // migration that landed, means no migration has to remember to ask, and a later failure cannot leave
+        // an earlier migration's schema unseen.
+        await client.query("NOTIFY pgrst, 'reload schema'");
         console.log(`  applied ${m.name}`);
       } catch (error) {
         if (transactional) await client.query('ROLLBACK');

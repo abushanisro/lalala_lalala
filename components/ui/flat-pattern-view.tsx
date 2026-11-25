@@ -4,6 +4,7 @@ import React, { useMemo, useState } from 'react';
 
 import { ReanalyzeButton } from '@/components/features/bom/ReanalyzeButton';
 import { FlatPatternDrawing, normalizeFlatPattern } from '@/components/ui/flat-pattern-drawing';
+import { Mark } from '@/components/ui/status-mark';
 import { shoelaceAreaMm2 } from '@/lib/geometry/polygon2d';
 import type { FlatPatternBlank } from '@/lib/types/manufacturing';
 
@@ -170,7 +171,7 @@ function SingleFlatPatternView({
               <>
                 <Row label="Independently-computed CAD area" value={`${flatPatternAreaMm2.toFixed(1)} mm²`} />
                 <div className={`flex items-center gap-1.5 mt-1 rounded px-2 py-1 ${areaCheck.diffPct <= 10 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
-                  <span>{areaCheck.diffPct <= 10 ? '✓' : '⚠'}</span>
+                  <span>{areaCheck.diffPct <= 10 ? <Mark kind="ok" inherit /> : <Mark kind="warn" inherit />}</span>
                   <span>
                     {areaCheck.diffPct <= 10 ? 'Matches' : 'Differs from'} the independently-computed CAD flat-pattern area
                     within {areaCheck.diffPct.toFixed(1)}%
@@ -193,7 +194,7 @@ function SingleFlatPatternView({
               Holes ({bbox.holes.length}) — click a hole to inspect (position is distance from the part&apos;s own bottom-left corner)
             </p>
             {selectedHole && (
-              <div className="mb-1.5 rounded bg-blue-600/20 px-2 py-1">
+              <div className="mb-1.5 rounded bg-brand-600/20 px-2 py-1">
                 <Row label={`Hole ${((selectedHoleIdx ?? 0) + 1).toString()} position`} value={`${selectedHole.cx_mm.toFixed(2)}, ${selectedHole.cy_mm.toFixed(2)} mm`} />
                 <Row label={`Hole ${((selectedHoleIdx ?? 0) + 1).toString()} diameter`} value={`Ø${selectedHole.diameter_mm.toFixed(2)} mm`} />
               </div>
@@ -203,7 +204,7 @@ function SingleFlatPatternView({
                 <button
                   key={hi}
                   onClick={() => { setSelectedHoleIdx(hi); }}
-                  className={`w-full text-left flex items-center justify-between px-1.5 py-0.5 rounded ${selectedHoleIdx === hi ? 'bg-blue-600' : 'hover:bg-white/10'}`}
+                  className={`w-full text-left flex items-center justify-between px-1.5 py-0.5 rounded ${selectedHoleIdx === hi ? 'bg-brand-600' : 'hover:bg-white/10'}`}
                 >
                   <span>#{hi + 1}</span>
                   <span className="font-mono">Ø{h.diameter_mm.toFixed(2)} @ ({h.cx_mm.toFixed(1)}, {h.cy_mm.toFixed(1)})</span>

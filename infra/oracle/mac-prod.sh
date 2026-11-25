@@ -29,7 +29,7 @@ run="${PROD_DIR:-$HOME/emithran-prod-run}"; baseline="${BASELINE_DIR:-$HOME/emit
 case "$run" in */emithran-prod-run) ;; *) echo "PROD_DIR must end in /emithran-prod-run (it is emptied on each release): $run" >&2; exit 2 ;; esac
 [ -f "$run/env/prd.env" ] && [ -d "$baseline" ] || { echo "need $run/env/prd.env and the baseline directory $baseline" >&2; exit 2; }
 command -v docker >/dev/null && docker info >/dev/null 2>&1 || { echo "Docker is not running" >&2; exit 2; }
-services="backend frontend cad-engine ecad-engine"
+services="backend frontend cad-engine"
 
 # Required values must be real: blank or a REPLACE_ placeholder fails (the same rule deploy.sh applies).
 python3 - "$run/env/prd.env" <<'PY'
@@ -79,8 +79,8 @@ chmod 600 .migrate.env
 docker run --rm --network emithran-prd_db -v "$run:/work" -w /work/backend node:24 sh -c 'npm ci --legacy-peer-deps --no-audit --no-fund >/dev/null 2>&1 && npx ts-node -r tsconfig-paths/register scripts/migrate.ts --env prd --env-file /work/.migrate.env --confirm' | tail -2
 rm -f .migrate.env
 echo "[4/5] services (the tunnel connector is NOT started yet)"
-pd up -d backend frontend cad-engine ecad-engine postgrest
-for s in backend frontend cad-engine ecad-engine postgrest; do
+pd up -d backend frontend cad-engine postgrest
+for s in backend frontend cad-engine postgrest; do
   st=starting; for _ in $(seq 1 100); do st="$(docker inspect -f '{{.State.Health.Status}}' "emithran-prd-$s-1" 2>/dev/null || echo missing)"; [ "$st" = healthy ] && break; sleep 3; done
   echo "  $s: $st"; [ "$st" = healthy ] || { echo "$s is not healthy: the tunnel stays off. Look: docker logs emithran-prd-$s-1" >&2; exit 1; }
 done

@@ -1,12 +1,13 @@
 import type { FactMismatch } from '@/lib/api/hooks/useBOMItems';
 
 /**
- * Validation tab rows for the part's 2D-drawing-vs-3D-CAD fact agreement
+ * Validation rows (under the Design Guidance tab) for the part's 2D-drawing-vs-3D-CAD fact agreement
  * (backend costing/shared/physics/drawing-cad-consistency.ts):
  *
  *   ✗ Bend count: drawing says 3 bends, the 3D model measures 2 bends   (critical — clickable, highlights the CAD bends)
  *   ! Sheet thickness: drawing (2.0 mm) and 3D model (2.11 mm) disagree (warning)
- *   Overall dimensions: not present in either source                   (info — nothing fabricated)
+ *   Thread count: only the 3D model has this                           (info)
+ * A fact neither source carries has no row.
  *
  * Pure 1:1 transform, same convention as gdtCalloutNodes: v2FeatureIds is
  * left OMITTED, not [], when the fact has no real CAD features to point at

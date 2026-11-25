@@ -354,17 +354,19 @@ export const TAP_CYCLE_SEC: Record<string, number> = {
   'M6': 10, 'M8': 14, 'M10': 18, 'M12': 22, 'M16': 28,
 };
 
-// Same ISO metric coarse-thread pitch series used by drawing_analyzer.py's
-// _default_pitch() — kept in sync so a bare "M4" drawing callout (no explicit
-// pitch) and a CAD-detected tapped_hole (which has no pitch field at all)
-// resolve to the identical standard pitch.
-const DEFAULT_THREAD_PITCH_MM: Record<number, number> = {
-  3: 0.5, 4: 0.7, 5: 0.8, 6: 1.0, 8: 1.25, 10: 1.5, 12: 1.75, 16: 2.0, 20: 2.5, 24: 3.0,
+// ISO 261 coarse-pitch series (first, second and third choice diameters,
+// M1 to M68). A bare "M4" callout and a CAD tapped hole with no pitch both
+// resolve to the standard coarse pitch of their diameter.
+const ISO_261_COARSE_PITCH_MM: Record<number, number> = {
+  1: 0.25, 1.1: 0.25, 1.2: 0.25, 1.4: 0.3, 1.6: 0.35, 1.8: 0.35, 2: 0.4, 2.2: 0.45, 2.5: 0.45,
+  3: 0.5, 3.5: 0.6, 4: 0.7, 4.5: 0.75, 5: 0.8, 6: 1, 7: 1, 8: 1.25, 9: 1.25, 10: 1.5, 11: 1.5,
+  12: 1.75, 14: 2, 16: 2, 18: 2.5, 20: 2.5, 22: 2.5, 24: 3, 27: 3, 30: 3.5, 33: 3.5,
+  36: 4, 39: 4, 42: 4.5, 45: 4.5, 48: 5, 52: 5, 56: 5.5, 60: 5.5, 64: 6, 68: 6,
 };
 
 /** ISO 261 coarse pitch of a metric nominal diameter, or null off the series. */
 export function isoCoarsePitchMm(nominalDiameterMm: number): number | null {
-  return Number.isInteger(nominalDiameterMm) ? DEFAULT_THREAD_PITCH_MM[nominalDiameterMm] ?? null : null;
+  return ISO_261_COARSE_PITCH_MM[nominalDiameterMm] ?? null;
 }
 
 // The two values used when even the standard series cannot answer. Named, so
@@ -504,7 +506,7 @@ export function resolveTapPhysicsInputs(
   // 0.7. The `?? 1.0` tail was not: an off-series nominal (M7, M14, M18, M22, or
   // a diameter that came from the assumption above) got a 1.0mm pitch that
   // scales feed = RPM x pitch, and so scales tapping cycle time and cost.
-  const tablePitch = DEFAULT_THREAD_PITCH_MM[Math.round(diameterMm)];
+  const tablePitch = isoCoarsePitchMm(diameterMm);
   const pitchIsAssumed = pitchMmIn == null && tablePitch == null;
   const pitchMm = pitchMmIn ?? tablePitch ?? ASSUMED_THREAD_PITCH_MM;
   const depthIsAssumed = depthMmIn == null || depthMmIn <= 0;
@@ -1074,6 +1076,9 @@ export const MACHINE_REGISTRY = {
   // wiring it into an actual CNC cost line is deferred until a real
   // time-per-feature source is found, same discipline as every other
   // documented "resolvable but not yet costed" gap in this file.
+  // The XRF analyzer that checks each raw material lot's composition (the machining calculator workbook's RM Composition Analysis sheet,
+  // work centre XRF-0000-0001P; mhr_records rows by migration 1145). The exact class value as its keyword, as machining_inspection's.
+  xrf_analyzer: { commodityCodes: [], processGroupKeywords: ['Machining'], machineClassKeywords: ['xrf_analyzer'] },
   special_inspection: { commodityCodes: [],                                                                                          processGroupKeywords: ['Machining'],                                                                                                        machineClassKeywords: ['special_inspection', 'Special Inspection'] },
   // Real, granular primary CNC milling/turning classes — replaces the 6
   // generic cnc_3ax_vmc/cnc_4ax_vmc/cnc_5ax_mc/cnc_lathe/cnc_lathe_live/
@@ -1146,6 +1151,12 @@ export const MACHINE_REGISTRY = {
   // low-pressure with a blowing agent) — reuses computeInjectionMoldedCostSummary
   // unchanged, only the machine pool/rate differs from injection_molding.
   structural_foam_molding: { commodityCodes: [] as string[], processGroupKeywords: ['Injection Molding', 'Plastic Molding'], machineClassKeywords: ['Structural Foam', 'Foam Molder', 'Foam Molding'] },
+  // Insert molding presses (memory/Assembly molding, migrations 862, 1079, 1080): injection physics on vertical presses that load inserts every shot,
+  // priced by computeInjectionMoldedCostSummary like Structural Foam; only the pool, the rate and the shot (insert loading) differ.
+  assembly_molding_insert_injection_molding: { commodityCodes: [] as string[], processGroupKeywords: ['Assembly Molding'], machineClassKeywords: ['Insert Injection Molding'] },
+  // Multi-shot presses (memory/Assembly plastic molding, migrations 862, 1085): 2K/3K presses, each shot injection physics; chosen and priced by
+  // the multi-shot engine (plastic-molding/multi-shot), which reads the injection units, stations and tool index time from the press.
+  assembly_plastic_molding_multi_shot_molding: { commodityCodes: [] as string[], processGroupKeywords: ['Assembly Plastic Molding'], machineClassKeywords: ['Multi-Shot Molding'] },
   // Real, distinct machine class (2026-09-02). Real machine pool:
   // memory/Injection/machine/compression_molding_machines.json (23 machines,
   // e.g. "Accurl Hydraulic Press HBP-40"). Compression molding is NOT
@@ -1187,12 +1198,13 @@ export type MachineClass = keyof typeof MACHINE_REGISTRY;
 // table) — no hardcoded/fallback rate lives here anymore (removed the old
 // `defaultInrRate` field, which several call sites silently fell back to when
 // a real rate lookup came back empty).
-// `materialCol`: column to read from raw_materials for this location.
+// `materialCol`: column to read from raw_materials for this location: the
+// material's price there in USD per kg, not in `code` (material-location-price.ts).
 
 interface LocationCurrencyInfo {
   readonly code: string;          // ISO 4217 currency code
   readonly symbol: string;        // display symbol
-  readonly materialCol: string;   // raw_materials column
+  readonly materialCol: string;   // raw_materials column (USD per kg)
 }
 
 export const LOCATION_INFO: Readonly<Record<string, LocationCurrencyInfo>> = {

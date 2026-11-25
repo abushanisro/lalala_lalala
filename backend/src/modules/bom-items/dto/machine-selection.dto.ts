@@ -67,12 +67,24 @@ export interface MachineCandidate {
   transferTimeS: number | null;
   stockFeedTimeS: number | null;
   speedSynchronizationTimeS: number | null;
+  // mhr_records.specs spindle_speed_rpm / live_tooling_speed_rpm — the
+  // machine's top main-spindle and driven-tool speeds (migrations 1093, 1136;
+  // source memory/machining/machine/*.csv). A cutting calculator caps its
+  // spindle speed n = 1000 v / (pi D) at these. null when not staged.
+  maxSpindleRpm: number | null;
+  liveToolingMaxRpm: number | null;
+  // mhr_records.specs rapid_traverse_mm_per_min (migration 1141; source memory/machining/machine/*.csv): the rate the machine moves
+  // between the features it cuts. null when not staged.
+  rapidTraverseMmPerMin: number | null;
   // mhr_records.setup_time_hr — real per-machine setup time, generically
   // available for any class (2026-09-02, added for Compression Molding /
   // Reaction Injection Molding, which have no per-operation lookup table
   // the way Sheet Metal classes do — real setup_time_hr genuinely IS a
   // fixed per-machine value for these). null when not set for this machine.
   setupTimeHr: number | null;
+  /** mhr_records.machine_power_kw: the machine's power draw, kW (the HR Rates engine's electricity input). Its energy per part in the
+   *  sustainability panel is this x the line's cycle time. null when not on file. */
+  machinePowerKw: number | null;
   /**
    * The two components the canonical Machine Hour Rate is DEFINED as
    * (migration 581: MHR = Direct Overhead Rate + Indirect Overhead Rate,

@@ -1,9 +1,18 @@
 'use client';
 
+import { useQueryClient, useQuery, keepPreviousData } from '@tanstack/react-query';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';
-import { useFileFormats } from '@/lib/api/hooks/useElectronics';
-import { describeRejection } from '@/lib/electronics/rejections';
+import { toast } from 'sonner';
+
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Command,
+  CommandGroup,
+  CommandList,
+} from '@/components/ui/command';
 import {
   Dialog,
   DialogContent,
@@ -12,30 +21,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Command,
-  CommandGroup,
-  CommandList,
-} from '@/components/ui/command';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
 import {
   FileText,
   Package,
@@ -50,16 +35,31 @@ import {
   Check,
   X,
   DollarSign,
-} from 'lucide-react';
-import { toast } from 'sonner';
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Progress } from '@/components/ui/progress';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { apiClient } from '@/lib/api/client';
 import { createBOMItem, updateBOMItem, analyzeForAutoFill, measureForAutoFill, type AutoFillResponse } from '@/lib/api/hooks/useBOMItems';
-import { beginProtectedJob } from '@/lib/auth/session-idle/protected-jobs';
-import { familyToProcessGroupLabel, processGroupOptionsFrom, processGroupToFamilyHint, processesForMaterialGroups } from '@/lib/features/process-group';
 import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculatorMappings';
 import type { DrawingAnalysisResult } from '@/lib/api/vave';
+import { beginProtectedJob } from '@/lib/auth/session-idle/protected-jobs';
+import { BOARD_SET_ACCEPT, describeRejection, isBoardSetFile } from '@/lib/features/board-files';
+import { familyToProcessGroupLabel, processGroupOptionLabel, processGroupOptionsFrom, processGroupToFamilyHint, processesForMaterialGroups } from '@/lib/features/process-group';
 import { BOMItemType, ITEM_TYPE_LABELS } from '@/lib/types/bom.types';
-import { apiClient } from '@/lib/api/client';
-import { useQueryClient, useQuery, keepPreviousData } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -298,8 +298,6 @@ interface BOMItemDialogProps {
   parentItemId?: string | null;
   defaultItemType?: BOMItemType;
   getAutoParent?: (type: BOMItemType) => string | null;
-  /** The Electronics module of this BOM's project. Board files point there; absent, the dialog only says it cannot read them. */
-  electronicsHref?: string;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -335,20 +333,20 @@ const AutoBadgeFor = React.memo(function AutoBadgeFor({
   if (!lineage) return null;
   if (lineage.source === 'derived') {
     return (
-      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-brand-400 border-brand-400/40 ml-1">
+      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-primary border-primary/40 ml-1">
         DERIVED
       </Badge>
     );
   }
   if (lineage.source === 'drawing') {
     return (
-      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-blue-500 border-blue-400/40 ml-1">
+      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-primary border-primary/40 ml-1">
         DRAWING
       </Badge>
     );
   }
   return (
-    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-cyan-500 border-cyan-400/40 ml-1">
+    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-primary border-primary/40 ml-1">
       CAD
     </Badge>
   );
@@ -363,7 +361,6 @@ export function BOMItemDialog({
   parentItemId,
   defaultItemType,
   getAutoParent,
-  electronicsHref
 }: BOMItemDialogProps) {
   const queryClient = useQueryClient();
 
@@ -514,6 +511,8 @@ export function BOMItemDialog({
   const [loading, setLoading] = useState(false);
   const [autoParentId, setAutoParentId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ file2d?: number; file3d?: number }>({});
+  // A circuit board's board set (Gerber layers, drill file, Pick Place, or one .zip of them): stored with the item, read when it is analysed.
+  const [boardFiles, setBoardFiles] = useState<File[]>([]);
   const [showHelp, setShowHelp] = useState<Record<string, boolean>>({});
   // ── Multi-file / auto-fill state ──────────────────────────────────────────
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -930,7 +929,12 @@ export function BOMItemDialog({
     selectProcess(candidates[0]!, 'material');
   }, [materialGroupsByName, processMaterialLinks, processGroupOptions, processSource, selectProcess, detectProcessAmong]);
 
-  const handleFileDrop = useCallback(async (acceptedFiles: File[]) => {
+  const handleFileDrop = useCallback(async (dropped: File[]) => {
+    if (!dropped.length) return;
+    // Board files go to the item's board set; they are not 3D models and are not measured here.
+    const board = dropped.filter((f) => isBoardSetFile(f.name));
+    if (board.length) setBoardFiles((prev) => [...prev.filter((p) => !board.some((b) => b.name === p.name)), ...board]);
+    const acceptedFiles = dropped.filter((f) => !isBoardSetFile(f.name));
     if (!acceptedFiles.length) return;
     const isDxfFile = (f: File) => /\.(dxf|dwg)$/i.test(f.name);
     const dxfFiles = acceptedFiles.filter(isDxfFile);
@@ -1021,21 +1025,14 @@ export function BOMItemDialog({
     });
   }, [activeFileId, populateFormFromResult]);
 
-  // react-dropzone drops files of other types silently, which looked like "no file found". Name them, and when they are
-  // board files (Gerber, drill, Pick Place: types from the electronics file-role table) say where they belong.
-  const { data: boardFormats } = useFileFormats();
+  // react-dropzone drops files of other types silently, which looked like "no file found": name them and say what the form takes.
   const handleFileRejected = useCallback((rejections: FileRejection[]) => {
     const message = describeRejection(
       rejections.map((r) => ({ name: r.file.name, tooLarge: r.errors.some((e) => e.code === 'file-too-large') })),
-      new Set(boardFormats?.boardFiles.map((r) => r.extension) ?? []),
       100,
     );
-    toast.error(message.title, {
-      description: message.description,
-      duration: message.boardFiles ? 12000 : 10000,
-      ...(message.boardFiles && electronicsHref ? { action: { label: 'Open Electronics', onClick: () => window.location.assign(electronicsHref) } } : {}),
-    });
-  }, [boardFormats, electronicsHref]);
+    toast.error(message.title, { description: message.description, duration: 10000 });
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: handleFileDrop,
@@ -1043,7 +1040,8 @@ export function BOMItemDialog({
     accept: {
       // STEP/STP are analysed by the CAD engine (the only 3D formats it reads);
       // DXF/DWG are stored as the 2D drawing, not analysed.
-      'application/octet-stream': ['.step', '.stp', '.dxf', '.dwg'],
+      // A circuit board's Gerber set (layers, drill file, Pick Place, or one .zip of them) is kept as the item's board set.
+      'application/octet-stream': ['.step', '.stp', '.dxf', '.dwg', ...BOARD_SET_ACCEPT],
     },
     maxSize: 100 * 1024 * 1024,
     multiple: true,
@@ -1154,6 +1152,7 @@ export function BOMItemDialog({
     setProcessSource(null);
     setMaterialProcessChoices([]);
     setPendingFiles([]);
+    setBoardFiles([]);
     setActiveFileId(null);
     setAutoFilledFields(new Set());
     setActiveResult(null);
@@ -1456,7 +1455,7 @@ export function BOMItemDialog({
       } else {
         const newItem = await createBOMItem(payload);
         itemId = newItem.id;
-        toast.success(`🎉 "${formData.name}" added to BOM`, {
+        toast.success(`"${formData.name}" added to BOM`, {
           description: 'New item is now part of your Bill of Materials',
           duration: 4000
         });
@@ -1470,9 +1469,11 @@ export function BOMItemDialog({
       });
 
       const dxfPending = pendingFiles.find(pf => /\.(dxf|dwg)$/i.test(pf.file.name));
-      if (formData.file2d || formData.file3d || dxfPending) {
+      if (formData.file2d || formData.file3d || dxfPending || boardFiles.length > 0) {
         const formDataUpload = new FormData();
         const fileNames: string[] = [];
+        for (const board of boardFiles) formDataUpload.append('fileBoard', board);
+        if (boardFiles.length > 0) fileNames.push(boardFiles.length === 1 ? boardFiles[0]!.name : `${boardFiles.length} board files`);
 
         if (dxfPending) {
           formDataUpload.append('file2d', dxfPending.file);
@@ -1711,10 +1712,10 @@ export function BOMItemDialog({
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-2">
                   <Package className="h-4 w-4" />
-                  3D Model (STEP) · 2D drawing (DXF, DWG)
-                  {pendingFiles.length > 0 && (
+                  3D Model (STEP) · 2D drawing (DXF, DWG) · Board files (Gerber)
+                  {pendingFiles.length + boardFiles.length > 0 && (
                     <Badge variant="secondary" className="text-xs ml-1">
-                      {pendingFiles.length} file{pendingFiles.length !== 1 ? 's' : ''}
+                      {pendingFiles.length + boardFiles.length} file{pendingFiles.length + boardFiles.length !== 1 ? 's' : ''}
                     </Badge>
                   )}
                 </Label>
@@ -1732,7 +1733,7 @@ export function BOMItemDialog({
                 )}
               >
                 <input {...getInputProps()} />
-                {pendingFiles.length === 0 ? (
+                {pendingFiles.length === 0 && boardFiles.length === 0 ? (
                   <div className="flex flex-col items-center gap-2 text-muted-foreground py-2">
                     <Package className="h-7 w-7 opacity-50" />
                     <p className="text-sm font-medium">
@@ -1740,12 +1741,7 @@ export function BOMItemDialog({
                     </p>
                     <p className="text-xs">Multiple files supported · 100 MB max each · STEP is analysed by the CAD engine and fills the form · DXF/DWG are stored as the drawing only (not analysed)</p>
                     <p className="text-xs">
-                      Circuit board files (Gerber, drill, Pick Place)? This form cannot read them.{' '}
-                      {electronicsHref ? (
-                        <a href={electronicsHref} onClick={(e) => e.stopPropagation()} className="font-medium text-primary underline underline-offset-2">Open the project Electronics module</a>
-                      ) : (
-                        <span>Use the Electronics module of a project.</span>
-                      )}
+                      Circuit board? Drop its Gerber set (layers, drill file, Pick Place) or one .zip of it: it is kept with the part and read when the part is analysed.
                     </p>
                   </div>
                 ) : (
@@ -1767,7 +1763,7 @@ export function BOMItemDialog({
                             : 'hover:bg-muted',
                         )}
                       >
-                        {pf.status === 'analyzing' && <Loader2 className="h-3 w-3 animate-spin text-blue-500 shrink-0" />}
+                        {pf.status === 'analyzing' && <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />}
                         {pf.status === 'ready'     && <CheckCircle className="h-3 w-3 text-green-500 shrink-0" />}
                         {pf.status === 'error'     && <XCircle className="h-3 w-3 text-red-500 shrink-0" />}
                         {pf.status === 'pending'   && <div className="h-3 w-3 rounded-full bg-muted-foreground/30 shrink-0" />}
@@ -1792,6 +1788,36 @@ export function BOMItemDialog({
                         </button>
                       </div>
                     ))}
+                    {boardFiles.length > 0 && (
+                      <div className="rounded-md border border-dashed px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium">Board files</span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setBoardFiles([]); }}
+                            className="text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            Remove all
+                          </button>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {boardFiles.map((b) => (
+                            <Badge key={b.name} variant="outline" className="gap-1 text-xs font-normal">
+                              {b.name}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${b.name}`}
+                                onClick={(e) => { e.stopPropagation(); setBoardFiles((prev) => prev.filter((p) => p !== b)); }}
+                                className="text-muted-foreground hover:text-foreground"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          ))}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">Kept with the part; the board is measured when the part is analysed (Refresh analysis).</p>
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground pt-1 px-1">
                       Click a file to load its properties · Drop more files to add
                     </p>
@@ -1979,7 +2005,7 @@ export function BOMItemDialog({
                 <SelectTrigger id="processType"><SelectValue placeholder="Select process…" /></SelectTrigger>
                 <SelectContent>
                   {processGroupOptions.map((g) => (
-                    <SelectItem key={g} value={g}>{g}</SelectItem>
+                    <SelectItem key={g} value={g}>{processGroupOptionLabel(g)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -2038,7 +2064,7 @@ export function BOMItemDialog({
                 {formData.file2d ? formData.file2d.name : 'Choose file…'}
               </label>
               {isAnalyzing2d ? (
-                <div className="flex items-center gap-2 text-xs text-blue-600">
+                <div className="flex items-center gap-2 text-xs text-primary">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   <span>Analysing drawing…</span>
                 </div>
@@ -2211,7 +2237,7 @@ export function BOMItemDialog({
                 <div className="flex items-center gap-2">
                   <h4 className="text-sm font-medium">Physical Properties (Optional)</h4>
                   {(formData.volume > 0 || formData.weight > 0 || formData.surfaceArea > 0 || formData.maxLength > 0) && (
-                    <span className="text-xs text-blue-600 bg-blue-50 dark:bg-blue-950/20 px-2 py-1 rounded">Auto-extracted</span>
+                    <span className="text-xs text-primary bg-primary/10 dark:bg-primary/20 px-2 py-1 rounded">Auto-extracted</span>
                   )}
                 </div>
               </div>

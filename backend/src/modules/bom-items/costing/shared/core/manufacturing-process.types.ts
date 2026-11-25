@@ -55,6 +55,8 @@ export interface TurretPunchMachineParams {
   strokeRateFactor: number | null;
   /** Machine tonnage the factor was looked up for (press force / 9.80665). */
   machineTonnageT: number | null;
+  /** The Lookup Table 1 row the factor was read from (its tonnage_t) and the complexity column; null when no factor. */
+  strokeRateFactorRow: { tonnageT: number; column: 'simple' | 'intermediate' | 'complex' } | null;
 }
 
 export interface LaserPunchParams {
@@ -82,11 +84,15 @@ export interface PlasmaCutParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 export interface PlasmaPunchParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 // Real, per-SELECTED-MACHINE roll speed/prebend time (2026-09-01), resolved
@@ -185,9 +191,9 @@ export interface CuttingProcessContext {
   // seeded for this machine class — the engine must NOT charge a guessed
   // allowance in that case.
   handlingAllowance?: { allowanceUsd: number; dataFound: boolean };
-  // Real nozzle-wear cost/hr resolved by the caller from
-  // sm_waterjet_nozzle_rates (SheetMetalLookupService.getWaterjetNozzleCostPerHr,
-  // migration 531, closeout Plan Phase 2b). Only WaterjetEngine reads this.
+  // Real nozzle-wear cost an hour, in the quote's currency: resolved by the caller from the staged
+  // tblWaterjetAbrasiveNozzle rows (SheetMetalLookupService.getWaterjetNozzleCostPerHr, which states
+  // it in USD) and converted. Only WaterjetEngine reads this.
   nozzleRate?: { costPerHr: number; dataFound: boolean };
   // ── Shared cost-composition-core inputs (Phase 1, engine registry unification) ──
   // These 7 fields feed eMithranTerms() (engine-kernel.ts) — the platform's one

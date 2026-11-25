@@ -4,6 +4,7 @@ exports[`route authorization inventory matches the reviewed route-policy table 1
 "org:member      DELETE /api/v1/balloon-diagrams/:diagramId/annotations/:annotationId  ProjectReportsController.deleteAnnotation
 org:member      DELETE /api/v1/balloon-diagrams/:id  ProjectReportsController.deleteBalloonDiagram
 org:member      DELETE /api/v1/benchmark-sessions/:id  BenchmarkSessionsController.remove
+org:viewer      DELETE /api/v1/bom-item-stars/:bomItemId  BomItemStarsController.unstar
 org:member      DELETE /api/v1/bom-items/:bomItemId/process-specifications  ProcessPlanningController.deleteSpecifications
 org:member      DELETE /api/v1/bom-items/:id  BOMItemsController.remove
 org:member      DELETE /api/v1/bom-items/:id/calculator-field-overrides  CalculatorFieldOverridesController.clear
@@ -18,8 +19,6 @@ org:admin       DELETE /api/v1/calculators/:id/formulas/:formulaId  CalculatorsC
 org:member      DELETE /api/v1/child-part-costs/:id  ChildPartCostController.remove
 org:member      DELETE /api/v1/copilot/memory  CopilotController.clearMemory
 org:member      DELETE /api/v1/copilot/memory/preferences  CopilotController.deleteMemoryItem
-org:member      DELETE /api/v1/electronic-designs/:designId  ElectronicsController.deleteDesign
-org:member      DELETE /api/v1/electronic-designs/:designId/revisions/:revisionId  ElectronicsController.deleteRevision
 org:admin       DELETE /api/v1/labour-rates  LHRController.removeAll
 org:admin       DELETE /api/v1/labour-rates/:id  LHRController.remove
 org:admin       DELETE /api/v1/machine-rates  MHRController.removeAll
@@ -73,6 +72,7 @@ authenticated   GET /api/v1/auth/session  SessionController.status
 org:viewer      GET /api/v1/balloon-diagrams/:id  ProjectReportsController.getBalloonDiagram
 org:viewer      GET /api/v1/benchmark-sessions  BenchmarkSessionsController.findAll
 org:viewer      GET /api/v1/benchmark-sessions/:id  BenchmarkSessionsController.findOne
+org:viewer      GET /api/v1/bom-item-stars  BomItemStarsController.list
 org:viewer      GET /api/v1/bom-items  BOMItemsController.findAll
 org:viewer      GET /api/v1/bom-items/:bomItemId/process-specifications  ProcessPlanningController.getSpecificationsByBomItem
 org:viewer      GET /api/v1/bom-items/:id  BOMItemsController.findOne
@@ -84,6 +84,7 @@ org:viewer      GET /api/v1/bom-items/:id/candidate-routes  BOMItemsController.g
 org:viewer      GET /api/v1/bom-items/:id/cost-summary  BOMItemsController.getCostSummary
 org:viewer      GET /api/v1/bom-items/:id/cost-table  BOMItemsController.getCostTable
 org:viewer      GET /api/v1/bom-items/:id/dependencies  BOMItemsController.checkDeleteDependencies
+org:viewer      GET /api/v1/bom-items/:id/design-guidance  BOMItemsController.getDesignGuidance
 org:viewer      GET /api/v1/bom-items/:id/dfm-scores  BOMItemsController.getDFMScores
 org:viewer      GET /api/v1/bom-items/:id/draw-direction  BomItemDrawDirectionController.get
 org:viewer      GET /api/v1/bom-items/:id/dxf-content  BOMItemsController.getDxfContent
@@ -91,11 +92,14 @@ org:viewer      GET /api/v1/bom-items/:id/dxf-content-legacy  BOMItemsController
 org:viewer      GET /api/v1/bom-items/:id/feature-tolerances  BOMItemsController.getFeatureTolerances
 org:viewer      GET /api/v1/bom-items/:id/file-url/:fileType  BOMItemsController.getFileUrl
 org:viewer      GET /api/v1/bom-items/:id/file-url/dxf  BOMItemsController.getDxfFileUrl
+org:viewer      GET /api/v1/bom-items/:id/forging-dfm  BOMItemsController.getForgingDfm
 org:viewer      GET /api/v1/bom-items/:id/gdt-analysis  BOMItemsController.getGdtAnalysis
+org:viewer      GET /api/v1/bom-items/:id/machining-dfm  BOMItemsController.getMachiningDfm
 org:viewer      GET /api/v1/bom-items/:id/machining-need  BOMItemsController.getMachiningNeed
 org:viewer      GET /api/v1/bom-items/:id/manufacturing-implications  BOMItemsController.getManufacturingImplications
 org:viewer      GET /api/v1/bom-items/:id/material-intelligence  BOMItemsController.getMaterialIntelligence
 org:viewer      GET /api/v1/bom-items/:id/material-strengths  BOMItemsController.getMaterialStrengths
+org:viewer      GET /api/v1/bom-items/:id/material-usage  BOMItemsController.getMaterialUsage
 org:viewer      GET /api/v1/bom-items/:id/nre  BOMItemsController.getNre
 org:viewer      GET /api/v1/bom-items/:id/part-summary  BOMItemsController.getPartSummary
 org:viewer      GET /api/v1/bom-items/:id/plastic-dfm  BOMItemsController.getPlasticDfm
@@ -129,17 +133,6 @@ org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId  CostAnalysisContr
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/excel  CostAnalysisController.downloadBomItemExcel
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/location-comparison  CostAnalysisController.getLocationComparison
 org:viewer      GET /api/v1/currencies  FxController.listCurrencies
-org:viewer      GET /api/v1/electronic-coverage-reports  ElectronicsController.coverage
-org:viewer      GET /api/v1/electronic-designs  ElectronicsController.listDesigns
-org:viewer      GET /api/v1/electronic-designs/:designId  ElectronicsController.getDesign
-org:viewer      GET /api/v1/electronic-file-formats  ElectronicsController.formats
-org:viewer      GET /api/v1/electronic-jobs/:jobId  ElectronicsController.job
-org:viewer      GET /api/v1/electronic-results/:resultId  ElectronicsController.result
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/features  ElectronicsController.features
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/latest-result  ElectronicsController.latestResult
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/preview  ElectronicsController.preview
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/scenario-options  ElectronicsController.scenarioOptions
-org:viewer      GET /api/v1/electronic-uploads/:uploadId/thumbnail  ElectronicsController.thumbnail
 org:viewer      GET /api/v1/exchange-rates  FxController.listExchangeRates
 org:viewer      GET /api/v1/exchange-rates/effective  FxController.getRate
 org:viewer      GET /api/v1/factories  FxController.listFactories
@@ -185,6 +178,8 @@ org:viewer      GET /api/v1/processes/reference-lookup  ProcessesController.getR
 org:viewer      GET /api/v1/processes/reference-tables/:tableId  ProcessesController.getReferenceTable
 org:viewer      GET /api/v1/processes/sm-lookup-tables  ProcessesController.getSmLookupTables
 org:viewer      GET /api/v1/processes/sm-lookup-tables/by-name/:table  ProcessesController.getSmLookupTableByName
+org:viewer      GET /api/v1/processes/source-tables/machine/:id  ProcessesController.getMachineSourceTable
+org:viewer      GET /api/v1/processes/source-tables/material/:id  ProcessesController.getMaterialSourceTable
 org:viewer      GET /api/v1/processes/stroke-rate-factor-table  ProcessesController.getStrokeRateFactorTable
 org:viewer      GET /api/v1/processes/turret-machines-table  ProcessesController.getTurretMachinesTable
 org:viewer      GET /api/v1/processes/variables  ProcessesController.getDomainVariables
@@ -295,6 +290,7 @@ org:member      PATCH /api/v1/rfqs/:id/send  RfqController.sendRfq
 org:member      PATCH /api/v1/supplier-evaluation-groups/:id  SupplierEvaluationGroupsController.update
 authenticated   POST /api/v1/auth/session/activity  SessionController.activity
 authenticated   POST /api/v1/auth/session/end  SessionController.end
+public          POST /api/v1/auth/sign-ins  AuthController.startSession
 org:member      POST /api/v1/balloon-diagrams  ProjectReportsController.createBalloonDiagram
 org:member      POST /api/v1/balloon-diagrams/:id/annotations  ProjectReportsController.addAnnotation
 org:member      POST /api/v1/benchmark-sessions  BenchmarkSessionsController.create
@@ -333,10 +329,6 @@ org:member      POST /api/v1/child-part-costs  ChildPartCostController.create
 org:member      POST /api/v1/child-part-costs/calculations  ChildPartCostController.calculateOnly
 org:member      POST /api/v1/copilot/chat  CopilotController.chat
 org:member      POST /api/v1/copilot/memory-proposals/:id/confirm  CopilotController.confirmMemoryProposal
-org:member      POST /api/v1/electronic-designs  ElectronicsController.createDesign
-org:member      POST /api/v1/electronic-quotes  ElectronicsController.quote
-org:member      POST /api/v1/electronic-uploads  ElectronicsController.upload
-org:member      POST /api/v1/electronic-uploads/:uploadId/reparse  ElectronicsController.reparseUpload
 platform_admin  POST /api/v1/exchange-rates/refresh  FxController.refresh
 org:member      POST /api/v1/feature-process-mappings  ManufacturingKnowledgeController.createFeatureProcessMapping
 org:admin       POST /api/v1/labour-rates  LHRController.create
@@ -426,6 +418,7 @@ org:member      POST /api/v1/vendors/services  VendorsController.createService
 org:member      PUT /api/v1/balloon-diagrams/:diagramId/annotations/:annotationId  ProjectReportsController.updateAnnotation
 org:member      PUT /api/v1/balloon-diagrams/:id  ProjectReportsController.updateBalloonDiagram
 org:member      PUT /api/v1/benchmark-sessions/:id  BenchmarkSessionsController.update
+org:viewer      PUT /api/v1/bom-item-stars/:bomItemId  BomItemStarsController.star
 org:member      PUT /api/v1/bom-items/:bomItemId/process-specifications  ProcessPlanningController.updateSpecifications
 org:member      PUT /api/v1/bom-items/:id  BOMItemsController.update
 org:member      PUT /api/v1/bom-items/:id/calculator-field-overrides  CalculatorFieldOverridesController.set

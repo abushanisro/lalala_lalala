@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 import {
   HOT_BOX_GUIDANCE,
@@ -14,8 +14,8 @@ import {
   parseCavities,
   parsePositive,
   sandOverrideCount,
-  type FieldCommit,
 } from '@/lib/costing/sand-scenario';
+import { NumberField } from '@/components/costing/NumberField';
 
 
 interface Props {
@@ -27,38 +27,7 @@ interface Props {
 
 const rowClass = 'flex items-center gap-2 py-0.5';
 const labelClass = 'text-xs text-muted-foreground w-24 shrink-0';
-const controlClass = 'flex-1 min-w-0 text-xs border border-border rounded px-2 py-1 bg-background focus:outline-hidden focus:ring-1 focus:ring-brand-500';
-
-/** A text field that commits on blur: an unusable number keeps the field and changes nothing. */
-function NumberField({ label, value, placeholder, parse, onCommit, title }: {
-  label: string;
-  value: number | null;
-  placeholder: string;
-  parse: (text: string) => FieldCommit;
-  onCommit: (v: number | null) => void;
-  title: string;
-}) {
-  const [draft, setDraft] = useState(value == null ? '' : String(value));
-  useEffect(() => { setDraft(value == null ? '' : String(value)); }, [value]);
-  const parsed = parse(draft);
-  return (
-    <div className={rowClass} title={title}>
-      <span className={labelClass}>{label}</span>
-      <input
-        className={`${controlClass} ${parsed === 'invalid' ? 'border-red-500' : ''}`}
-        inputMode="decimal"
-        value={draft}
-        placeholder={placeholder}
-        aria-invalid={parsed === 'invalid'}
-        onChange={(e) => { setDraft(e.target.value); }}
-        onBlur={() => {
-          if (parsed === 'invalid') { setDraft(value == null ? '' : String(value)); return; }
-          if (parsed !== value) onCommit(parsed);
-        }}
-      />
-    </div>
-  );
-}
+const controlClass = 'flex-1 min-w-0 text-xs border border-border rounded px-2 py-1 bg-background focus:outline-hidden focus:ring-1 focus:ring-primary/40';
 
 /** The Cost Guide choices of a sand casting (what the route decided is in the Cost tab: SandRouteSummary). Every choice is optional; unset means the engine decides or, for the energy price and the tooling life, charges nothing. */
 export function SandCastingSection({ overrides, onChange }: Props) {
@@ -74,7 +43,7 @@ export function SandCastingSection({ overrides, onChange }: Props) {
           className="cursor-pointer select-none text-[11px] text-muted-foreground"
           title="Moulding, cores and cavities from the CAD analysis; energy, coating and drying from the plant data; hot box from published values. What was used is on each line of the Cost tab."
         >
-          Sand settings: {overridden > 0 ? `${overridden} overridden` : 'automatic'} · <span className="font-medium text-brand-500 hover:text-brand-400">Override</span>
+          Sand settings: {overridden > 0 ? `${overridden} overridden` : 'automatic'} · <span className="font-medium text-primary hover:text-primary">Override</span>
         </summary>
         <div className="space-y-1 pt-1">
       <div className={rowClass}>

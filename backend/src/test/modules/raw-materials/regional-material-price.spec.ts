@@ -1,28 +1,38 @@
 import { pickRegionalMaterialPrice } from '../../../modules/raw-materials/services/raw-material-cost.service';
 
+// Every raw_materials location price is USD per kg (material-location-price.ts): the record's unit cost is that price, never a rupee or
+// yuan figure converted (India's 2.72 for Aluminum AA 7003 used to be stored as 2.72 INR, 0.029 USD).
 describe('pickRegionalMaterialPrice', () => {
   it("uses the country's own column when it has a price", () => {
-    expect(pickRegionalMaterialPrice([{ cost_usa: '2.5', cost_india: '80' }], 'USA')).toEqual({
+    expect(pickRegionalMaterialPrice([{ cost_usa: '2.5', cost_india: '0.8' }], 'USA')).toEqual({
       price: 2.5, found: true, currency: 'USD', priceSource: 'local',
     });
   });
 
   it('flags the India price when the local column is empty, instead of passing it off as local', () => {
-    const r = pickRegionalMaterialPrice([{ cost_usa: null, cost_india: '80' }], 'USA');
-    expect(r).toMatchObject({ price: 80, found: true, currency: 'INR', priceSource: 'fallback_india' });
+    const r = pickRegionalMaterialPrice([{ cost_usa: null, cost_india: '0.8' }], 'USA');
+    expect(r).toMatchObject({ price: 0.8, found: true, currency: 'USD', priceSource: 'fallback_india' });
     expect(r.warning).toContain('has no USA price');
   });
 
   it('flags the India price for a location with no price column at all', () => {
-    const r = pickRegionalMaterialPrice([{ cost_india: '80' }], 'Brazil');
-    expect(r).toMatchObject({ price: 80, currency: 'INR', priceSource: 'fallback_india' });
+    const r = pickRegionalMaterialPrice([{ cost_india: '0.8' }], 'Brazil');
+    expect(r).toMatchObject({ price: 0.8, currency: 'USD', priceSource: 'fallback_india' });
     expect(r.warning).toContain('no price column for location "Brazil"');
   });
 
-  it('reports India prices as local, never as a fallback', () => {
-    expect(pickRegionalMaterialPrice([{ cost_india: '80' }], 'India')).toEqual({
-      price: 80, found: true, currency: 'INR', priceSource: 'local',
+  it('reports India prices as local and in USD, never as a fallback or in rupees', () => {
+    expect(pickRegionalMaterialPrice([{ cost_india: '2.72' }], 'India')).toEqual({
+      price: 2.72, found: true, currency: 'USD', priceSource: 'local',
     });
+  });
+
+  it("reads each location's column as the cost engine does (LOCATION_INFO), in USD", () => {
+    // W. Europe's column is cost_w_europe (there is no cost_europe), China's holds USD, not yuan.
+    expect(pickRegionalMaterialPrice([{ cost_w_europe: '3.6', cost_india: '0.8' }], 'W. Europe')).toMatchObject({ price: 3.6, currency: 'USD', priceSource: 'local' });
+    expect(pickRegionalMaterialPrice([{ cost_china: '2.96', cost_india: '2.72' }], 'China')).toMatchObject({ price: 2.96, currency: 'USD', priceSource: 'local' });
+    // 'Other' is priced at the USA price, as the engine prices it.
+    expect(pickRegionalMaterialPrice([{ cost_usa: '5.37', cost_india: '2.72' }], 'Other')).toMatchObject({ price: 5.37, currency: 'USD', priceSource: 'local' });
   });
 
   it('returns found:false with no invented price when nothing is on file', () => {

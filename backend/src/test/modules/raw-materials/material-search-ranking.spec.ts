@@ -165,6 +165,30 @@ describe('rankMaterialMatches — tie-breaks', () => {
   });
 });
 
+// Rows of the local reference data that name plastics in words; drawings name them by their ISO 1043-1 symbol.
+describe('rankMaterialMatches — a plastic named by its ISO 1043-1 symbol', () => {
+  const nylon66: RankableMaterial = { id: 'pa66', material: 'Generic Nylon, Type 66', materialGrade: 'Generic Nylon, Type 66', densityKgM3: 1346, hasCost: true };
+  const nylon66Glass: RankableMaterial = { id: 'pa66-gf', material: 'Generic Nylon, Type 66 30% Glass', densityKgM3: 1400, hasCost: true };
+  const nylon6: RankableMaterial = { id: 'pa6', material: 'Generic Nylon, Type 6', densityKgM3: 1130, hasCost: true };
+  const acetal: RankableMaterial = { id: 'pom', material: 'Generic Acetal, Copolymer', densityKgM3: 1410, hasCost: true };
+  const pc: RankableMaterial = { id: 'pc', material: 'Generic Polycarbonate', densityKgM3: 1200, hasCost: true };
+  const pcAbs: RankableMaterial = { id: 'pc-abs', material: 'Generic ABS, PC-ABS', densityKgM3: 1070, hasCost: true };
+  const plastics = [nylon66, nylon66Glass, nylon6, acetal, pc, pcAbs];
+
+  it('PA66 is nylon 66 by its exact name, before its glass-filled grade; nylon 6 only after both, on two of three words', () => {
+    const ranked = rankMaterialMatches('PA66', plastics);
+    expect(ids(ranked)).toEqual(['pa66', 'pa66-gf', 'pa6']);
+    expect(ranked.map((r) => r.tier)).toEqual(['exact', 'designation', 'partial']);
+    expect(ids(rankMaterialMatches('PA6', plastics))[0]).toBe('pa6');
+  });
+
+  it('POM is an acetal, PC a polycarbonate, and PC/ABS still the blend, not plain polycarbonate', () => {
+    expect(ids(rankMaterialMatches('POM', plastics))).toEqual(['pom']);
+    expect(ids(rankMaterialMatches('PC', plastics))[0]).toBe('pc');
+    expect(ids(rankMaterialMatches('PC/ABS', plastics))[0]).toBe('pc-abs');
+  });
+});
+
 describe('escapeLikePattern', () => {
   it('escapes LIKE wildcards so a grade matches literally', () => {
     expect(escapeLikePattern('6061_T6')).toBe('6061\\_T6');

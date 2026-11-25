@@ -213,12 +213,12 @@ describe('CAD upload, queue depth and active request metrics', () => {
   });
 
   it('reports each registered queue under one gauge, skips one that cannot be read, and keeps the others', async () => {
-    observeQueueDepth(['electronics_queue'], async () => 3);
+    observeQueueDepth(['report_queue'], async () => 3);
     observeQueueDepth(['cad_upload'], async () => 5);
     observeQueueDepth(['broken'], async () => { throw new Error('db down'); });
     const metric = (await find('emithran.job.queue.depth'))!;
     const byQueue = Object.fromEntries(metric.dataPoints.map((p) => [p.attributes['emithran.queue'], p.value]));
-    expect(byQueue).toMatchObject({ electronics_queue: 3, cad_upload: 5 });
+    expect(byQueue).toMatchObject({ report_queue: 3, cad_upload: 5 });
     expect(byQueue).not.toHaveProperty('broken');
   });
 

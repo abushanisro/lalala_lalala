@@ -178,18 +178,28 @@ export function resolveScenarioCavityCount(
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
-// ── Machining Stock Form (BlankOptimizerService's "Let eMithran Decide" override) ──
+// ── Molding secondary checks (Cost Guide switches) ──
 //
-// Persisted scenario stock-form choice for CNC parts, e.g. "Round Bar" picked
-// explicitly over the auto-decided candidate. Restricted to the forms
-// BlankOptimizerService can actually source from real stock_profiles data
-// (round_bar/hex_bar/rectangular_bar) plus the explicit 'billet' opt-out —
-// 'plate'/'square_bar'/'round_tube' are not accepted here because there is no
-// real stock data to honor them with (see StockForm's own doc comment in
-// blank-optimizer.service.ts) — an unrecognized value is treated the same as
-// unset (auto-decide), never silently coerced into one of the real forms.
-type ScenarioStockForm = 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'billet';
-const VALID_SCENARIO_STOCK_FORMS: ReadonlySet<string> = new Set(['round_bar', 'hex_bar', 'rectangular_bar', 'billet']);
+// A molded part is quoted without the insert pull test and the weight check unless the Cost Guide switches them on for it (user decision
+// 2026-11-25). Only a literal true switches one on.
+export function resolveMoldingSecondaryChecks(
+  scenarioOverrides: Record<string, unknown> | null | undefined,
+): { insertPullTest: boolean; weightCheck: boolean } {
+  return {
+    insertPullTest: scenarioOverrides?.['moldingInsertPullTest'] === true,
+    weightCheck: scenarioOverrides?.['moldingWeightCheck'] === true,
+  };
+}
+
+// ── Machining Stock Form (the stock model's form, set by hand) ──
+//
+// Persisted scenario stock-form choice for machined parts, e.g. "Round Bar" picked explicitly over the
+// form the part's shape asks for (costing/stock/stock-selection.ts): the six forms the reference prices for
+// machining stock (memory/Stock Maching materials: round, hex, rectangular and square bar, plate, round tube)
+// plus the explicit 'billet'. An unrecognized value is treated the same as unset (auto-decide), never coerced
+// into a form.
+type ScenarioStockForm = 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'square_bar' | 'plate' | 'round_tube' | 'billet';
+const VALID_SCENARIO_STOCK_FORMS: ReadonlySet<string> = new Set(['round_bar', 'hex_bar', 'rectangular_bar', 'square_bar', 'plate', 'round_tube', 'billet']);
 
 /** Persisted scenario Stock Form override. null = unset ("Let eMithran Decide"). */
 export function resolveScenarioStockForm(
@@ -197,4 +207,45 @@ export function resolveScenarioStockForm(
 ): ScenarioStockForm | null {
   const raw = scenarioOverrides?.['stockForm'];
   return typeof raw === 'string' && VALID_SCENARIO_STOCK_FORMS.has(raw) ? (raw as ScenarioStockForm) : null;
+}
+
+// ── Stock settings of a part machined from stock (costing/stock, memory/Stock Maching) ──
+//
+// The Cost Guide's replacements for the stock rules, beside the Stock Form above. Readers only, as the rest of this file: each is null when
+// the key is unset or not a value of its kind, and the stock model then applies the reference data's own rule (stock-reference.ts) or the
+// engine's stated value (stock-research.ts).
+
+const nonNegative = (raw: unknown): number | null => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : null);
+const flag = (raw: unknown): boolean | null => (typeof raw === 'boolean' ? raw : null);
+
+/** The stock left on each side of the part (mm), replacing the allowance rule; 0 is a choice (the stock's surface as supplied). */
+export function resolveScenarioStockAllowanceMm(scenarioOverrides: Record<string, unknown> | null | undefined): number | null {
+  return nonNegative(scenarioOverrides?.['stockAllowanceMm']);
+}
+
+/** Whether the stock's size snaps up to the next preferred size, replacing snapStockSize / hexSnapStockSize. */
+export function resolveScenarioStockSnap(scenarioOverrides: Record<string, unknown> | null | undefined): boolean | null {
+  return flag(scenarioOverrides?.['stockSnap']);
+}
+
+/** The end of a bar that makes no part (mm), replacing the engine's bar end. */
+export function resolveScenarioStockRemnantMm(scenarioOverrides: Record<string, unknown> | null | undefined): number | null {
+  return nonNegative(scenarioOverrides?.['stockRemnantMm']);
+}
+
+/** Whether the chips are sold back, replacing enableScrapMaterialCredit. */
+export function resolveScenarioStockScrapCredit(scenarioOverrides: Record<string, unknown> | null | undefined): boolean | null {
+  return flag(scenarioOverrides?.['stockScrapCredit']);
+}
+
+type ScenarioStockRoughingTechnique = 'all_bulk_milling' | 'perimeter_milling_dropoff' | 'plate_cutting_dropoff';
+const VALID_SCENARIO_ROUGHING_TECHNIQUES: ReadonlySet<string> = new Set(['all_bulk_milling', 'perimeter_milling_dropoff', 'plate_cutting_dropoff']);
+
+/**
+ * How a part cut from plate is separated from the plate and roughed out (costing/stock/plate-roughing.ts), replacing the data's
+ * defaultRoughingTechnique. It applies to plate stock only: bar stock has one technique. Any other value is unset.
+ */
+export function resolveScenarioStockRoughingTechnique(scenarioOverrides: Record<string, unknown> | null | undefined): ScenarioStockRoughingTechnique | null {
+  const raw = scenarioOverrides?.['stockRoughingTechnique'];
+  return typeof raw === 'string' && VALID_SCENARIO_ROUGHING_TECHNIQUES.has(raw) ? (raw as ScenarioStockRoughingTechnique) : null;
 }

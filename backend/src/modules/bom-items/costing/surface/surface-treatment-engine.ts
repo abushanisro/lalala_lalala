@@ -136,9 +136,11 @@ function laserEngraving(base: Base, part: SecondaryPartFacts, ref: SecondaryRefe
   const materials = ref.lookups.get('tblLaserEngraving');
   if ([len, wid, step, speed, passes].some((v) => v == null) || !materials) return notCosted(base, 'gap', 'Laser engraving reference data is not staged: run migration 819.');
   if (!part.materialTypeName) return notCosted(base, 'gap', 'The part material type is needed to check laser-engraving compatibility (tblLaserEngraving).');
-  const allowed = materials.map((r) => String(r['Material Type Name'] ?? '')).filter(Boolean);
-  if (!allowed.includes(part.materialTypeName)) {
-    return notCosted(base, 'not_applicable', `Material type "${part.materialTypeName}" is not in ${SRC_LOOKUP('tblLaserEngraving')}: ${allowed.join(', ')}.`);
+  // tblLaserEngraving lists the material types the process is not used on (flame-retardant plastics and composites: their additives and resins
+  // give off toxic or corrosive fumes under the beam). It was read as the list of materials that can be engraved, which ruled out every metal.
+  const excluded = materials.map((r) => String(r['Material Type Name'] ?? '')).filter(Boolean);
+  if (excluded.includes(part.materialTypeName)) {
+    return notCosted(base, 'not_applicable', `Material type "${part.materialTypeName}" is not laser engraved (${SRC_LOOKUP('tblLaserEngraving')} lists the materials the process is not used on: ${excluded.join(', ')}).`);
   }
   const m = pickMachine(base.process, envelopeCapable(pool, part).filter((x) => num(x.specs['max_engrave_speed_mm_per_s']) != null), ref);
   if (!m) return notCosted(base, 'gap', 'No laser engraver takes this part.');
@@ -773,37 +775,87 @@ function maskBench(base: Base, part: SecondaryPartFacts, ref: SecondaryReference
   }, ref, part.batchSize);
 }
 
+/** The part's holes that carry both a measured diameter and a measured depth (mm), one per occurrence; empty when any hole lacks either. */
+function measuredBores(part: SecondaryPartFacts): Array<{ diameterMm: number; depthMm: number }> {
+  const holes = part.features.filter((f) => /hole/i.test(String(f.feature_type)))
+    .flatMap((f) => (f.occurrences as Array<Record<string, unknown>>).map((o) => ({
+      diameterMm: num(o.diameter_mm) ?? num((f as { diameter_mm?: unknown }).diameter_mm), depthMm: num(o.depth_mm),
+    })));
+  const measured = holes.filter((h): h is { diameterMm: number; depthMm: number } => (h.diameterMm ?? 0) > 0 && (h.depthMm ?? 0) > 0);
+  return measured.length === holes.length ? measured : [];
+}
+
 function maskSpray(base: Base, part: SecondaryPartFacts, ref: SecondaryReference, pool: SecondaryMachine[]): SecondaryProcessResult {
   if (pool.length === 0) return notCosted(base, 'gap', noMachineRate('mask spray booth'));
   const layers = variable(ref, 'defaultNumMaskantLayers');
   if (layers == null) return notCosted(base, 'gap', 'defaultNumMaskantLayers is not staged: run migration 819.');
-  const dias = part.holeDiametersMm ?? [];
+  // Each hole is masked as deep as it is: its measured depth where the analysis has one (a machined or cast part), else the wall it goes through (a sheet).
+  const bores = measuredBores(part);
+  const dias = bores.length > 0 ? bores.map((b) => b.diameterMm) : part.holeDiametersMm ?? [];
   if (dias.length === 0) return notCosted(base, 'not_applicable', 'The part has no CAD-counted hole to mask; the reference does not say which other surfaces are masked.');
-  if (part.wallThicknessMm == null || part.wallThicknessMm <= 0) return notCosted(base, 'gap', 'The wall thickness is needed for the depth of a hole to mask.');
+  const byWall = bores.length === 0;
+  if (byWall && (part.wallThicknessMm == null || part.wallThicknessMm <= 0)) {
+    return notCosted(base, 'gap', 'The holes have no measured depth and the part has no wall thickness, so the area to mask is not known: re-run the analysis.');
+  }
   const m = pickMachine(base.process, pool.filter((x) => num(x.specs.spray_rate_mm2_per_s) != null && num(x.specs.spray_rate_mm2_per_s)! > 0), ref);
   if (!m) return notCosted(base, 'gap', 'No mask spray booth with a spray rate is on file.');
   const rate = num(m.specs.spray_rate_mm2_per_s)!;
-  // Masked area = the bore of every CAD-counted hole (pi x diameter x wall); the depth of a hole is not read.
-  const areaMm2 = dias.reduce((a, d) => a + Math.PI * d * part.wallThicknessMm!, 0);
+  // Masked area = the bore of every hole: pi x diameter x depth.
+  const areaMm2 = byWall
+    ? dias.reduce((a, d) => a + Math.PI * d * part.wallThicknessMm!, 0)
+    : bores.reduce((a, b) => a + Math.PI * b.diameterMm * b.depthMm, 0);
   const progHr = num(m.specs.programming_time_hr) ?? 0;
   return costed(base, m, {
     perPartSec: (areaMm2 * layers) / rate,
     batchExtraSec: progHr * 3600,
     trace: [
-      { label: 'Masked area', value: Number(areaMm2.toFixed(1)), unit: 'mm²', source: `ASSUMED: the bore of ${dias.length} CAD-counted holes (π × diameter × wall ${part.wallThicknessMm} mm)` },
+      { label: 'Masked area', value: Number(areaMm2.toFixed(1)), unit: 'mm²', source: byWall ? `ASSUMED: the bore of ${dias.length} CAD-counted holes (π × diameter × wall ${part.wallThicknessMm} mm)` : `CAD: the bore of ${dias.length} holes, each π × its diameter × its measured depth` },
       { label: 'Maskant layers', value: layers, source: `${SRC_VAR} (defaultNumMaskantLayers)` },
       { label: 'Spray rate', value: rate, unit: 'mm²/s', source: `machine ${m.name}` },
       { label: 'Programming (once per batch)', value: progHr, unit: 'hr', source: `machine ${m.name}` },
     ],
-    warnings: ['Provisional: only the bores of the CAD-counted holes are masked (the reference does not say which surfaces are), each as wall thickness deep. The tack time between layers and the maskant material are not priced.'],
+    warnings: [`Provisional: only the bores of the CAD-counted holes are masked (the reference does not say which surfaces are), each ${byWall ? 'as wall thickness deep' : 'at its measured depth'}. The tack time between layers and the maskant material are not priced.`],
     highlight: 'whole_part', provisional: true,
   }, ref, part.batchSize);
 }
 
+/**
+ * Conveyor Conversion Coating (a pretreatment washer: clean, rinse, coat, rinse, drain). The line runs no faster than lets a part spend the
+ * minimum time in a rinse stage and in a drain zone, and a part takes its pitch on the load bar at that speed. The material must take a chromate
+ * or a phosphate coat (tblConversionCoating).
+ */
+function conveyorConversionCoating(base: Base, part: SecondaryPartFacts, ref: SecondaryReference, pool: SecondaryMachine[]): SecondaryProcessResult {
+  const minRinse = variable(ref, 'conversionCoatingMinRinseTime');
+  const minDrain = variable(ref, 'conversionCoatingMinDrainTime');
+  const materials = ref.lookups.get('tblConversionCoating');
+  if (minRinse == null || minDrain == null || !materials) return notCosted(base, 'gap', 'Conversion coating reference data is not staged: run migration 819.');
+  if (!part.materialTypeName) return notCosted(base, 'gap', 'The part material type is needed to check which conversion coat it takes (tblConversionCoating).');
+  const row = materials.find((r) => String(r['Material Type Name']) === part.materialTypeName);
+  const coats = ['Chromate', 'Phosphate'].filter((c) => String(row?.[`Can ${c} Coat`]) === 'true');
+  if (!row) return notCosted(base, 'gap', `Material type "${part.materialTypeName}" has no row in ${SRC_LOOKUP('tblConversionCoating')}, so the coats it takes are not known.`);
+  if (coats.length === 0) return notCosted(base, 'not_applicable', `Material type "${part.materialTypeName}" takes neither a chromate nor a phosphate coat (${SRC_LOOKUP('tblConversionCoating')}).`);
+  const trace: SecondaryTraceStep[] = [{ label: 'Coat the material takes', value: coats.join(' or '), source: SRC_LOOKUP('tblConversionCoating') }];
+  const pitch = conveyorPitch(part, ref, trace);
+  if (typeof pitch === 'string') return notCosted(base, 'gap', pitch, { trace });
+  if (pool.length === 0) return notCosted(base, 'gap', 'No conveyor pretreatment washer is on file for this location (migration 1048 seeds USA).', { trace });
+  const m = pickMachine(base.process, conveyorCapable(pool, part)
+    .filter((x) => num(x.specs['rinse_stage_length_mm']) != null && num(x.specs['drain_zone_length_mm']) != null), ref);
+  if (!m) return notCosted(base, 'gap', 'No conveyor pretreatment washer opening takes this part.', { trace });
+  const rinse = num(m.specs['rinse_stage_length_mm'])!;
+  const drain = num(m.specs['drain_zone_length_mm'])!;
+  const speed = Math.min(rinse / minRinse, drain / minDrain);
+  trace.push({
+    label: 'Line speed', value: Number(speed.toFixed(3)), unit: 'mm/s',
+    source: `the slower of rinse stage ${rinse} mm / ${minRinse} s and drain zone ${drain} mm / ${minDrain} s (machine ${m.name}; ${SRC_VAR} conversionCoatingMinRinseTime, conversionCoatingMinDrainTime)`,
+  });
+  return costed(base, m, {
+    perPartSec: pitch / speed, trace, highlight: 'whole_part',
+    warnings: ['The cleaning and coating solutions are not priced: the reference gives their reuse (conversionCoatingSolutionReusePercent) but no solution price or spray volume per part.'],
+  }, ref, part.batchSize);
+}
+
 /** Why each remaining process cannot be timed from the reference data. */
-const UNDEFINED: Record<string, string> = {
-  'Conveyor Conversion Coating': 'The reference has no machine file for this process.',
-};
+const UNDEFINED: Record<string, string> = {};
 
 type Model = (base: Base, part: SecondaryPartFacts, ref: SecondaryReference, pool: SecondaryMachine[]) => SecondaryProcessResult;
 
@@ -817,6 +869,7 @@ const MODELS: Record<string, Model> = {
   'Shot Peen': shotPeen,
   'Conveyor Shot Blast': conveyorShotBlast,
   'Conveyor Dry': conveyorDry,
+  'Conveyor Conversion Coating': conveyorConversionCoating,
   'Conveyor Abrasive Finishing': conveyorAbrasiveFinishing,
   'Conveyor Part Loading': handling,
   'Conveyor Part Unloading': handling,

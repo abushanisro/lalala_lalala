@@ -10,8 +10,8 @@ import type { CastingReferenceService } from '../../../modules/bom-items/costing
 import type { SandCostService } from '../../../modules/bom-items/costing/casting/sand/sand-cost.service';
 import type { FeatureToleranceService } from '../../../modules/bom-items/services/feature-tolerance.service';
 import type { SheetMetalCatalogOperationsService } from '../../../modules/bom-items/costing/sheet-metal/operation/catalog-operations.service';
-import type { HydroformingReferenceService } from '../../../modules/bom-items/costing/hydroforming/hydroforming-reference.service';
 import { BOMItemsService } from '../../../modules/bom-items/bom-items.service';
+import { BomItemCostingService } from '../../../modules/bom-items/bom-item-costing.service';
 import { type BlankOptimizerService } from '../../../modules/bom-items/costing/sheet-metal/machine/blank-optimizer.service';
 import { type SheetMetalLookupService } from '../../../modules/bom-items/costing/sheet-metal/lookup/sheet-metal-lookup.service';
 import { type MachiningLookupService } from '../../../modules/bom-items/costing/machining/lookup/machining-lookup.service';
@@ -26,7 +26,10 @@ import { type InspectionKnowledgeService } from '../../../modules/manufacturing-
 import type { CostSummaryDto } from '../../../modules/bom-items/dto/cost-breakdown.dto';
 
 function buildService() {
-  return new BOMItemsService(
+  return new BomItemCostingService(
+    new BOMItemsService({} as never, {} as never),
+    {} as never, {} as never, {} as never, // MachineRateService, CostOverridesService, GdtAnalysisService
+    {} as never, // NestingCostService
     {} as unknown as DatabaseService,
     {} as unknown as InspectionKnowledgeService,
     {} as unknown as BlankOptimizerService,
@@ -46,7 +49,6 @@ function buildService() {
     {} as unknown as FeatureToleranceService,
     {} as unknown as SheetMetalCatalogOperationsService,
     {} as unknown as PlasticCatalogOperationsService,
-    {} as unknown as HydroformingReferenceService,
   );
 }
 
@@ -198,6 +200,40 @@ describe('BOMItemsService.normalizeCostSummaryToCurrency', () => {
     expect(result.materialCost).toBeCloseTo(100 * rate, 6);
     expect(result.totalCost).toBeCloseTo(150 * rate, 6);
     expect(result.toUsdRate).toBeCloseTo(rate, 6);
+  });
+
+  it('converts a line\'s other charge in its own currency with its money; the USD figure its detail states stays USD', () => {
+    const service = buildService() as any;
+    const rates = makeRates({ USD: 83.5 });
+    const line = { process: 'Manual MIG Welding', setupCost: 0, runCost: 167, totalCost: 167, hourlyRate: 835, otherCostPerPart: 83.5, otherCostPerPartUsd: 1 };
+    const result = service.normalizeCostSummaryToCurrency(minimalCostSummary({ processLines: [line] } as never), rates, 'INR', null);
+    expect(result.processLines[0].otherCostPerPart).toBeCloseTo(1, 9);
+    expect(result.processLines[0].otherCostPerPartUsd).toBe(1);
+    expect(result.processLines[0].totalCost).toBeCloseTo(2, 9);
+  });
+
+  it('converts the route options of every family, an assembly\'s consumables and a weldment\'s wire, with the lines (an India quote is not half in rupees)', () => {
+    const service = buildService() as any;
+    const rates = makeRates({ USD: 83.5 });
+    const option = (route: string, totalCost: number | null) => ({ route, label: route, complete: totalCost != null, totalCost, reason: null });
+    const dto = minimalCostSummary({
+      additive: { options: [option('printing', 835), option('resin_curing', null)] },
+      composites: { options: [option('hand_layup', 167)] },
+      forging: { options: [option('closed_die', 83.5)] },
+      assembly: { options: [option('manual', 1670)], consumablesCost: 58.89, joints: [{ id: 'w1', consumablesCost: 58.89 }, { id: 's1', consumablesCost: null }] },
+      partAssembly: { options: [option('manual', 14588), option('robotic', null)], wireCost: 12.525 },
+    } as never);
+    const result = service.normalizeCostSummaryToCurrency(dto, rates, 'INR', null);
+    expect(result.additive.options.map((o: { totalCost: number | null }) => o.totalCost)).toEqual([10, null]);
+    expect(result.composites.options[0].totalCost).toBeCloseTo(2, 9);
+    expect(result.forging.options[0].totalCost).toBeCloseTo(1, 9);
+    expect(result.assembly.options[0].totalCost).toBeCloseTo(20, 9);
+    expect(result.assembly.consumablesCost).toBeCloseTo(58.89 / 83.5, 9);
+    expect(result.assembly.joints[0].consumablesCost).toBeCloseTo(58.89 / 83.5, 9);
+    expect(result.assembly.joints[1].consumablesCost).toBeNull();
+    // A weldment's route totals and MIG wire: an India weldment shown in USD had them in rupees.
+    expect(result.partAssembly.options.map((o: { totalCost: number | null }) => o.totalCost)).toEqual([14588 / 83.5, null]);
+    expect(result.partAssembly.wireCost).toBeCloseTo(0.15, 9);
   });
 
   it('converts to the scenario currency (not USD) when a matching fxSnapshot is on file', () => {

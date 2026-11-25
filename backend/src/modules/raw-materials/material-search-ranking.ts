@@ -1,3 +1,4 @@
+import { polymerSymbolVariants } from './material-polymer-symbols';
 import { expandSearchTermSpellingVariants } from './material-search-spelling';
 import { shapeRankForFamily } from './constants/material-shape-ranking';
 
@@ -230,7 +231,9 @@ export function rankMaterialMatches<T extends RankableMaterial>(
   rows: readonly T[],
   opts: RankOptions = {},
 ): RankedMaterial<T>[] {
-  const variants = expandSearchTermSpellingVariants(query.trim()).filter(Boolean);
+  // A plastic named by its ISO 1043-1 symbol ("PA66") is also scored as the words the reference data names it with ("Nylon, Type 66").
+  const q = query.trim();
+  const variants = [...new Set([q, ...polymerSymbolVariants(q)].flatMap(expandSearchTermSpellingVariants))].filter(Boolean);
   const ranked: RankedMaterial<T>[] = [];
 
   for (const row of rows) {

@@ -14,6 +14,7 @@ import logging
 import tempfile
 import hashlib
 import hmac
+import importlib.metadata
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, R
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -50,6 +52,9 @@ from shared import telemetry
 from shared.error_reporting import report_failure
 from shared import sldprt_converter
 from shared.drawing_analyzer import router as drawing_router
+from pcb.extraction.board import ExtractionError, extract_board
+from pcb.extraction.render import render_board
+from pcb.service import Refusal, board_capabilities, parse_manifest, read_board_files, refused
 
 # ============================================================================
 # CONFIGURATION & LOGGING
@@ -177,7 +182,7 @@ _CAD_API_KEY = os.getenv("CAD_ENGINE_API_KEY", "")
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 async def require_api_key(api_key: str = Security(_api_key_header)):
-    # Fail closed in every environment, as the ecad-engine does: an unset key refuses every protected route instead of opening
+    # Fail closed in every environment: an unset key refuses every protected route instead of opening
     # them. Local runs set CAD_ENGINE_API_KEY like any other deployment (docker-compose.yml requires it).
     if not _CAD_API_KEY:
         raise HTTPException(
@@ -277,6 +282,13 @@ async def ready() -> JSONResponse:
     return JSONResponse(status_code=503 if problems else 200, content={"ready": not problems, "problems": problems})
 
 
+def _package_version(package: str) -> str:
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     """Detailed health check endpoint with advanced capabilities"""
@@ -311,6 +323,11 @@ async def health() -> Dict[str, Any]:
             "dfm_standards": ["ISO 2768", "ASME Y14.5"],
             "optimization_strategies": ["aggressive", "balanced", "conservative"],
             "supported_processes": ["CNC Machining", "Investment Casting", "Sheet Metal", "Additive Manufacturing"]
+        },
+        "board": {
+            **board_capabilities(),
+            "max_files": config.max_board_files,
+            "libraries": {"gerbonara": _package_version("gerbonara"), "openpyxl": _package_version("openpyxl")},
         },
         "performance_targets": {
             "analysis_time_large_files": "< 10 seconds",
@@ -556,9 +573,11 @@ def analyze_geometry_advanced(
     "plastic_molded", "die_cast") to force that family's extractor instead of
     the real geometric classifier chain -- this is the only way to reach
     "die_cast" today, since no automatic die-cast classifier exists yet
-    (routing-adjacent inference, deliberately deferred). Any other value
-    (including the default "") is ignored and the real classifier chain
-    runs unchanged.
+    (routing-adjacent inference, deliberately deferred). "machined" (the
+    part's Process is a machining process) and "two_model" are not families:
+    the part is analysed as a machined part and the geometry picks milled,
+    turned or mill-turn. Any other value (including the default "") is
+    ignored and the real classifier chain runs unchanged.
     """
     import json as _json
 
@@ -838,6 +857,76 @@ async def nest_true_shape(
         raise HTTPException(status_code=422, detail=f"Could not compute a true nest: {reason}")
     logger.info(f"[nest] success: parts_per_sheet={result['parts_per_sheet']} utilization_pct={result['utilization_pct']} capped={result['capped']}")
     return result
+
+
+# ============================================================================
+# PRINTED CIRCUIT BOARDS (Gerber, Excellon, drill report, Pick Place)
+# ============================================================================
+
+def _board_request_id(request: Request) -> str:
+    return request.headers.get("x-request-id") or "-"
+
+
+async def _board_inputs(files: List[UploadFile], manifest_text: str):
+    """(files, manifest), or the refusal of the request."""
+    manifest = parse_manifest(manifest_text)
+    if isinstance(manifest, Refusal):
+        return manifest
+    inputs = await read_board_files(files, manifest.roles, config.max_board_files, config.max_file_size_bytes)
+    return inputs if isinstance(inputs, Refusal) else (inputs, manifest)
+
+
+@app.post("/extract/board")
+@limiter.limit(f"{config.rate_limit_per_minute}/minute")
+async def extract_board_set(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    manifest: str = Form(...),
+    _auth: None = Security(require_api_key),
+) -> JSONResponse:
+    """A board set (several files, described by a JSON manifest) -> the board feature graph with per-field provenance,
+    the documents read for review and a report of each file. Nothing is estimated: what the files do not state is
+    `unresolved`. A refusal of the files is a 422 with a code and an error id, never the files' content."""
+    read = await _board_inputs(files, manifest)
+    if isinstance(read, Refusal):
+        return read.response()
+    inputs, described = read
+    try:
+        # A refusal of the files (ExtractionError, unreadable file) is an outcome "rejected", not a failure.
+        with telemetry.stage("extract_board", expected=(ExtractionError, ValueError)):
+            result = await run_in_threadpool(extract_board, inputs, described.lookups, described.supplied, described.tier)
+    except ExtractionError:
+        return refused("extraction_failed", "The board files could not be extracted.", _board_request_id(request))
+    except ValueError:  # a file that cannot be read
+        return refused("unreadable_file", "A board file could not be read.", _board_request_id(request))
+    except Exception:
+        raise _internal_error("Board extraction")
+    logger.info(f"[board] extracted a set of {len(inputs)} files")
+    return JSONResponse(content={"graph": result.graph, "documents": result.documents, "filesReport": result.files_report})
+
+
+@app.post("/render/board")
+@limiter.limit(f"{config.rate_limit_per_minute}/minute")
+async def render_board_set(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    manifest: str = Form(...),
+    _auth: None = Security(require_api_key),
+) -> JSONResponse:
+    """The layers of a board set drawn on one shared frame (SVG, millimetres), with the parts and holes positioned on it."""
+    read = await _board_inputs(files, manifest)
+    if isinstance(read, Refusal):
+        return read.response()
+    inputs, described = read
+    try:
+        with telemetry.stage("render_board", expected=(ExtractionError, ValueError)):
+            preview = await run_in_threadpool(render_board, inputs, described.lookups.placement_layers)
+    except ExtractionError:
+        return refused("render_failed", "The board layers could not be drawn.", _board_request_id(request))
+    except Exception:
+        raise _internal_error("Board drawing")
+    logger.info(f"[board] drew {len(preview['layers'])} layers")
+    return JSONResponse(content=preview)
 
 
 @app.get("/memory/usage-report")

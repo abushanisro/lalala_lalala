@@ -211,8 +211,19 @@ export function resolveStoredProcessLines<
   effective: EffectiveCostingInputs,
 ): ResolvedStoredLine<L, R>[] {
   const batchSize = Math.max(num(effective.batchSize, 1), 1);
+  // How many earlier rows share a row's machine class and operation: the n-th such row is the n-th engine line of them (an assembly
+  // screws in three sizes on one machine, three "Mechanical Assembly" rows and three lines), never the first line again.
+  const opKey = (machineClass: string | null | undefined, operation: string | null | undefined) =>
+    `${machineClass ?? ''}|${(operation ?? '').trim().toLowerCase()}`;
+  const seen = new Map<string, number>();
+  const nthOfKey = rows.map((row) => {
+    const key = opKey(row.machineClass, row.category || row.operation);
+    const n = seen.get(key) ?? 0;
+    seen.set(key, n + 1);
+    return n;
+  });
 
-  return rows.map((row) => {
+  return rows.map((row, rowIndex) => {
     // machine_class alone identifies the RIGHT candidate exactly when a class
     // has one engine line per part (true for almost every class: one Fiber
     // Laser Cutting line, one Press Brake line, ...). It stopped being enough
@@ -233,10 +244,9 @@ export function resolveStoredProcessLines<
       (l) => l.machineClass && row.machineClass && l.machineClass === row.machineClass,
     );
     const rowOperation = (row.category || row.operation || '').trim().toLowerCase();
+    const sameOperation = rowOperation ? classMatches.filter((l) => (l.process ?? '').trim().toLowerCase() === rowOperation) : [];
     const matchedEngineLine =
-      (rowOperation
-        ? classMatches.find((l) => (l.process ?? '').trim().toLowerCase() === rowOperation)
-        : undefined)
+      (sameOperation.length > 0 ? sameOperation[nthOfKey[rowIndex] ?? 0] ?? sameOperation[0] : undefined)
       ?? (classMatches.length === 1 ? classMatches[0] : undefined)
       ?? null;
 
@@ -251,9 +261,11 @@ export function resolveStoredProcessLines<
       : (liveCandidate ? num(liveCandidate.hourlyRate) : num(row.machineRate));
     const laborRate = num(row.laborRate);
     const setupMin = num(row.setupTime);
-    const setupManning = Math.max(num(row.setupManning, 1), 1);
+    // 0 is a real crew: a machine that runs unattended (a printer, an oven) charges no labour. A row that states none is one operator.
+    const crew = (v: unknown) => (v == null || v === '' ? 1 : Math.max(num(v, 1), 0));
+    const setupManning = crew(row.setupManning);
     const cycleSec = liveCycleSec ?? num(row.cycleTime);
-    const heads = Math.max(num(row.heads, 1), 1);
+    const heads = crew(row.heads);
     const partsPerCycle = Math.max(num(row.partsPerCycle, 1), 1);
     const scrap = num(row.scrap);
 
@@ -340,6 +352,14 @@ export interface ProcessTotalSelection {
  *   snapshot priced against another location answers a different question and
  *   must not override a calculation made under the current inputs.
  */
+/**
+ * Whether a part's material side is settled, so its saved process costs count: it has a material record, or its material is its parts' (an
+ * assembly's or a weldment's: the cost summary says so, each part's material is in the BOM roll-up and it keeps no record of its own).
+ */
+export function isMaterialSettled(materialRecords: number, summary: { materialOfParts?: boolean } | null | undefined): boolean {
+  return materialRecords > 0 || summary?.materialOfParts === true;
+}
+
 export function selectProcessTotal(args: {
   hasStoredMaterial: boolean;
   storedLines: readonly ResolvedStoredLine[];

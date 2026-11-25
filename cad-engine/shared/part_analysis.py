@@ -134,8 +134,15 @@ def analyze_part(
             # Real sharp-edge length (deburring path) measured from the
             # B-Rep — replaces the backend estimating it from surface area.
             try:
-                from shared.edge_length import sharp_edge_length  # type: ignore
-                machining_features_result["edges"] = sharp_edge_length(shape)
+                from shared.edge_length import sharp_edge_faces, sharp_edge_length  # type: ignore
+                _edges = sharp_edge_length(shape, detail=True)
+                machining_features_result["edges"] = {
+                    "sharp_edge_count": _edges["sharp_edge_count"],
+                    "sharp_edge_length_mm": _edges["sharp_edge_length_mm"],
+                    "total_edge_length_mm": _edges["total_edge_length_mm"],
+                    # The faces meeting at those edges: the deburring line's edge length is lit on them.
+                    "sharp_edge_face_ids": sharp_edge_faces(_edges),
+                }
             except Exception as _edge_exc:
                 logger.warning(f"[machining_features] edge length failed: {_edge_exc}")
             # Embed face_map so the frontend can resolve face_ids → STL triangle ranges.
@@ -175,12 +182,34 @@ def analyze_part(
                 # Nominal size for ISO 286 grading of tolerances on non-hole features.
                 from shared.feature_extent import annotate_occurrence_extents
                 annotate_occurrence_extents(shape, machining_features_result["feature_graph_v2"]["features"])
+                # How each feature is reached (tool axis), a pocket's tightest corner and the wall behind each feature:
+                # what the setup rule and the design-for-machining checks read.
+                try:
+                    from machining.feature_access import annotate_occurrence_access
+                    # The flag tells a reader the occurrences were measured: an absent corner_radius_mm then means "no inside corner", not "not looked for".
+                    machining_features_result["feature_graph_v2"]["metadata"]["feature_access"] = annotate_occurrence_access(
+                        shape, machining_features_result["feature_graph_v2"]["features"],
+                        (_bbox_raw["xmax"] - _bbox_raw["xmin"], _bbox_raw["ymax"] - _bbox_raw["ymin"], _bbox_raw["zmax"] - _bbox_raw["zmin"]),
+                    )
+                except Exception as _access_exc:
+                    logger.warning(f"[machining_fgv2] feature access failed: {_access_exc}")
                 logger.info(
                     f"[machining_fgv2] synthesised "
                     f"{len(machining_features_result['feature_graph_v2']['features'])} features"
                 )
             except Exception as _fgv2_exc:
                 logger.warning(f"[machining_fgv2] synthesis failed: {_fgv2_exc}")
+            # The stock the part is cut from (machining/stock_envelope.py, "stock", stk_v1): the axis it runs along, its length, the
+            # round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's surface;
+            # and, as a piece cut out of plate, its outline seen along its thinnest direction ("plate", plt_v1; None when that alone fails).
+            # Measured for every machined part; a failure here leaves it None and never fails the analysis.
+            stock = None
+            try:
+                from machining.stock_envelope import measure_stock  # type: ignore
+                stock = measure_stock(shape)
+            except Exception as _stock_exc:
+                logger.warning(f"[machining_features] stock envelope failed: {_stock_exc}")
+            machining_features_result["stock"] = stock
     except Exception as _cnc_exc:
         logger.warning(f"[machining_features] extraction failed: {_cnc_exc}")
 

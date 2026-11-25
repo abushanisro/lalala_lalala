@@ -25,10 +25,49 @@ DIE_CAST = "die_cast"
 # through the explicit family_hint (the user's chosen process).
 SAND_CAST = "sand_cast"
 INVESTMENT_CAST = "investment_cast"
+# Closed-die forging: measured by forging/feature_extractor.py. Like the casting families, reached only through the explicit family_hint (the
+# user's chosen process): no shape is a forging by its geometry alone.
+FORGED = "forged"
+# Powder metal (press and sinter): the part is pressed along one direction, so it is measured as a forging is, along that direction
+# (forging/feature_extractor.py). Reached only through the explicit family_hint, like the forging.
+POWDER_METAL = "powder_metal"
+# Composites (prepreg laid on a one-sided tool, bagged and autoclave cured): measured as a laminate by composites/feature_extractor.py. Reached only
+# through the explicit family_hint, like the casting and forging families.
+COMPOSITE = "composite"
+# Additive manufacturing (built layer by layer: DMLS, SLS, material jetting, SLA): measured for its build by additive/feature_extractor.py.
+# Reached only through the explicit family_hint: no shape is a printed part by its geometry alone.
+ADDITIVE = "additive"
+# Bar and tube fabrication (stock of one cross-section cut to length, bent, end formed, holed; extruded profiles; parts cut from plate): measured as a
+# section swept along a centreline by bar_tube/feature_extractor.py. Reached only through the explicit family_hint: a straight round tube is, by its
+# geometry alone, a turned part.
+BAR_TUBE = "bar_tube"
+# Blow molding and rotational molding (a hollow shell): measured by roto_blow/feature_extractor.py (its wall, inside, spout, parting line,
+# envelope). Reached only through the explicit family_hint: a molded shell is, by its geometry alone, a plastic molded part.
+ROTO_BLOW = "roto_blow"
+# A printed circuit board measured from its 3D model when its board files are not given (pcb/feature_extractor.py: the board found among the
+# model's bodies, its thickness, outline, holes and cutouts). Reached only through the explicit family_hint: a board is, by its geometry alone, a
+# sheet metal part. Its board files are measured by the board routes (pcb/service.py), not here.
+PCB = "pcb"
 
 ALL_FAMILIES: FrozenSet[str] = frozenset({
-    SHEET_METAL, MILLED, TURNED, MILL_TURN, PLASTIC_MOLDED, DIE_CAST, SAND_CAST, INVESTMENT_CAST,
+    SHEET_METAL, MILLED, TURNED, MILL_TURN, PLASTIC_MOLDED, DIE_CAST, SAND_CAST, INVESTMENT_CAST, FORGED, POWDER_METAL, COMPOSITE, ADDITIVE, BAR_TUBE,
+    ROTO_BLOW, PCB,
 })
+
+# 2-Model Machining (a finished part machined from a cast blank, memory/"2 Mold Molding"): a hint, not a family. The part is analysed as
+# a machined part: the geometry decides milled, turned or mill-turn, never another process (the backend derives its blank from it).
+TWO_MODEL_HINT = "two_model"
+
+# A machining process that is not one family (Machining: milled, turned or mill-turn; any process costed as all of them): a hint, not a
+# family. The part is machined, and the geometry picks the machining family: a shaft whose Process is Machining is analysed as the turned
+# part it is, not forced to milled.
+MACHINED_HINT = "machined"
+
+# The hints that say only "this part is machined": a geometric machining family stands, any other family is analysed as milled.
+MACHINED_HINTS: FrozenSet[str] = frozenset({TWO_MODEL_HINT, MACHINED_HINT})
+
+# Families measured along one die (or press) direction by forging/feature_extractor.py.
+DIE_DIRECTION_FAMILIES: FrozenSet[str] = frozenset({FORGED, POWDER_METAL})
 
 # Casting families -> the reference-catalog domain their features validate
 # against (shared/reference_features.json). One map, read by the dispatcher.

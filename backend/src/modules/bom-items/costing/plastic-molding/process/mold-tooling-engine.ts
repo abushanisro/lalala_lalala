@@ -60,7 +60,8 @@ import { componentNameKey, type MoldToolingTables } from '../plastic-reference';
 // requiring one. Every other component is fixed baseline hardware present on
 // every mold regardless of feature count (same "fixed baseline" pattern as
 // progressive-die-tooling-engine.ts's guidePinAssy/stripperGuidePinAssy).
-const SIDE_ACTION_ONLY_COMPONENTS = new Set(['Hydraulic Cylinder', 'Side Lock'].map(componentNameKey));
+// Side locks are on every injection mold (sideLocksTotal: "total number of side locks on mold tool"); only the cylinder is for a slide.
+const SIDE_ACTION_ONLY_COMPONENTS = new Set(['Hydraulic Cylinder'].map(componentNameKey));
 
 interface MoldToolingInput {
   /** Real required mold-window area (projected area x cavity count), mm^2. */
@@ -89,6 +90,8 @@ interface MoldToolingResult {
   missingComponents: string[];
   /** Design and assembly hours, from the staged tables; the machining hours and every price are the tooling calculator's (mold-tooling-calculator.ts). */
   estimatedDesignHrs: number;
+  /** The mold_base_area_mm2 of the cmMoldBaseDesignHours row the design hours were read from. */
+  designHoursRowAreaMm2: number;
   estimatedAssemblyHrs: number;
   estimatedAssemblyOperators: number;
   warnings: string[];
@@ -113,21 +116,22 @@ export function toolingGapIds(scope: MoldToolingInput['scope']): string[] {
     ...(scope.sideActionsPriced ? [] : ['G-03']),
     ...(scope.ribInsertsPriced ? [] : ['G-04']),
     ...(scope.cavityTexture.toLowerCase() !== 'none' ? ['G-05'] : []),
-    'G-06',
     ...(scope.classUsesInserts !== false ? ['G-07'] : []),
     ...(scope.runner === 'hot' ? ['G-08'] : []),
   ];
 }
 
+/** What the priced mold leaves out, in one line (the Invest tab breaks down what it includes). */
 export function toolingScopeWarning(scope: MoldToolingInput['scope']): string {
-  const left = [...(scope.sideActionsPriced ? [] : ['slides and lifters (the CAD bundles are not all recognised and sized)']), ...(scope.ribInsertsPriced ? [] : ['the rib inserts and their EDM (the CAD ribs are not all measured, or one is too large for an insert class)']), 'water baffles (no count on file)'];
-  if (scope.runner === 'hot') left.push('the hot-runner manifold and controller (no price on file)');
-  if (!scope.steelTreatmentKnown) left.push('the heat treatment (no treatment reference for the tool steel grade)');
-  if (scope.classUsesInserts !== false) left.push('cavity inserts');
-  if (scope.cavityTexture.toLowerCase() !== 'none') left.push(`the ${scope.cavityTexture} texture`);
-  return 'Injection Molding tooling cost includes the mold base plate steel, the cavity and core machining and polish, the standard components, the ejector '
-    + `pins, sprue bushing, locating ring, try-out, ${scope.sideActionsPriced ? 'the slide and lifter blocks, ' : ''}${scope.steelTreatmentKnown ? 'the heat treatment the tool steel grade needs, ' : ''}the cooling lines, ${scope.ribInsertsPriced ? 'the rib inserts and their EDM, ' : ''}${scope.runner === 'hot' ? 'the hot drops, ' : ''}and the toolroom hours; it does NOT include ${left.join(', ')} (no formula on file yet): the true tooling `
-    + 'investment is higher than this figure.';
+  const left = [
+    ...(scope.sideActionsPriced ? [] : ['slides and lifters']),
+    ...(scope.ribInsertsPriced ? [] : ['rib inserts']),
+    ...(scope.runner === 'hot' ? ['the hot-runner manifold'] : []),
+    ...(scope.steelTreatmentKnown ? [] : ['tool steel heat treatment']),
+    ...(scope.classUsesInserts !== false ? ['cavity inserts'] : []),
+    ...(scope.cavityTexture.toLowerCase() !== 'none' ? [`the ${scope.cavityTexture} texture`] : []),
+  ];
+  return left.length ? `Mold tooling excludes ${left.join(', ')} (no data yet): the real investment is higher.` : '';
 }
 
 /**
@@ -161,13 +165,14 @@ export function computeMoldToolingCost(input: MoldToolingInput): MoldToolingResu
   const bomSubtotalUsd = items.reduce((s, i) => s + i.totalCostUsd, 0);
 
   const areaM2 = Math.max(input.moldBaseAreaMm2, 0) / 1_000_000;
-  const estimatedDesignHrs = bracket(t.designHoursByArea, (r) => r.areaMm2, input.moldBaseAreaMm2).hours;
+  const designRow = bracket(t.designHoursByArea, (r) => r.areaMm2, input.moldBaseAreaMm2);
+  const estimatedDesignHrs = designRow.hours;
   const estimatedAssemblyOperators = bracket(t.operatorsByArea, (r) => r.areaM2, areaM2).operators;
 
-  const warnings = [toolingScopeWarning(input.scope)];
+  const warnings = [toolingScopeWarning(input.scope)].filter(Boolean);
   if (input.slideBundles != null && input.slideBundles === 0 && input.slideOrLifterBundles > 0) {
     warnings.push(
-      `Slide hardware (hydraulic cylinder, side lock) is not priced: ${input.slideOrLifterBundles} side-action bundle${input.slideOrLifterBundles === 1 ? '' : 's'} could be lifters or slides, `
+      `Slide hardware (hydraulic cylinder) is not priced: ${input.slideOrLifterBundles} side-action bundle${input.slideOrLifterBundles === 1 ? '' : 's'} could be lifters or slides, `
       + 'which depends on the clearance beside the part in the tool and is not assessed. No lifter hardware cost is on file.',
     );
   }
@@ -180,11 +185,11 @@ export function computeMoldToolingCost(input: MoldToolingInput): MoldToolingResu
     warnings.push(`Real components with no derivable quantity on file, so not included: ${missingComponents.join(', ')}.`);
   }
   if (noAssemblyTime.length > 0) {
-    warnings.push(`No assembly time on file (cmToolAssemblyTimes) for: ${noAssemblyTime.join(', ')}; not counted in assembly hours.`);
+    warnings.push(`No assembly time on file for: ${noAssemblyTime.join(', ')}; not counted in assembly hours.`);
   }
   return {
     items, bomSubtotalUsd, missingComponents,
-    estimatedDesignHrs, estimatedAssemblyHrs: assemblyHrs, estimatedAssemblyOperators,
+    estimatedDesignHrs, designHoursRowAreaMm2: designRow.areaMm2, estimatedAssemblyHrs: assemblyHrs, estimatedAssemblyOperators,
     warnings,
   };
 }

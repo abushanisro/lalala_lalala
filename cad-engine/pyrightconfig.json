@@ -10,7 +10,7 @@
   ],
   "reportMissingImports": "none",
   "reportMissingTypeStubs": "none",
-  "pythonVersion": "3.11",
+  "pythonVersion": "3.12",
   "typeCheckingMode": "basic",
   "stubPath": ""
 }

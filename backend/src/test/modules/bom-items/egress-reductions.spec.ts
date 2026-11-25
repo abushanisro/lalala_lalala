@@ -9,7 +9,6 @@ import type { CastingReferenceService } from '../../../modules/bom-items/costing
 import type { SandCostService } from '../../../modules/bom-items/costing/casting/sand/sand-cost.service';
 import type { FeatureToleranceService } from '../../../modules/bom-items/services/feature-tolerance.service';
 import type { SheetMetalCatalogOperationsService } from '../../../modules/bom-items/costing/sheet-metal/operation/catalog-operations.service';
-import type { HydroformingReferenceService } from '../../../modules/bom-items/costing/hydroforming/hydroforming-reference.service';
 import { NotFoundException } from '@nestjs/common';
 import { BOMItemsService } from '../../../modules/bom-items/bom-items.service';
 import { MachiningLookupService } from '../../../modules/bom-items/costing/machining/lookup/machining-lookup.service';
@@ -23,19 +22,7 @@ import { type DatabaseService } from '../../../common/database/database.service'
 
 function buildService(database: unknown = {}) {
   const none = {} as never;
-  return new BOMItemsService(
-    database as DatabaseService,
-    none, none, none, none, none, none, none, none, none, none,
-    {} as SecondaryProcessService,
-    {} as PlasticReferenceService,
-    {} as never, // PlasticRouteComparisonService
-    {} as CastingReferenceService,
-    {} as SandCostService,
-    {} as FeatureToleranceService,
-    {} as SheetMetalCatalogOperationsService,
-    {} as PlasticCatalogOperationsService,
-    {} as HydroformingReferenceService,
-  );
+  return new BOMItemsService(database as DatabaseService, none);
 }
 
 /** A user client whose bom_items select resolves to `rows`, recording the columns asked for. */

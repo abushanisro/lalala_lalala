@@ -30,6 +30,7 @@ re-exports every name here unchanged.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── Tap drill size table ──────────────────────────────────────────────────────
@@ -63,11 +64,60 @@ HELICOIL_DRILL_RANGES: List[Tuple[float, float, str]] = [
 # and detect_multistep_holes so both use the exact same real tolerance.
 MAX_COAXIAL_DIST_MM = 5.0
 
+# A cylinder face is a bore only if it sweeps at least this much of a full turn (its patches
+# merged). 97 %: a bore split into patches measures 2*pi to within the sampling of the sweep.
+# Less is an arc of something else: a pocket's rounded inside corner, a slot end, a fillet.
+HOLE_MIN_SWEEP_RAD = 0.97 * 2.0 * math.pi
 
-def classify_hole(diameter_mm: float, through: bool) -> Tuple[str, Optional[str], bool]:
+# The countersink at the mouth of a tapped hole only breaks the thread's first turn: DIN 76-1 sizes it at about 1.05 x the thread's
+# nominal diameter, and shop practice countersinks a tapped hole 90 degrees to at most ~1.2 x. A countersunk screw's head is far wider
+# than its own thread: ISO 2009 / ISO 7046-1 head diameter dk (actual) M2 3.8, M2.5 4.7, M3 5.5, M4 8.4, M5 9.3, M6 11.3, M8 15.8 mm
+# (1.8-2.1 x d), ISO 10642 (hexagon socket) M3 6.72 ... M8 15.96 (2.0-2.24 x d). A clearance hole for such a screw (ISO 273 fine series:
+# M2 2.2, M3 3.2, M4 4.3, M8 8.4) falls in the tap-drill band of the next size up (M2.5, M4, M5, M10 here), so measured against that
+# larger thread its seat is still >= 1.37 x (M3 head 5.5 on a hole read as M4) and usually 1.5-2.1 x. A countersink whose entry is wider
+# than this many times the nominal diameter of the thread a hole's size suggests is a screw-head seat: the hole is a clearance hole, not
+# tapped. Between the 1.2 of a tapped hole's chamfer and the 1.37 of the narrowest screw seat.
+COUNTERSUNK_SEAT_MIN_RATIO = 1.3
+
+# The shortest thread a tapped hole is given: about one nominal diameter of engagement (Machinery's Handbook, "Length of engagement"
+# of tapped holes: 1 x D in steel, 1.5 x D in cast iron, 2 x D in aluminium; an ISO 4032 nut is 0.8-0.9 x d high). A coaxial step at
+# a tap-drill size that is shallower than this, over a smaller bore it opens into, is a counterbore (a seat, a recess), not a thread.
+MIN_THREAD_ENGAGEMENT_DIAMETERS = 1.0
+
+_THREAD_NOMINAL = re.compile(r"M\s*(\d+(?:\.\d+)?)")
+
+
+def thread_nominal_mm(spec: Optional[str]) -> Optional[float]:
+    """The nominal (major) diameter of a metric thread spec such as "M2.5×0.45"; None when the spec names none."""
+    m = _THREAD_NOMINAL.match(spec or "")
+    return float(m.group(1)) if m else None
+
+
+def is_screw_seat(countersink_entry_mm: Optional[float], spec: Optional[str]) -> bool:
+    """A countersink of this entry diameter, at the mouth of a hole whose size reads as `spec`, seats a countersunk screw's head
+    (COUNTERSUNK_SEAT_MIN_RATIO): the hole is the screw's clearance hole, not a tapped hole."""
+    nominal = thread_nominal_mm(spec)
+    if not countersink_entry_mm or not nominal:
+        return False
+    return countersink_entry_mm > COUNTERSUNK_SEAT_MIN_RATIO * nominal
+
+
+def classify_hole(
+    diameter_mm: float, through: bool, full_turn: bool = True, countersink_entry_mm: Optional[float] = None,
+) -> Tuple[str, Optional[str], bool]:
     """
     Returns (SimpleHole variant, thread_spec_or_None, is_helicoil) -- variant is
     one of "threaded" / "through" / "blind" (see machining/feature_models.VARIANTS).
+
+    full_turn: the hole's wall goes all the way round its axis. A tap needs a
+    round hole, so a hole whose wall is interrupted (closed by a flat: a D bore,
+    a double D; opened by a keyway) is never read as threaded: it is plain
+    "through" / "blind" whatever its diameter.
+
+    countersink_entry_mm: the entry diameter of the countersink at the hole's
+    mouth, when it has one (countersink_mouths). A countersink that seats a
+    screw head (is_screw_seat) makes the hole a clearance hole: plain
+    "through" / "blind" whatever its diameter.
 
     Heuristic: holes whose diameter falls within a known tap pre-drill range are
     emitted as variant 'threaded' (confidence 0.55 — geometry only, no PMI to confirm).
@@ -83,13 +133,67 @@ def classify_hole(diameter_mm: float, through: bool) -> Tuple[str, Optional[str]
 
     Helicoil variant flagged separately for the process planner.
     """
-    for lo, hi, spec in TAP_DRILL_RANGES:
-        if lo <= diameter_mm <= hi:
-            return "threaded", spec, False
-    for lo, hi, spec in HELICOIL_DRILL_RANGES:
-        if lo <= diameter_mm <= hi:
-            return "threaded", spec, True
+    if full_turn:
+        for ranges, helicoil in ((TAP_DRILL_RANGES, False), (HELICOIL_DRILL_RANGES, True)):
+            for lo, hi, spec in ranges:
+                if lo <= diameter_mm <= hi:
+                    if is_screw_seat(countersink_entry_mm, spec):
+                        return ("through" if through else "blind"), None, False
+                    return "threaded", spec, helicoil
     return ("through" if through else "blind"), None, False
+
+
+# The hole variants a family's recogniser reports that can be a tapped hole: a plain round hole. A countersink, a perforation, a stepped bore
+# and a hole the recogniser already threaded are not read again.
+THREADABLE_HOLE_VARIANTS = ("through", "blind")
+# Holes that are never tapped, and so neither is a plain hole that is one of them (a perforation listed again as through holes) or that one
+# of them opens into (the countersink at the mouth of a hole: the hole is a clearance hole for a countersunk screw).
+UNTAPPED_HOLE_VARIANTS = ("countersunk", "countersink", "perforated")
+
+
+def annotate_hole_threads(feature_graph_v2: Optional[Dict[str, Any]], face_neighbours: Optional[Dict[int, set]] = None) -> int:
+    """
+    The tap-drill check the machining recogniser runs on every hole, for every other family's holes (a casting's, a forging's, a sheet-metal
+    part's...): each SimpleHole occurrence of a plain through or blind hole at a tap-drill size is tapped. It gets tapped True, spec (e.g.
+    "M3×0.5"), detection "geometry_heuristic" and helicoil_candidate, as a machined hole carries them; its variant is kept (a casting's hole
+    stays through or blind, which decides whether it is cast or drilled). The families' hole recognisers report only holes whose wall goes
+    all the way round (recognize_holes, the sheet-metal and bar/tube full-circle tests), so the check is run as for a full turn.
+    Not tapped either: a hole that is a perforation or a countersunk hole by its own faces, or that a countersink opens into (its wall shares
+    an edge with the countersink's cone; face_neighbours, shared.face_attributes.face_neighbours: without it only the shared faces are seen).
+    Returns how many occurrences were found tapped. A hole that already carries a thread is left as it is.
+    """
+    if not isinstance(feature_graph_v2, dict):
+        return 0
+    features = feature_graph_v2.get("features") or []
+    untapped_faces = {
+        fid for f in features if f.get("variant") in UNTAPPED_HOLE_VARIANTS
+        for occ in f.get("occurrences") or [] for fid in occ.get("face_ids") or []
+    }
+    near_untapped = set(untapped_faces)
+    for fid in untapped_faces:
+        near_untapped |= (face_neighbours or {}).get(fid, set())
+    tapped = 0
+    for feature in features:
+        if feature.get("feature_type") != "SimpleHole" or feature.get("variant") not in THREADABLE_HOLE_VARIANTS:
+            continue
+        for occ in feature.get("occurrences") or []:
+            if occ.get("spec") or occ.get("tapped"):
+                continue
+            if near_untapped & set(occ.get("face_ids") or []):
+                continue
+            diameter = occ.get("diameter_mm", feature.get("diameter_mm"))
+            if not isinstance(diameter, (int, float)) or diameter <= 0:
+                continue
+            _, spec, helicoil = classify_hole(float(diameter), through=feature.get("variant") == "through", full_turn=True)
+            if not spec:
+                continue
+            occ["tapped"] = True
+            occ["spec"] = spec
+            occ["detection"] = "geometry_heuristic"
+            if helicoil:
+                occ["helicoil_candidate"] = True
+            tapped += 1
+    return tapped
 
 
 def annotate_hole_depth(params: Dict, diameter_mm: float, depth_mm: float) -> None:
@@ -108,11 +212,47 @@ def annotate_hole_depth(params: Dict, diameter_mm: float, depth_mm: float) -> No
         params["deep_hole"] = True
 
 
+def _countersink_hole(cone: Dict, cylinders: List[Dict]) -> Optional[Tuple[Dict, List[Dict]]]:
+    """The hole a cone is the mouth of (classify_cone's test), as (its cylinder, the faces of its wall at the cone); None when the
+    cone is no countersink."""
+    cx, cy, cz = cone["centroid"]
+    ref_r = cone.get("max_radius", cone["ref_radius"])
+    touching = set(cone["adjacent_faces"]) if cone["concave"] else set()
+    holes = [c for c in cylinders if c["kind"] in ("through_hole", "blind_hole") and touching & set(c["face_indices"])]
+    for cyl in holes:
+        # The hole's stored origin must also lie within 5 mm of the cone's, as it always had to. That is not a measure of
+        # the part (the origin is wherever the CAD system put it), but without it every chamfered bore mouth reads as a
+        # countersink, and nothing here tells a broken edge from a screw seat yet.
+        dcx, dcy, dcz = cyl["centroid"]
+        dist = math.sqrt((cx - dcx) ** 2 + (cy - dcy) ** 2 + (cz - dcz) ** 2)
+        if dist < 5.0 and cyl["radius"] < ref_r:
+            # The hole's wall at the cone: every face of that radius on that axis line the cone touches (one merged face, or
+            # the patches of a bore whose faces were not merged). A hole's goes all the way round.
+            wall = [c for c in holes if abs(c["radius"] - cyl["radius"]) <= 0.02 + 0.005 * cyl["radius"] and same_axis_line(c, cyl)]
+            if sum(c.get("u_range", 2.0 * math.pi) for c in wall) >= HOLE_MIN_SWEEP_RAD:
+                return cyl, wall
+    return None
+
+
 def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     """
-    A cone is a countersink if there is a coaxial cylinder immediately below it.
-    Otherwise it is a chamfer. Returns (Edge variant "countersink"|"chamfer",
+    A cone is a countersink when it is the mouth of a hole: a concave cone (the
+    material is outside it, as it is outside the hole) that touches the hole's
+    wall and is wider than the hole. Any other cone is a chamfer: a convex cone
+    is the chamfer of the diameter or the boss it is cut on, however near a
+    hole's axis it lies (the chamfer of a shoulder on a bored shaft is not a
+    countersink of the bore). Returns (Edge variant "countersink"|"chamfer",
     params, confidence).
+
+    cone: as _collect_cones lists it, with "concave" and "adjacent_faces" (the
+    faces that share an edge with it); cylinders: as collect_cylinders lists them,
+    face patches merged or not.
+
+    The hole is a hole: its wall at the cone goes all the way round (the cylinder
+    faces of that radius on that axis line that touch the cone sweep
+    HOLE_MIN_SWEEP_RAD together). The quarter cone of a chamfer round a pocket's
+    rim, where it runs round the pocket's rounded inside corner, touches a quarter
+    cylinder: it is a chamfer, not a countersink.
     """
     cx, cy, cz = cone["centroid"]
     half_angle = cone["half_angle_deg"]
@@ -120,28 +260,54 @@ def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     # it; RefRadius alone can be the narrow end (see _collect_cones).
     ref_r = cone.get("max_radius", cone["ref_radius"])
 
-    # Check for coaxial adjacent cylinder (within 5 mm centroid proximity)
-    for cyl in cylinders:
-        if cyl["kind"] in ("through_hole", "blind_hole"):
-            dcx, dcy, dcz = cyl["centroid"]
-            dist = math.sqrt((cx - dcx) ** 2 + (cy - dcy) ** 2 + (cz - dcz) ** 2)
-            if dist < 5.0 and cyl["radius"] < ref_r:
-                return "countersink", {
-                    "entry_diameter_mm": round(ref_r * 2.0, 3),
-                    "bore_diameter_mm": round(cyl["radius"] * 2.0, 3),
-                    "half_angle_deg": round(half_angle, 1),
-                    # centroid required by build_machining_feature_graph_v2 to
-                    # place this feature -- the cone's own centroid, already
-                    # computed above, was never actually propagated into the
-                    # returned params before this fix.
-                    "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
-                }, 0.78
+    hole = _countersink_hole(cone, cylinders)
+    if hole is not None:
+        cyl, _wall = hole
+        return "countersink", {
+            "entry_diameter_mm": round(ref_r * 2.0, 3),
+            "bore_diameter_mm": round(cyl["radius"] * 2.0, 3),
+            "half_angle_deg": round(half_angle, 1),
+            # centroid required by build_machining_feature_graph_v2 to
+            # place this feature -- the cone's own centroid, already
+            # computed above, was never actually propagated into the
+            # returned params before this fix.
+            "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
+        }, 0.78
 
     return "chamfer", {
         "half_angle_deg": round(half_angle, 1),
         "diameter_mm": round(ref_r * 2.0, 3),
         "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
     }, 0.85
+
+
+def countersink_mouths(cones: List[Dict], cylinders: List[Dict]) -> Dict[int, float]:
+    """The entry diameter of the countersink at each hole's mouth, by the face ids of the hole's wall (the countersinks classify_cone
+    finds), for classify_hole(countersink_entry_mm=...): a hole a countersink opens into is tapped or a clearance hole by its size."""
+    mouths: Dict[int, float] = {}
+    for cone in cones:
+        hole = _countersink_hole(cone, cylinders)
+        if hole is None:
+            continue
+        entry = round(cone.get("max_radius", cone["ref_radius"]) * 2.0, 3)
+        for fid in (i for c in hole[1] for i in c["face_indices"]):
+            mouths[fid] = max(mouths.get(fid, 0.0), entry)
+    return mouths
+
+
+def same_axis_line(a: Dict, b: Dict) -> bool:
+    """Two cylinders (as collect_cylinders lists them) lie on one axis line: their axes are parallel and the line through one's
+    origin passes within 0.02 mm + 0.5 % of its radius of the other's. Patches of one cylinder, and the steps of a stepped bore, do;
+    two holes side by side, however close, do not. True when either carries no axis: there is nothing to tell them apart by."""
+    ax, bx = a.get("axis"), b.get("axis")
+    ca, cb = a.get("centroid"), b.get("centroid")
+    if ax is None or bx is None or ca is None or cb is None:
+        return True
+    if abs(sum(x * y for x, y in zip(ax, bx))) < 0.9999:
+        return False
+    d = (cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2])
+    cross = (d[1] * ax[2] - d[2] * ax[1], d[2] * ax[0] - d[0] * ax[2], d[0] * ax[1] - d[1] * ax[0])
+    return math.sqrt(sum(c * c for c in cross)) <= 0.02 + 0.005 * a["radius"]
 
 
 def detect_counterbores(
@@ -154,28 +320,47 @@ def detect_counterbores(
 
     bore_features: objects with .id/.params (duck-typed -- both machining's
     real MachiningFeature and Sheet Metal's own compatible construction work).
+    A bore may carry a thread (params "spec", read from its diameter by
+    classify_hole). The outer step of a pair is a counterbore whatever its
+    diameter when it is shallower than a thread's minimum engagement
+    (MIN_THREAD_ENGAGEMENT_DIAMETERS x the nominal diameter of the thread its
+    size suggests); one at least that deep stays the tapped hole it reads as.
+    A tapped inner bore is the counterbore's bore: params carry its bore_spec.
+
+    With bore_id_to_cyl the two bores must lie on one axis line
+    (same_axis_line) and meet along it (_steps_meet: the shoulder between them
+    is all that parts them), not only lie near each other: two holes side by
+    side, or two holes drilled from opposite faces on one axis with metal
+    between them, are not a counterbore. The cylinders' stored origins are not
+    compared: an origin is any point of the axis (a Ø4.5 x 2 counterbore's lay
+    8 mm from its Ø2.5 bore's). A cylinder with no axis falls back to the
+    origins lying within MAX_COAXIAL_DIST_MM. Each bore is in one counterbore at
+    most.
 
     Returns list of (outer_id, inner_id, params).
     """
     results = []
-    checked: set = set()
+    paired: set = set()
     for i, outer in enumerate(bore_features):
         for j, inner in enumerate(bore_features):
-            if i >= j:
+            if i == j or outer.id in paired or inner.id in paired:
                 continue
-            pair_key = (outer.id, inner.id)
-            if pair_key in checked:
-                continue
-            checked.add(pair_key)
             od = outer.params["diameter_mm"]
             id_ = inner.params["diameter_mm"]
             if od <= id_:
                 continue
             oc = None
             if bore_id_to_cyl:
-                oc = bore_id_to_cyl.get(outer.id, {}).get("centroid")
-                ic = bore_id_to_cyl.get(inner.id, {}).get("centroid")
-                if oc and ic:
+                ocyl = bore_id_to_cyl.get(outer.id, {})
+                icyl = bore_id_to_cyl.get(inner.id, {})
+                oc = ocyl.get("centroid")
+                ic = icyl.get("centroid")
+                if ocyl.get("axis") and icyl.get("axis"):
+                    if not same_axis_line(ocyl, icyl) or not _steps_meet(ocyl, icyl):
+                        continue
+                elif oc and ic:
+                    # No axis to compare: the stored origins must lie near each other (an origin is any point of the axis, so
+                    # this is only a coarse guard).
                     dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(oc, ic)))
                     if dist > MAX_COAXIAL_DIST_MM:
                         continue
@@ -183,12 +368,17 @@ def detect_counterbores(
             inner_depth = inner.params["depth_mm"]
             if outer_depth >= inner_depth:
                 continue
+            outer_nominal = thread_nominal_mm(outer.params.get("spec"))
+            if outer_nominal and outer_depth >= MIN_THREAD_ENGAGEMENT_DIAMETERS * outer_nominal:
+                continue  # deep enough to be the thread its size reads as: a tapped hole over a smaller bore
             params = {
                 "counterbore_diameter_mm": od,
                 "counterbore_depth_mm": round(outer_depth, 3),
                 "bore_diameter_mm": id_,
                 "bore_depth_mm": round(inner_depth, 3),
             }
+            if inner.params.get("spec"):
+                params["bore_spec"] = inner.params["spec"]
             # centroid (the outer/visible bore's position -- where a tool
             # approaches from) is required by build_machining_feature_graph_v2
             # to place this feature; without bore_id_to_cyl there is no real
@@ -197,7 +387,24 @@ def detect_counterbores(
             if oc:
                 params["centroid"] = oc
             results.append((outer.id, inner.id, params))
+            paired.update((outer.id, inner.id))
     return results
+
+
+# Two coaxial bores are steps of one hole when their extents along the axis meet to within this: the face bounds they are measured from
+# carry the model's tolerance, far below any metal left between two holes.
+STEP_GAP_TOLERANCE_MM = 0.05
+
+
+def _steps_meet(a: Dict, b: Dict) -> bool:
+    """Two cylinders on one axis line meet along it: their axial extents (collect_cylinders axial_range, along each one's own axis
+    direction) overlap or touch. True when either has no extent recorded."""
+    ra, rb = a.get("axial_range"), b.get("axial_range")
+    if not ra or not rb:
+        return True
+    sign = 1.0 if sum(x * y for x, y in zip(a["axis"], b["axis"])) >= 0 else -1.0
+    rb = sorted((sign * rb[0], sign * rb[1]))
+    return max(ra[0], rb[0]) - min(ra[1], rb[1]) <= STEP_GAP_TOLERANCE_MM
 
 
 def detect_multistep_holes(
@@ -287,6 +494,28 @@ def point_to_axis_distance(
     cy = pz * ax - px * az
     cz = px * ay - py * ax
     return math.sqrt(cx * cx + cy * cy + cz * cz)
+
+
+def line_to_axis_distance(
+    point: Tuple[float, float, float],
+    direction: Tuple[float, float, float],
+    axis_unit: Tuple[float, float, float],
+) -> float:
+    """
+    Distance between two lines: one through `point` along the unit vector `direction`, the other
+    through the origin along axis_unit. 0 when they meet. Two parallel lines are as far apart as
+    any point of one is from the other.
+    """
+    dx, dy, dz = direction
+    ax, ay, az = axis_unit
+    # The direction square to both lines: the lines are closest along it.
+    nx = dy * az - dz * ay
+    ny = dz * ax - dx * az
+    nz = dx * ay - dy * ax
+    n = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if n < 1e-9:
+        return point_to_axis_distance(point, axis_unit)
+    return abs(point[0] * nx + point[1] * ny + point[2] * nz) / n
 
 
 def angle_around_axis(
@@ -406,6 +635,7 @@ def collect_cylinders(
     shape,
     main_axis: Tuple[float, float, float],
     bbox: Dict,
+    axis_point: Optional[Tuple[float, float, float]] = None,
 ) -> List[Dict]:
     """
     Collects all cylindrical faces and classifies each as:
@@ -414,6 +644,11 @@ def collect_cylinders(
     Uses face orientation (FORWARD/REVERSED) for external vs internal.
     Uses axis alignment with main_axis for axial vs cross orientation.
     Uses length vs part span for through vs blind discrimination.
+
+    axis_point: a point on the part's own axis, the line along main_axis that distances and
+    angles are measured from and a turned diameter lies on. A turned part's is the line it is
+    turned about (turning_line_point). Without one the line runs through the centre of the
+    bounding box: a reference for a part that has no turning axis (a milled block, a sheet).
 
     Real, live cross-domain primitive: Sheet Metal
     (sheet_metal/feature_extractor.py, sheet_metal/features/formed_feature.py (stage 1))
@@ -437,12 +672,15 @@ def collect_cylinders(
 
     # Part span along main axis — used for through vs blind discrimination
     part_span = axis_span(bbox, (ax, ay, az))
-    # The part's own axis passes through its bounding-box centre, not the
-    # global origin: distances and angles round the axis are measured from
-    # there, so a part modelled away from 0,0,0 classifies the same way.
-    ox = (bbox["xmin"] + bbox["xmax"]) / 2
-    oy = (bbox["ymin"] + bbox["ymax"]) / 2
-    oz = (bbox["zmin"] + bbox["zmax"]) / 2
+    # The part's own axis passes through axis_point or, with none, the bounding-box
+    # centre, not the global origin: distances and angles round the axis are measured
+    # from there, so a part modelled away from 0,0,0 classifies the same way.
+    if axis_point is not None:
+        ox, oy, oz = axis_point
+    else:
+        ox = (bbox["xmin"] + bbox["xmax"]) / 2
+        oy = (bbox["ymin"] + bbox["ymax"]) / 2
+        oz = (bbox["zmin"] + bbox["zmax"]) / 2
 
     results = []
     face_idx = 0
@@ -482,8 +720,10 @@ def collect_cylinders(
             cx, cy, cz = loc.X(), loc.Y(), loc.Z()
             position = cx * ax + cy * ay + cz * az
 
-            # Distance from centroid to main axis (arbitrary orientation)
-            dist_from_axis = point_to_axis_distance((cx - ox, cy - oy, cz - oz), (ax, ay, az))
+            # Distance from the main axis. A cylinder that runs along the axis is as far from it as any
+            # point of its own axis is; a cross hole's is measured below, between the two lines.
+            from_axis = (cx - ox, cy - oy, cz - oz)
+            dist_from_axis = point_to_axis_distance(from_axis, (ax, ay, az))
 
             # Approximate length from face bounding box
             fbox = Bnd_Box()
@@ -502,7 +742,7 @@ def collect_cylinders(
             axial_range = (min(projections), max(projections))
 
             # Angular position of centroid around main axis (for PCD grouping)
-            angle_deg = angle_around_axis((cx - ox, cy - oy, cz - oz), (ax, ay, az))
+            angle_deg = angle_around_axis(from_axis, (ax, ay, az))
 
             if alignment >= 0.85:
                 # Axially aligned cylinder
@@ -523,6 +763,16 @@ def collect_cylinders(
                     kind = "offset_profile"
             else:
                 kind = "cross_hole"
+                # The stored origin of a cross hole is an arbitrary point of its own axis, so nothing about the
+                # hole is read from it (a hole drilled through the main axis was as far from it as that point
+                # happened to lie). Its distance is the one between the two lines, 0 when they meet. Its angle
+                # round the main axis is that of the middle of its wall; a hole the main axis runs through lies
+                # on both sides of it and has none.
+                dist_from_axis = line_to_axis_distance(from_axis, (fx, fy, fz), (ax, ay, az))
+                along = (axial_range[0] + axial_range[1]) / 2 - (cx * fx + cy * fy + cz * fz)
+                middle = (from_axis[0] + along * fx, from_axis[1] + along * fy, from_axis[2] + along * fz)
+                on_one_side = point_to_axis_distance(middle, (ax, ay, az)) > radius
+                angle_deg = angle_around_axis(middle, (ax, ay, az)) if on_one_side else 0.0
 
             # Arc extent in the U (angular) direction — 2π = full cylinder.
             # Used by _deduplicate_cylinders to distinguish arc patches of
@@ -545,3 +795,224 @@ def collect_cylinders(
         exp.Next()
 
     return results
+
+
+# Two cylinder axes within this angle run the same way: far above export noise, far below two axes meant to differ.
+PARALLEL_AXIS_TOLERANCE_DEG = 0.5
+
+
+def _analytic_cylinder_faces(shape):
+    """Each analytic cylindrical face of the shape: (the face, its axis with one sign, a point on that axis, its radius)."""
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder  # type: ignore
+    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = exp.Current()
+        surf = BRepAdaptor_Surface(face)
+        if surf.GetType() == GeomAbs_Cylinder:
+            cyl = surf.Cylinder()
+            d, loc = cyl.Axis().Direction(), cyl.Location()
+            yield face, _one_way((d.X(), d.Y(), d.Z())), (loc.X(), loc.Y(), loc.Z()), float(cyl.Radius())
+        exp.Next()
+
+
+def _face_area(face) -> float:
+    from OCC.Core.BRepGProp import brepgprop  # type: ignore
+    from OCC.Core.GProp import GProp_GProps  # type: ignore
+
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(face, props)
+    return float(props.Mass())
+
+
+def dominant_cylinder_axis(shape) -> Optional[Tuple[float, float, float]]:
+    """
+    The part's dominant cylinder axis, the machining recognizer's turning axis: the direction its outer (convex) cylindrical faces cover the
+    most area along. A lathe turns outer diameters, so they decide; the holes (concave faces) decide only between directions the outer faces
+    cover equally, and alone on a part with no outer cylinder. Area, not face count: a shaft's few turned diameters outweigh the many small
+    faces of its cross holes (Lead Screw side shaft: three diameters and a bore along Y, four cross-hole faces along Z, read as turned about Z).
+    The direction is the widest face's own, signed so its first component that is not zero is positive. None when the part has no analytic
+    cylindrical face.
+    """
+    from shared.bspline_cylinder import face_is_internal
+
+    parallel = math.cos(math.radians(PARALLEL_AXIS_TOLERANCE_DEG))
+    # One entry per direction: [its widest face's direction, that face's area, outer area, inner area].
+    directions: List[List[Any]] = []
+    for face, axis, point, _radius in _analytic_cylinder_faces(shape):
+        area = _face_area(face)
+        inner = face_is_internal(face, point, axis)
+        entry = next((e for e in directions if abs(e[0][0] * axis[0] + e[0][1] * axis[1] + e[0][2] * axis[2]) >= parallel), None)
+        if entry is None:
+            entry = [axis, area, 0.0, 0.0]
+            directions.append(entry)
+        elif area > entry[1]:
+            entry[0], entry[1] = axis, area
+        entry[3 if inner else 2] += area
+    if not directions:
+        return None
+    return max(directions, key=lambda e: (e[2], e[3]))[0]
+
+
+def turning_line_point(shape, direction: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+    """
+    A point on the line the part is turned about, for the turning direction `direction` (the dominant cylinder axis): the axis line its
+    outer (convex) cylindrical faces along `direction` cover the most area about. Only a cylinder the part is centred in counts (the part's
+    centre of mass lies inside it): a turned part's diameters share one line through its mass, while the round of a block's corner and a
+    boss beside the middle have lines of their own. None when no outer cylinder qualifies: the part has no turned diameter.
+
+    Read from the surfaces and the solid themselves, so it is the same however the part is meshed and wherever it lies. The centre of the
+    bounding box is not: the box of a meshed shape is read from the mesh's nodes (a plain shaft's centre lay 0.02 mm off its axis, farther
+    than COAXIAL_TOLERANCE_MM, so it had no turned diameter), and it leaves the axis of any part that is not the same on both sides of it
+    (a shaft with a flat along its length, a stepped shaft lying askew in the model).
+    """
+    from OCC.Core.BRepGProp import brepgprop  # type: ignore
+    from OCC.Core.GProp import GProp_GProps  # type: ignore
+    from shared.bspline_cylinder import face_is_internal
+
+    parallel = math.cos(math.radians(PARALLEL_AXIS_TOLERANCE_DEG))
+    n = math.sqrt(sum(c * c for c in direction)) or 1.0
+    direction = (direction[0] / n, direction[1] / n, direction[2] / n)
+
+    def off_line(point, on_line) -> float:
+        return point_to_axis_distance((point[0] - on_line[0], point[1] - on_line[1], point[2] - on_line[2]), direction)
+
+    centre = None  # the part's centre of mass, measured for the first outer cylinder along the direction
+    lines: List[List[Any]] = []  # one entry per axis line: [a point on it, the outer area about it]
+    for face, axis, point, radius in _analytic_cylinder_faces(shape):
+        if abs(axis[0] * direction[0] + axis[1] * direction[1] + axis[2] * direction[2]) < parallel or face_is_internal(face, point, axis):
+            continue
+        if centre is None:
+            props = GProp_GProps()
+            brepgprop.VolumeProperties(shape, props)
+            if props.Mass() <= 0:
+                return None  # not a closed solid: it has no centre of mass to be turned about
+            cm = props.CentreOfMass()
+            centre = (cm.X(), cm.Y(), cm.Z())
+        if off_line(centre, point) >= radius:
+            continue
+        entry = next((e for e in lines if off_line(point, e[0]) <= COAXIAL_TOLERANCE_MM), None)
+        if entry is None:
+            lines.append([point, _face_area(face)])
+        else:
+            entry[1] += _face_area(face)
+    return max(lines, key=lambda e: e[1])[0] if lines else None
+
+
+def _one_way(axis: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """The same axis as a unit vector with one sign (its first component that is not zero is positive): an axis has two names, this picks one."""
+    n = math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) or 1.0
+    v = [round(c / n, 9) + 0.0 for c in axis]  # + 0.0: a rounded -0.0 becomes 0.0
+    sign = next((1.0 if c > 0 else -1.0 for c in v if c != 0.0), 1.0)
+    return (v[0] * sign + 0.0, v[1] * sign + 0.0, v[2] * sign + 0.0)
+
+
+def turned_diameter_count(shape) -> Optional[int]:
+    """
+    The part's turned outer diameters: convex cylindrical faces on its dominant axis (collect_cylinders' external_diameter). A lathe turns
+    a part about such a surface; a part with none (a block whose only round faces are holes and corner rounds) is not turned, however many
+    of its holes share one axis. The family classifier's evidence that a part is turned (component_feature_analyzer.detect_part_family).
+
+    None when the part has no analytic cylinder to find its axis by (an export that writes every face as a B-spline): not measured, so the
+    classifier does not use it, rather than reading a turned part as having no diameter.
+    """
+    line = turning_axis(shape)
+    return None if line is None else len(line["diameters"])
+
+
+# A surface lies on the part's envelope when it is this close to it: the model's own precision (as COAXIAL_TOLERANCE_MM) plus the rounding
+# an export carries, which grows with the size.
+ENVELOPE_TOLERANCE_MM = 0.01
+ENVELOPE_TOLERANCE_RATIO = 1e-4
+
+
+def envelope_tolerance(size_mm: float) -> float:
+    """How far from an envelope of this size a surface may be and still lie on it."""
+    return ENVELOPE_TOLERANCE_MM + ENVELOPE_TOLERANCE_RATIO * abs(size_mm)
+
+
+def mesh_nodes(shape) -> List[Tuple[float, float, float]]:
+    """Every node of the shape's mesh, in model coordinates. Nodes lie on the surfaces, and every corner of the part is one. A shape that
+    was never meshed is meshed as the analysis meshes it (shared/memory_optimizer.py), so calling this earlier changes nothing later."""
+    from OCC.Core.BRep import BRep_Tool  # type: ignore
+    from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_FACE  # type: ignore
+    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+    from OCC.Core.TopLoc import TopLoc_Location  # type: ignore
+    from OCC.Core.TopoDS import topods  # type: ignore
+
+    def collect() -> List[Tuple[float, float, float]]:
+        nodes: List[Tuple[float, float, float]] = []
+        exp = TopExp_Explorer(shape, TopAbs_FACE)
+        while exp.More():
+            location = TopLoc_Location()
+            tri = BRep_Tool.Triangulation(topods.Face(exp.Current()), location)
+            if tri is not None:
+                transform = location.Transformation()
+                for i in range(1, tri.NbNodes() + 1):
+                    p = tri.Node(i).Transformed(transform)
+                    nodes.append((float(p.X()), float(p.Y()), float(p.Z())))
+            exp.Next()
+        return nodes
+
+    nodes = collect()
+    if not nodes:
+        BRepMesh_IncrementalMesh(shape, 0.1, False, 0.5, True).Perform()
+        nodes = collect()
+    return nodes
+
+
+def swing_radius(nodes: List[Tuple[float, float, float]], point: Tuple[float, float, float], direction: Tuple[float, float, float]) -> float:
+    """The part's reach from a line (its farthest mesh node): the radius of the smallest round bar, centred on the line, the part is cut from."""
+    px, py, pz = point
+    return max((point_to_axis_distance((x - px, y - py, z - pz), direction) for x, y, z in nodes), default=0.0)
+
+
+def turning_axis(shape) -> Optional[Dict[str, Any]]:
+    """
+    The line the part is turned about and what is turned on it: the dominant cylinder axis, placed on the line the part's outer cylinders
+    lie about (turning_line_point), with the outer diameters on that line (collect_cylinders' external_diameter). None when the part has no
+    analytic cylinder to find the axis by.
+
+      direction            the dominant cylinder axis (unit vector)
+      diameters            every turned outer diameter face, as collect_cylinders lists it; empty when the part has none
+      point                a point on the line: the largest turned diameter's own axis; None when the part has no turned diameter
+      largest_radius_mm    that diameter's radius; None when the part has no turned diameter
+    """
+    axis = dominant_cylinder_axis(shape)
+    if axis is None:
+        return None
+    cylinders = collect_cylinders(shape, axis, part_bounding_box(shape), turning_line_point(shape, axis))
+    turned = [c for c in cylinders if c["kind"] == "external_diameter"]
+    largest = max(turned, key=lambda c: c["radius"]) if turned else None
+    return {
+        "direction": axis,
+        "diameters": turned,
+        "point": tuple(largest["centroid"]) if largest else None,
+        "largest_radius_mm": float(largest["radius"]) if largest else None,
+    }
+
+
+def turned_envelope(shape, line: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    The part's largest turned outer diameter against its swing about the turning axis. A part that lies wholly within its largest turned
+    diameter was cut from round bar of that diameter and turned: what the family classifier takes as proof of a turned part, whatever the
+    proportions of its box (component_feature_analyzer.detect_part_family). None when the part has no turned outer diameter. `line` is the
+    part's turning_axis() when the caller already has it.
+
+      largest_turned_od_mm, swing_diameter_mm    the two diameters
+      within                                     the swing is no larger than the turned diameter (to envelope_tolerance)
+    """
+    line = line if line is not None else turning_axis(shape)
+    if line is None or not line["diameters"]:
+        return None
+    radius = line["largest_radius_mm"]
+    swing = swing_radius(mesh_nodes(shape), line["point"], line["direction"])
+    return {
+        "largest_turned_od_mm": round(2.0 * radius, 4),
+        "swing_diameter_mm": round(2.0 * swing, 4),
+        "within": swing <= radius + envelope_tolerance(2.0 * radius),
+    }

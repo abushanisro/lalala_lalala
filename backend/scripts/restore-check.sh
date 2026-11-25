@@ -7,13 +7,13 @@ set -euo pipefail
 
 archive="${1:?usage: restore-check.sh <backup.tar.age>}"
 identity="${AGE_IDENTITY:?set AGE_IDENTITY to the age private key file}"
-IMAGE="postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b"
+IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b}"
 work="$(mktemp -d)"
 name="restorecheck-$$"
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
 
 age --decrypt --identity "$identity" < "$archive" | tar -C "$work" -xf -
-docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=test --tmpfs /var/lib/postgresql/data -v "$work":/backup:ro "$IMAGE" >/dev/null
+docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=test --tmpfs "${POSTGRES_DATA_MOUNT:-/var/lib/postgresql/data}" -v "$work":/backup:ro "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do docker exec "$name" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break; sleep 1; done
 
 # Roles that policies and grants mention must exist, or pg_restore reports errors for them.

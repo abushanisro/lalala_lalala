@@ -39,11 +39,12 @@ function expectedSteelUsd(): number {
 }
 
 describe('the mold tooling calculator', () => {
-  it('is a helper whose result is the tooling cost per part, at version 9 written by migration 1022 (1012 to 1020 are history)', () => {
+  it('is a helper whose result is the tooling cost per part, at version 10 written by migration 1082 (1012 to 1022 are history)', () => {
     const c = loadPlasticMoldingCalculatorSpec().calculators.find((x) => x.name === MOLD_TOOLING_CALCULATOR)!;
-    expect(c).toMatchObject({ helper: true, operations: [], migration: 1022, version: 9, output: 'Tooling Cost Per Part' });
+    expect(c).toMatchObject({ helper: true, operations: [], migration: 1082, version: 10, output: 'Tooling Cost Per Part' });
     expect(c.description).toMatch(/G-03 to G-08/);
-    expect(readFileSync(join(__dirname, '../../../../../../migrations/1022_plastic_mold_steel_treatment_hot_drops.sql'), 'utf8')).toBe(buildPlasticMoldingCalculatorsMigrationSql(1022));
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1082_plastic_mold_water_baffles.sql'), 'utf8')).toBe(buildPlasticMoldingCalculatorsMigrationSql(1082));
+    expect(readFileSync(join(__dirname, '../../../../../../migrations/1022_plastic_mold_steel_treatment_hot_drops.sql'), 'utf8')).toContain('version 9');
     expect(readFileSync(join(__dirname, '../../../../../../migrations/1020_plastic_mold_rib_inserts_edm.sql'), 'utf8')).toContain('version 8');
     expect(readFileSync(join(__dirname, '../../../../../../migrations/1019_plastic_mold_cooling_lines.sql'), 'utf8')).toContain('version 7');
     expect(readFileSync(join(__dirname, '../../../../../../migrations/1018_plastic_mold_heat_treatment.sql'), 'utf8')).toContain('version 6');
@@ -70,7 +71,10 @@ describe('the mold tooling calculator', () => {
     expect(r.outputs['Tryout Hours']).toBe(36);
     expect(r.outputs['Tryout Cost']).toBeCloseTo(36 * 76.81, 6);
     expect(r.outputs['Tooling Investment']).toBe(Math.floor((2140 + r.outputs['Toolroom Labour Cost']! + expectedSteelUsd() + r.outputs['Cavity Machining Cost']! + r.outputs['Polish Cost']! + EXTRAS_USD
-      + r.outputs['Heat Treatment Cost']! + r.outputs['Cooling Cost']! + r.outputs['Hot Drop Cost']!) * 100 + 0.5) / 100);
+      + r.outputs['Heat Treatment Cost']! + r.outputs['Cooling Cost']! + r.outputs['Hot Drop Cost']! + r.outputs['Baffle Cost']!) * 100 + 0.5) / 100);
+    // water baffles (F-37): the 446 mm base holds 2 x floor(446 / 76.2) = 10, at 8 USD + 0.15 h assembly each, tapped 0.75 h each + 4 h setup
+    expect(r.outputs['Water Baffles']).toBe(10);
+    expect(r.outputs['Baffle Cost']).toBeCloseTo(10 * (8 + 0.15 * 76.81) + (10 * 0.75 + 4) * 100.55, 6);
     // the default tool steel AISI P20 is supplied pre-hardened (reference/mold-steel-treatment-reference.csv): no treatment is charged
     expect(r.outputs['Heat Treatment Cost']).toBe(0);
     expect(r.trace.find((t) => t.fieldName === 'Hardening Applies')?.source).toMatch(/AISI P20 \(pre-hardened \(quenched and tempered\)\) heat_treatment_required -> not charged/);
@@ -80,7 +84,7 @@ describe('the mold tooling calculator', () => {
     expect(r.perPartUsd).toBe(Math.floor(r.outputs['Tooling Investment']! / 30_000 * 10000 + 0.5) / 10000);
     expect(r.trace.find((t) => t.fieldName === 'Mold Base Width')?.source).toMatch(/tblStandardMoldBaseSizes: .*layoutNumCav/);
     expect(r.trace.find((t) => t.fieldName === 'Tool Steel Price')?.source).toMatch(/AISI P20/);
-    expect(r.trace.find((t) => t.fieldName === 'Purchased Components Cost')?.source).toMatch(/cmStandardToolingComponents: Guide Pin 4 x 100/);
+    expect(r.trace.find((t) => t.fieldName === 'Purchased Components Cost')?.source).toMatch(/cmStandardToolingComponents for the rest: Guide Pin 4 x 100/);
     expect(r.trace.find((t) => t.fieldName === 'Design Rate')?.source).toMatch(/designRateUsdPerHr/);
   });
 
@@ -98,6 +102,15 @@ describe('the mold tooling calculator', () => {
     expect(r.outputs['Side Action Cost']).toBeCloseTo(r.outputs['Side Action Steel Cost']! + surface * 0.18 * 100.55 + (1.52 * 3 + 5) * 100.55, 6);
     expect(r.trace.find((t) => t.fieldName === 'Lifter Block Volume')?.source).toMatch(/2 small x 75 in³ \(smallLifterVolume\)/);
     expect(r.trace.find((t) => t.fieldName === 'Slide Block Volume')?.source).toMatch(/1 medium x 1100 in³ \(mediumSlideVolume\)/);
+    // Without the bundles' ids (an older signal) the volumes name no features.
+    expect(r.trace.find((t) => t.fieldName === 'Slide Block Volume')?.ref).toBeUndefined();
+    const named = runMoldTooling(facts({
+      sideActionBlocks: { slide: { ...NONE, medium: 1 }, lifter: { ...NONE, small: 2 }, unsized: 0 },
+      sideActionBundleIds: { slide: ['bundle-1'], lifter: ['bundle-2', 'bundle-3'] },
+    }), CALCS);
+    if (!named.derivable) throw new Error(named.missing.join());
+    expect(named.trace.find((t) => t.fieldName === 'Slide Block Volume')?.ref).toEqual({ kind: 'features', label: 'slide bundles', features: [{ featureId: 'bundle-1' }] });
+    expect(named.trace.find((t) => t.fieldName === 'Lifter Block Volume')?.ref).toEqual({ kind: 'features', label: 'lifter bundles', features: [{ featureId: 'bundle-2' }, { featureId: 'bundle-3' }] });
     // and it is in the mold cost
     const without = runMoldTooling(facts(), CALCS);
     if (!without.derivable) throw new Error(without.missing.join());

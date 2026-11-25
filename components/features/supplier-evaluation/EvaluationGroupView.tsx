@@ -1,24 +1,30 @@
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Search, MapPin, Building2, Send, Package, FileText, TrendingUp, Award, Mail, Box, ArrowLeft, X, Check, UserCheck, Trash2, Plus } from 'lucide-react';
 import { toast } from 'sonner';
-import { useVendors } from '@/lib/api/hooks/useVendors';
-import { useCreateRfq, useSendRfq } from '@/lib/api/hooks/useRfq';
-import { useRfqTrackingRecords, useRfqTrackingStats, useInvalidateRfqTracking, useUpdateRfqTrackingStatus, useDeleteRfqTracking, useCreateRfqTracking } from '@/lib/api/hooks/useRfqTracking';
-import { getRfqSummaryText, formatResponseTime, getStatusText, getStatusColor, RfqTrackingStatus } from '@/lib/api/rfq-tracking';
+
+import { VendorRatingEngine } from '@/components/features/supplier-nominations/VendorRatingEngine';
+import { VendorStatusBadge } from '@/components/features/vendors/VendorStatusBadge';
+import { PageHeader } from '@/components/layout/PageHeader';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Search, MapPin, Building2, Send, Package, FileText, TrendingUp, Award, Mail, Box, ArrowLeft, X, Check, UserCheck, Trash2, Plus } from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { ListSkeleton } from '@/components/ui/loading-skeleton';
+import { Mark } from '@/components/ui/status-mark';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { analyzeTrackingFeature, getFeatureStatusMessage, TrackingFeatureState } from '@/lib/api/features/tracking-feature';
 import { useProcessCosts } from '@/lib/api/hooks/useProcessCosts';
 import type { ProcessCostListResponse, ProcessCostRecord } from '@/lib/api/hooks/useProcessCosts';
 import { useProcesses } from '@/lib/api/hooks/useProcesses';
-import { VendorRatingEngine } from '@/components/features/supplier-nominations/VendorRatingEngine';
+import { useCreateRfq, useSendRfq } from '@/lib/api/hooks/useRfq';
+import { useRfqTrackingRecords, useRfqTrackingStats, useInvalidateRfqTracking, useUpdateRfqTrackingStatus, useDeleteRfqTracking, useCreateRfqTracking } from '@/lib/api/hooks/useRfqTracking';
 import { useSupplierNominations } from '@/lib/api/hooks/useSupplierNominations';
+import { useVendors } from '@/lib/api/hooks/useVendors';
+import { getRfqSummaryText, formatResponseTime, getStatusText, getStatusColor, RfqTrackingStatus } from '@/lib/api/rfq-tracking';
 
 interface BOMPart {
   id: string;
@@ -401,7 +407,7 @@ We look forward to your competitive proposal and establishing a successful partn
       });
 
       // Show success message
-      toast.success(`RFQ sent successfully to ${vendorIds.length} vendor${vendorIds.length !== 1 ? 's' : ''} for ${bomItemIds.length} part${bomItemIds.length !== 1 ? 's' : ''}!`);
+      toast.success(`RFQ sent successfully to ${vendorIds.length} vendor${vendorIds.length !== 1 ? 's' : ''} for ${bomItemIds.length} part${bomItemIds.length !== 1 ? 's' : ''}.`);
       
       // Reset selections
       setSelectedParts([]);
@@ -433,118 +439,73 @@ We look forward to your competitive proposal and establishing a successful partn
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="animate-fade-in">
+      <div className="space-y-6">
         {/* Header */}
-        <div className="flex justify-between items-start">
-          <div className="flex items-center gap-4">
-            {onBack && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onBack}
-                className="border-gray-600 text-gray-300 hover:bg-gray-800 hover:text-white"
-              >
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Back
-              </Button>
-            )}
-            <div>
-              <h1 className="text-2xl font-bold text-white">
-                {evaluationGroupName ? evaluationGroupName : 'Supplier Evaluation'}
-              </h1>
-              <p className="text-gray-300 mt-1">
-                {evaluationGroupName 
-                  ? 'Evaluate vendors and manage RFQs for this evaluation group'
-                  : 'Select BOM parts to find and evaluate vendors'
-                }
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="Search parts, vendors..."
-                className="pl-9 w-80 bg-gray-800 border-gray-700 text-white placeholder:text-gray-400"
-                value={partsSearchTerm}
-                onChange={(e) => setPartsSearchTerm(e.target.value)}
-              />
-            </div>
+        <div className="flex items-start gap-3">
+          {onBack && (
+            <Button
+              variant="outline"
+              size="icon"
+              className="mt-0.5 h-8 w-8 shrink-0"
+              aria-label="Back to evaluation groups"
+              onClick={onBack}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          )}
+          <div className="min-w-0 flex-1">
+            <PageHeader
+              title={evaluationGroupName ? evaluationGroupName : 'Supplier Evaluation'}
+              description={evaluationGroupName
+                ? 'Evaluate vendors and manage RFQs for this evaluation group'
+                : 'Select BOM parts to find and evaluate vendors'}
+            >
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  aria-label="Search parts and vendors"
+                  placeholder="Search parts, vendors..."
+                  className="h-9 w-full pl-9 sm:w-72"
+                  value={partsSearchTerm}
+                  onChange={(e) => setPartsSearchTerm(e.target.value)}
+                />
+              </div>
+            </PageHeader>
           </div>
         </div>
 
         {/* Overview Stats */}
-        <div className="grid grid-cols-4 gap-6">
-          <Card className="bg-gray-800 border-gray-700">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-3 rounded-lg bg-teal-600/20">
-                  <Package className="h-6 w-6 text-teal-400" />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { label: 'Total Parts', value: stats.totalParts, hint: 'From active BOM', icon: Package, hintTone: 'text-success' },
+            { label: 'Active Vendors', value: stats.activeVendors, hint: 'Database managed vendors', icon: Building2, hintTone: 'text-muted-foreground' },
+            { label: 'Available Vendors', value: stats.availableVendors, hint: 'Ready for RFQ', icon: Award, hintTone: 'text-success' },
+            { label: 'RFQs Sent', value: stats.sentRfqCount, hint: 'Total sent today', icon: TrendingUp, hintTone: 'text-primary' },
+          ].map(({ label, value, hint, icon: Icon, hintTone }) => (
+            <Card key={label}>
+              <CardContent className="flex items-center justify-between gap-3 p-4">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-muted-foreground">{label}</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground">{value}</p>
+                  <p className={`mt-0.5 truncate text-xs ${hintTone}`}>{hint}</p>
                 </div>
-                <div>
-                  <h3 className="text-2xl font-bold text-white">{stats.totalParts}</h3>
-                  <p className="text-sm text-gray-300">Total Parts</p>
-                  <p className="text-xs text-green-400 mt-1">From active BOM</p>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Icon className="h-4 w-4" aria-hidden="true" />
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gray-800 border-gray-700">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-3 rounded-lg bg-blue-600/20">
-                  <Building2 className="h-6 w-6 text-blue-400" />
-                </div>
-                <div>
-                  <h3 className="text-2xl font-bold text-white">{stats.activeVendors}</h3>
-                  <p className="text-sm text-gray-300">Active Vendors</p>
-                  <p className="text-xs text-gray-400 mt-1">Database managed vendors</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gray-800 border-gray-700">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-3 rounded-lg bg-indigo-600/20">
-                  <Award className="h-6 w-6 text-indigo-400" />
-                </div>
-                <div>
-                  <h3 className="text-2xl font-bold text-white">{stats.availableVendors}</h3>
-                  <p className="text-sm text-gray-300">Available Vendors</p>
-                  <p className="text-xs text-green-400 mt-1">Ready for RFQ</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gray-800 border-gray-700">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-3 rounded-lg bg-brand-600/20">
-                  <TrendingUp className="h-6 w-6 text-brand-400" />
-                </div>
-                <div>
-                  <h3 className="text-2xl font-bold text-white">{stats.sentRfqCount}</h3>
-                  <p className="text-sm text-gray-300">RFQs Sent</p>
-                  <p className="text-xs text-blue-400 mt-1">Total sent today</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          ))}
         </div>
 
         {/* Block 1: SELECT BOM PARTS */}
-        <Card className="bg-gray-800 border-gray-700">
+        <Card className="bg-card border-border">
           <CardContent className="p-0">
-            <div className="p-6 border-b border-gray-700">
+            <div className="p-6 border-b border-border">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-white">BOM Parts</h2>
+                <h2 className="text-lg font-semibold text-foreground">BOM Parts</h2>
                 <div className="flex items-center gap-3">
-                  <Badge variant="outline" className="text-teal-400 border-teal-400/50">
+                  <Badge variant="outline" className="text-primary border-primary/40">
                     {selectedParts.length} selected
                   </Badge>
                   {selectedParts.length > 0 && (
@@ -555,7 +516,7 @@ We look forward to your competitive proposal and establishing a successful partn
                         setSelectedParts([]);
                         setSelectedVendors([]);
                       }}
-                      className="h-7 text-xs border-gray-600 text-gray-300 hover:border-red-500 hover:text-red-400"
+                      className="h-7 text-xs border-border text-foreground/80 hover:border-destructive/50 hover:text-destructive"
                     >
                       Clear Selection
                     </Button>
@@ -564,28 +525,28 @@ We look forward to your competitive proposal and establishing a successful partn
               </div>
               
               <Tabs value={activeBomTab} onValueChange={setActiveBomTab} className="w-full">
-                <TabsList className="grid w-full grid-cols-4 bg-muted rounded-lg p-1 h-10">
+                <TabsList className="grid w-full grid-cols-4">
                   <TabsTrigger
                     value="rfq"
-                    className="text-xs data-[state=active]:bg-background data-[state=active]:text-foreground"
+                    className="text-sm"
                   >
                     RFQ Tracking
                   </TabsTrigger>
                   <TabsTrigger
                     value="overview"
-                    className="text-xs data-[state=active]:bg-background data-[state=active]:text-foreground"
+                    className="text-sm"
                   >
                     BOM & Vendor
                   </TabsTrigger>
                   <TabsTrigger
                     value="cost-analysis"
-                    className="text-xs data-[state=active]:bg-background data-[state=active]:text-foreground"
+                    className="text-sm"
                   >
                     Cost Analysis
                   </TabsTrigger>
                   <TabsTrigger
                     value="evaluation"
-                    className="text-xs data-[state=active]:bg-background data-[state=active]:text-foreground"
+                    className="text-sm"
                   >
                     Supplier Analysis
                   </TabsTrigger>
@@ -594,24 +555,24 @@ We look forward to your competitive proposal and establishing a successful partn
 
             {/* Parts Table */}
             <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-900/50 border-b border-gray-700">
-                  <tr>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400"></th>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400">PART NO.</th>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400">DESCRIPTION</th>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400">PROCESS</th>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400">QTY</th>
-                    <th className="text-left p-4 text-sm font-medium text-gray-400">FILES</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <TableHeader className="bg-muted/40">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-10"><span className="sr-only">Select</span></TableHead>
+                    <TableHead>Part No.</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead>Process</TableHead>
+                    <TableHead>Qty</TableHead>
+                    <TableHead>Files</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {filteredParts.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-12 text-center">
-                        <div className="text-gray-400">
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={7} className="p-12 text-center">
+                        <div className="text-muted-foreground">
                           <Package className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                          <h3 className="font-medium mb-2 text-white">No BOM Parts Found</h3>
+                          <h3 className="font-medium mb-2 text-foreground">No BOM Parts Found</h3>
                           <p className="text-sm">
                             {bomParts.length === 0 
                               ? 'No BOM parts loaded for this project'
@@ -619,33 +580,33 @@ We look forward to your competitive proposal and establishing a successful partn
                             }
                           </p>
                           {bomParts.length === 0 && (
-                            <p className="text-xs mt-2 text-teal-400">
+                            <p className="text-xs mt-2 text-primary">
                               Check if BOM data is properly loaded from the project
                             </p>
                           )}
                         </div>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ) : (
-                    filteredParts.map((part, index) => (
-                    <tr key={part.id} className={index % 2 === 0 ? 'bg-gray-800' : 'bg-gray-800/50'}>
-                      <td className="p-4">
+                    filteredParts.map((part) => (
+                    <TableRow key={part.id}>
+                      <TableCell>
                         <Checkbox
                           checked={selectedParts.includes(part.id)}
                           onCheckedChange={(checked) => handlePartToggle(part.id, !!checked)}
-                          className="border-gray-600 data-[state=checked]:bg-teal-600"
+                          className="border-border data-[state=checked]:bg-primary"
                         />
-                      </td>
-                      <td className="p-4">
-                        <div className="font-medium text-white">{part.partNumber}</div>
-                      </td>
-                      <td className="p-4">
-                        <div className="text-white">{part.description}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium text-foreground">{part.partNumber}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-foreground">{part.description}</div>
                         {part.price && (
-                          <div className="text-sm text-teal-400 font-medium">${part.price.toFixed(3)}</div>
+                          <div className="text-sm text-primary font-medium">${part.price.toFixed(3)}</div>
                         )}
-                      </td>
-                      <td className="p-4">
+                      </TableCell>
+                      <TableCell>
                         <ProcessEditor
                           partId={part.id}
                           processes={partProcesses[part.id] || []}
@@ -657,11 +618,11 @@ We look forward to your competitive proposal and establishing a successful partn
                             }));
                           }}
                         />
-                      </td>
-                      <td className="p-4">
-                        <div className="text-white">{part.quantity} pcs</div>
-                      </td>
-                      <td className="p-4">
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-foreground">{part.quantity} pcs</div>
+                      </TableCell>
+                      <TableCell>
                         <div className="flex flex-col gap-1">
                           {part.file2dPath && (
                             <button
@@ -669,7 +630,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                 e.stopPropagation();
                                 onViewFile?.(part, '2d');
                               }}
-                              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-600/10 px-2 py-1 rounded transition-colors text-left"
+                              className="flex items-center gap-1.5 text-xs text-primary hover:text-primary hover:bg-primary/10 px-2 py-1 rounded transition-colors text-left"
                               title="View 2D Drawing"
                             >
                               <FileText className="h-3 w-3 shrink-0" />
@@ -682,7 +643,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                 e.stopPropagation();
                                 onViewFile?.(part, '3d');
                               }}
-                              className="flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 hover:bg-brand-600/10 px-2 py-1 rounded transition-colors text-left"
+                              className="flex items-center gap-1.5 text-xs text-primary hover:text-primary hover:bg-primary/10 px-2 py-1 rounded transition-colors text-left"
                               title="View 3D Model"
                             >
                               <Box className="h-3 w-3 shrink-0" />
@@ -690,32 +651,32 @@ We look forward to your competitive proposal and establishing a successful partn
                             </button>
                           )}
                           {!part.file2dPath && !part.file3dPath && (
-                            <span className="text-xs text-gray-500">No files</span>
+                            <span className="text-xs text-muted-foreground">No files</span>
                           )}
                         </div>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                     ))
                   )}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
-            <div className="p-4 border-t border-gray-700 bg-gray-900/30 text-sm text-gray-400">
+            <div className="p-4 border-t border-border bg-card/30 text-sm text-muted-foreground">
               Showing {filteredParts.length} of {bomParts.length} parts
             </div>
 
             {/* Vendor Selection - Only show when parts are selected */}
             {selectedParts.length > 0 && (
               <div className="mt-6">
-                <div className="p-6 border-b border-gray-700">
+                <div className="p-6 border-b border-border">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-white">Matched Vendors</h2>
+                    <h2 className="text-lg font-semibold text-foreground">Matched Vendors</h2>
                     <div className="flex items-center gap-3">
-                      <Badge variant="outline" className="text-teal-400 border-teal-400/50">
+                      <Badge variant="outline" className="text-primary border-primary/40">
                         {matchedVendors.length} available
                       </Badge>
-                      <Badge variant="outline" className="text-brand-400 border-brand-400/50">
+                      <Badge variant="outline" className="text-primary border-primary/50">
                         {selectedVendors.length} selected
                       </Badge>
                     </div>
@@ -730,12 +691,12 @@ We look forward to your competitive proposal and establishing a successful partn
                     const uniqueProcesses = [...new Set(selectedProcesses)];
                     return uniqueProcesses.length > 0 ? (
                       <div className="mt-4">
-                        <p className="text-xs text-gray-400 mb-2">
+                        <p className="text-xs text-muted-foreground mb-2">
                           Searching for vendors with processes from {selectedParts.length} selected part{selectedParts.length !== 1 ? 's' : ''}:
                         </p>
                         <div className="flex flex-wrap gap-1">
                           {uniqueProcesses.map(process => (
-                            <Badge key={process} variant="outline" className="text-xs border-yellow-500 text-yellow-400">
+                            <Badge key={process} variant="outline" className="text-xs border-warning/40 text-warning">
                               {process}
                             </Badge>
                           ))}
@@ -747,15 +708,11 @@ We look forward to your competitive proposal and establishing a successful partn
 
                 <div className="p-6">
                   {isLoadingVendors ? (
-                    <div className="text-center py-8 text-gray-400">
-                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-400 mx-auto mb-4"></div>
-                      <h3 className="font-medium mb-2 text-white">Loading vendors...</h3>
-                      <p className="text-sm">Fetching vendor database</p>
-                    </div>
+                    <ListSkeleton rows={4} label="Loading vendors..." />
                   ) : matchedVendors.length === 0 ? (
-                    <div className="text-center py-8 text-gray-400">
+                    <div className="text-center py-8 text-muted-foreground">
                       <Building2 className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <h3 className="font-medium mb-2 text-white">No vendors matched</h3>
+                      <h3 className="font-medium mb-2 text-foreground">No vendors matched</h3>
                       <p className="text-sm">
                         {vendors.length === 0 
                           ? 'No vendors found in database'
@@ -772,7 +729,7 @@ We look forward to your competitive proposal and establishing a successful partn
                         }
                       </p>
                       {selectedParts.length > 0 && (
-                        <p className="text-xs mt-2 text-teal-400">
+                        <p className="text-xs mt-2 text-primary">
                           Selected parts: {selectedParts.length} | Available vendors: {vendors.length}
                         </p>
                       )}
@@ -781,11 +738,11 @@ We look forward to your competitive proposal and establishing a successful partn
                     <>
                       {selectedVendors.length > 0 && (
                         <div className="mb-4 flex items-center justify-between">
-                          <span className="text-sm text-gray-400">
+                          <span className="text-sm text-muted-foreground">
                             {selectedVendors.length} vendor{selectedVendors.length !== 1 ? 's' : ''} selected
                           </span>
                           <Button
-                            className="bg-teal-600 hover:bg-teal-700 text-white"
+                            className="bg-primary hover:bg-primary/90 text-primary-foreground"
                             onClick={handleSendRfq}
                             disabled={isSubmittingRfq || createRfqMutation.isPending || sendRfqMutation.isPending}
                           >
@@ -804,33 +761,28 @@ We look forward to your competitive proposal and establishing a successful partn
                             key={vendor.id}
                             className={`border rounded-lg p-4 cursor-pointer transition-all ${
                               selectedVendors.includes(vendor.id)
-                                ? 'border-teal-500 bg-teal-600/10 shadow-md shadow-teal-500/20'
-                                : 'border-gray-700 hover:border-teal-500/50 hover:shadow-xs bg-gray-900/50 hover:bg-gray-900'
+                                ? 'border-primary bg-primary/10 shadow-xs'
+                                : 'border-border hover:border-primary/50 hover:shadow-xs bg-card/50 hover:bg-accent'
                             }`}
                             onClick={() => handleVendorToggle(vendor.id, !selectedVendors.includes(vendor.id))}
                           >
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
-                                <h3 className="font-semibold text-white mb-1">{vendor.name}</h3>
-                                <Badge 
-                                  variant={vendor.status === 'active' ? "default" : "secondary"}
-                                  className={`text-xs ${vendor.status === 'active' ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'}`}
-                                >
-                                  {vendor.status}
-                                </Badge>
+                                <h3 className="font-semibold text-foreground mb-1">{vendor.name}</h3>
+                                <VendorStatusBadge status={vendor.status} />
                               </div>
                               <div className="ml-2">
                                 <Checkbox
                                   checked={selectedVendors.includes(vendor.id)}
                                   onChange={() => {}}
-                                  className="border-gray-600 data-[state=checked]:bg-teal-600"
+                                  className="border-border data-[state=checked]:bg-primary"
                                 />
                               </div>
                             </div>
 
-                            <div className="mt-3 space-y-2 text-sm text-gray-300">
+                            <div className="mt-3 space-y-2 text-sm text-foreground/80">
                               <div className="flex items-center gap-2">
-                                <MapPin className="h-4 w-4 text-teal-400" />
+                                <MapPin className="h-4 w-4 text-primary" />
                                 <span>{vendor.city && vendor.state ? `${vendor.city}, ${vendor.state}` : 'Location TBD'}</span>
                               </div>
                             </div>
@@ -881,14 +833,14 @@ We look forward to your competitive proposal and establishing a successful partn
                                       key={cap}
                                       variant="outline"
                                       className={`text-xs ${isMatch 
-                                        ? 'border-green-500 text-green-400 bg-green-500/10' 
-                                        : 'border-gray-600 text-gray-300'
+                                        ? 'border-success/40 text-success bg-success/10' 
+                                        : 'border-border text-foreground/80'
                                       }`}
                                     >
                                       {cap}
                                     </Badge>
                                   );
-                                }) || <span className="text-xs text-gray-500">No processes</span>}
+                                }) || <span className="text-xs text-muted-foreground">No processes</span>}
                               </div>
                             </div>
                           </div>
@@ -904,7 +856,7 @@ We look forward to your competitive proposal and establishing a successful partn
 
                 <TabsContent value="cost-analysis" className="mt-0">
                   <div className="p-6">
-                    <div className="text-center py-8 text-gray-400">
+                    <div className="text-center py-8 text-muted-foreground">
                       <div className="text-sm">Cost Analysis Feature</div>
                       <div className="text-xs mt-1">Cost analysis functionality will be implemented here</div>
                     </div>
@@ -916,21 +868,21 @@ We look forward to your competitive proposal and establishing a successful partn
                   {shouldShowTracking ? (
                     <div className="p-6">
                       <div className="flex justify-between items-center mb-6">
-                        <h3 className="text-xl font-semibold text-white">RFQ Tracking</h3>
+                        <h3 className="text-xl font-semibold text-foreground">RFQ Tracking</h3>
                         <div className="flex gap-4 text-sm">
                           {rfqStats && (
                             <>
                               <div className="text-center">
-                                <div className="text-lg font-bold text-teal-400">{rfqStats.totalSent}</div>
-                                <div className="text-xs text-gray-400">Total Sent</div>
+                                <div className="text-lg font-bold text-primary">{rfqStats.totalSent}</div>
+                                <div className="text-xs text-muted-foreground">Total Sent</div>
                               </div>
                               <div className="text-center">
-                                <div className="text-lg font-bold text-green-400">{rfqStats.totalResponded}</div>
-                                <div className="text-xs text-gray-400">Responded</div>
+                                <div className="text-lg font-bold text-success">{rfqStats.totalResponded}</div>
+                                <div className="text-xs text-muted-foreground">Responded</div>
                               </div>
                               <div className="text-center">
-                                <div className="text-lg font-bold text-blue-400">{formatResponseTime(rfqStats.avgResponseTime)}</div>
-                                <div className="text-xs text-gray-400">Avg Response</div>
+                                <div className="text-lg font-bold text-primary">{formatResponseTime(rfqStats.avgResponseTime)}</div>
+                                <div className="text-xs text-muted-foreground">Avg Response</div>
                               </div>
                             </>
                           )}
@@ -939,26 +891,26 @@ We look forward to your competitive proposal and establishing a successful partn
                       
                       <div className="space-y-4">
                         {rfqTrackingRecords.length === 0 && !isLoadingTracking ? (
-                          <div className="text-center py-8 text-gray-400">
+                          <div className="text-center py-8 text-muted-foreground">
                             <div className="text-sm">No RFQ tracking records yet</div>
                             <div className="text-xs mt-1">Send your first RFQ to see tracking information here</div>
                           </div>
                         ) : (
                           rfqTrackingRecords.map((tracking) => (
-                            <div key={tracking.id} className="bg-gray-800 rounded-lg p-4 border border-gray-600">
+                            <div key={tracking.id} className="bg-card rounded-lg p-4 border border-border">
                             <div className="flex justify-between items-start mb-4">
                               <div>
-                                <h4 className="font-medium text-white">{tracking.rfqName}</h4>
-                                <p className="text-sm text-gray-400 mt-1">
+                                <h4 className="font-medium text-foreground">{tracking.rfqName}</h4>
+                                <p className="text-sm text-muted-foreground mt-1">
                                   {getRfqSummaryText(tracking)}
                                 </p>
-                                <p className="text-xs text-gray-500 mt-2">
+                                <p className="text-xs text-muted-foreground mt-2">
                                   RFQ #{tracking.rfqNumber} • Sent {new Date(tracking.sentAt).toLocaleString()}
                                 </p>
                               </div>
                               <div className="flex items-center gap-3">
                                 <Badge 
-                                  className={`bg-${getStatusColor(tracking.status)}-600 text-white`}
+                                  className={`bg-${getStatusColor(tracking.status)}-600 text-foreground`}
                                 >
                                   {getStatusText(tracking.status)}
                                 </Badge>
@@ -971,7 +923,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                       size="sm"
                                       onClick={() => handleCancelRfq(tracking.id)}
                                       disabled={deleteTrackingMutation.isPending}
-                                      className="border-red-600 text-red-400 hover:bg-red-600/10 hover:text-red-300"
+                                      className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
                                     >
                                       <X className="h-3 w-3 mr-1" />
                                       Cancel
@@ -981,7 +933,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                       size="sm"
                                       onClick={() => handleApproveRfq(tracking.id, tracking.vendors)}
                                       disabled={updateTrackingStatusMutation.isPending}
-                                      className="border-green-600 text-green-400 hover:bg-green-600/10 hover:text-green-300"
+                                      className="border-success/50 text-success hover:bg-success/10 hover:text-success"
                                     >
                                       <Check className="h-3 w-3 mr-1" />
                                       Approve
@@ -996,7 +948,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                     size="sm"
                                     onClick={() => handleDeleteEvaluationRfq(tracking.id)}
                                     disabled={deleteTrackingMutation.isPending}
-                                    className="border-red-600 text-red-400 hover:bg-red-600/10 hover:text-red-300"
+                                    className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
                                   >
                                     <Trash2 className="h-3 w-3 mr-1" />
                                     Delete
@@ -1009,18 +961,18 @@ We look forward to your competitive proposal and establishing a successful partn
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               {/* Vendors */}
                               <div>
-                                <h5 className="text-sm font-medium text-gray-300 mb-2 flex items-center gap-1">
+                                <h5 className="text-sm font-medium text-foreground/80 mb-2 flex items-center gap-1">
                                   <Building2 className="h-4 w-4" />
                                   Vendors ({tracking.vendorCount})
                                 </h5>
                                 <div className="space-y-2">
                                   {tracking.vendors.map((vendor) => (
-                                    <div key={vendor.id} className="bg-gray-700 rounded p-2 text-xs">
+                                    <div key={vendor.id} className="bg-muted rounded p-2 text-xs">
                                       <div className="flex justify-between items-start">
                                         <div className="flex-1">
-                                          <div className="text-white font-medium">{vendor.name}</div>
+                                          <div className="text-foreground font-medium">{vendor.name}</div>
                                           {vendor.email && (
-                                            <div className="text-gray-400 flex items-center gap-1 mt-1">
+                                            <div className="text-muted-foreground flex items-center gap-1 mt-1">
                                               <Mail className="h-3 w-3" />
                                               {vendor.email}
                                             </div>
@@ -1028,8 +980,8 @@ We look forward to your competitive proposal and establishing a successful partn
                                         </div>
                                         <div className="ml-2">
                                           {vendor.responded ? (
-                                            <div className="text-green-400 text-xs">
-                                              <div>✓ Responded</div>
+                                            <div className="text-success text-xs">
+                                              <div><Mark kind="ok" /> Responded</div>
                                               {vendor.quoteAmount && (
                                                 <div>${vendor.quoteAmount}</div>
                                               )}
@@ -1038,7 +990,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                               )}
                                             </div>
                                           ) : (
-                                            <div className="text-gray-400 text-xs">Pending</div>
+                                            <div className="text-muted-foreground text-xs">Pending</div>
                                           )}
                                         </div>
                                       </div>
@@ -1049,29 +1001,29 @@ We look forward to your competitive proposal and establishing a successful partn
                               
                               {/* Parts */}
                               <div>
-                                <h5 className="text-sm font-medium text-gray-300 mb-2 flex items-center gap-1">
+                                <h5 className="text-sm font-medium text-foreground/80 mb-2 flex items-center gap-1">
                                   <Package className="h-4 w-4" />
                                   Parts ({tracking.partCount})
                                 </h5>
                                 <div className="space-y-2">
                                   {tracking.parts.map((part) => (
-                                    <div key={part.id} className="bg-gray-700 rounded p-2 text-xs">
-                                      <div className="text-white font-medium">{part.partNumber}</div>
-                                      <div className="text-gray-400 mt-1">{part.description}</div>
+                                    <div key={part.id} className="bg-muted rounded p-2 text-xs">
+                                      <div className="text-foreground font-medium">{part.partNumber}</div>
+                                      <div className="text-muted-foreground mt-1">{part.description}</div>
                                       <div className="flex items-center gap-2 mt-2 flex-wrap">
-                                        <span className="text-xs text-gray-500">Qty: {part.quantity}</span>
+                                        <span className="text-xs text-muted-foreground">Qty: {part.quantity}</span>
                                         {(partProcesses[part.id] || []).map((process, index) => (
-                                          <Badge key={index} variant="outline" className="text-xs border-blue-500 text-blue-400">
+                                          <Badge key={index} variant="outline" className="text-xs border-primary/40 text-primary">
                                             {process}
                                           </Badge>
                                         ))}
                                         {part.has2dFile && (
-                                          <Badge variant="outline" className="text-xs border-green-500 text-green-400">
+                                          <Badge variant="outline" className="text-xs border-success/50 text-success">
                                             2D
                                           </Badge>
                                         )}
                                         {part.has3dFile && (
-                                          <Badge variant="outline" className="text-xs border-brand-500 text-brand-400">
+                                          <Badge variant="outline" className="text-xs border-primary/40 text-primary">
                                             3D
                                           </Badge>
                                         )}
@@ -1084,13 +1036,13 @@ We look forward to your competitive proposal and establishing a successful partn
                             
                             {/* Response Summary */}
                             {tracking.responseCount > 0 && (
-                              <div className="mt-4 pt-4 border-t border-gray-700">
+                              <div className="mt-4 pt-4 border-t border-border">
                                 <div className="flex justify-between text-sm">
-                                  <div className="text-gray-300">
-                                    Response Rate: <span className="text-green-400 font-medium">{Math.round((tracking.responseCount / tracking.vendorCount) * 100)}%</span>
+                                  <div className="text-foreground/80">
+                                    Response Rate: <span className="text-success font-medium">{Math.round((tracking.responseCount / tracking.vendorCount) * 100)}%</span>
                                   </div>
                                   {tracking.firstResponseAt && (
-                                    <div className="text-gray-400">
+                                    <div className="text-muted-foreground">
                                       First response: {new Date(tracking.firstResponseAt).toLocaleDateString()}
                                     </div>
                                   )}
@@ -1103,15 +1055,12 @@ We look forward to your competitive proposal and establishing a successful partn
                       </div>
                       
                       {isLoadingTracking && (
-                        <div className="text-center py-4">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-400 mx-auto"></div>
-                          <p className="text-gray-400 text-sm mt-2">Loading RFQ tracking data...</p>
-                        </div>
+                        <ListSkeleton rows={2} label="Loading RFQ tracking data..." />
                       )}
                     </div>
                   ) : (
                     <div className="p-6">
-                      <div className="text-center py-8 text-gray-400">
+                      <div className="text-center py-8 text-muted-foreground">
                         <Send className="h-12 w-12 mx-auto mb-4 opacity-50" />
                         <div className="text-sm">No RFQ tracking available</div>
                         <div className="text-xs mt-1">Go to BOM & Vendor tab, select parts and vendors, then click Send RFQ</div>
@@ -1122,39 +1071,39 @@ We look forward to your competitive proposal and establishing a successful partn
 
                 <TabsContent value="evaluation" className="mt-0">
                   <div className="p-6">
-                    <h3 className="text-lg font-semibold text-white mb-4">Vendor Rating Analysis</h3>
+                    <h3 className="text-lg font-semibold text-foreground mb-4">Vendor Rating Analysis</h3>
                     
                     {/* Vendor Selection for Rating */}
                     {matchedVendors.length === 0 ? (
-                      <div className="text-center py-8 text-gray-400">
+                      <div className="text-center py-8 text-muted-foreground">
                         <div className="text-sm">Select BOM parts first to see matched vendors for rating</div>
                         <div className="text-xs mt-1">Go to BOM & Vendor tab to select parts and vendors</div>
                       </div>
                     ) : (
                       <div className="space-y-6">
-                        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                          <h4 className="text-md font-medium text-white mb-3">Select Vendor to Rate</h4>
+                        <div className="bg-card rounded-lg p-4 border border-border">
+                          <h4 className="text-md font-medium text-foreground mb-3">Select Vendor to Rate</h4>
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                             {matchedVendors.map((vendor) => (
                               <div
                                 key={vendor.id}
                                 className={`border rounded-lg p-3 cursor-pointer transition-all ${
                                   selectedVendorForRating === vendor.id
-                                    ? 'border-blue-500 bg-blue-600/10 shadow-md'
-                                    : 'border-gray-600 hover:border-blue-500/50 bg-gray-900/50'
+                                    ? 'border-primary/40 bg-primary/10 shadow-md'
+                                    : 'border-border hover:border-primary/50 bg-card/50'
                                 }`}
                                 onClick={() => setSelectedVendorForRating(vendor.id)}
                               >
-                                <div className="font-medium text-white">{vendor.name}</div>
-                                <div className="text-sm text-gray-400 mt-1">{vendor.city && vendor.state ? `${vendor.city}, ${vendor.state}` : 'Location TBD'}</div>
+                                <div className="font-medium text-foreground">{vendor.name}</div>
+                                <div className="text-sm text-muted-foreground mt-1">{vendor.city && vendor.state ? `${vendor.city}, ${vendor.state}` : 'Location TBD'}</div>
                                 <div className="flex flex-wrap gap-1 mt-2">
                                   {vendor.process?.slice(0, 2).map((proc) => (
-                                    <Badge key={proc} variant="outline" className="text-xs border-gray-500 text-gray-300">
+                                    <Badge key={proc} variant="outline" className="text-xs border-border text-foreground/80">
                                       {proc}
                                     </Badge>
                                   ))}
                                   {vendor.process && vendor.process.length > 2 && (
-                                    <Badge variant="outline" className="text-xs border-gray-500 text-gray-300">
+                                    <Badge variant="outline" className="text-xs border-border text-foreground/80">
                                       +{vendor.process.length - 2}
                                     </Badge>
                                   )}
@@ -1168,7 +1117,7 @@ We look forward to your competitive proposal and establishing a successful partn
                         {selectedVendorForRating && (() => {
                           const selectedVendorName = matchedVendors.find(v => v.id === selectedVendorForRating)?.name;
                           return (
-                          <div className="bg-gray-800 rounded-lg border border-gray-700">
+                          <div className="bg-card rounded-lg border border-border">
                             {supplierNominations && supplierNominations.length > 0 && supplierNominations[0] ? (
                               <VendorRatingEngine
                                 vendorId={selectedVendorForRating}
@@ -1179,13 +1128,10 @@ We look forward to your competitive proposal and establishing a successful partn
                                 }}
                               />
                             ) : isLoadingNominations ? (
-                              <div className="p-6 text-center">
-                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400 mx-auto mb-4"></div>
-                                <p className="text-gray-400">Loading nomination data...</p>
-                              </div>
+                              <ListSkeleton rows={3} label="Loading nomination data..." className="p-6" />
                             ) : (
                               <div className="p-6 text-center">
-                                <div className="text-gray-400 mb-4">
+                                <div className="text-muted-foreground mb-4">
                                   <div className="text-lg font-medium">No Supplier Nomination Found</div>
                                   <div className="text-sm mt-2">
                                     A supplier nomination evaluation is required to rate vendors. 
@@ -1195,7 +1141,7 @@ We look forward to your competitive proposal and establishing a successful partn
                                 <Button 
                                   variant="outline"
                                   onClick={() => window.open(`/projects/${projectId}/supplier-nomination`, '_blank')}
-                                  className="border-blue-500 text-blue-400 hover:bg-blue-500/10"
+                                  className="border-primary/40 text-primary hover:bg-primary/10"
                                 >
                                   Create Supplier Nomination
                                 </Button>
@@ -1216,12 +1162,12 @@ We look forward to your competitive proposal and establishing a successful partn
 
 {/* Block 3: REVIEW & SEND RFQ - Only show when vendors are selected */}
         {selectedVendors.length > 0 && (
-          <Card className="bg-gray-800 border-gray-700">
+          <Card className="bg-card border-border">
             <CardContent className="p-0">
-              <div className="p-6 border-b border-gray-700">
+              <div className="p-6 border-b border-border">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold text-white">RFQ Summary</h2>
-                  <Badge variant="outline" className="text-green-400 border-green-400/50">
+                  <h2 className="text-lg font-semibold text-foreground">RFQ Summary</h2>
+                  <Badge variant="outline" className="text-success border-success/40">
                     {selectedVendors.length} vendor{selectedVendors.length !== 1 ? 's' : ''} ready
                   </Badge>
                 </div>
@@ -1229,60 +1175,60 @@ We look forward to your competitive proposal and establishing a successful partn
 
               <div className="p-6">
                 {selectedVendorData.map((vendor) => (
-                  <div key={vendor.id} className="bg-gray-900/50 rounded-lg p-4 mb-4 last:mb-0 border border-gray-700">
+                  <div key={vendor.id} className="bg-card/50 rounded-lg p-4 mb-4 last:mb-0 border border-border">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <div className="flex items-center gap-3 mb-3">
-                          <div className="p-2 rounded bg-teal-600/20">
-                            <Building2 className="h-5 w-5 text-teal-400" />
+                          <div className="p-2 rounded bg-primary/10">
+                            <Building2 className="h-5 w-5 text-primary" />
                           </div>
                           <div>
-                            <h3 className="font-semibold text-white">{vendor.name}</h3>
-                            <p className="text-sm text-gray-400">{vendor.supplierCode || 'No supplier code'}</p>
+                            <h3 className="font-semibold text-foreground">{vendor.name}</h3>
+                            <p className="text-sm text-muted-foreground">{vendor.supplierCode || 'No supplier code'}</p>
                           </div>
-                          <Badge className="ml-auto bg-green-600 text-white">
+                          <Badge className="ml-auto bg-success text-success-foreground">
                             {vendor.status}
                           </Badge>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 text-sm">
                           <div>
-                            <h4 className="font-medium text-white mb-1">CONTACT</h4>
-                            <div className="text-gray-300 space-y-1">
+                            <h4 className="font-medium text-foreground mb-1">CONTACT</h4>
+                            <div className="text-foreground/80 space-y-1">
                               <div>{vendor.primaryContacts?.[0]?.name || 'Contact not available'}</div>
                               <div>{vendor.primaryContacts?.[0]?.email || vendor.companyEmail || 'Email not available'}</div>
                               <div>{vendor.primaryContacts?.[0]?.phone || vendor.companyPhone || 'Phone not available'}</div>
                             </div>
                           </div>
                           <div>
-                            <h4 className="font-medium text-white mb-1">CAPABILITIES</h4>
+                            <h4 className="font-medium text-foreground mb-1">CAPABILITIES</h4>
                             <div className="flex flex-wrap gap-1">
                               {vendor.process?.map((cap) => (
-                                <Badge key={cap} className="bg-teal-600 text-white text-xs">
+                                <Badge key={cap} className="bg-primary text-primary-foreground text-xs">
                                   {cap}
                                 </Badge>
-                              )) || <span className="text-xs text-gray-500">No capabilities listed</span>}
+                              )) || <span className="text-xs text-muted-foreground">No capabilities listed</span>}
                             </div>
                           </div>
                         </div>
 
                         <div className="mt-3 grid grid-cols-1 gap-4 text-sm">
                           <div>
-                            <div className="text-gray-400">Certifications</div>
+                            <div className="text-muted-foreground">Certifications</div>
                             <div className="text-xs space-x-2">
                               {vendor.certifications?.map((cert) => (
-                                <Badge key={cert} variant="outline" className="text-xs border-gray-600 text-gray-300">
+                                <Badge key={cert} variant="outline" className="text-xs border-border text-foreground/80">
                                   {cert}
                                 </Badge>
-                              )) || <span className="text-xs text-gray-500">None listed</span>}
+                              )) || <span className="text-xs text-muted-foreground">None listed</span>}
                             </div>
                           </div>
                         </div>
                       </div>
 
                       <div className="ml-6 text-right">
-                        <div className="text-2xl font-bold text-teal-400">Ready</div>
-                        <div className="text-sm text-gray-400">{vendor.city && vendor.state ? `${vendor.city}, ${vendor.state}` : 'Location TBD'}</div>
+                        <div className="text-2xl font-bold text-primary">Ready</div>
+                        <div className="text-sm text-muted-foreground">{vendor.city && vendor.state ? `${vendor.city}, ${vendor.state}` : 'Location TBD'}</div>
                       </div>
                     </div>
                   </div>
@@ -1290,7 +1236,7 @@ We look forward to your competitive proposal and establishing a successful partn
 
                 <div className="mt-6 flex justify-end">
                   <Button 
-                    className="bg-teal-600 hover:bg-teal-700 text-white px-8"
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground px-8"
                     onClick={handleSendRfq}
                     disabled={isSubmittingRfq || createRfqMutation.isPending || sendRfqMutation.isPending}
                   >
@@ -1311,50 +1257,50 @@ We look forward to your competitive proposal and establishing a successful partn
         {shouldShowFeatureNotice && (
           <Card className={`mt-6 ${
             trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-              ? 'bg-amber-900/20 border-amber-600/50' 
+              ? 'bg-warning/10 border-warning/40' 
               : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-              ? 'bg-red-900/20 border-red-600/50'
-              : 'bg-gray-900/50 border-gray-600/50'
+              ? 'bg-destructive/10 border-destructive/40'
+              : 'bg-card/50 border-border/50'
           }`}>
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className={`p-2 rounded-lg ${
                     trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-                      ? 'bg-amber-600/20' 
+                      ? 'bg-warning/15' 
                       : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-                      ? 'bg-red-600/20'
-                      : 'bg-gray-600/20'
+                      ? 'bg-destructive/15'
+                      : 'bg-muted-foreground/20'
                   }`}>
                     <Package className={`h-5 w-5 ${
                       trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-                        ? 'text-amber-400' 
+                        ? 'text-warning' 
                         : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-                        ? 'text-red-400'
-                        : 'text-gray-400'
+                        ? 'text-destructive'
+                        : 'text-muted-foreground'
                     }`} />
                   </div>
                   <div>
                     <h3 className={`text-lg font-semibold ${
                       trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-                        ? 'text-amber-300' 
+                        ? 'text-warning' 
                         : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-                        ? 'text-red-300'
-                        : 'text-gray-300'
+                        ? 'text-destructive'
+                        : 'text-foreground/80'
                     }`}>
                       {featureStatusMessage.title}
                     </h3>
                     <p className={`text-sm mt-1 ${
                       trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-                        ? 'text-amber-200' 
+                        ? 'text-warning' 
                         : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-                        ? 'text-red-200'
-                        : 'text-gray-300'
+                        ? 'text-destructive'
+                        : 'text-foreground/80'
                     }`}>
                       {featureStatusMessage.description}
                     </p>
                     {trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED && (
-                      <p className="text-amber-300 text-xs mt-2">
+                      <p className="text-warning text-xs mt-2">
                         Your RFQs are being sent successfully! Tracking will be available after migration.
                       </p>
                     )}
@@ -1370,10 +1316,10 @@ We look forward to your competitive proposal and establishing a successful partn
                     }}
                     className={`${
                       trackingFeatureStatus.state === TrackingFeatureState.MIGRATION_REQUIRED 
-                        ? 'border-amber-600 text-amber-300 hover:bg-amber-600/10'
+                        ? 'border-warning/50 text-warning hover:bg-warning/10'
                         : trackingFeatureStatus.state === TrackingFeatureState.ERROR
-                        ? 'border-red-600 text-red-300 hover:bg-red-600/10'
-                        : 'border-gray-600 text-gray-300 hover:bg-gray-600/10'
+                        ? 'border-destructive/50 text-destructive hover:bg-destructive/10'
+                        : 'border-border text-foreground/80 hover:bg-accent/10'
                     }`}
                   >
                     {featureStatusMessage.actionText}
@@ -1387,12 +1333,12 @@ We look forward to your competitive proposal and establishing a successful partn
         {/* Approve Vendor Selection Modal */}
         {approveModalOpen && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-            <Card className="bg-gray-800 border-gray-700 w-full max-w-2xl max-h-[80vh] overflow-hidden">
+            <Card className="bg-card border-border w-full max-w-2xl max-h-[80vh] overflow-hidden">
               <CardContent className="p-0">
-                <div className="p-6 border-b border-gray-700">
+                <div className="p-6 border-b border-border">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                      <UserCheck className="h-5 w-5 text-green-400" />
+                    <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                      <UserCheck className="h-5 w-5 text-success" />
                       Approve RFQ - Select Vendors
                     </h3>
                     <Button
@@ -1402,12 +1348,12 @@ We look forward to your competitive proposal and establishing a successful partn
                         setApproveModalOpen(null);
                         setSelectedApproveVendors([]);
                       }}
-                      className="text-gray-400 hover:text-white"
+                      className="text-muted-foreground hover:text-foreground"
                     >
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
-                  <p className="text-sm text-gray-400 mt-2">
+                  <p className="text-sm text-muted-foreground mt-2">
                     Select which vendors you want to proceed with for this RFQ
                   </p>
                 </div>
@@ -1420,8 +1366,8 @@ We look forward to your competitive proposal and establishing a successful partn
                         key={vendor.id}
                         className={`border rounded-lg p-4 mb-3 cursor-pointer transition-all ${
                           selectedApproveVendors.includes(vendor.id)
-                            ? 'border-green-500 bg-green-600/10'
-                            : 'border-gray-600 hover:border-green-500/50 bg-gray-900/50'
+                            ? 'border-success bg-success/10'
+                            : 'border-border hover:border-success/50 bg-card/50'
                         }`}
                         onClick={() => {
                           setSelectedApproveVendors(prev =>
@@ -1438,19 +1384,19 @@ We look forward to your competitive proposal and establishing a successful partn
                                 <Checkbox
                                   checked={selectedApproveVendors.includes(vendor.id)}
                                   onChange={() => {}} // Controlled by parent click
-                                  className="border-gray-600 data-[state=checked]:bg-green-600"
+                                  className="border-border data-[state=checked]:bg-success"
                                 />
-                                <h4 className="font-medium text-white">{vendor.name}</h4>
+                                <h4 className="font-medium text-foreground">{vendor.name}</h4>
                               </div>
                               {vendor.responded && (
-                                <Badge className="bg-green-600 text-white text-xs">
+                                <Badge className="bg-success text-success-foreground text-xs">
                                   Responded
                                 </Badge>
                               )}
                             </div>
                             
                             {vendor.email && (
-                              <div className="text-sm text-gray-400 flex items-center gap-1 mt-2">
+                              <div className="text-sm text-muted-foreground flex items-center gap-1 mt-2">
                                 <Mail className="h-3 w-3" />
                                 {vendor.email}
                               </div>
@@ -1460,14 +1406,14 @@ We look forward to your competitive proposal and establishing a successful partn
                               <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
                                 {vendor.quoteAmount && (
                                   <div>
-                                    <div className="text-gray-400">Quote Amount</div>
-                                    <div className="font-medium text-green-400">${vendor.quoteAmount}</div>
+                                    <div className="text-muted-foreground">Quote Amount</div>
+                                    <div className="font-medium text-success">${vendor.quoteAmount}</div>
                                   </div>
                                 )}
                                 {vendor.leadTimeDays && (
                                   <div>
-                                    <div className="text-gray-400">Lead Time</div>
-                                    <div className="font-medium text-blue-400">{vendor.leadTimeDays} days</div>
+                                    <div className="text-muted-foreground">Lead Time</div>
+                                    <div className="font-medium text-primary">{vendor.leadTimeDays} days</div>
                                   </div>
                                 )}
                               </div>
@@ -1475,7 +1421,7 @@ We look forward to your competitive proposal and establishing a successful partn
                           </div>
 
                           {selectedApproveVendors.includes(vendor.id) && (
-                            <div className="w-5 h-5 rounded-full bg-green-600 flex items-center justify-center ml-3">
+                            <div className="w-5 h-5 rounded-full bg-success flex items-center justify-center ml-3">
                               <Check className="w-3 h-3 text-white" />
                             </div>
                           )}
@@ -1485,9 +1431,9 @@ We look forward to your competitive proposal and establishing a successful partn
                   })()}
                 </div>
 
-                <div className="p-6 border-t border-gray-700">
+                <div className="p-6 border-t border-border">
                   <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-400">
+                    <div className="text-sm text-muted-foreground">
                       {selectedApproveVendors.length} vendor{selectedApproveVendors.length !== 1 ? 's' : ''} selected
                     </div>
                     <div className="flex gap-3">
@@ -1497,14 +1443,14 @@ We look forward to your competitive proposal and establishing a successful partn
                           setApproveModalOpen(null);
                           setSelectedApproveVendors([]);
                         }}
-                        className="border-gray-600 text-gray-300"
+                        className="border-border text-foreground/80"
                       >
                         Cancel
                       </Button>
                       <Button
                         onClick={handleConfirmApproval}
                         disabled={selectedApproveVendors.length === 0 || updateTrackingStatusMutation.isPending}
-                        className="bg-green-600 hover:bg-green-700 text-white"
+                        className="bg-success hover:bg-success/90 text-success-foreground"
                       >
                         {updateTrackingStatusMutation.isPending ? (
                           <>
@@ -1646,7 +1592,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
           <Badge
             key={index}
             variant="outline"
-            className="border-blue-500 text-blue-400 text-xs px-2 py-1 cursor-pointer hover:bg-blue-500/10"
+            className="border-primary/40 text-primary text-xs px-2 py-1 cursor-pointer hover:bg-primary/10"
             onClick={() => removeProcess(process)}
           >
             {process}
@@ -1655,7 +1601,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
         ))}
         
         {processes.length === 0 && (
-          <span className="text-gray-500 text-xs">No processes</span>
+          <span className="text-muted-foreground text-xs">No processes</span>
         )}
       </div>
 
@@ -1667,20 +1613,20 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type process name..."
-            className="h-7 text-xs bg-gray-800 border-gray-600 text-white"
+            className="h-7 text-xs bg-card border-border text-foreground"
             autoFocus
           />
           
           {/* Quick select from intelligent suggestions */}
           <div className="space-y-2 max-h-32 overflow-y-auto">
             {isLoadingProcesses ? (
-              <span className="text-xs text-gray-500">Loading processes...</span>
+              <span className="text-xs text-muted-foreground">Loading processes...</span>
             ) : (
               <>
                 {/* Show part-specific processes first if available */}
                 {partSpecificProcesses.length > 0 && (
                   <div>
-                    <p className="text-xs text-blue-400 mb-1">From this part's process planning:</p>
+                    <p className="text-xs text-primary mb-1">From this part's process planning:</p>
                     <div className="flex flex-wrap gap-1">
                       {partSpecificProcesses
                         .filter(p => !processes.includes(p))
@@ -1689,7 +1635,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
                           <Badge
                             key={process}
                             variant="outline"
-                            className="border-blue-500 text-blue-300 text-xs cursor-pointer bg-blue-500/10"
+                            className="border-primary/40 text-primary text-xs cursor-pointer bg-primary/10"
                             onClick={() => addProcess(process)}
                           >
                             {process}
@@ -1701,7 +1647,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
                 
                 {/* Show other available processes */}
                 <div>
-                  <p className="text-xs text-gray-400 mb-1">
+                  <p className="text-xs text-muted-foreground mb-1">
                     {partSpecificProcesses.length > 0 ? 'Other available processes:' : 'Available processes:'}
                   </p>
                   <div className="flex flex-wrap gap-1">
@@ -1713,7 +1659,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
                         <Badge
                           key={process}
                           variant="outline"
-                          className="border-gray-500 text-gray-300 text-xs cursor-pointer"
+                          className="border-border text-foreground/80 text-xs cursor-pointer"
                           onClick={() => addProcess(process)}
                         >
                           {process}
@@ -1724,7 +1670,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
               </>
             )}
             {!isLoadingProcesses && allAvailableProcesses.length === 0 && (
-              <span className="text-xs text-gray-500">No processes available</span>
+              <span className="text-xs text-muted-foreground">No processes available</span>
             )}
           </div>
 
@@ -1757,7 +1703,7 @@ function ProcessEditor({ partId, processes, onProcessesChange, processData }: Pr
         <Button
           size="sm"
           variant="outline"
-          className="h-6 text-xs border-gray-600 text-gray-300 hover:border-blue-500 hover:text-blue-400"
+          className="h-6 text-xs border-border text-foreground/80 hover:border-primary/40 hover:text-primary"
           onClick={() => setIsEditing(true)}
         >
           <Plus className="h-3 w-3 mr-1" />

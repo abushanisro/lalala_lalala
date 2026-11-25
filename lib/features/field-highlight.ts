@@ -6,8 +6,15 @@ import { isBend, isPlainHole } from './feature-graph';
 export interface FieldHighlight {
   /** What the viewer highlights: only the faces this field counted. */
   node: FeatureNodeV2;
-  /** What the CAD engine measured on those faces, for the engineer to compare with the field. */
-  measured: { value: number; unit: string; label: string };
+  /**
+   * What the CAD engine measured on those faces, for the engineer to compare with the field. Null when the faces are the whole part and the
+   * graph records no number for them (a volume on a machining graph): `wholePart` then says what is shown, and nothing is compared.
+   */
+  measured: { value: number; unit: string; label: string } | null;
+  /** The faces are every face of the part (a volume or a surface is measured over all of them). */
+  wholePart?: { faces: number; label: string };
+  /** A named set of faces (no feature lists them): what the value was measured along. */
+  faceSet?: { faces: number; label: string };
   /** False when the faces do not account for the number (engine-side) or for the input's current value. */
   reconciles: boolean;
   /** Why it does not reconcile, for the engineer. */
@@ -21,7 +28,8 @@ type Source =
   | { kind: 'measurement'; key: MeasurementKey; label: string }
   | { kind: 'bends' }
   | { kind: 'longest_bend' }
-  | { kind: 'tool_changes' };
+  | { kind: 'tool_changes' }
+  | { kind: 'whole_part'; label: string };
 
 // Evidence key (declared by the backend on the input's trace step, see
 // backend costing/shared/cad-evidence.ts) -> how to read its faces from the part.
@@ -34,7 +42,43 @@ const SOURCE_BY_EVIDENCE: Record<string, Source> = {
   flat_pattern_area: { kind: 'measurement', key: 'flat_pattern_area', label: 'flat pattern area' },
   wall_thickness: { kind: 'measurement', key: 'wall_thickness', label: 'wall thickness' },
   part_volume: { kind: 'measurement', key: 'part_volume', label: 'part volume' },
+  // A surface area is measured over every face of the part.
+  part_surface: { kind: 'whole_part', label: 'part surface' },
+  // A forging or a powder metal part, measured along its die (press) direction.
+  projected_area: { kind: 'measurement', key: 'projected_area', label: 'projected area along the die direction' },
+  parting_perimeter: { kind: 'measurement', key: 'parting_perimeter', label: 'parting line' },
+  die_depth: { kind: 'measurement', key: 'die_depth', label: 'depth along the die direction' },
+  plan_length: { kind: 'measurement', key: 'plan_length', label: 'plan length' },
+  plan_width: { kind: 'measurement', key: 'plan_width', label: 'plan width' },
+  // A composite laminate on its tool.
+  tool_area: { kind: 'measurement', key: 'tool_area', label: 'tool side of the laminate' },
+  trim_length: { kind: 'measurement', key: 'trim_length', label: 'trimmed edge' },
+  skin_area: { kind: 'measurement', key: 'skin_area', label: 'both skins of the laminate' },
+  layup_height: { kind: 'measurement', key: 'layup_height', label: 'height along the layup direction' },
+  footprint_length: { kind: 'measurement', key: 'footprint_length', label: 'footprint length' },
+  footprint_width: { kind: 'measurement', key: 'footprint_width', label: 'footprint width' },
+  // An additive build, along its build direction.
+  build_height: { kind: 'measurement', key: 'build_height', label: 'height along the build direction' },
+  overhang_area: { kind: 'measurement', key: 'overhang_area', label: 'overhang needing support' },
+  support_volume: { kind: 'measurement', key: 'support_volume', label: 'supported overhang' },
+  plate_contact_area: { kind: 'measurement', key: 'plate_contact_area', label: 'contact with the build plate' },
+  developed_length: { kind: 'measurement', key: 'developed_length', label: 'the centreline, end to end' },
+  section_area: { kind: 'measurement', key: 'section_area', label: 'the cross-section of the stock' },
 };
+
+/** Every face of the part, from the face map: what a volume or a surface is measured over. Null without a face map (nothing to draw). */
+function wholePartHighlight(graph: FeatureGraphV2, label: string): FieldHighlight | null {
+  // A graph stored before face_map existed has none (the type says it always does).
+  const faceMap = (graph.metadata as Partial<FeatureGraphV2['metadata']> | undefined)?.face_map ?? [];
+  const faceIds = faceMap.map((e) => e.face_id);
+  if (faceIds.length === 0) return null;
+  return {
+    node: { id: `whole_part_${label}`, feature_type: 'Blank', occurrences: [{ centroid: [0, 0, 0], face_ids: faceIds }] },
+    measured: null,
+    wholePart: { faces: faceIds.length, label },
+    reconciles: true,
+  };
+}
 
 /**
  * The faces behind a CAD-derived calculator input, or null when this part's
@@ -122,8 +166,12 @@ function computeFieldHighlight(evidenceKey: string, graph: FeatureGraphV2): Fiel
     };
   }
 
+  if (source.kind === 'whole_part') return wholePartHighlight(graph, source.label);
+
   const m = graph.measurements?.[source.key];
   const occurrences = m?.occurrences.filter((o) => o.face_ids.length > 0) ?? [];
+  // A volume is measured over the whole closed solid: a graph without the measurement (a machining or casting part) still has its faces.
+  if ((!m || occurrences.length === 0) && source.key === 'part_volume') return wholePartHighlight(graph, source.label);
   if (!m || occurrences.length === 0) return null;
   return {
     node: {
@@ -142,7 +190,7 @@ function computeFieldHighlight(evidenceKey: string, graph: FeatureGraphV2): Fiel
  */
 export function checkAgainstInput(highlight: FieldHighlight, inputValue: unknown): FieldHighlight {
   const value = typeof inputValue === 'number' ? inputValue : Number(inputValue);
-  if (!Number.isFinite(value) || inputValue === '' || inputValue === null) return highlight;
+  if (!Number.isFinite(value) || inputValue === '' || inputValue === null || !highlight.measured) return highlight;
   const { value: measured, unit } = highlight.measured;
   const tolerance = unit === 'count' ? 0 : Math.max(0.5, Math.abs(value) * 0.002);
   if (Math.abs(measured - value) <= tolerance) return highlight;
@@ -152,4 +200,85 @@ export function checkAgainstInput(highlight: FieldHighlight, inputValue: unknown
     reconciles: false,
     note: `the input holds ${shown(value)} but these faces measure ${shown(measured)} ${unit}`,
   };
+}
+
+/**
+ * The faces of particular features (a SourceRef of kind 'features'): every occurrence of a feature named without one, else only the named
+ * occurrence. The measured value is the number of instances lit, so an input that counts them (Holes 5) is checked against it. Null when the
+ * graph has none of them (re-analysed since, or analysed before face ids): the eye then says so instead of lighting a guess.
+ */
+type FeaturesRef =
+  | { label: string; features: readonly { featureId: string; occurrenceIndex?: number }[] }
+  | { label: string; faceIds: readonly number[] };
+
+export function featuresHighlight(ref: FeaturesRef, graph: FeatureGraphV2 | null | undefined): FieldHighlight | null {
+  if (!graph) return null;
+  // Faces named directly (no feature lists them, e.g. the faces meeting at sharp edges): lit as one set, not counted against the input.
+  if ('faceIds' in ref) {
+    if (ref.faceIds.length === 0) return null;
+    return {
+      node: { id: `faces_${ref.label}`, feature_type: 'Blank', occurrences: [{ centroid: [0, 0, 0], face_ids: [...ref.faceIds] }] },
+      measured: null,
+      faceSet: { faces: ref.faceIds.length, label: ref.label },
+      reconciles: true,
+    };
+  }
+  const byId = new Map(graph.features.map((f) => [f.id, f]));
+  const occurrences: FeatureOccurrence[] = [];
+  for (const r of ref.features) {
+    const f = byId.get(r.featureId);
+    if (!f) continue;
+    const picked = r.occurrenceIndex == null ? f.occurrences : [f.occurrences[r.occurrenceIndex]].filter((o): o is FeatureOccurrence => o != null);
+    occurrences.push(...picked.filter((o) => o.face_ids.length > 0));
+  }
+  if (occurrences.length === 0) return null;
+  return {
+    node: { id: `features_${ref.label}`, feature_type: byId.get(ref.features[0]?.featureId ?? '')?.feature_type ?? 'Blank', occurrences: occurrences.map((o) => ({ centroid: o.centroid, face_ids: o.face_ids })) },
+    measured: { value: occurrences.length, unit: 'count', label: ref.label },
+    reconciles: true,
+  };
+}
+
+const featuresCache = new WeakMap<FeatureGraphV2, WeakMap<object, FieldHighlight | null>>();
+
+/** featuresHighlight, computed once per (graph, ref): the dialog's rows are memoized and need the same object between renders. */
+export function cachedFeaturesHighlight(ref: FeaturesRef, graph: FeatureGraphV2 | null | undefined): FieldHighlight | null {
+  if (!graph) return null;
+  let byRef = featuresCache.get(graph);
+  if (!byRef) featuresCache.set(graph, byRef = new WeakMap());
+  if (byRef.has(ref)) return byRef.get(ref) ?? null;
+  const h = featuresHighlight(ref, graph);
+  byRef.set(ref, h);
+  return h;
+}
+
+const highlightGraphCache = new WeakMap<object, FeatureGraphV2 | null>();
+
+/**
+ * The features a calculator input can name, as one graph: feature_graph_v2 plus a plastic part's recognised features
+ * (summary.plasticFeatureGraph items, e.g. the slide and lifter bundles), which carry their own faces. Cached per stored feature graph,
+ * so the memoized dialog rows get the same object between renders.
+ */
+export function highlightableGraph(featureGraph: { feature_graph_v2?: FeatureGraphV2 | null; summary?: unknown } | null | undefined): FeatureGraphV2 | null {
+  if (!featureGraph) return null;
+  if (highlightGraphCache.has(featureGraph)) return highlightGraphCache.get(featureGraph) ?? null;
+  const v2 = featureGraph.feature_graph_v2 ?? null;
+  const plastic = (featureGraph.summary as { plasticFeatureGraph?: { items?: unknown } } | undefined)?.plasticFeatureGraph?.items;
+  const items = Array.isArray(plastic)
+    ? (plastic as { id?: unknown; feature_type?: unknown; occurrences?: unknown }[])
+      .filter((i) => typeof i.id === 'string' && Array.isArray(i.occurrences))
+      .map((i) => ({
+        id: i.id as string,
+        feature_type: String(i.feature_type ?? 'Feature'),
+        occurrences: (i.occurrences as { centroid?: unknown; face_ids?: unknown }[]).map((o) => ({
+          centroid: (Array.isArray(o.centroid) ? o.centroid : [0, 0, 0]) as [number, number, number],
+          face_ids: Array.isArray(o.face_ids) ? (o.face_ids as number[]) : [],
+        })),
+      })) as unknown as FeatureNodeV2[]
+    : [];
+  const out = v2 || items.length > 0
+    ? { ...(v2 ?? { metadata: { face_map: [] } }), features: [...(v2?.features ?? []), ...items] } as FeatureGraphV2
+    : null;
+  highlightGraphCache.set(featureGraph, out);
+  return out;
 }

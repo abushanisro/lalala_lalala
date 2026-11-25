@@ -39,6 +39,7 @@ MachiningFeatureType = Literal[
     "CurvedWall",
     "CurvedSurface",
     "AxiGroove",
+    "Flat",
 ]
 
 # Geometric sub-classification per type. Each value is a real geometric fact
@@ -52,14 +53,22 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     # counterbore: 2 coaxial bores, large+shallow over small+deep.
     # stepped: 3+ coaxial bores of strictly decreasing diameter.
     "MultiStepHole": frozenset({"counterbore", "stepped"}),
-    # countersink: cone coaxial with a bore; chamfer: cone with no bore;
-    # round: convex toroidal blend.
+    # countersink: concave cone at the mouth of a bore (it touches the bore's
+    # wall and is wider than it); chamfer: any other cone (a convex cone is the
+    # chamfer of the diameter it is cut on); round: a toroidal blend or a
+    # cylindrical arc, params.concave saying which side the material is on: a
+    # rounded edge (convex) or an inside fillet (concave; a toroidal one on the
+    # turning line all the way round is a turned shoulder fillet,
+    # turned_shoulder) -- see toroid_features.py.
     "Edge": frozenset({"countersink", "chamfer", "round"}),
-    # outer_diameter: external turned cylinder step; groove: concave annular
-    # (toroidal) recess on a turned part.
+    # outer_diameter: external turned cylinder step; groove: a round-bottomed
+    # groove (concave torus, profile >= 135 degrees) on the turning line all
+    # the way round a turned part (Plunging//Ring).
     "Ring": frozenset({"outer_diameter", "groove"}),
-    # straight: elongated milled slot; radial: elongated slot on a turned OD;
-    # groove: concave toroidal recess on a milled part (Groove Milling//Slot).
+    # straight: elongated milled slot; radial: a slot on a turned part that runs
+    # across the turning axis (milled into a turned diameter or a bore, or across
+    # an end face or a shoulder);
+    # groove: any other round-bottomed toroidal groove (Groove Milling//Slot).
     "Slot": frozenset({"straight", "radial", "groove"}),
     "Keyway": frozenset({"default"}),
     "PocketV2": frozenset({"default"}),
@@ -69,6 +78,10 @@ VARIANTS: Mapping[str, FrozenSet[str]] = {
     "CurvedSurface": frozenset({"default"}),
     # Teeth repeated around a turned part's axis (gear / spline): see axigroove.py.
     "AxiGroove": frozenset({"default"}),
+    # A flat milled on a turned diameter (a wrench flat, a D flat, a tang): the
+    # catalog's Flat ("Rough Milling//Flat", "Surface Finishing//Flat"), which
+    # has no variants of its own.
+    "Flat": frozenset({"default"}),
 }
 
 for _t in VARIANTS:

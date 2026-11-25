@@ -6,6 +6,7 @@ import { useAuthEnabledWith } from './useAuthEnabled';
 import { toast } from 'sonner';
 import { runProtectedJob } from '@/lib/auth/session-idle/protected-jobs';
 import type { FeatureGraph, DFMScoresResponse, OccurrenceScore } from '@/lib/types/manufacturing';
+import type { SourceRef } from '@/lib/calculators/input-source';
 import type { MachiningAllowanceSummary } from './useMachiningAllowance';
 
 export type { OccurrenceScore };
@@ -32,6 +33,10 @@ export interface BOMItem {
   file3dPath?: string;
   file2dPath?: string;
   fileDxfPath?: string;
+  /** The board set (Gerber layers, drill file, Pick Place) kept as one zip; measured when the part is analysed. */
+  fileBoardPath?: string;
+  /** The STEP model the CAD analysis reads. */
+  fileStepPath?: string;
   createdAt: string;
   updatedAt: string;
   weight?: number;
@@ -504,6 +509,39 @@ export interface PartSummary {
   uncosted: string[];
 }
 
+export type DesignGuidanceSeverity = 'critical' | 'major' | 'minor';
+/** Something to look at on the model: the feature instances and faces it points at. */
+export interface DesignGuidanceItem {
+  label: string; detail: string | null; severity: DesignGuidanceSeverity | null;
+  occurrences: { featureId: string; occurrenceIndex: number }[]; faces: number[];
+}
+export interface DesignGuidanceRange { value: number | null; min: number | null; max: number | null }
+/** The part's design guidance (backend costing/shared/design-guidance.ts). A null is a value the analysis, the reference data and the applied cost do not hold, with its reason in notModelled; a null panel does not apply to the part's process. */
+export interface DesignGuidance {
+  family: string;
+  processGroup: string | null;
+  costDrivers: { count: number | null; items: DesignGuidanceItem[] };
+  material: { name: string | null; currency: string; costPerCm3: DesignGuidanceRange; massKg: DesignGuidanceRange; comparedWith: number; comparedGroups: string[] };
+  thickness: { recommendedMinMm: number | null; recommendedMaxMm: number | null; partMinMm: number | null; partMaxMm: number | null; maxMinRatio: number | null; source: string | null; items: DesignGuidanceItem[] };
+  moldTooling: { slides: number | null; lifters: number | null; cores: number | null; items: DesignGuidanceItem[] } | null;
+  machining: { routing: string | null; scrapPct: number | null; machinedFeatures: number | null; items: DesignGuidanceItem[] } | null;
+  tolerances: { withTolerances: number | null; drivingMachining: number | null; drivingFinishing: number | null; items: DesignGuidanceItem[]; machiningItems: DesignGuidanceItem[]; finishingItems: DesignGuidanceItem[]; heldByOperations: number | null; heldItems: DesignGuidanceItem[]; needsReview: number | null; reviewItems: DesignGuidanceItem[] };
+  setups: { count: number | null; perpendicular: number | null; oblique: number | null; fewFeatureSetups: number | null; fewFeatureLimit: number; items: DesignGuidanceItem[] } | null;
+  holesAndFillets: { holeDiametersMm: number[]; filletRadiiMm: number[]; nonStandardTools: number | null; holeItems: DesignGuidanceItem[]; filletItems: DesignGuidanceItem[]; nonStandardItems: DesignGuidanceItem[] } | null;
+  notModelled: Partial<Record<string, string>>;
+}
+
+/** The Design Guidance tab's data. Refetched on each visit (staleTime 0): the limits are read from the reference data and the routing from the applied cost, and both can change. */
+export function useDesignGuidance(bomItemId: string | undefined) {
+  return useQuery({
+    queryKey: ['bom-items', bomItemId, 'design-guidance'],
+    queryFn: async () => apiClient.get<DesignGuidance>(`/bom-items/${bomItemId}/design-guidance`),
+    enabled: useAuthEnabledWith(!!bomItemId),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
 /** The Part Summary tab's data. Refetched on each visit (staleTime 0): what Apply wrote is what it shows. */
 export function usePartSummary(bomItemId: string | undefined) {
   return useQuery({
@@ -549,6 +587,56 @@ export function usePlasticDfm(bomItemId: string | undefined, enabled: boolean) {
   return useQuery({
     queryKey: ['bom-items', bomItemId, 'plastic-dfm'],
     queryFn: async () => apiClient.get<PlasticDfmView>(`/bom-items/${bomItemId}/plastic-dfm`),
+    enabled: useAuthEnabledWith(!!bomItemId && enabled),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export type MachiningDfmSeverity = 'critical' | 'major' | 'minor';
+export interface MachiningDfmFinding {
+  rule: string;
+  severity: MachiningDfmSeverity;
+  label: string;
+  limit: string;
+  source: string;
+  recommendation: string;
+  featureIds: string[];
+  occurrences: { featureId: string; occurrenceIndex: number }[];
+  faces: number[];
+  /** The check that raised it, when its rule has several (a forging's draft on walls and in forged holes). */
+  check?: string;
+}
+export interface MachiningDfmCheck {
+  rule: string;
+  name: string;
+  limit: string;
+  source: string;
+  status: 'passed' | 'failed' | 'not_evaluated';
+  detail: string;
+}
+export interface MachiningDfmView {
+  status: 'ok' | 'no_analysis';
+  result: { findings: MachiningDfmFinding[]; checks: MachiningDfmCheck[] } | null;
+  reasons: string[];
+}
+
+/** The design-for-machining checks of a machined part against the machining reference limits (evaluated when asked). */
+export function useMachiningDfm(bomItemId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['bom-items', bomItemId, 'machining-dfm'],
+    queryFn: async () => apiClient.get<MachiningDfmView>(`/bom-items/${bomItemId ?? ''}/machining-dfm`),
+    enabled: useAuthEnabledWith(!!bomItemId && enabled),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** The design-for-forging checks of a forged part against the forging reference rules (same result shape as the machining checks). */
+export function useForgingDfm(bomItemId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['bom-items', bomItemId, 'forging-dfm'],
+    queryFn: async () => apiClient.get<MachiningDfmView>(`/bom-items/${bomItemId ?? ''}/forging-dfm`),
     enabled: useAuthEnabledWith(!!bomItemId && enabled),
     staleTime: 0,
     refetchOnWindowFocus: false,
@@ -690,8 +778,13 @@ export interface CatalogOperation {
   count: number;
   featureIds: string[];
   status: 'resolved' | 'undecided' | 'infeasible';
-  children: Array<{ operation: string; featureType: string }>;
+  children: { operation: string; featureType: string; featureFaceIds?: number[][] }[];
   reason?: string;
+  /**
+   * Sand casting with a casting analysis: each feature's faces on the 3D model (face_map face_ids), in featureIds order. Its features are
+   * the analysis's own, not feature_graph_v2 entries, so these faces, not featureIds, are what a click highlights.
+   */
+  featureFaceIds?: number[][];
 }
 
 export interface FeatureOp {
@@ -703,6 +796,10 @@ export interface FeatureOp {
   featureIds?: string[];
   /** Exact occurrences this entry machines (feature_graph_v2 entry id + occurrence index). */
   occurrenceRefs?: Array<{ featureId: string; occurrenceIndex: number }>;
+  /** CAD faces (face_map ids) the entry acts on when no feature lists them (the faces meeting at the sharp edges deburred). */
+  faceIds?: number[];
+  /** Why this feature is machined after the primary process: the requirement, where it was read, and what the process holds instead. */
+  basis?: { requirement: string; source: string; reason: string };
 }
 
 export interface CalculationTraceStep {
@@ -718,6 +815,13 @@ export interface CalculationTraceStep {
   stepType?: 'physics' | 'lookup';
   /** The part's own value replaced this step: what the calculator would have used, and why it was changed. */
   override?: { original: number | null; reason: string };
+  /** 'input' steps measured on CAD faces: which measurement (backend cad-evidence.ts). */
+  evidence?: string;
+  /** 'input' steps: where the value was read, structured (lib/calculators/input-source.ts), for the eye beside the input. */
+  ref?: SourceRef;
+  /** A line that ran one calculator per group: the group ("M2") and the calculator's own field name (fieldName carries the prefix). */
+  group?: string;
+  groupField?: string;
 }
 
 export type LookupPolicyType = 'EXACT_MATCH' | 'INTERPOLATE' | 'RANGE' | 'FORMULA';
@@ -787,6 +891,11 @@ export interface ProcessLineCost {
   processGroup?: string;
   processRoute?: string;
   operation?: string;
+  /**
+   * Set on a line the part's stock puts before its first machine under another process group than Stock Machining: a plate part cut out
+   * of its plate by a Sheet Metal cutting process (backend ProcessLineCost.stockStep). A step of the stock, like the Band Saw.
+   */
+  stockStep?: boolean;
   setupCost: number;
   runCost: number;
   totalCost: number;
@@ -805,7 +914,7 @@ export interface ProcessLineCost {
   hourlyRate: number;
   /** 'mhr_database' = a real HR Rates machine; 'no_db_rate' = no machine (not costed);
    *  'tooling_amortization' / 'consumable_allowance' = real non-machine cost lines. */
-  rateSource: 'mhr_database' | 'no_db_rate' | 'tooling_amortization' | 'consumable_allowance';
+  rateSource: 'mhr_database' | 'no_db_rate' | 'tooling_amortization' | 'consumable_allowance' | 'no_cost_feature';
   machineClass: string;
   machineName: string | null;
   commodityCode: string | null;
@@ -833,12 +942,16 @@ export interface ProcessLineCost {
   /** Sheet metal: the reference-catalog operations this step performs on the
    *  part's own CAD features (backend catalog-operation-resolver.ts). */
   catalogOperations?: CatalogOperation[];
+  /** The step acts on the whole part (a sand casting's melting, pouring, cooling, ...): the process tree highlights all of it. */
+  actsOnWholePart?: boolean;
+  /** The step forms the part's shape (a forging's press or hammer, a powder metal compaction): the tree lists every feature under it. */
+  formsPartFeatures?: boolean;
   /** GD&T callouts this line (Inspection) covers — see GdtCallout above. */
   gdtCallouts?: GdtCallout[];
   /** Full end-to-end audit trail (real inputs + provenance, then calculated
    *  fields + real DB formula string, in evaluation order) — present only for
-   *  processes wired to a real DB calculator (Laser Cutting, Press Brake).
-   *  Powers the "Download calculation" export. */
+   *  processes wired to a real DB calculator. Shown in the Cost tab's
+   *  calculation trace and the calculator dialog. */
   calculationTrace?: CalculationTraceStep[];
   // Machining calculators: per input field, the lookup table + row(s) its value came from.
   lookupMatches?: Record<string, { table: string; row: Record<string, string | number> }>;
@@ -958,6 +1071,9 @@ export interface InjectionMoldToolingDto {
   calculatorName?: string;
 }
 
+/** A PCB board value and where it came from (backend PcbFactDto). */
+export interface PcbFactDto<T> { value: T; basis: 'board_files' | 'cad_model' | 'cost_guide' | 'reference_default' | 'derived'; source: string }
+
 export interface CostSummaryDto {
   /** Molded parts: what each CAD cost driver is worth (the engine run again with only that driver moved one step), per part, in this summary's currency. */
   driverImpacts?: DriverImpact[];
@@ -968,6 +1084,8 @@ export interface CostSummaryDto {
   costStatus?: CostStatus;
   /** Process names with an unresolved physicsGap, when costStatus is 'incomplete'. */
   incompleteProcesses?: string[];
+  /** Every operation of the route that failed to cost, by name (backend CostSummaryDto.uncostedOperations): what the Summary banner counts. */
+  uncostedOperations?: string[];
   /** Part-level 2D-drawing-vs-3D-CAD fact agreement — see FactMismatch above. */
   drawingCadConsistency?: FactMismatch[];
   materialCost: number;
@@ -1021,6 +1139,339 @@ export interface CostSummaryDto {
   dieCasting?: DieCastingBreakdown;
   /** Sand casting: what the route decided (mirrors the backend's SandCastingBreakdown). */
   sandCasting?: { mouldingProcess: string; mouldingMachine: string; cavities: number; coresMade: number; coresLeftSolid: number; complete: boolean; measuredBy: 'casting analysis' | 'cad-engine'; gating: SandGatingLayout; flask: { lengthMm: number; widthMm: number; heightMm: number } };
+  /** Investment casting: the wax tree the route built and its shell (mirrors the backend's InvestmentCastingBreakdown). */
+  investmentCasting?: { patternsPerTree: number; layers: number; treeHeightMm: number; treeWidthMm: number; treesInBatch: number; primaryDips: number; backupDips: number; gatesPerPattern: number; dryingHoursPerTree: number | null; complete: boolean };
+  /** Investment casting: the wax pattern die (USD, separate from the piece cost). */
+  patternTooling?: { tools: number; costUsd: number; perPartUsd: number | null; detail: string };
+  /** Powder metal: what the press-and-sinter route decided (mirrors the backend's PowderMetalBreakdown). */
+  powderMetal?: {
+    routeLabel: string; greenDensityKgM3: number; greenDensitySource: 'material' | 'scenario';
+    compactionPressureMpa: number; pressForceKn: number; fillHeightMm: number; compressionRatio: number;
+    belt: { speedMmPerMin: number; partsAcross: number; partsPerMetre: number } | null;
+    complete: boolean;
+  };
+  /** Forging: the quoted route and every other route of the part (mirrors the backend's ForgingBreakdown). */
+  forging?: {
+    route: string; routeLabel: string; complexity: number; barDiameterMm: number; multLengthMm: number; heating: 'induction' | 'furnace'; hits: number;
+    /** A force (kN), or on a hammer a blow energy (J). */
+    forming: { quantity: 'force_kn' | 'energy_j'; value: number };
+    trimForceKn: number | null;
+    flash: { thicknessMm: number; widthMm: number; volumeMm3: number } | null;
+    complete: boolean;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  /** 2-Model Machining: the source component the part is machined from, its cost being this part's material (backend withSourceComponent). */
+  sourceComponent?: {
+    itemId: string; name: string; basis: 'fully_burdened' | 'piece_part';
+    materialCost: number; processCost: number; toolingCost: number; totalCost: number;
+    asSuppliedFeatures: number; removedVolumeMm3: number | null;
+    /** No blank model linked: the blank is derived from the part (backend two-model/derived-blank.ts), made by blankProcess, with its allowance metal. */
+    derived?: boolean; blankProcess?: string; allowanceVolumeMm3?: number;
+    /** The derived blank's faces left as supplied: the features its casting holds. */
+    asSuppliedFaceIds?: number[];
+  };
+  /** Composites: the ply stack read from the laminate, the core and the layup route quoted (mirrors the backend's CompositesBreakdown). */
+  /**
+   * Assembly: the components loaded (each BOM child) and every joint (derived from the children's threaded holes or set in the Cost Guide),
+   * the route quoted and every route (backend AssemblyBreakdown). The summary is the assembly's own work; its children are added by the roll-up.
+   */
+  /** Assembly Molding (insert molding): the inserts, their loading, the insert press and its shot, every route (backend InsertMoldingBreakdown). */
+  /** Multi-shot molding (Assembly Plastic Molding): the shots, the loaded components, the press and the multi-shot cycle, and every route (backend MultiShotBreakdown). */
+  multiShot?: {
+    route: string; routeLabel: string; complete: boolean;
+    shots: Array<{ name: string; source: 'bom' | 'part' | 'cost_guide'; itemId: string | null; grade: string | null; volumePct: number | null; volumeMm3: number; cycleSec: number | null; clampT: number | null; shotGppsG: number | null }>;
+    components: Array<{ id: string | null; name: string; perPart: number; massKg: number | null }>;
+    press: { name: string | null; orientation: string | null; units: number | null; stations: number | null; rotatingStack: boolean; indexSec: number | null; reasons: string[] };
+    cycleSec: number | null; loaderName: string | null; loadSecPerPart: number | null;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  insertMolding?: {
+    route: string; routeLabel: string; complete: boolean;
+    inserts: Array<{ id: string | null; name: string; perPart: number; massKg: number | null; source: 'bom' | 'cost_guide' | 'cad' }>;
+    /** The insert candidates the CAD recognised: a starting count to offer. */
+    cadInsertCandidates: number | null;
+    loaderName: string | null; loadSecPerPart: number | null;
+    press: { name: string | null; tableConfiguration: string | null; tablePress: boolean; reasons: string[] };
+    moldingCycleSec: number | null; shotSec: number | null; toolingNote: string | null;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  assembly?: {
+    route: string | null; routeLabel: string | null; complete: boolean;
+    components: Array<{ id: string; name: string; quantity: number; massKg: number | null; massSource: 'weight' | 'volume' | null; maxDimensionMm: number | null; threadedHoles: number }>;
+    joints: Array<{
+      id: string; process: string; routeProcess: string | null; operation: string | null; label: string; count: number;
+      source: 'derived' | 'engineer'; enabled: boolean; componentId: string | null; featureIds: string[];
+      lengthMm: number | null; throatMm: number | null; depthMm: number | null; areaMm2: number | null;
+      weldMaterial: string | null; gas: string | null; position: string | null; wireDiameterMm: number | null; timeS: number | null;
+      prep: boolean; cleanUp: boolean; cycleSec: number | null; consumablesCost: number | null; reason: string | null;
+    }>;
+    consumablesCost: number;
+    adhesiveKg: number;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  /**
+   * The part's material is its parts': an assembly or a weldment costed from its BOM children has no material record of its own (each part's
+   * is in the BOM roll-up), so Apply keeps none and the Cost tab counts its own costs without one (backend CostSummaryDto.materialOfParts).
+   */
+  materialOfParts?: boolean;
+  /**
+   * Part Assembly (a weldment, memory/Part Assembly): the components welded, the plate and material, every weld of the weld table with what
+   * it came to on the quoted route, the MIG wire, and every route (backend PartAssemblyBreakdown).
+   */
+  partAssembly?: {
+    route: string | null; routeLabel: string | null; complete: boolean;
+    components: { id: string; name: string; quantity: number; massKg: number | null; massSource: 'weight' | 'volume' | null; maxDimensionMm: number | null }[];
+    weldmentMassKg: number | null;
+    thicknessMm: number | null; thicknessSource: string;
+    material: string | null; cutCodeFamily: string | null;
+    welds: {
+      id: string; process: string; routeProcess: string | null; operation: string; feature: 'Edge' | 'Blank' | 'SimpleHole'; label: string; count: number | null;
+      lengthMm: number | null; sizeMm: number | null; thicknessMm: number | null; areaMm2: number | null; depthMm: number | null;
+      bevel: boolean; grind: boolean; finishGrind: boolean; wireBrush: boolean; enabled: boolean;
+      cycleSec: number | null; wireKg: number | null; reason: string | null;
+    }[];
+    wireCost: number;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /** Additive Manufacturing: the build (direction, height, supports, parts per build), the route quoted and every route (backend AdditiveBreakdown). */
+  additive?: {
+    /** Additive Manufacturing or Rapid Prototyping (backend additive-domain.ts). */
+    processGroup: string;
+    route: string; routeLabel: string;
+    buildDirection: string; buildDirectionSource: 'engineer' | 'least_support'; selfSupportingDeg: number;
+    buildHeightMm: number; footprintMm: number[]; overhangAreaMm2: number; supportVolumeMm3: number; plateContactAreaMm2: number;
+    partsPerBuild: number | null; layers: number | null; materialMassKg: number; complete: boolean;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+    /** Rapid Prototyping: each hole and void cleaning timed (size: a diameter in mm or a volume in mm³, as `measure` says). */
+    cleaning: { id: string; type: string; label: string; measure: 'diameter' | 'volume'; size: number; depthMm: number; timeSec: number }[];
+  };
+  /** Bar and Tube Fabrication: the stock, the bends (each one's method), ends, forms and openings, the route quoted and every route. */
+  barTube?: {
+    route: string; routeLabel: string;
+    stockForm: string; sectionWidthMm: number; sectionHeightMm: number; wallMm: number | null; sectionAreaMm2: number; developedLengthMm: number;
+    partsPerStock: number | null; materialMassKg: number; partMassKg: number; stockPricePerKg: number | null; stockMissing: string | null;
+    bends: Array<{ clrMm: number; angleDeg: number }>;
+    holeCount: number; openingCount: number;
+    ends: Array<{ end: string; variant: string; cutAngleDeg: number | null }>;
+    forms: Array<{ end: string; variant: string }>;
+    bendPlan: Array<{ index: number; clrMm: number; angleDeg: number; method: string | null; toolKey: string | null; mandrel: boolean; reason: string | null }>;
+    plate: { thicknessMm: number; blankLengthMm: number; blankWidthMm: number; cutLengthMm: number } | null;
+    complete: boolean;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  /**
+   * Multi-Spindle Machining: the bar, the machine and its station plan (the slowest station sets the cycle), the route quoted and every route
+   * (backend MultiSpindleBreakdown).
+   */
+  multiSpindle?: {
+    route: string; routeLabel: string;
+    machineName: string | null; spindles: number; cycleSec: number | null; indexSec: number | null;
+    stations: Array<{ spindle: number; backWork: boolean; seconds: number; slowest: boolean; operations: Array<{ name: string; slide: string; seconds: number }> }>;
+    splits: string[];
+    bar: {
+      form: string; sizeMm: number; sizeLabel: string; unitSystem: string; snapped: boolean; requiredMm: number; allowancePerSideMm: number;
+      partingWidthMm: number; facingStockMm: number; lengthPerPartMm: number; barLengthMm: number; remnantMm: number;
+    };
+    partsPerBar: number | null; materialMassKg: number | null; partMassKg: number | null; stockPricePerKg: number | null; stockMissing: string | null;
+    complete: boolean;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  /**
+   * A machined part's stock (Machining and Stock Machining alike): the stock bought for the part and, for a Stock Machining part, the band
+   * saw that cuts it to pieces, before the Machining route cuts the part (backend StockMachiningBreakdown). Lengths in mm, masses in kg,
+   * times in s, money in the summary's currency.
+   */
+  stockMachining?: {
+    /** The form the part's shape asks for, and why. */
+    rule: { form: string; basis: string };
+    /** The stock the quote prices; null when no form holds the part. */
+    stock: {
+      form: string; sizeLabel: string;
+      /** a: a bar's diameter, flats, side or width, a plate's thickness, a tube's OD. b: a rectangular bar's height, a tube's bore. */
+      boughtAMm: number; boughtBMm: number | null; requiredAMm: number; requiredBMm: number | null;
+      allowancePerSideMm: number; endAllowanceMm: number; snapped: boolean; unitSystem: string;
+      piece: { lengthMm: number; widthMm: number | null; thicknessMm: number | null };
+      cutWidthMm: number; cutOff: 'saw' | 'parting';
+      partsPerStock: number; stocksForBatch: number; stockLengthMm: number; stockWidthMm: number | null;
+      virtualPlate: boolean; barEndMm: number | null; utilizationPct: number;
+      purchasedKg: number | null; pieceKg: number | null; partKg: number | null;
+    } | null;
+    /** Why the chosen stock is not the rule's or the Cost Guide's form, when it is not. */
+    fallback: string | null;
+    /** Every form: its stock with what it costs a part (the stock bought, and its sawing), or why it is not offered. */
+    options: { form: string; sizeLabel: string | null; unavailable: string | null; materialCost: number | null; sawCost: number | null; chosen: boolean }[];
+    /**
+     * How a part cut from plate is separated from the plate and roughed out: the technique the quote prices and every other beside it
+     * (backend StockMachiningBreakdown.roughing). Present only for plate stock on a mill's route: bar stock has one technique.
+     */
+    roughing?: {
+      /** The quoted technique (all_bulk_milling, perimeter_milling_dropoff, plate_cutting_dropoff) and its name. */
+      technique: string; label: string;
+      /** Whether it was set here (scenario key stockRoughingTechnique), or is the data's default. */
+      source: 'cost_guide' | 'default'; defaultTechnique: string;
+      /** Why the technique asked for is not the quoted one, when it is not. */
+      fallback: string | null;
+      options: {
+        technique: string; label: string; chosen: boolean; unavailable: string | null;
+        partsPerPlate: number | null; materialCost: number | null;
+        /** What separates the part from the plate: the Band Saw, the mill's Perimeter Milling, or a plate cutting process; cost null when not costed. */
+        separation: { process: string; machineClass: string | null; machineName: string | null; cost: number | null; timeSec: number | null } | null;
+        /** What is left round the part for the mill to remove in bulk (mm³). */
+        bulkVolumeMm3: number | null;
+        /** Plate Cutting with Drop-off: every cutting process, each priced or with why it is not. */
+        processes: {
+          process: string; chosen: boolean; unavailable: string | null; machineClass: string | null; machineName: string | null; partsPerPlate: number | null;
+          materialCost: number | null; cutCost: number | null;
+        }[];
+      }[];
+    };
+    saw: {
+      machineName: string; bundleBars: number; bundleBasis: string; cuttingRateMm2Min: number;
+      cutSec: number; feedSec: number; loadSec: number; unloadSec: number; cycleSec: number;
+    } | null;
+    /** Why there is no saw: a bar-fed lathe parts the piece off, the part's Process costs no sawing, a drop-off technique cuts the part out of the plate, or what keeps the saw from being costed. */
+    sawMissing: string | null;
+    scrapCredit: { enabled: boolean; percent: number | null; credit: number };
+    partSource: 'measured' | 'bounding box';
+    /** The faces left as the stock supplies them, which the mill does not finish; and the two end faces, where the cuts lie. */
+    asSuppliedFaceIds: { curvedWall: number[]; planarFace: number[] };
+    endFaceIds: number[];
+    stockLabel: string | null;
+    notes: string[];
+  };
+  /** Bar and tube: the tools the quoted route needs (extrusion die, bend die sets), USD, kept out of the piece cost; costUsd null when unpriced. */
+  barTubeTooling?: Array<{ key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }>;
+  /** Roto & Blow Molding: the shell, its features' operations, parts per shot or arm, the route quoted and both routes (backend RotoBlowBreakdown). */
+  rotoBlow?: {
+    route: string; routeLabel: string;
+    envelopeMm: number[]; wallMm: number; insideVolumeMm3: number; partingLineMm: number | null;
+    spouts: { id: string; diameterMm: number }[];
+    partsPerCycle: number | null; coolingTimeS: number | null; materialMassKg: number; partMassKg: number;
+    features: { id: string; featureType: string; operation: string; process: string; reason: string }[];
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /** Roto & Blow Molding: the molds and trim tooling (USD), kept out of the piece cost. */
+  rotoBlowTooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null }[];
+  /** PCB: the board and where each value came from, its stack-up and panel nest, the finishes, the route quoted and every route (backend PcbBreakdown). */
+  pcb?: {
+    route: string | null; routeLabel: string | null;
+    board: Record<'lengthMm' | 'widthMm' | 'areaMm2' | 'thicknessMm' | 'layers' | 'outerCopperOz' | 'soldermaskSides' | 'silkscreenSides', PcbFactDto<number>> & {
+      innerCopperOz: PcbFactDto<number> | null; finish: PcbFactDto<string>; testPoints: PcbFactDto<number> | null;
+      holes: { diameterMm: number; plated: boolean; count: number }[]; holesSource: string;
+    };
+    finishLabel: string;
+    stackup: { sequence: string[]; cores: number; foils: number; innerCores: number; prepregSpaces: number; coreDielectricMm: number | null; laminated: boolean } | null;
+    nest: { boardsPerPanel: number; arraysPerPanel: number; boardsPerArray: number; panelMm: number[]; utilization: number; note: string } | null;
+    materials: { name: string; count: number; usdPerM2: number; detail: string }[];
+    finishOptions: { finish: string; label: string; totalCost: number | null; reason: string | null }[];
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+    /** The board's assembly (backend PcbAssemblyBreakdown): whether it is included and why, the processes included, the counts and the choices. */
+    assembly: {
+      included: boolean; mode: 'auto' | 'include' | 'bare'; basis: string;
+      processes: { group: string; steps: string[]; basis: 'auto' | 'user' }[];
+      counts: { placements: number; placementsTop: number; placementsBottom: number; feeders: number; sides: string[]; thtParts: number; joints: number; nets: number | null; bomComponents: number };
+      smtLine: { placers: number; maxPlacers: number; taktSec: number } | null;
+      thtSolder: { chosen: string | null; basis: 'auto' | 'user'; options: { key: string; label: string; costPerBoard: number | null; reason: string | null }[] } | null;
+      test: { chosen: string | null; basis: 'auto' | 'user'; options: { key: string; label: string; costPerBoard: number | null; reason: string | null }[] } | null;
+    } | null;
+  };
+  /** PCB: the stamping die, the bed-of-nails fixture or the flying-probe program, the stencils and the assembly test tooling (USD), kept out of the piece cost. */
+  pcbTooling?: { key: string; description: string; detail: string; costUsd: number | null; perPartUsd: number | null; amortizationParts: number | null }[];
+  /**
+   * Sheet Metal - Hydroforming: memory's route rule, the draws, the blank and its nest, the press, the tray, the route quoted and both routes
+   * (backend HydroformingBreakdown).
+   */
+  hydroforming?: {
+    route: string; routeLabel: string;
+    rule: { route: string; ratio: number; depthMm: number; widthMm: number; threshold: number; basis: string };
+    draws: number; drawRatiosPct: number[];
+    blank: { method: string; areaMm2: number; addendumMm: number; massKg: number };
+    nest: { method: string; partsPerSheet: number; utilizationPct: number; sheetLengthMm: number; sheetWidthMm: number } | null;
+    press: { name: string; formingCycleTimeS: number } | null;
+    /** Fluid Cell: the parts formed a cycle, the Cost Guide's ask (null: the data's default) and how many fit the tray; null on Deep Draw. */
+    partsPerTray: { value: number; requested: number | null; max: number | null } | null;
+    handAdjustingLengthMm: number; throwPadAreaMm2: number; cappingTools: number;
+    /** Every hole is pierced with the blank (memory's Offline Blank); inFormedWalls of them go through a wall the forming then shapes. */
+    holes: { pierced: number; inFormedWalls: number };
+    intensifier: boolean;
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /**
+   * Sheet Metal - Hydroforming: the hydroform tool and the offline blanking die (USD), kept out of the piece cost. costUsd is the tools the job
+   * wears out, spread over amortizationParts; toolCostUsd one tool. Both null when not costed (the blanking die is listed, not costed).
+   */
+  hydroformingTooling?: {
+    key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null;
+  }[];
+  /**
+   * Sheet Metal Roll Forming (backend cost-breakdown.dto.ts RollFormingBreakdown): the strip, the roll stations, the mill, the line speed and
+   * what limits it, the coil, the punching, the welding, the route quoted and both routes. Lengths mm, masses kg, speeds mm/s, money in the
+   * summary's currency.
+   */
+  rollForming?: {
+    route: string;
+    routeLabel: string;
+    rule: { route: string; closed: boolean; basis: string };
+    section: {
+      heightMm: number; widthMm: number; closed: boolean; bends: number; curveRadiusMm: number | null;
+      /** A closed section's outside sizes (round: outerDiameterMm; otherwise its outer width and height) and wall; null for an open section. */
+      tube?: { outerDiameterMm: number | null; outerWidthMm: number | null; outerHeightMm: number | null; wallMm: number | null } | null;
+      /** Bends modelled sharp (no radius in the CAD), priced at the material's minimum bend radius, and how much that changes the strip (mm, negative when narrower). */
+      sharpBends?: { count: number; pricedRadiusMm: number | null; stripChangeMm?: number; basis: string } | null;
+    };
+    /** widthMm is the strip priced; measuredWidthMm the CAD's stretch-out (they differ when sharp bends are formed at a radius). */
+    strip: { widthMm: number; measuredWidthMm?: number; thicknessMm: number; lengthMm: number; feedLengthMm: number; slugMm: number; massKg: number; partMassKg: number };
+    /** Where the material's price per kg comes from (the India price of a namesake in another group, or the USA price). */
+    materialPriceSource?: string | null;
+    stations: {
+      forming: number; leadIn: number; finishing: number; rule: number; total: number; override: number | null; panel: boolean; levelSource: string;
+      /** What the flange a level carries is measured from (open strip, closed section, tube), and the mill's stand spacing it is formed over. */
+      flangeSource?: string;
+      standSpacingMm?: number | null;
+      /**
+       * Bends within distanceBetweenGroupBendsMax of each other (bend indices across the strip): a rib (its turns cancel) is formed as one unit
+       * at its inner bend's level and carries only its span; any other group as flanges. directionsMeasured false: no fold direction was measured.
+       */
+      groups?: { firstBend: number; lastBend: number; rib: boolean; level: number | null; spanMm: number | null; signedTurnDeg: number | null }[];
+      directionsMeasured?: boolean;
+      levels: {
+        level: number; bends: number; maxAngleDeg: number; passes: number;
+        /** The flange the level's bends carry, the degrees a pass forms, and what limits it (memory's lift angle or the flange's length). */
+        flangeCarriedMm?: number | null; degreesPerPass?: number; governedBy?: 'lift angle' | 'flange length';
+      }[];
+    };
+    mill: { name: string; stands: number | null; shaftDiameterMm: number | null; type: string | null; curveUnit: boolean; requiredShaftMm: number | null } | null;
+    lineSpeed: { mmPerS: number; limiting: string | null; multiplier: number; caps: { name: string; mmPerS: number }[]; speedsTried?: number } | null;
+    coil: { massKg: number; partsPerCoil: number; changeTimeS: number; perPartS: number; method: string; setupMethod?: string } | null;
+    dieSharpeningPerPartS: number;
+    flattener: { needed: boolean; reason: string };
+    punching: { dieStations: string[]; punched: number; notPunched: { featureType: string; count: number; reason: string }[]; minHoleMm: number | null } | null;
+    welding: { process: string; machine: string | null; source: 'rule' | 'cost guide' } | null;
+    forcesKn: { punch: number | null; cutOff: number | null };
+    feasible: boolean;
+    complete: boolean;
+    options: { route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }[];
+  };
+  /** Sheet Metal Roll Forming: the mill's rolls and the press dies (USD), kept out of the piece cost, as hydroformingTooling. */
+  rollFormingTooling?: {
+    key: string; description: string; detail: string; costUsd: number | null; toolCostUsd: number | null; perPartUsd: number | null; amortizationParts: number | null;
+  }[];
+  composites?: {
+    route: string; routeLabel: string;
+    /** The laminate at its thickest (core excluded) and the cured ply thickness it is divided by. */
+    laminateMm: number; plyThicknessMm: number; plySource: 'geometry' | 'scenario';
+    plies: Array<{ index: number; areaMm2: number; perimeterMm: number; level: number }>;
+    core: { areaMm2: number; perimeterMm: number; depthMm: number } | null;
+    partsPerLoad: number | null; boughtAreaM2: number; plyMassKg: number; complete: boolean;
+    options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;
+  };
+  /** Forging: the finishing and trim dies (USD, separate from the piece cost). */
+  forgingDies?: { sets: number; costUsd: number; perPartUsd: number | null; detail: string };
+  /** A molded part number's first article inspection: a one-off on the CMM, USD, kept out of the piece cost (backend F-39). */
+  firstArticleInspection?: { costUsd: number | null; perPartUsd: number | null; detail: string; machineName: string | null };
   /** Sand casting: the machining allowance of each machined feature (display only, never costed). */
   machiningAllowance?: MachiningAllowanceSummary;
   /** The die-casting die amortised over its life (USD, separate from the piece cost). */
@@ -1133,6 +1584,17 @@ export interface DieCastingBreakdown {
   };
 }
 
+/** One mold layout priced on the press that holds it (USD): mirrors the backend's CavityOption. */
+export interface CavityOption {
+  cavityCount: number;
+  machineName: string | null;
+  clampMachineT: number;
+  pieceCostUsd: number;
+  moldCostPerPartUsd: number | null;
+  costPerPartUsd: number;
+  chosen: boolean;
+}
+
 /**
  * Mirrors the backend's InjectionMoldingBreakdown (cost-breakdown.dto.ts).
  * The clamp/shot fields are the same real per-polymer-family formula
@@ -1143,10 +1605,14 @@ export interface DieCastingBreakdown {
 export interface InjectionMoldingBreakdown {
   moldingSubtype: 'standard' | 'lsr' | 'insert' | 'overmold' | 'gas_assisted' | 'two_shot' | 'unscrewing';
   cavityCount: number;
-  /** 'user': set in the Cost Guide; 'default': reference defaultNumCavities; 'unverified': press / clamp / layout check failed. */
-  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'unverified';
+  /** 'user': set in the Cost Guide; 'default': reference defaultNumCavities; 'lowest_cost': the layout with the lowest cost per part, mold included; 'unverified': press / clamp / layout check failed. */
+  cavityConstrainedBy: 'clamp' | 'shot_capacity' | 'economic' | 'default' | 'user' | 'lowest_cost' | 'unverified';
   /** Reference mold layouts (layoutNumCav) a cavity count may take. */
   cavityLayouts?: number[];
+  /** With 'lowest_cost': each layout a press holds, at its cheapest press, cheapest first (the costed one is `chosen`). */
+  cavityOptions?: CavityOption[];
+  /** With 'default' where the layouts could have been compared: why they were not. */
+  cavityNote?: string;
   /** Reference defaultNumCavities. */
   defaultCavityCount?: number | null;
   runnerSystemType: 'hot' | 'cold';
@@ -1172,7 +1638,7 @@ export interface InjectionMoldingBreakdown {
 }
 
 export interface BlankSpecDto {
-  form: 'sheet' | 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'billet' | 'extrusion' | 'casting' | 'granules';
+  form: 'sheet' | 'round_bar' | 'hex_bar' | 'rectangular_bar' | 'square_bar' | 'plate' | 'round_tube' | 'billet' | 'extrusion' | 'casting' | 'granules';
   sizeLabel: string;
   grossWeightKg: number;
   netWeightKg: number;
@@ -1188,6 +1654,8 @@ export interface BlankSpecDto {
   // Sheet origin + the kerf / edge margin the cost engine nested with.
   sheetSource?: string;
   kerfMm?: number;
+  /** Where kerfMm comes from, when not sheet metal's part-spacing table (a hydroformed blank). */
+  kerfSource?: string;
   edgeMarginMm?: number;
   // Stock sheets the Nest view ranks and recommends from.
   candidateSheets?: Array<{ widthMm: number; lengthMm: number; source: string }>;
@@ -1336,7 +1804,14 @@ export interface NestPlacementDto {
 export interface TrueNestResultDto {
   outlinePointsMm: number[][];
   holesMm: { cxMm: number; cyMm: number; diameterMm: number }[];
-  outlineSource: 'wire_walk' | 'unavailable';
+  /**
+   * What was nested (backend nest-blank-source.ts): the true outline, a hydroformed part's blank, or, with no outline measured, the flat
+   * pattern's rectangle or the part's footprint (an estimate). outlineNote says why when it is not the true outline.
+   */
+  outlineSource: 'wire_walk' | 'hydroform_blank' | 'blank_rectangle' | 'part_footprint';
+  outlineNote: string | null;
+  /** cad_engine: the true-shape placement. rectangle_grid: the cad-engine could not nest it, so it sits on a grid of its rectangle. */
+  placementSource: 'cad_engine' | 'rectangle_grid';
   sheetWidthMm: number;
   sheetLengthMm: number;
   partsPerSheet: number;
@@ -1402,7 +1877,10 @@ export type CapabilityReasonCode =
   | "CLASS_THICKNESS_LIMIT"
   | "THICKNESS_EXCEEDED"
   | "BED_LENGTH_EXCEEDED"
-  | "BED_WIDTH_EXCEEDED";
+  | "BED_WIDTH_EXCEEDED"
+  | "TONNAGE_EXCEEDED"
+  /** An input the quote needs is missing (the material grade): the route was not priced. */
+  | "INPUT_MISSING";
 
 export interface RouteCapability {
   cuttingCapable: boolean;
@@ -1596,7 +2074,7 @@ export interface RouteComparisonDto {
   routes: RouteResultDto[];
   comparisonWarnings: string[];
   /** Molding: why the material itself cannot be molded or lacks reference data; said once for the whole comparison. */
-  materialNote?: { kind: 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data'; reason: string; missing: string[] } | null;
+  materialNote?: { kind: 'metal' | 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data'; reason: string; missing: string[] } | null;
   /** Part-level 2D-drawing-vs-3D-CAD fact agreement — see FactMismatch above. */
   drawingCadConsistency?: FactMismatch[];
   currency: string;
@@ -1622,9 +2100,18 @@ export function routeComparisonUrl(
   return `/bom-items/${itemId}/route-comparison?${costingQuery(batchSize, location)}`;
 }
 
+/**
+ * Whether the server refused the comparison for the part as it is now (a 4xx: a Process with no cost model, a part not analysed). Then the
+ * routes cached from before describe another part and are dropped. A timeout or a network failure is not a refusal: the last good routes stay.
+ */
+export function comparisonRefused(error: unknown): boolean {
+  const status = (error as { statusCode?: unknown } | null)?.statusCode;
+  return typeof status === 'number' && status >= 400 && status < 500;
+}
+
 /** `batchSize` semantics are identical to useCostSummary above. */
 export function useRouteComparison(itemId: string | undefined, batchSize: number | undefined, location = 'USA') {
-  return useQuery({
+  const query = useQuery({
     queryKey: routeComparisonQueryKey(itemId, batchSize, location),
     queryFn: () =>
       // The server takes 46-157 s for this comparison under load. A shorter client
@@ -1643,6 +2130,9 @@ export function useRouteComparison(itemId: string | undefined, batchSize: number
     // out-of-band edits. This is an 8-18s call; remounting should not re-run it.
     refetchOnMount: false,
   });
+  // A failed refetch keeps the last good data in the cache. Those are the routes of the part as it was: after its Process changed to one the
+  // server refuses (no cost model), the Workflow Builder listed the old Process's routes (Bar and Tube showing multi-shot presses).
+  return comparisonRefused(query.error) ? { ...query, data: undefined } : query;
 }
 
 export interface CandidateRouteDto {

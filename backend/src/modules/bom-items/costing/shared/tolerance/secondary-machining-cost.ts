@@ -28,10 +28,16 @@ import { MACHINE_REGISTRY } from '../core/default-rates.constants';
 import { eMithranTerms, resolveSetupMinutes, type EMithranTermsArgs } from '../core/engine-kernel';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators } from '../../machining/calculators/machining-calculator';
 import { machiningLookupSeeds, type MachiningLookupContext } from '../../machining/calculators/machining-lookup-seeds';
+import { spindleLimitSeed, workbookSeeds } from '../../machining/process/cost-machining-engine';
+import { sumRuns } from '../../machining/process/machining-trace';
+import { runOnLine } from '../calculators/reference-calculator';
+
 import type { FeatureInstance } from './feature-tolerances';
 import type { MachiningNeedResult } from './machining-need';
 
-const HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Jig Boring', 'Gun Drilling', 'Deep Bore Machine']);
+const HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Step Drilling', 'Jig Boring', 'Gun Drilling', 'Deep Bore Machine']);
+/** The hole calculators timed on the machining workbook (migration 1139). */
+const WORKBOOK_HOLE_CALCULATORS = new Set(['Drilling', 'Reaming', 'Step Drilling']);
 
 /** HR Rates machine per calculator; the caller supplies the classes the machining engine uses. */
 type MachineForCalculator = (calculator: string) => MHRRateInput | undefined;
@@ -76,9 +82,11 @@ function seedsFor(calculator: string, inst: FeatureInstance, ctx: MachiningLooku
   const seeds: Record<string, CalcSeed> = {};
   if (HOLE_CALCULATORS.has(calculator)) {
     if (inst.sizeMm == null) return { seeds, missing: ['the hole has no measured diameter'] };
-    seeds['Hole Diameter'] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
+    // A step of a stepped hole is the Step Drilling calculator's step; any other hole calculator's, the hole.
+    const [dia, depth] = calculator === 'Step Drilling' ? ['Step Diameter', 'Step Depth'] : ['Hole Diameter', 'Hole Depth'];
+    seeds[dia] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
     seeds['Holes'] = { value: 1, source: `CAD: ${inst.label}` };
-    if (inst.depthMm != null) seeds['Hole Depth'] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
+    if (inst.depthMm != null) seeds[depth] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
   } else if (calculator === 'Surface Grinding') {
     const [len, wid] = inst.extentsMm ?? [];
     if (!(len! > 0) || !(wid! > 0)) return { seeds, missing: ['the face has no measured length and width'] };
@@ -93,9 +101,29 @@ function seedsFor(calculator: string, inst: FeatureInstance, ctx: MachiningLooku
   } else {
     return { seeds, missing: [`the ${calculator} calculator's inputs are not measured for a ${inst.featureType}`] };
   }
-  const lookup = machiningLookupSeeds(calculator, ctx, { 'Hole Diameter': inst.sizeMm ?? NaN });
+  // Drilling and Reaming read the machining workbook's data; the other calculators their own tables.
+  const lookup = WORKBOOK_HOLE_CALCULATORS.has(calculator)
+    ? workbookSeeds(ctx.workbook, calculator, null, ctx.matClass, seeds)
+    : machiningLookupSeeds(calculator, ctx, { 'Hole Diameter': inst.sizeMm ?? NaN });
   if (lookup) { Object.assign(seeds, lookup.seeds); missing.push(...lookup.missing); }
   return { seeds, missing };
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  manual: 'entered on the feature', policy_uniform: 'tolerance policy (uniform values)', cad_model: 'model PMI (CAD policy)',
+  cad_model_replaced: 'model PMI, replaced by the policy value', auto_detected: 'model PMI (detected)',
+};
+
+/** The requirement, its source and the reason a feature is machined after the primary process, for its cost entry. */
+export function machiningBasis(f: MachiningNeedResult['features'][number]): NonNullable<FeatureOp['basis']> {
+  if (f.requirements.length === 0) {
+    return { requirement: 'none', source: `${f.forming ? 'formability' : 'assessment'} of the primary process`, reason: f.reasons.join('; ') };
+  }
+  return {
+    requirement: f.requirements.map((r) => `${r.category} ${r.value}${r.origin ? ` (${r.origin.stated}, ${r.origin.annotationRef})` : ''}`).join('; '),
+    source: [...new Set(f.requirements.map((r) => `${SOURCE_LABEL[r.source] ?? r.source}${r.origin ? `, ${r.origin.basis === 'native_pmi' ? 'native' : 'engineer approved'}` : ''}`))].join('; '),
+    reason: f.reasons.join('; '),
+  };
 }
 
 export function priceSecondaryMachining(input: {
@@ -147,7 +175,8 @@ export function priceSecondaryMachining(input: {
         : [inst];
       const runs = parts.map((part) => {
         const { seeds, missing: m } = seedsFor(calculator, part, input.lookupContext);
-        return { run: runMachiningCalculator(input.calculators, calculator, seeds), missing: m };
+        // On the machine that machines it: a calculator caps its spindle at the machine's own limit.
+        return { run: runMachiningCalculator(input.calculators, calculator, { ...seeds, ...spindleLimitSeed(machine, null) }), missing: m };
       });
       const missing = runs.flatMap((r) => (r.run.sec == null ? [...r.missing, ...r.run.missing] : []));
       const run: CalcRun = {
@@ -197,9 +226,13 @@ export function priceSecondaryMachining(input: {
       groups.set(k, g);
     }
   }
+  // Why each feature is machined: its requirements with where each was read, and the assessment's own reasons.
+  const basisOf = new Map(input.need.features.filter((x) => x.verdict === 'needs_machining').map((x) => [x.label, machiningBasis(x)]));
   const lines: ProcessLineCost[] = [];
   const setupCharged = new Set<string>();
-  const lineFor = (machine: MHRRateInput, operation: string, sec: number, breakdown: FeatureOp[], referenceSetupTimeHr?: number | null): ProcessLineCost => {
+  // runs: the calculator runs the line's time is (one per feature it machines): their calculation goes on the line, so the saved line can
+  // reopen its calculator with the inputs it was costed from. None for a step timed from a reference time (a bench step).
+  const lineFor = (machine: MHRRateInput, operation: string, sec: number, breakdown: FeatureOp[], referenceSetupTimeHr?: number | null, runs: readonly { label: string; run: CalcRun }[] = []): ProcessLineCost => {
     const firstOnMachine = !setupCharged.has(machine.machineClass);
     setupCharged.add(machine.machineClass);
     const handling = firstOnMachine ? input.handling?.[machine.machineClass] : undefined;
@@ -245,6 +278,7 @@ export function priceSecondaryMachining(input: {
       ...(machine.selection ? { machineSelection: machine.selection } : {}),
       ...(candidate?.machineId ? { mhrId: candidate.machineId } : {}),
       featureBreakdown: breakdown,
+      ...(runs.length > 0 ? runOnLine(sumRuns(runs, `${operation} cycle time`)) : {}),
     };
   };
   const occRef = (inst: FeatureInstance | undefined) =>
@@ -252,8 +286,8 @@ export function priceSecondaryMachining(input: {
   for (const { machine, operation, picks } of groups.values()) {
     const sec = picks.reduce((t, p) => t + p.op.sec, 0);
     lines.push(lineFor(machine, operation, sec, picks.map(({ f, op, inst }) => ({
-      name: f.label, featureType: f.featureType, timeSec: r2(op.sec), count: 1, ...occRef(inst),
-    }))));
+      name: f.label, featureType: f.featureType, timeSec: r2(op.sec), count: 1, ...occRef(inst), basis: basisOf.get(f.label),
+    })), undefined, picks.map(({ f, op }) => ({ label: f.label, run: op.run }))));
   }
 
   // Deburring: the sharp edges machining creates -- every CAD sharp edge
@@ -263,6 +297,7 @@ export function priceSecondaryMachining(input: {
   if (machined.length > 0 && input.deburr) {
     const edges = input.instances.filter((i) => i.featureType === 'SharpEdge' && i.lengthMm != null);
     const rows: FeatureOp[] = [];
+    const runs: { label: string; run: CalcRun }[] = [];
     let sec = 0;
     const gaps: string[] = [];
     for (const inst of machined) {
@@ -276,12 +311,13 @@ export function priceSecondaryMachining(input: {
       });
       if (run.sec == null) { gaps.push(...(lookup?.missing ?? []), ...run.missing); continue; }
       sec += run.sec;
+      runs.push({ label: inst.label, run });
       rows.push({ name: inst.label, featureType: inst.featureType, timeSec: r2(run.sec), count: 1, ...occRef(inst) });
     }
     if (gaps.length) warnings.push(`Deburring after machining not fully priced: ${[...new Set(gaps)].join('; ')}.`);
     if (rows.length === 0 && gaps.length === 0) warnings.push('Deburring after machining: no CAD sharp edge touches a machined feature (re-run analysis if edges are missing).');
     if (rows.length > 0) {
-      if (input.deburr.machine.source === 'mhr_database') lines.push(lineFor(input.deburr.machine, 'Deburring', sec, rows));
+      if (input.deburr.machine.source === 'mhr_database') lines.push(lineFor(input.deburr.machine, 'Deburring', sec, rows, undefined, runs));
       else warnings.push('Deburring after machining not costed: no deburr machine in HR Rates.');
     }
   }

@@ -9,26 +9,43 @@ function build(over: {
   begin?: { data?: unknown; error?: { message: string } };
   routeError?: Error;
   notes?: Array<{ notes: string | null }>;
+  /** The active records once the route step has run (the route service can remove a route of the part's previous process). */
+  notesAfterRoute?: Array<{ notes: string | null }>;
   machine?: jest.Mock;
+  /** The material the cost summary priced ('' = the part's grade, as an unpriced summary says). */
+  pricedGrade?: string;
+  /** What the route could not cost, as RouteApplicationService reports it. */
+  noCostFeatures?: string[];
+  /** The part's BOM children, and whether its cost summary says its material is its parts' (an assembly or weldment of them). */
+  children?: object[];
+  materialOfParts?: boolean;
 } = {}) {
   const calls: string[] = [];
   const patches: Array<Record<string, unknown>> = [];
   const bomItems = {
     update: jest.fn().mockImplementation(() => { calls.push('item.update'); return Promise.resolve({}); }),
     patchScenarioOverrides: jest.fn().mockImplementation((_id: string, patch: Record<string, unknown>) => { calls.push('overrides'); patches.push(patch); return Promise.resolve({}); }),
-    findOne: jest.fn().mockResolvedValue({ id: 'i1', volume: 10, weight: 1 }),
-    getCostSummary: jest.fn().mockImplementation(() => { calls.push('cost-summary'); return Promise.resolve({ grossWeightKg: 1 }); }),
+    findOne: jest.fn().mockResolvedValue({ id: 'i1', name: 'Frame', volume: 10, weight: 1 }),
+    findChildren: jest.fn().mockResolvedValue(over.children ?? []),
+    getCostSummary: jest.fn().mockImplementation(() => { calls.push('cost-summary'); return Promise.resolve({ grossWeightKg: 1, materialGrade: over.pricedGrade ?? '', ...(over.materialOfParts ? { materialOfParts: true } : {}) }); }),
     setMachineOverride: over.machine ?? jest.fn().mockResolvedValue({}),
   };
-  const chain = { select: () => chain, eq: () => chain, then: (r: (v: unknown) => void) => r({ data: over.notes ?? [], error: null }) };
+  let routeRan = false;
+  const chain = { select: () => chain, eq: () => chain, then: (r: (v: unknown) => void) => r({ data: (routeRan ? over.notesAfterRoute ?? over.notes : over.notes) ?? [], error: null }) };
   const database = {
     getUserClient: () => ({
       rpc: jest.fn().mockImplementation(() => { calls.push('begin'); return Promise.resolve(over.begin ?? { data: 3, error: null }); }),
       from: () => chain,
     }),
   };
-  const materials = { ensure: jest.fn().mockImplementation(() => { calls.push('material'); return Promise.resolve({ action: 'replaced', recordId: 'r1', usage: null }); }) };
-  const toolingCosts = { ensure: jest.fn().mockImplementation(() => { calls.push('tooling'); return Promise.resolve({ action: 'replaced', items: ['Injection mold'] }); }) };
+  const materials = {
+    ensure: jest.fn().mockImplementation(() => { calls.push('material'); return Promise.resolve({ action: 'replaced', recordId: 'r1', usage: null }); }),
+    retireOwnMaterial: jest.fn().mockImplementation(() => { calls.push('material.retire'); return Promise.resolve(1); }),
+  };
+  const toolingCosts = {
+    ensure: jest.fn().mockImplementation(() => { calls.push('tooling'); return Promise.resolve({ action: 'replaced', items: ['Injection mold'] }); }),
+    retire: jest.fn().mockImplementation(() => { calls.push('tooling.retire'); return Promise.resolve(['Forging dies (1 set)']); }),
+  };
   const status = (over.analysis ?? READY) as { ready: boolean; missing: string[] };
   const routes = {
     // The one rule (RouteApplicationService.requireAnalysis): the status is read, never made current here.
@@ -38,12 +55,14 @@ function build(over: {
     }),
     applyRoute: jest.fn().mockImplementation(() => {
       calls.push('route');
-      return over.routeError ? Promise.reject(over.routeError) : Promise.resolve({ created: 5, operations: ['a'], routeLabel: 'Auto', routeId: 'im-standard-200t' });
+      routeRan = true;
+      return over.routeError ? Promise.reject(over.routeError)
+        : Promise.resolve({ created: 5, operations: ['a'], routeLabel: 'Auto', routeId: 'im-standard-200t', ...(over.noCostFeatures ? { noCostFeatures: over.noCostFeatures } : {}) });
     }),
     applyCustomRoute: jest.fn().mockImplementation(() => { calls.push('custom-route'); return Promise.resolve({ created: 2, operations: ['x'], routeLabel: 'Custom', needsManualCycleTime: [] }); }),
   };
   const audit = { recordBestEffort: jest.fn().mockResolvedValue(undefined) };
-  const svc = new ScenarioApplicationService(bomItems as never, database as never, materials as never, toolingCosts as never, routes as never, audit as never);
+  const svc = new ScenarioApplicationService(bomItems as never, bomItems as never, bomItems as never, database as never, materials as never, toolingCosts as never, routes as never, audit as never);
   return { svc, calls, patches, bomItems, materials, toolingCosts, routes, audit };
 }
 const input = (request: object) => ({ bomItemId: 'i1', userId: 'u', organizationId: 'o', token: 't', request: { location: 'USA', route: { mode: 'auto' }, ...request } as never });
@@ -63,6 +82,48 @@ describe('ScenarioApplicationService.apply', () => {
     expect(r.material).toEqual({ grade: 'ABS', action: 'replaced', recordId: 'r1' });
     expect(r.route).toMatchObject({ mode: 'auto', routeId: 'im-standard-200t', created: 5 });
     expect(r.tooling).toEqual({ action: 'replaced', items: ['Injection mold'] });
+  });
+
+  it('a grade that is not a material of the part\'s process: the record holds the material the summary priced, and the result says so', async () => {
+    const { svc, materials } = build({ pricedGrade: 'Aluminum, ANSI 6061' });
+    const r = await svc.apply(input({ materialGrade: 'Generic PETG Copol' }));
+    expect(materials.ensure).toHaveBeenCalledWith(expect.objectContaining({ grade: 'Aluminum, ANSI 6061' }));
+    expect(r.material).toEqual({ grade: 'Aluminum, ANSI 6061', action: 'replaced', recordId: 'r1' });
+    expect(r.warnings).toContain('"Generic PETG Copol" is priced as "Aluminum, ANSI 6061", a material of the part\'s process (the cost summary says why).');
+  });
+
+  it('an assembly or a weldment with parts under it keeps no material record of its own: an earlier one is retired, with or without a grade', async () => {
+    {
+      const withGrade = build({ children: [{ id: 'a' }, { id: 'b' }], materialOfParts: true });
+      const r = await withGrade.svc.apply(input({ materialGrade: 'Steel, Cold Worked, AISI 1020' }));
+      expect(withGrade.materials.ensure).not.toHaveBeenCalled();
+      expect(withGrade.materials.retireOwnMaterial).toHaveBeenCalledWith('i1', 'u', 't');
+      expect(r.material).toBeNull();
+      expect(r.warnings).toContain("Frame's material is its parts' (each part's is in the BOM roll-up): its own material record was retired.");
+      // No grade sent: a record from an older Apply, or from the part's previous process, is retired all the same.
+      const noGrade = build({ children: [{ id: 'a' }], materialOfParts: true });
+      await noGrade.svc.apply(input({}));
+      expect(noGrade.materials.retireOwnMaterial).toHaveBeenCalled();
+    }
+  });
+
+  it('one with no parts under it is its own one component and keeps its own; a part of another process with parts under it is priced as before', async () => {
+    const alone = build();
+    expect((await alone.svc.apply(input({ materialGrade: 'ABS' }))).material).toMatchObject({ grade: 'ABS', action: 'replaced' });
+    expect(alone.materials.retireOwnMaterial).not.toHaveBeenCalled();
+    const machined = build({ children: [{ id: 'a' }] });
+    expect((await machined.svc.apply(input({ materialGrade: 'ABS' }))).material).toMatchObject({ grade: 'ABS', action: 'replaced' });
+    // Nothing to price and nothing it could have: no grade and no parts leaves the material step out.
+    const bare = build();
+    await bare.svc.apply(input({}));
+    expect(bare.bomItems.getCostSummary).toHaveBeenCalledTimes(1);
+  });
+
+  it('what the route could not cost is applied as No Cost Features, each said in the warnings (Apply never fails)', async () => {
+    const { svc } = build({ noCostFeatures: ['Insert Pick and Place: the part has no inserts'] });
+    const r = await svc.apply(input({ materialGrade: 'ABS' }));
+    expect(r.scenario).toMatchObject({ status: 'applied' });
+    expect(r.warnings).toContain('No Cost Feature (not costed, $0): Insert Pick and Place: the part has no inserts');
   });
 
   it('writes every scenario key in one merge, and the grade as a manual pick', async () => {
@@ -107,6 +168,26 @@ describe('ScenarioApplicationService.apply', () => {
     const states = stateWritten(patches);
     expect(states[states.length - 1]).toMatchObject({ status: 'failed', revision: 3, error: 'No route is both feasible and fully costed for this part' });
     expect(states.some((s) => s['status'] === 'applied')).toBe(false);
+  });
+
+  it('a refused route that took the earlier route of another process with it takes that route\'s tooling too (Carriage Mount: forging dies)', async () => {
+    const { svc, calls, toolingCosts } = build({
+      routeError: new Error("The part's process has no route to apply."),
+      notes: [{ notes: 'auto_fill_from_route:forging-closed_die_hammer' }],
+      notesAfterRoute: [],
+    });
+    await expect(svc.apply(input({}))).rejects.toThrow("The part's process has no route to apply.");
+    expect(toolingCosts.retire).toHaveBeenCalledWith({ bomItemId: 'i1', userId: 'u', token: 't' });
+    expect(calls).toContain('tooling.retire');
+  });
+
+  it('a refused route that leaves the applied route in place leaves its tooling', async () => {
+    const kept = build({ routeError: new Error('refused'), notes: [{ notes: 'auto_fill_from_route:im-standard-200t' }] });
+    await expect(kept.svc.apply(input({}))).rejects.toThrow();
+    const never = build({ routeError: new Error('refused') });
+    await expect(never.svc.apply(input({}))).rejects.toThrow();
+    expect(kept.toolingCosts.retire).not.toHaveBeenCalled();
+    expect(never.toolingCosts.retire).not.toHaveBeenCalled();
   });
 
   it('applying again after a failure converges: the second apply succeeds from the same revision', async () => {

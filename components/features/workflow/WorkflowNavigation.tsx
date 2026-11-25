@@ -1,28 +1,13 @@
 'use client';
 
-import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import React from 'react';
+
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { ArrowRight, ArrowLeft, Clock, CheckCircle, Circle, Lock, Package, Cog, DollarSign, Search, UserCheck, FileText, Calendar, Shield, Truck, Sparkles } from '@/components/ui/icons';
 import { Progress } from '@/components/ui/progress';
-import { 
-  ArrowRight, 
-  ArrowLeft, 
-  Clock,
-  CheckCircle,
-  Circle,
-  Lock,
-  Package,
-  Cog,
-  DollarSign,
-  Search,
-  UserCheck,
-  FileText,
-  Calendar,
-  Shield,
-  Truck,
-} from 'lucide-react';
 import {
   WORKFLOW_MODULES,
   getNextModule,
@@ -75,10 +60,10 @@ export const WorkflowNavigation: React.FC<WorkflowNavigationProps> = ({
   const getStatusColor = (status: WorkflowModule['status']) => {
     switch (status) {
       case 'completed': return 'text-green-600 bg-green-100 border-green-200';
-      case 'current': return 'text-blue-600 bg-blue-100 border-blue-200';
+      case 'current': return 'text-primary bg-primary/10 border-primary/40';
       case 'pending': return 'text-orange-600 bg-orange-100 border-orange-200';
-      case 'locked': return 'text-gray-400 bg-gray-100 border-gray-200';
-      default: return 'text-gray-600 bg-gray-100 border-gray-200';
+      case 'locked': return 'text-muted-foreground bg-muted border-border';
+      default: return 'text-muted-foreground bg-muted border-border';
     }
   };
 
@@ -170,7 +155,7 @@ export const WorkflowNavigation: React.FC<WorkflowNavigationProps> = ({
             <div className="flex-1 mx-6">
               <div className="text-center space-y-4">
                 <div>
-                  <h3 className="text-xl font-bold text-foreground mb-2">🎉 Workflow Complete!</h3>
+                  <h3 className="mb-2 flex items-center justify-center gap-2 text-xl font-bold text-foreground"><Sparkles className="h-5 w-5" /> Workflow Complete!</h3>
                   <p className="text-muted-foreground">
                     Congratulations! You have successfully completed the entire manufacturing workflow from BOM to delivery.
                   </p>

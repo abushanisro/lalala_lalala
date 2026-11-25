@@ -1,28 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Upload, Trash2, Microscope, Search, ChevronDown, Filter, Sparkles, ChevronRight } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Skeleton } from '@/components/ui/skeleton';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { useVaveBom, useBulkImportVaveBom, useDeleteVaveBomItem } from '@/lib/api/hooks/useVave';
-import { useProjects, useBOMs, useBOMItems } from '@/lib/api/hooks';
-import { useProcesses } from '@/lib/api/hooks/useProcesses';
-import type { Process } from '@/lib/api/hooks/useProcesses';
-import type { VaveBomItem, DrawingAnalysisResult } from '@/lib/api/vave';
-import { toast } from 'sonner';
 import {
   BarChart,
   Bar,
@@ -32,6 +10,30 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
+import { toast } from 'sonner';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Upload, Trash2, Microscope, Search, ChevronDown, Filter, Sparkles, ChevronRight } from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useProjects, useBOMs, useBOMItems } from '@/lib/api/hooks';
+import { useProcesses } from '@/lib/api/hooks/useProcesses';
+import type { Process } from '@/lib/api/hooks/useProcesses';
+import { useVaveBom, useBulkImportVaveBom, useDeleteVaveBomItem } from '@/lib/api/hooks/useVave';
+import type { VaveBomItem, DrawingAnalysisResult } from '@/lib/api/vave';
+
 
 interface Props {
   projectId: string;
@@ -66,9 +68,9 @@ function getSpendColor(spend: number, items: VaveBomItem[]) {
     cum += item.annualSpend;
     if (item.annualSpend === spend) {
       const pct = (cum / total) * 100;
-      if (pct <= 50) return 'bg-red-500/10 text-red-400 border-red-500/30';
-      if (pct <= 80) return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
-      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+      if (pct <= 50) return 'bg-destructive/10 text-destructive border-destructive/30';
+      if (pct <= 80) return 'bg-warning/10 text-warning border-warning/30';
+      return 'bg-success/10 text-success border-success/30';
     }
   }
   return '';
@@ -366,15 +368,17 @@ function HierarchyView({ items, allProcesses, analysisResults, analyzingId, onAn
 // ── Spend Analysis view ───────────────────────────────────────────────────────
 
 const CHART_COLORS = [
-  'hsl(187 100% 42%)',
-  'hsl(187 100% 55%)',
-  'hsl(187 80% 35%)',
+  'hsl(175 84% 32%)',
+  'hsl(173 66% 50%)',
+  'hsl(175 77% 26%)',
   'hsl(160 60% 45%)',
   'hsl(215 80% 55%)',
   'hsl(250 70% 60%)',
   'hsl(30 90% 55%)',
   'hsl(350 70% 55%)',
 ];
+// The index is always inside the palette; recharts 3 no longer takes an undefined fill.
+const chartColor = (index: number) => CHART_COLORS[index % CHART_COLORS.length] ?? '';
 
 interface SpendAnalysisViewProps {
   items: VaveBomItem[];
@@ -436,23 +440,23 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
     {
       label: 'Parts Count',
       value: items.length.toLocaleString(),
-      accent: 'text-blue-400',
-      bg: 'bg-blue-500/10',
-      border: 'border-blue-500/20',
+      accent: 'text-primary',
+      bg: 'bg-primary/10',
+      border: 'border-primary/20',
     },
     {
       label: 'Top Supplier Spend',
       value: formatUSD(topSupplierSpend),
-      accent: 'text-amber-400',
-      bg: 'bg-amber-500/10',
-      border: 'border-amber-500/20',
+      accent: 'text-warning',
+      bg: 'bg-warning/10',
+      border: 'border-warning/20',
     },
     {
       label: 'Avg Unit Cost',
       value: formatUSD(avgUnitCost),
-      accent: 'text-emerald-400',
-      bg: 'bg-emerald-500/10',
-      border: 'border-emerald-500/20',
+      accent: 'text-success',
+      bg: 'bg-success/10',
+      border: 'border-success/20',
     },
   ];
 
@@ -520,11 +524,11 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
           <Card>
             <CardContent className="pt-4 pb-2 px-2">
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={materialData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                <BarChart accessibilityLayer={false} data={materialData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                   <XAxis
                     type="number"
                     tickFormatter={(v: number) => fmtShort(v)}
-                    tick={{ fontSize: 10, fill: 'hsl(220 15% 55%)' }}
+                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                     axisLine={false}
                     tickLine={false}
                   />
@@ -532,24 +536,24 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                     type="category"
                     dataKey="name"
                     width={80}
-                    tick={{ fontSize: 10, fill: 'hsl(220 15% 55%)' }}
+                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                     axisLine={false}
                     tickLine={false}
                   />
                   <RechartsTooltip
-                    formatter={(v: number) => [formatUSD(v), 'Spend']}
+                    formatter={(v) => [formatUSD(Number(v)), 'Spend']}
                     contentStyle={{
-                      background: 'hsl(220 18% 10%)',
-                      border: '1px solid hsl(220 15% 18%)',
+                      background: 'hsl(var(--popover))',
+                      border: '1px solid hsl(var(--border))',
                       borderRadius: '6px',
                       fontSize: 11,
                     }}
-                    labelStyle={{ color: 'hsl(220 15% 70%)' }}
-                    itemStyle={{ color: 'hsl(187 100% 42%)' }}
+                    labelStyle={{ color: 'hsl(var(--foreground))' }}
+                    itemStyle={{ color: 'hsl(175 84% 32%)' }}
                   />
                   <Bar dataKey="spend" radius={[0, 3, 3, 0]}>
                     {materialData.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                      <Cell key={i} fill={chartColor(i)} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -566,11 +570,11 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
           <Card>
             <CardContent className="pt-4 pb-2 px-2">
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={supplierData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                <BarChart accessibilityLayer={false} data={supplierData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                   <XAxis
                     type="number"
                     tickFormatter={(v: number) => fmtShort(v)}
-                    tick={{ fontSize: 10, fill: 'hsl(220 15% 55%)' }}
+                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                     axisLine={false}
                     tickLine={false}
                   />
@@ -578,24 +582,24 @@ function SpendAnalysisView({ items }: SpendAnalysisViewProps) {
                     type="category"
                     dataKey="name"
                     width={80}
-                    tick={{ fontSize: 10, fill: 'hsl(220 15% 55%)' }}
+                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                     axisLine={false}
                     tickLine={false}
                   />
                   <RechartsTooltip
-                    formatter={(v: number) => [formatUSD(v), 'Spend']}
+                    formatter={(v) => [formatUSD(Number(v)), 'Spend']}
                     contentStyle={{
-                      background: 'hsl(220 18% 10%)',
-                      border: '1px solid hsl(220 15% 18%)',
+                      background: 'hsl(var(--popover))',
+                      border: '1px solid hsl(var(--border))',
                       borderRadius: '6px',
                       fontSize: 11,
                     }}
-                    labelStyle={{ color: 'hsl(220 15% 70%)' }}
-                    itemStyle={{ color: 'hsl(187 100% 42%)' }}
+                    labelStyle={{ color: 'hsl(var(--foreground))' }}
+                    itemStyle={{ color: 'hsl(175 84% 32%)' }}
                   />
                   <Bar dataKey="spend" radius={[0, 3, 3, 0]}>
                     {supplierData.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[(i + 2) % CHART_COLORS.length]} />
+                      <Cell key={i} fill={chartColor(i + 2)} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -847,7 +851,7 @@ export function BOMExplorer({ projectId, sourceProjectId }: Props) {
 
         <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
           <Upload className="h-3.5 w-3.5 mr-1.5" />
-          Import from Mithran BOM
+          Import from EMITHRAN BOM
         </Button>
       </div>
 
@@ -936,7 +940,7 @@ export function BOMExplorer({ projectId, sourceProjectId }: Props) {
             </div>
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3">
-              <p className="text-sm">No BOM items yet. Import from a Mithran BOM to get started.</p>
+              <p className="text-sm">No BOM items yet. Import from a EMITHRAN BOM to get started.</p>
               <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
                 <Upload className="h-3.5 w-3.5 mr-1.5" />
                 Import BOM
@@ -955,7 +959,7 @@ export function BOMExplorer({ projectId, sourceProjectId }: Props) {
               </div>
             ) : filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3">
-                <p className="text-sm">No BOM items yet. Import from a Mithran BOM to get started.</p>
+                <p className="text-sm">No BOM items yet. Import from a EMITHRAN BOM to get started.</p>
                 <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
                   <Upload className="h-3.5 w-3.5 mr-1.5" />
                   Import BOM
@@ -1002,9 +1006,9 @@ export function BOMExplorer({ projectId, sourceProjectId }: Props) {
         <p className="text-xs text-muted-foreground">
           {filtered.length} of {items.length} parts · Total annual spend:{' '}
           {formatUSD(filtered.reduce((s, i) => s + i.annualSpend, 0))}
-          <span className="ml-2 text-red-400">■ Top 50% cost</span>
-          <span className="ml-1 text-amber-400">■ 50–80%</span>
-          <span className="ml-1 text-emerald-400">■ Bottom 20%</span>
+          <span className="ml-2 text-destructive">■ Top 50% cost</span>
+          <span className="ml-1 text-warning">■ 50–80%</span>
+          <span className="ml-1 text-success">■ Bottom 20%</span>
         </p>
       )}
 
@@ -1012,7 +1016,7 @@ export function BOMExplorer({ projectId, sourceProjectId }: Props) {
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Import from Mithran BOM</DialogTitle>
+            <DialogTitle>Import from EMITHRAN BOM</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">

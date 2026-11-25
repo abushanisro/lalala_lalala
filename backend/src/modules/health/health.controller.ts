@@ -16,7 +16,6 @@ import { HealthCheckService, HealthCheck, HealthCheckResult } from '@nestjs/term
 import { DatabaseHealthIndicator } from './indicators/database.health';
 import { CastingWorkerHealthIndicator } from './indicators/casting-worker.health';
 import { EngineHealthIndicator } from './indicators/engine.health';
-import { ElectronicsQueueHealthIndicator } from '../electronics-costing/infrastructure/queue/queue.health';
 import { PlatformAdmin } from '../../common/authz/authz-policy';
 import { Public } from '../../common/decorators/public.decorator';
 
@@ -29,7 +28,6 @@ export class HealthController {
     private readonly databaseIndicator: DatabaseHealthIndicator,
     private readonly engineIndicator: EngineHealthIndicator,
     private readonly castingWorkerIndicator: CastingWorkerHealthIndicator,
-    private readonly queueIndicator: ElectronicsQueueHealthIndicator,
     private readonly config: ConfigService,
   ) { }
 
@@ -63,8 +61,6 @@ export class HealthController {
     return this.health.check([
       () => this.databaseIndicator.isReachable('database'),
       () => this.engineIndicator.check('cad_engine', 'CAD_ENGINE_URL', '/ready'),
-      () => this.engineIndicator.check('ecad_engine', 'ECAD_ENGINE_URL', '/ready'),
-      () => this.queueIndicator.check('electronics_queue'),
       () => this.castingWorkerIndicator.check('casting_worker'),
     ]);
   }

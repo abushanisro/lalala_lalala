@@ -1,13 +1,19 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../../common/database/database.service';
-import { resolveGdtCallouts } from '../costing/shared/physics/gdt-callouts';
+import { isMachiningFamily } from '../../../domain/part-family';
+import { machiningRouteFamilyOf, resolveCanonicalOperation } from '../costing/machining/process/canonical-operation';
+import { drawingGdtCallouts, resolveGdtCallouts } from '../costing/shared/physics/gdt-callouts';
+import { detectTolerances } from '../costing/shared/tolerance/auto-detect';
+import { pmiReviewRowOf, resolvePmiRecords, type PmiReviewRow } from '../costing/shared/tolerance/pmi-records';
 import { CastingReferenceService, type CastabilityProcess } from '../costing/casting/casting-reference.service';
 import { holeCastability, holeProximityCastability, type HoleCastability } from '../costing/casting/casting-reference';
 import { castingProcessLabel, castingProcessOfFamily } from '../costing/casting/casting-cost-summary';
 import { resolveScenarioDieCastingProcess } from '../costing/casting/die-casting-process-choice';
 import { HPDC_PROCESS } from '../costing/casting/hpdc-engine';
 import { GDC_PROCESS } from '../costing/casting/gdc-engine';
+import { directionalHoleFormability, FORGED_HOLES, PRESSED_HOLES, type DirectionalHoleRule } from '../costing/forging/forging-hole-formability';
 import { evaluateMachiningNeed, type MachiningNeedResult } from '../costing/shared/tolerance/machining-need';
+import { evaluateToleranceDecisions, toleranceProfileOf, type ToleranceDecision, type ToleranceProcessProfile } from '../costing/shared/tolerance/process-profile';
 import { ToleranceReferenceService } from '../costing/shared/tolerance/tolerance-reference.service';
 import { GTOL_CATEGORIES, type GtolCategory } from '../costing/shared/tolerance/process-capability';
 import {
@@ -61,6 +67,15 @@ export class FeatureToleranceService {
     return featureInstances(fg?.feature_graph_v2 ?? fg?.machining_features?.feature_graph_v2 ?? null);
   }
 
+  /** The current engineer decisions on the part's PMI records (pmi_record_reviews); none is read when the analysis carries no records. */
+  private async pmiReviews(id: string, featureGraph: any, accessToken: string): Promise<PmiReviewRow[]> {
+    if (!Array.isArray(featureGraph?.pmi?.records) || featureGraph.pmi.records.length === 0) return [];
+    const { data, error } = await this.database.getUserClient(accessToken)
+      .from('pmi_record_reviews').select('*').eq('bom_item_id', id).is('superseded_at', null);
+    if (error) throw new InternalServerErrorException(`Failed to read PMI reviews: ${error.message}`);
+    return (data ?? []).map(pmiReviewRowOf);
+  }
+
   async get(id: string, accessToken: string): Promise<FeatureTolerancesView> {
     const item = await this.loadItem(id, accessToken);
     const { data: rows, error } = await this.database.getUserClient(accessToken)
@@ -73,13 +88,17 @@ export class FeatureToleranceService {
       .map((r: any) => ({ featureKey: r.feature_key, category: r.category, value: Number(r.value) }));
     const parsed = parseTolerancePolicy(item.scenario_overrides?.['tolerancePolicy']);
     const policy = parsed.policy ?? parseTolerancePolicy(null).policy!;
+    const instances = this.instancesOf(item);
+    const callouts = resolveGdtCallouts(item.feature_graph, item.drawing_intelligence);
+    const detection = detectTolerances({
+      instances,
+      records: resolvePmiRecords(item.feature_graph, await this.pmiReviews(id, item.feature_graph, accessToken)),
+      callouts,
+      drawingCallouts: drawingGdtCallouts(item.drawing_intelligence),
+      generalTolerances: (item.drawing_intelligence as { general_tolerances?: string | null } | null)?.general_tolerances ?? null,
+    });
     return {
-      ...resolveFeatureRequirements({
-        instances: this.instancesOf(item),
-        manual,
-        policy,
-        callouts: resolveGdtCallouts(item.feature_graph, item.drawing_intelligence),
-      }),
+      ...resolveFeatureRequirements({ instances, manual, policy, callouts, detection }),
       policy,
       policyErrors: parsed.errors,
     };
@@ -146,11 +165,73 @@ export class FeatureToleranceService {
    * whose names tblGtolProcessCapabilities carries; any other family is
    * reported as not yet assessed rather than guessed.
    */
-  async getMachiningNeed(id: string, accessToken: string, primaryProcessOverride?: string): Promise<MachiningNeedView> {
+  /** `familyOverride`: the family the cost summary prices the part as, when it is not the one it was analysed as (a Casting part priced as each casting family). */
+  async getMachiningNeed(id: string, accessToken: string, primaryProcessOverride?: string, familyOverride?: string): Promise<MachiningNeedView> {
     const item = await this.loadItem(id, accessToken);
     const tolerances = await this.get(id, accessToken);
-    const family = item.feature_graph?.classification?.family ?? item.family_classification ?? 'unknown';
+    const family = familyOverride ?? item.feature_graph?.classification?.family ?? item.family_classification ?? 'unknown';
+    const assessed = await this.assessNeed(item, tolerances, family, accessToken, primaryProcessOverride);
+    // The process's own reading of each feature (process-profile.ts): held, an operation added, or left for review. Never a cost by itself.
+    const profile = toleranceProfileOf(family);
+    return {
+      ...assessed, profile,
+      decisions: evaluateToleranceDecisions({ profile, features: tolerances.instances, need: assessed.result, notAssessedReason: profile.capability === 'not_validated' ? null : assessed.reason }),
+    };
+  }
+
+  /**
+   * A forged or powder metal part: each feature judged by what its process holds (its row of the capability table, as a casting is by its
+   * process's), and a hole by whether the tooling can make it at all: only along the direction it closes in (the die or press direction) and at
+   * least the process's least hole diameter across (minForgeableHoleDiameter, memory/Forging; minPressableHoleDiameter, memory/Powder metal). Any
+   * other hole is drilled after.
+   */
+  private async assessDieDirection(
+    item: Awaited<ReturnType<FeatureToleranceService['loadItem']>>, tolerances: FeatureTolerancesView, accessToken: string,
+    process: { primaryProcess: string; sourceVersion: string; rule: DirectionalHoleRule },
+  ): Promise<Omit<MachiningNeedView, 'profile' | 'decisions'>> {
+    const { reference, missing } = await this.toleranceReference.get();
+    if (!reference) return { assessed: false, reason: 'Tolerance reference data not staged.', missing, result: null, instances: [] };
+    // The reference table is public-read (its row-level policy lets every user read it): the user's own client reads it.
+    const { data } = await this.database.getUserClient(accessToken)
+      .from('machining_reference_data').select('value')
+      .eq('category', 'variable').eq('source_version', process.sourceVersion).eq('key', process.rule.minHoleVariable).maybeSingle();
+    const minHole = Number((data as { value?: string } | null)?.value);
+    const die = (item.feature_graph as { summary?: { forgingDieDirection?: unknown } } | null)?.summary?.forgingDieDirection;
+    const dieDir = Array.isArray(die) && die.length === 3 ? (die as number[]).map(Number) : null;
+    const result = evaluateMachiningNeed({
+      primaryProcess: process.primaryProcess,
+      features: tolerances.instances,
+      ...reference,
+      formability: ({ instance }) => directionalHoleFormability(process.rule, instance, Number.isFinite(minHole) ? minHole : null, dieDir),
+    });
+    return { assessed: true, reason: null, missing: [], result, instances: tolerances.instances.map((i) => i.instance) };
+  }
+
+  private async assessNeed(
+    item: Awaited<ReturnType<FeatureToleranceService['loadItem']>>, tolerances: FeatureTolerancesView, family: string, accessToken: string, primaryProcessOverride?: string,
+  ): Promise<Omit<MachiningNeedView, 'profile' | 'decisions'>> {
+    const id = item.id;
     const casting = castingProcessOfFamily(family);
+    if (isMachiningFamily(family)) {
+      // A machined part has no forming process to fall short: each feature is made by its own operation, and a tolerance finer than that operation holds calls for
+      // a finer one (reaming, boring, fine milling) or an abrasive one (grinding, honing).
+      const { reference, missing } = await this.toleranceReference.get();
+      if (!reference) return { assessed: false, reason: 'Tolerance reference data not staged.', missing, result: null, instances: [] };
+      const capabilityOf = new Map(reference.links.map((l) => [l.operation, l.capabilityProcess]));
+      const routeFamily = machiningRouteFamilyOf(family);
+      const result = evaluateMachiningNeed({
+        primaryProcess: 'Machining',
+        features: tolerances.instances,
+        ...reference,
+        primaryProcessOf: ({ instance }) => {
+          const operation = resolveCanonicalOperation(instance.featureType, instance.variant, routeFamily)?.split(' // ')[0];
+          return (operation && capabilityOf.get(operation)) || null;
+        },
+      });
+      return { assessed: true, reason: null, missing: [], result, instances: tolerances.instances.map((i) => i.instance) };
+    }
+    if (family === 'forged') return this.assessDieDirection(item, tolerances, accessToken, { primaryProcess: 'Forging', sourceVersion: '2026-Forging', rule: FORGED_HOLES });
+    if (family === 'powder_metal') return this.assessDieDirection(item, tolerances, accessToken, { primaryProcess: 'Powder Metal', sourceVersion: '2026-PowderMetal', rule: PRESSED_HOLES });
     if (!casting) {
       return { assessed: false, reason: `No primary-process capability assessment for family ${family} yet.`, missing: [], result: null, instances: [] };
     }
@@ -230,6 +311,7 @@ export class FeatureToleranceService {
   }
 }
 
+
 export interface MachiningNeedView {
   assessed: boolean;
   /** Why not assessed (family has no primary-process capability, data missing). */
@@ -238,4 +320,7 @@ export interface MachiningNeedView {
   result: MachiningNeedResult | null;
   /** The feature instances assessed (sizes, depths, extents, viewer refs). */
   instances: FeatureInstance[];
+  /** How the part's process treats tolerances (process-profile.ts), and its decision on every feature. */
+  profile: ToleranceProcessProfile;
+  decisions: ToleranceDecision[];
 }

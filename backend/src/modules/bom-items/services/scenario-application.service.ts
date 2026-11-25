@@ -4,6 +4,9 @@ import { AuditService } from '../../../common/audit/audit.service';
 import { DatabaseService } from '../../../common/database/database.service';
 import { currentFeatureGraphVersion, MISSING_ANALYSIS_TEXT } from '../analysis-status';
 import { BOMItemsService } from '../bom-items.service';
+import { BomItemCostingService } from '../bom-item-costing.service';
+import { NO_COST_FEATURE } from '../costing/shared/core/engine-kernel';
+import { CostOverridesService } from './cost-overrides.service';
 import { AUTO_ROUTE_ID } from '../dto/apply-route.dto';
 import type { AppliedScenarioState, ApplyScenarioDto, ScenarioApplicationResult } from '../dto/apply-scenario.dto';
 import { MaterialCostSnapshotService } from './material-cost-snapshot.service';
@@ -46,6 +49,8 @@ export class ScenarioApplicationService {
 
   constructor(
     private readonly bomItems: BOMItemsService,
+    private readonly costing: BomItemCostingService,
+    private readonly overrides: CostOverridesService,
     private readonly database: DatabaseService,
     private readonly materials: MaterialCostSnapshotService,
     private readonly toolingCosts: ToolingCostSnapshotService,
@@ -95,27 +100,47 @@ export class ScenarioApplicationService {
         token,
       );
 
-      // 4. The material cost record, from the cost summary at this scenario.
+      // 4. The material cost record, from the cost summary at this scenario. An assembly's or a weldment's material is its parts': with parts
+      // under it in the BOM each part's record is in the roll-up, so it keeps none of its own (one written before, by an older Apply or as
+      // another process, is retired: it would count the material twice). One with no parts under it is its own one component, and keeps its own.
       let material: ScenarioApplicationResult['material'] = null;
-      if (grade) {
+      const hasParts = (await this.bomItems.findChildren(id, token)).length > 0;
+      if (grade || hasParts) {
         const item = await this.bomItems.findOne(id, userId, token);
-        const summary = await this.bomItems.getCostSummary(id, userId, token, undefined, request.location, request.productionLifeYears);
-        const snapshot = await this.materials.ensure({ item, grade, location: request.location, summary, userId, organizationId, token });
-        material = { grade, action: snapshot.action, recordId: snapshot.recordId };
+        const summary = await this.costing.getCostSummary(id, userId, token, undefined, request.location, request.productionLifeYears);
+        if (summary.materialOfParts === true) {
+          const retired = await this.materials.retireOwnMaterial(id, userId, token);
+          if (retired > 0) warnings.push(`${item.name}'s material is its parts' (each part's is in the BOM roll-up): its own material record was retired.`);
+        } else if (grade) {
+          // The record holds the material the summary priced: the grade, or the process's closest own material when the grade is not one of the
+          // process's (MaterialResolutionService.gradeForProcess), so the material cost and the process costs are of the same material.
+          const priced = summary.materialGrade.trim() || grade;
+          if (priced !== grade) warnings.push(`"${grade}" is priced as "${priced}", a material of the part's process (the cost summary says why).`);
+          const snapshot = await this.materials.ensure({ item, grade: priced, location: request.location, summary, userId, organizationId, token });
+          material = { grade: priced, action: snapshot.action, recordId: snapshot.recordId };
+        }
       }
 
-      // 5. The route.
-      const route = await this.applyRoute(id, request, user, token, warnings);
+      // 5. The route. When it is refused and the route applied before is gone with it (it was a route of the part's previous process:
+      // RouteApplicationService.retireRouteOfAnotherProcess), that route's tooling goes too: a forging die is not in a molded part's cost.
+      const routeBefore = await this.currentRouteId(id, token);
+      let route: ScenarioApplicationResult['route'];
+      try {
+        route = await this.applyRoute(id, request, user, token, warnings);
+      } catch (e: unknown) {
+        if (routeBefore && !(await this.currentRouteId(id, token))) await this.toolingCosts.retire({ bomItemId: id, userId, token });
+        throw e;
+      }
 
       // 5b. The tooling the applied route needs (the mold), from the cost summary at this scenario.
-      const afterRoute = await this.bomItems.getCostSummary(id, userId, token, undefined, request.location, request.productionLifeYears);
+      const afterRoute = await this.costing.getCostSummary(id, userId, token, undefined, request.location, request.productionLifeYears);
       const tooling = await this.toolingCosts.ensure({ bomItemId: id, summary: afterRoute, userId, organizationId, token });
 
       // 6. The machines picked in the Workflow Builder: a machine that cannot be saved is reported, and does not undo the route.
       const machineOverrides: ScenarioApplicationResult['machineOverrides'] = { saved: 0, failed: [] };
       for (const ov of request.machineOverrides ?? []) {
         try {
-          await this.bomItems.setMachineOverride(id, userId, token, ov.processKey, ov.mhrRecordId ?? null, request.location);
+          await this.overrides.setMachineOverride(id, userId, token, ov.processKey, ov.mhrRecordId ?? null, request.location);
           machineOverrides.saved += 1;
         } catch (e: unknown) {
           machineOverrides.failed.push({ processKey: ov.processKey, message: e instanceof Error ? e.message : String(e) });
@@ -170,6 +195,8 @@ export class ScenarioApplicationService {
     if (applied.replacedRouteId) {
       warnings.push(`The applied route ${applied.replacedRouteId} is not a route for this part any more (its process changed): the recommended ${applied.routeLabel} was applied.`);
     }
+    // What the route could not make or cost was applied as a $0 No Cost Feature: said, so the quote is never read as complete without it.
+    for (const reason of applied.noCostFeatures ?? []) warnings.push(`${NO_COST_FEATURE} (not costed, $0): ${reason}`);
     return { mode, routeId: applied.routeId, routeLabel: applied.routeLabel, created: applied.created, operations: applied.operations };
   }
 

@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   GPPS_REFERENCE_MATERIAL,
@@ -7,13 +7,27 @@ import {
   type PlasticReference,
   type PlasticReferenceRows,
   SECONDARY_VARIABLE_KEYS,
+  SECONDARY_LOOKUP_KEYS,
+  MOLD_COMPONENT_VARIABLE_KEYS,
 } from '../../../../../modules/bom-items/costing/plastic-molding/plastic-reference';
 import type { MaterialClampProperties } from '../../../../../modules/bom-items/costing/plastic-molding/clamp-force';
 import type { RealResinInputs } from '../../../../../modules/bom-items/costing/plastic-molding/process/cycle-time';
 
 // The Plastic reference, resolved by the production resolver from the same
 // memory/Plastic Modeling files migration 823 stages (not values typed here).
-const DIR = join(__dirname, '../../../../../../../memory/plastic modeling');
+const MEMORY = join(__dirname, '../../../../../../../memory');
+const DIR = join(MEMORY, 'plastic modeling');
+
+/**
+ * A memory/ folder by name, whatever its case. The reference data is checked out in CI from a repository whose folders are lower case
+ * ("secondary process"), while a local memory/ may capitalise them ("Secondary process"); Linux compares names exactly, a Mac does not, so a
+ * path written in one case passed here and failed in CI. The folder is found by its real directory entry, which works on both.
+ */
+function memoryFolder(name: string): string {
+  const entry = readdirSync(MEMORY).find((e) => e.toLowerCase() === name.toLowerCase());
+  if (!entry) throw new Error(`memory/ has no folder "${name}"`);
+  return join(MEMORY, entry);
+}
 
 function parseCsv(text: string): Array<Record<string, string>> {
   const rows: string[][] = [];
@@ -40,14 +54,20 @@ const read = (rel: string) => parseCsv(readFileSync(join(DIR, rel), 'utf-8').rep
 /** The staged rows the plastic reference resolves from, read from memory/Plastic Modeling the way migration 823 stages them. */
 export function realReferenceRows(): PlasticReferenceRows {
   // memory/Secondary process (2026-Secondary): the variables the plastic model reads from it (SECONDARY_VARIABLE_KEYS), loaded next to its own.
-  const secondary = parseCsv(readFileSync(join(DIR, '../Secondary process/variables_inherited.csv'), 'utf-8').replace(/^\uFEFF/, ''))
+  const secondary = parseCsv(readFileSync(join(memoryFolder('secondary process'), 'variables_inherited.csv'), 'utf-8').replace(/^\uFEFF/, ''))
     .filter((r) => (SECONDARY_VARIABLE_KEYS as readonly string[]).includes(r['Variable Name']!))
     .map((r) => ({ key: r['Variable Name']!, value: r['String Value'] ?? null }));
-  const variables = [...read('variables/digital_factory_variables.csv').map((r) => ({ key: r['variableName']!, value: r['stringValue'] ?? null })), ...secondary];
+  // memory/Assembly plastic molding (2026-AssyPlastic): the injection mold's standard components (MOLD_COMPONENT_VARIABLE_KEYS).
+  const components = parseCsv(readFileSync(join(memoryFolder('Assembly plastic molding'), 'plastic_molding_variables.csv'), 'utf-8').replace(/^\uFEFF/, ''))
+    .filter((r) => (MOLD_COMPONENT_VARIABLE_KEYS as readonly string[]).includes(r['Variable Name']!))
+    .map((r) => ({ key: r['Variable Name']!, value: r['String Value'] ?? null }));
+  const variables = [...read('variables/digital_factory_variables.csv').map((r) => ({ key: r['variableName']!, value: r['stringValue'] ?? null })), ...secondary, ...components];
   // Same file for each key that migration 823 stages under it (split tables in
   // lookup/ as X__records.csv, the settings export in process/).
   const fileOf = (k: string) => (k.startsWith('digital_factory_') ? `process/${k}.csv` : `lookup/${k}__records.csv`);
-  const lookups = Object.fromEntries(PLASTIC_LOOKUP_KEYS.map((k) => [k, read(fileOf(k))]));
+  // memory/Secondary process (2026-Secondary) lookups the plastic model reads (SECONDARY_LOOKUP_KEYS): the AQL sample sizes.
+  const secondaryLookups = SECONDARY_LOOKUP_KEYS.map((k) => [k, parseCsv(readFileSync(join(memoryFolder('secondary process'), 'lookup', `${k}.csv`), 'utf-8').replace(/^\uFEFF/, ''))]);
+  const lookups = Object.fromEntries([...PLASTIC_LOOKUP_KEYS.map((k) => [k, read(fileOf(k))]), ...secondaryLookups]);
   const gps = read('materials_final.csv').find((r) => r['name'] === GPPS_REFERENCE_MATERIAL);
   const gppsMaterial = gps ? Object.fromEntries(Object.entries(gps).map(([k, v]) => [k, v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : v])) : undefined;
   return { variables, lookups, ...(gppsMaterial ? { gppsMaterial } : {}) };

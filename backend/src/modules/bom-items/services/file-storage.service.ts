@@ -30,6 +30,9 @@ interface UploadedFile {
  * - Handle file versioning
  * - Ensure data integrity
  */
+/** The kinds of file a BOM item stores: its 3D model, its 2D drawing, its DXF/DWG drawing, and its board set (one zip). */
+export type StoredFileType = '3d' | '2d' | 'dxf' | 'board';
+
 @Injectable()
 export class FileStorageService {
   private readonly logger = new Logger(FileStorageService.name);
@@ -70,10 +73,12 @@ export class FileStorageService {
    * - Validate file extension
    */
   private readonly ALLOWED_DXF_EXTENSIONS = ['.dxf', '.dwg'];
+  /** A board set is always stored as one zip (loose Gerber files are packed into it before upload: costing/pcb/board-graph/board-files.ts). */
+  private readonly ALLOWED_BOARD_EXTENSIONS = ['.zip'];
 
   private validateFile(
     file: UploadedFile,
-    fileType: '3d' | '2d' | 'dxf',
+    fileType: StoredFileType,
   ): void {
     // Check file size
     if (file.size > this.MAX_FILE_SIZE) {
@@ -88,7 +93,9 @@ export class FileStorageService {
       ? this.ALLOWED_3D_EXTENSIONS
       : fileType === 'dxf'
         ? this.ALLOWED_DXF_EXTENSIONS
-        : this.ALLOWED_2D_EXTENSIONS;
+        : fileType === 'board'
+          ? this.ALLOWED_BOARD_EXTENSIONS
+          : this.ALLOWED_2D_EXTENSIONS;
 
     if (!allowedExtensions.includes(extension)) {
       throw new BadRequestException(
@@ -96,8 +103,8 @@ export class FileStorageService {
       );
     }
 
-    // DXF/DWG have no standard MIME type — skip MIME check for these formats.
-    if (fileType === 'dxf') return;
+    // DXF/DWG have no standard MIME type — skip MIME check for these formats. A board set's zip was checked by the archive gate.
+    if (fileType === 'dxf' || fileType === 'board') return;
 
     const allowedMimeTypes = fileType === '3d'
       ? this.ALLOWED_3D_TYPES
@@ -128,7 +135,7 @@ export class FileStorageService {
     userId: string,
     projectId: string,
     bomItemId: string,
-    fileType: '3d' | '2d' | 'dxf',
+    fileType: StoredFileType,
     originalName: string,
   ): string {
     const timestamp = Date.now();
@@ -145,7 +152,7 @@ export class FileStorageService {
    */
   async uploadFile(
     file: UploadedFile,
-    fileType: '3d' | '2d' | 'dxf',
+    fileType: StoredFileType,
     userId: string,
     projectId: string,
     bomItemId: string,
@@ -213,6 +220,14 @@ export class FileStorageService {
       this.logger.error(`Could not sign a download URL for ${storagePath}: ${error instanceof Error ? error.message : error}`);
       throw new InternalServerErrorException('Failed to generate a download URL');
     }
+  }
+
+  /**
+   * The bytes of a stored file, or null when nothing is stored at the path (a row can name a file this environment never received:
+   * an item carried over from another database). Any other failure throws. Read straight from the store: no signed URL round trip.
+   */
+  async download(storagePath: string): Promise<Buffer | null> {
+    return this.store.get(this.BUCKET_NAME, storagePath);
   }
 
   /** The names directly under a folder of the bucket. A listing that fails is an empty list (callers fall back). */

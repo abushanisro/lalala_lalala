@@ -9,8 +9,8 @@
  * Only families with a real process_taxonomy group are mapped. 'Machining'
  * collapses milled/turned/mill_turn into one label — a group-level display
  * has no finer signal to pick between the three real families underneath it
- * (see BOMItemDialog.tsx's PROCESS_GROUP_TO_FAMILY_HINT, the forward
- * direction of this same mapping, for the full rationale). A family with no
+ * (see processGroupToFamilyHint below, the forward direction of this same
+ * mapping: Machining is analysed with the hint "machined"). A family with no
  * entry here (every family outside sheet_metal/plastic_molded/milled/
  * turned/mill_turn/die_cast) has no real process_group counterpart yet —
  * callers fall back to their own generic family label, never a fabricated
@@ -25,21 +25,118 @@ export const FAMILY_HINT_TO_PROCESS_GROUP: Record<string, string> = {
   die_cast: 'Die Casting',
   sand_cast: 'Sand Casting',
   investment_cast: 'Casting Investment',
+  forged: 'Forging',
+  powder_metal: 'Powder Metal',
+  composite: 'Composites',
+  two_model: '2-Model Machining',
+  additive: 'Additive Manufacturing',
+  // A length of bar, tube or profile (cad-engine bar_tube): costed by the bar and tube engine (backend costing/bar-tube).
+  bar_tube: 'Bar and Tube Fabrication',
+  // A blow molded or rotomolded hollow shell (cad-engine roto_blow): costed by the Roto & Blow Molding engine (backend costing/roto-blow).
+  roto_blow: 'Roto & Blow Molding',
+  // An assembly's own work, costed from its BOM children (backend costing/assembly): a costed group with no CAD extractor.
+  assembly: 'Assembly',
+  // A weldment's welding, costed from its BOM children and the Cost Guide's weld table (backend costing/part-assembly): no CAD extractor either.
+  part_assembly: 'Part Assembly',
+  // A printed circuit board, measured from its board files (Gerber, drill, Pick Place) by the CAD engine's board routes, else from its 3D model by
+  // the pcb extractor, and costed by backend costing/pcb.
+  pcb: 'PCB',
 };
+
+/** Families with no 3D extractor (no family_hint is sent for them): an assembly and a weldment, costed from their BOM children and the Cost Guide. */
+const NO_CAD_EXTRACTOR: ReadonlySet<string> = new Set(['assembly', 'part_assembly'])
+
+/**
+ * Families whose routes are their own whatever a 3D analysis read: an assembly and a weldment (no extractor), and a PCB, priced from its board
+ * files when it has them even if its model was analysed as another family.
+ */
+const ROUTED_AS_COSTED: ReadonlySet<string> = new Set([...NO_CAD_EXTRACTOR, 'pcb'])
 
 export function familyToProcessGroupLabel(family: string | null | undefined): string | null {
   return (family && FAMILY_HINT_TO_PROCESS_GROUP[family]) || null;
 }
 
 /**
+ * Processes whose routes are complete alternatives inside a CAD family that has a builder of its own: a hydroformed part is analysed as sheet
+ * metal, but its routes (Hydroform Deep Draw, Hydroform Fluid Cell, each an offline blank then the press) are not cut-then-form routes.
+ */
+const ROUTES_AS_FAMILY: Readonly<Record<string, string>> = {
+  'Sheet Metal - Hydroforming': 'hydroforming',
+  // A roll formed part's routes: the coil line ending in a Scissor or a Blade cut-off (backend roll-forming-route.ts ROLL_FORMING_ROUTES).
+  'Sheet Metal Roll Forming': 'roll_forming',
+};
+
+/**
+ * The family a part's routes are listed for (the Workflow Builder): its Process's when that process lists complete routes inside its CAD
+ * family (a hydroformed part); the one it is costed as when that family has no CAD extractor (an assembly, a weldment: costed from the BOM and
+ * the Cost Guide, so its CAD family is none, or one from an analysis as another process); else its CAD family.
+ */
+export function routingFamilyOf(cadFamily: string | null | undefined, costedFamily: string | null | undefined, processGroup?: unknown): string | null {
+  if (typeof processGroup === 'string' && processGroup in ROUTES_AS_FAMILY) return ROUTES_AS_FAMILY[processGroup] ?? null;
+  return costedFamily && ROUTED_AS_COSTED.has(costedFamily) ? costedFamily : cadFamily ?? null;
+}
+
+/** The families made by machining (cad-engine shared/part_family.py MACHINING_FAMILIES). */
+const MACHINING_FAMILIES: ReadonlySet<string> = new Set(['milled', 'turned', 'mill_turn'])
+
+/**
+ * The cad-engine family_hint for a machining process that is not one family (the backend's MACHINED_FAMILY_HINT, part-family-process-group.ts):
+ * the part is analysed as a machined part and the geometry picks milled, turned or mill-turn. Not a family: no part is classified as it.
+ */
+export const MACHINED_FAMILY_HINT = 'machined'
+
+/**
  * The forward direction: a chosen process group -> the cad-engine family_hint
- * that runs its extractor. Derived from FAMILY_HINT_TO_PROCESS_GROUP (first
- * family per group, so Machining -> milled, the general machining family), so
- * the two directions cannot drift. Undefined = no extractor for that group.
+ * that runs its extractor, by the backend's rule (familyHintOfProcessGroup) so
+ * an upload and Refresh analysis analyse the part the same way. Derived from
+ * FAMILY_HINT_TO_PROCESS_GROUP, so the two directions cannot drift: a group of
+ * one family names it; a group of several families that are all machining
+ * families (Machining) is "machined", so a shaft is analysed as the turned
+ * part it is, not forced to milled; any other group names its first family.
+ * Undefined = no extractor for that group.
  */
 export function processGroupToFamilyHint(group: string | null | undefined): string | undefined {
   if (!group) return undefined;
-  return Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).find(([, g]) => g === group)?.[0];
+  const own = Object.entries(FAMILY_HINT_TO_PROCESS_GROUP).filter(([f, g]) => g === group && !NO_CAD_EXTRACTOR.has(f)).map(([f]) => f);
+  const families = own.length > 0 ? own : COSTED_AS_FAMILIES[group] ?? [];
+  if (families.length > 1 && families.every((f) => MACHINING_FAMILIES.has(f))) return MACHINED_FAMILY_HINT;
+  return families[0];
+}
+
+/**
+ * Process groups with no CAD family of their own, and the families they are costed as (the backend's COSTED_AS_FAMILIES,
+ * part-family-process-group.ts), the one their CAD analysis runs as first: a hydroformed part is a sheet-metal part; a Casting part is
+ * analysed as a die casting and priced by every casting process.
+ */
+const COSTED_AS_FAMILIES: Readonly<Record<string, readonly string[]>> = {
+  'Sheet Metal - Hydroforming': ['sheet_metal'],
+  // Roll forming: a sheet-metal profile measured as one (cad-engine roll_form), formed from coil on a roll forming line (backend roll-forming).
+  'Sheet Metal Roll Forming': ['sheet_metal'],
+  Casting: ['die_cast', 'sand_cast', 'investment_cast'],
+  // Insert molding: a molded plastic part on the insert presses (backend plastic-molding/insert).
+  'Assembly Molding': ['plastic_molded'],
+  // Multi-shot molding: a molded plastic part, each shot on a multi-shot press (backend plastic-molding/multi-shot).
+  'Assembly Plastic Molding': ['plastic_molded'],
+  // Multi-spindle machining: a turned part made from bar on a CNC multi-spindle or twin-spindle turning center (backend multi-spindle).
+  'Multi-Spindle Machining': ['turned'],
+  // Rapid prototyping: analysed for its build as an additive part, priced in its own domain (backend additive/additive-domain.ts).
+  'Rapid Prototyping': ['additive'],
+  // Stock machining: a part machined from bar or plate (its stock picked, sawn, then the Machining route; backend stock-machining). A
+  // machined part of any of the three machining families: the geometry picks which, so its analysis hint is "machined".
+  'Stock Machining': ['milled', 'turned', 'mill_turn'],
+};
+
+/**
+ * Whether a process group has a cost model (the backend's familiesOfProcessGroup, part-family-process-group.ts). A part whose Process has none
+ * is not costed, so the Process fields say so on the option instead of letting it be chosen blind.
+ */
+export function isCostedProcessGroup(group: string | null | undefined): boolean {
+  return !!group && (Object.values(FAMILY_HINT_TO_PROCESS_GROUP).includes(group) || group in COSTED_AS_FAMILIES);
+}
+
+/** A process group as an option of a Process field: marked when it has no cost model. */
+export function processGroupOptionLabel(group: string): string {
+  return isCostedProcessGroup(group) ? group : `${group} (not costed yet)`;
 }
 
 /** A family whose process group is a casting process (die, sand, investment). */

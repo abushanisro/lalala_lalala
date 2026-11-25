@@ -13,9 +13,9 @@
 import { catalogPairs, type CatalogOperation } from '../../sheet-metal/operation/catalog-operation-resolver';
 import type { PlasticFeature } from './plastic-catalog-operation-resolver';
 
-/** The four molding processes of the reference (the first segment of their catalog rows). */
+/** The molding processes of the reference (the first segment of their catalog rows): the four of Plastic Molding and Assembly Molding's insert molding. */
 export const MOLDING_PROCESSES: ReadonlySet<string> = new Set([
-  'Injection Molding', 'Reaction Injection Molding', 'Structural Foam Molding', 'Compression Molding',
+  'Injection Molding', 'Reaction Injection Molding', 'Structural Foam Molding', 'Compression Molding', 'Insert Injection Molding', 'Multi-Shot Molding',
 ]);
 
 /**
@@ -71,8 +71,11 @@ export function resolveRouteFeatureRecognition(input: {
   const vocabulary = new Set<string>();
   for (const raw of input.catalogRaw) {
     if (catalogProcessName(raw) !== process) continue;
-    const [top] = catalogPairs(raw);
+    const [top, inner] = catalogPairs(raw);
     if (top) vocabulary.add(top.featureType);
+    // A mold stage ("Multi-Shot//Stage" of multi-shot molding) holds the features molded in it: the feature right under the stage
+    // (its CurvedWall, Rib, Slides//SlideBundle, Lifters//LifterBundle) is the process's vocabulary as much as a top-level one.
+    if (top?.featureType === 'Stage' && inner) vocabulary.add(inner.featureType);
   }
 
   const recognised = new Map<string, number>();

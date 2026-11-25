@@ -27,6 +27,8 @@ export interface MachineCapability {
   shotCapacityGrams: number | null; // max shot weight in grams
   minMoldHeightMm: number | null;   // min daylight (mold height)
   maxMoldHeightMm: number | null;   // max daylight (mold height)
+  /** Live-tool (driven) spindle power, kW (mhr_records.live_tooling_power_kw, migration 1043): 0 = none, so no cross or off-axis hole; null = not known. */
+  liveToolingPowerKw: number | null;
 }
 
 export const EMPTY_CAPABILITY: MachineCapability = {
@@ -39,6 +41,7 @@ export const EMPTY_CAPABILITY: MachineCapability = {
   cuttableMaterials: null,
   tieBarXMm: null, tieBarYMm: null, shotCapacityGrams: null,
   minMoldHeightMm: null, maxMoldHeightMm: null,
+  liveToolingPowerKw: null,
 };
 
 interface SeedEntry {
@@ -332,6 +335,7 @@ export const MACHINE_CLASS_DEFAULTS: Record<MachineClass, Partial<MachineCapabil
   // other Machining secondary-op class above.
   machining_inspection: {},
   special_inspection: {},
+  xrf_analyzer: {},
   pem_press:      {},
   // Conservative floor for an unknown hole_forming machine with no capability
   // on file — real researched units (Whitney Jensen/FTC105-10T/Fresan FP10P,
@@ -366,6 +370,9 @@ export const MACHINE_CLASS_DEFAULTS: Record<MachineClass, Partial<MachineCapabil
   // 2026-09-02 from structural_foam_molding_machines.json's real
   // clampingForceKn) via MachineCandidate, not this seed fallback.
   structural_foam_molding: {},
+  // The insert presses' clamp, shot, mold heights and tie bars are their own (migration 1080), never a class default.
+  assembly_molding_insert_injection_molding: {},
+  assembly_plastic_molding_multi_shot_molding: {}, // chosen by the multi-shot engine from its own press attributes (injection units, stations, clamp, shot)
   // Compression molding has no clamp-tonnage-style capability concept this
   // registry models (see cost-compression-molding-engine.ts) — real per-
   // machine press force/kinematics are staged directly onto mhr_records'

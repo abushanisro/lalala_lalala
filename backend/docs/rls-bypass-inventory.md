@@ -49,11 +49,6 @@ The deprecated `getAdminClient()` and `.client` accessors have been removed from
 | 1 | auth: resolve organization membership before an org context exists | `organization-context.guard.ts` |
 | 1 | health-check: connectivity probe | `supabase.health.ts` |
 | 1 | storage: CAD and drawing file bucket operations | `file-storage.service.ts` |
-| 1 | storage: electronics design-file bucket (private, organization-prefixed keys, no end-user policy) | `electronics-file-store.ts` |
-| 1 | reference-data: `electronics_reference_data` (global rates, read-only, migration 910) | `electronics-reference.repository.ts` |
-| 1 | reference-data: machine and labour hour rates (`mhr_records`) for electronics quotes, benchmark rows and the quoting organization rows only | `electronics-rate-book.loader.ts` |
-| 1 | system-job: electronics pipeline worker has no user context; every statement filters by the organization id in the job payload | `electronics.repository.ts` |
-| 1 | user-delete: electronics designs and uploads have no end-user DELETE policy; the caller is proven to see the design first and every statement filters by organization id | `electronics.repository.ts` |
 | 1 | cad-upload: store the uploaded file and queue its job (migration 917) after an RLS check that the caller can see the BOM; the row carries the caller's organization | `cad-uploads.service.ts` |
 | 1 | cad-upload runner: claim and update queued uploads (`claim_next_cad_upload`); a background job with no user context, every statement addresses one upload row | `cad-upload-runner.ts` |
 | 3 | cad-upload runner: create, attach a file to, and remove the BOM items of an upload already checked at upload time; items carry the uploader and organization | `bom-items.service.ts` |

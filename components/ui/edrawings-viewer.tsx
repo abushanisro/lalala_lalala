@@ -1,30 +1,14 @@
 'use client';
 
-import { highlightLabel, uniqueOccurrenceTriangles } from '@/lib/features/highlight-display';
-import { faceIdForTriangle } from '@/lib/features/machining-feature-tree';
-import React, { Suspense, useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Grid, Center } from '@react-three/drei';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import React, { Suspense, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
-import { fitCameraToBox } from '@/lib/geometry/camera-fit';
-import { centreGeometry } from '@/lib/geometry/centre-geometry';
-import { BodyEdges, SetupAxisArrows } from '@/components/viewer/body-overlays';
-import { DimensionOverlay, DimensionOverlayCtx } from '@/components/viewer/dimension-overlay';
-import { PmiPanel } from '@/components/viewer/pmi-panel';
-import type { PmiReviewProps } from '@/components/viewer/pmi-review-list';
-import { layoutPmi, type PmiDatumMark, type PmiFrame } from '@/lib/features/pmi-frames';
-import { buildPmiGraphicsBuffers } from '@/lib/features/pmi-graphics';
-import { buildDimensionAnnotations, visibleAnnotations, type AnnotationMode, type AnnotationSource } from '@/lib/features/dimension-annotations';
-import { freshWorldBoundsOf } from '@/lib/geometry/scene-bounds';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import { computeHeatmap } from '@/lib/heatmap/engine';
-import { MANUFACTURING_RISK_RAMP } from '@/lib/heatmap/ramps';
-import type { HeatmapSource, HeatmapNormalization } from '@/lib/heatmap/types';
 import {
   Home,
   Download,
@@ -48,14 +32,36 @@ import {
   X,
   LayoutGrid,
   Scan,
-} from 'lucide-react';
-import { NestView } from './nest-view';
+} from '@/components/ui/icons';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { BodyEdges, SetupAxisArrows } from '@/components/viewer/body-overlays';
+import { DimensionOverlay, DimensionOverlayCtx } from '@/components/viewer/dimension-overlay';
+import { PmiPanel } from '@/components/viewer/pmi-panel';
+import type { PmiReviewProps } from '@/components/viewer/pmi-review-list';
+import { buildDimensionAnnotations, visibleAnnotations, type AnnotationMode, type AnnotationSource } from '@/lib/features/dimension-annotations';
+import { highlightLabel, uniqueOccurrenceTriangles, withFaceCentroids } from '@/lib/features/highlight-display';
+import { faceIdForTriangle } from '@/lib/features/machining-feature-tree';
+import { layoutPmi, type PmiDatumMark, type PmiFrame } from '@/lib/features/pmi-frames';
+import { buildPmiGraphicsBuffers } from '@/lib/features/pmi-graphics';
+import { fitCameraToBox } from '@/lib/geometry/camera-fit';
+import { centreGeometry } from '@/lib/geometry/centre-geometry';
+import { freshWorldBoundsOf } from '@/lib/geometry/scene-bounds';
+import { computeHeatmap } from '@/lib/heatmap/engine';
+import { MANUFACTURING_RISK_RAMP } from '@/lib/heatmap/ramps';
+import type { HeatmapSource, HeatmapNormalization } from '@/lib/heatmap/types';
+import type { FlatPatternBlank } from '@/lib/types/manufacturing';
+import { CLICK_MAX_DRAG_PX, MODEL_PICK_HOLD_MS, centreOf, zoomOnto } from '@/lib/viewer/feature-zoom';
+
 import { FlatPatternView } from './flat-pattern-view';
 import { MeasurementOverlay } from './measurement-overlay';
-import type { MeasureMode, MeasureSubMode, MeasureSelection, MeasureResult, MeasureUnit, ArcSelection } from './measurement-overlay';
 import { getResultColors } from './measurement-overlay';
 import { MeasurementPanel } from './measurement-panel';
-import type { FlatPatternBlank } from '@/lib/types/manufacturing';
+import { NestView } from './nest-view';
+
+import type { MeasureMode, MeasureSubMode, MeasureSelection, MeasureResult, MeasureUnit, ArcSelection } from './measurement-overlay';
+
+
 
 const RISK_HIGHLIGHT_COLORS: Record<string, string> = {
   low: '#22c55e',
@@ -95,6 +101,8 @@ interface FeatureNodeV2HL {
   diameter_mm?: number;
   radius_mm?: number;
   normal?: [number, number, number];
+  /** The source knows the faces, not where they are: take each occurrence's centroid (and the box) from its triangles on the mesh. */
+  centroidFromFaces?: boolean;
 }
 
 interface EDrawingsViewerProps {
@@ -153,6 +161,8 @@ interface EDrawingsViewerProps {
   nestSheetLengthMm?: number;
   /** Kerf / edge margin / sheet origin the cost engine nested with (blankSpec). */
   nestKerfMm?: number;
+  /** Where the costed kerf comes from, when not sheet metal's part-spacing table. */
+  nestKerfSource?: string;
   nestEdgeMarginMm?: number;
   nestSheetSource?: string;
   nestCandidateSheets?: Array<{ widthMm: number; lengthMm: number; source: string }>;
@@ -669,7 +679,7 @@ function ModelLoadStatusOverlay({ status }: { status: ModelLoadStatus }) {
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="bg-background/80 backdrop-blur-sm p-4 rounded-lg border border-destructive">
           <div className="flex flex-col items-center gap-3 text-center max-w-sm">
-            <div className="text-destructive">⚠️</div>
+            <AlertTriangle className="h-6 w-6 text-destructive" />
             <div className="text-sm font-medium">Failed to Load 3D Model</div>
             <div className="text-xs text-muted-foreground">{status.message}</div>
           </div>
@@ -1201,32 +1211,36 @@ function VertexHighlight({ point, color, size }: {
 // triggerKey encodes what's selected (featureId + occurrence index) so the effect re-fires
 // whenever the selection changes, not just when the feature type changes.
 // cx/cy/viewSpan are read from refs at fire time to avoid stale closures.
+// Brings a feature selected in a tree or a card into view: the camera aims at its centre (in 3D) from the distance its size needs, keeping the
+// direction the engineer was looking (lib/viewer/feature-zoom.ts). A feature picked on the model itself is already in view: the selection that
+// pick causes does not move the camera (modelPickAtRef), or the part would jump from under the cursor.
 function FeatureZoomEffect({
   triggerKey,
-  cx,
-  cy,
+  focus,
   viewSpan,
+  modelPickAtRef,
 }: {
   triggerKey: string | undefined;
-  cx: number;
-  cy: number;
+  focus: [number, number, number];
   viewSpan: number;
+  modelPickAtRef?: React.MutableRefObject<number> | undefined;
 }) {
   const { camera, controls } = useThree();
-  const cxRef = React.useRef(cx);
-  const cyRef = React.useRef(cy);
+  const focusRef = React.useRef(focus);
   const spanRef = React.useRef(viewSpan);
-  cxRef.current = cx;
-  cyRef.current = cy;
+  focusRef.current = focus;
   spanRef.current = viewSpan;
 
   useEffect(() => {
     if (!triggerKey || !controls || !('target' in controls)) return;
+    if (modelPickAtRef && performance.now() - modelPickAtRef.current < MODEL_PICK_HOLD_MS) return;
     const span = Math.max(spanRef.current, 8);
     const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
     const dist = (span / (2 * Math.tan(fov / 2))) * 1.8;
-    (controls as any).target.set(cxRef.current, cyRef.current, 0);
-    camera.position.set(cxRef.current, cyRef.current, dist);
+    const t = (controls as any).target as THREE.Vector3;
+    const next = zoomOnto([camera.position.x, camera.position.y, camera.position.z], [t.x, t.y, t.z], focusRef.current, dist);
+    t.set(...next.target);
+    camera.position.set(...next.position);
     (controls as any).update();
   }, [triggerKey, camera, controls]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2664,6 +2678,8 @@ function STLModel({
           userData={{ isPrimaryModel: true }}
           visible={!isExploded || explodedParts.length === 0}
           onClick={(e) => {
+            // A press that moved (rotating or panning the view) and ended on the part is not a click on it.
+            if (e.delta > CLICK_MAX_DRAG_PX) return;
             // Heatmap inspector — fires when heatmap is active (takes priority over measurement)
             if (heatmapActive && onHeatmapInspect && e.intersections.length > 0) {
               e.stopPropagation();
@@ -2919,7 +2935,7 @@ function Scene({
   occurrenceFaceIndices, groupFaceIndices,
   riskGroups, selectedOccurrenceColor, groupHighlightColor,
   heatmapActive, heatmapSources, heatmapNormalization, heatmapRiskValuesRef, onHeatmapInspect, onTrianglePick,
-  onLoadStatus,
+  onLoadStatus, modelPickAtRef,
 }: {
   fileUrl: string; modelColor: string; showGrid: boolean;
   viewPosition: [number, number, number]; autoFit: boolean; fitCenter: [number, number, number];
@@ -2955,6 +2971,8 @@ function Scene({
   heatmapNormalization?: HeatmapNormalization | undefined;
   heatmapRiskValuesRef?: React.RefObject<Float32Array | null> | undefined;
   onHeatmapInspect?: ((worldPos: [number, number, number], triangleIndex: number, riskValue: number) => void) | undefined;
+  /** When a feature was last picked on the model (performance.now()): the selection it causes does not move the camera. */
+  modelPickAtRef?: React.MutableRefObject<number> | undefined;
   onTrianglePick?: ((triangleIndex: number) => void) | undefined;
   onLoadStatus: (status: ModelLoadStatus) => void;
 }) {
@@ -2991,11 +3009,11 @@ function Scene({
         const selOcc = selectedOccurrenceIndex !== null
           ? highlightOccurrences.occurrences[selectedOccurrenceIndex]
           : null;
-        let cx = 0, cy = 0, viewSpan = 80;
+        let focus: [number, number, number] = [0, 0, 0];
+        let viewSpan = 80;
         let triggerKey: string;
         if (selOcc) {
-          cx = selOcc.centroid[0];
-          cy = selOcc.centroid[1];
+          focus = [selOcc.centroid[0], selOcc.centroid[1], selOcc.centroid[2] ?? 0];
           const d = highlightOccurrences.diameter_mm;
           const r = highlightOccurrences.radius_mm;
           const sizeHint = d ? d * 4 : r ? r * Math.PI * 3 : 40;
@@ -3003,14 +3021,12 @@ function Scene({
           triggerKey = `${highlightOccurrences.id}#${selectedOccurrenceIndex}`;
         } else {
           const b = highlightOccurrences.bbox_centered;
-          if (b) {
-            cx = (b.x_min + b.x_max) / 2;
-            cy = (b.y_min + b.y_max) / 2;
-            viewSpan = Math.max(b.x_max - b.x_min, b.y_max - b.y_min, 8);
-          }
+          // The centre of the occurrences themselves, in 3D (the bbox is only in plan); its spread sizes the view.
+          focus = centreOf(highlightOccurrences.occurrences) ?? (b ? [(b.x_min + b.x_max) / 2, (b.y_min + b.y_max) / 2, 0] : focus);
+          if (b) viewSpan = Math.max(b.x_max - b.x_min, b.y_max - b.y_min, 8);
           triggerKey = `${highlightOccurrences.id}#all`;
         }
-        return <FeatureZoomEffect triggerKey={triggerKey} cx={cx} cy={cy} viewSpan={viewSpan} />;
+        return <FeatureZoomEffect triggerKey={triggerKey} focus={focus} viewSpan={viewSpan} modelPickAtRef={modelPickAtRef} />;
       })()}
 
       {/* Hole disc fill + HAZ ring — context-aware, reads featureType+sheetThickness from FeatureOverlayCtx */}
@@ -3093,7 +3109,7 @@ export const EDrawingsViewer = React.memo(function EDrawingsViewer({
   onBrepFacePick,
   highlightColor,
   setupAxes,
-  bomItemId, nestQuantity = 1, nestSheetWidthMm, nestSheetLengthMm, nestKerfMm, nestEdgeMarginMm, nestSheetSource, nestCandidateSheets, nestMaterialLabel, nestGradeLabel, processConflict,
+  bomItemId, nestQuantity = 1, nestSheetWidthMm, nestSheetLengthMm, nestKerfMm, nestKerfSource, nestEdgeMarginMm, nestSheetSource, nestCandidateSheets, nestMaterialLabel, nestGradeLabel, processConflict,
   flatPatternPartName, flatPatternOutlinePointsMm, flatPatternHolesMm, flatPatternOutlineSource,
   flatPatternBoundingLengthMm, flatPatternBoundingWidthMm, flatPatternCutLengthMm, flatPatternBendCount,
   flatPatternHoleCount, flatPatternPierceCount, flatPatternAreaMm2, flatPatternBlanks,
@@ -3223,12 +3239,15 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
   // face_id → FaceMapEntry lookup for O(1) triangle range access
   // Plain click on the model -> the B-Rep face under it (face_map triangle
   // ranges), so a host page can select the feature that owns that face.
+  const modelPickAtRef = useRef(0);
   const pickTriangle = useMemo(() => {
     if (!onBrepFacePick || !faceMap?.length) return undefined;
     const sorted = [...faceMap].sort((a, b) => a.tri_start - b.tri_start);
     return (triangleIndex: number) => {
       const faceId = faceIdForTriangle(sorted, triangleIndex);
-      if (faceId != null) onBrepFacePick(faceId);
+      if (faceId == null) return;
+      modelPickAtRef.current = performance.now();
+      onBrepFacePick(faceId);
     };
   }, [onBrepFacePick, faceMap]);
 
@@ -3236,6 +3255,13 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
     if (!faceMap?.length) return new Map();
     return new Map(faceMap.map((e) => [e.face_id, e]));
   }, [faceMap]);
+
+  // Where the highlighted faces are, for the zoom: from the mesh itself when the source did not say (withFaceCentroids).
+  const placedHighlight = useMemo(() => {
+    const position = currentGeometry?.getAttribute('position');
+    if (!highlightOccurrences?.centroidFromFaces || !position || !faceMapIndex.size) return highlightOccurrences;
+    return withFaceCentroids(highlightOccurrences, position.array as ArrayLike<number>, currentGeometry?.index?.array ?? null, faceMapIndex);
+  }, [highlightOccurrences, currentGeometry, faceMapIndex]);
 
   // ─── Heatmap Engine ───────────────────────────────────────────────────────────
   const heatmapActive = !!heatmapSources?.length;
@@ -3948,7 +3974,7 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
               variant="ghost"
               size="sm"
               onClick={measureMode === 'IDLE' ? startMeasure : exitMeasure}
-              className={`text-[#1f2d3a] hover:bg-[#dfe8e0] gap-1.5 text-xs font-medium ${measureMode !== 'IDLE' ? 'bg-blue-600 hover:bg-blue-700' : ''}`}
+              className={`text-[#1f2d3a] hover:bg-[#dfe8e0] gap-1.5 text-xs font-medium ${measureMode !== 'IDLE' ? 'bg-brand-600 hover:bg-brand-700' : ''}`}
               title="Measure tool — click two points on the model"
             >
               <Ruler className="h-3.5 w-3.5" />
@@ -3996,12 +4022,12 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
                   sheetWidthMm={nestSheetWidthMm}
                   sheetLengthMm={nestSheetLengthMm}
                   kerfMm={nestKerfMm}
+                  kerfSource={nestKerfSource}
                   edgeMarginMm={nestEdgeMarginMm}
                   sheetSource={nestSheetSource}
                   candidateSheets={nestCandidateSheets}
                   materialLabel={nestMaterialLabel}
                   gradeLabel={nestGradeLabel}
-                  processConflict={processConflict}
                   thicknessMm={sheetThickness}
                 />
               </DialogContent>
@@ -4121,7 +4147,7 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
               projectedFaceIndices={projectedFaceIndices}
               projectedHighlightColor={VIEW_COLORS[currentView] ?? '#06b6d4'}
               showProjectedHighlight={showProjectedAreaHighlight}
-              highlightOccurrences={highlightOccurrences}
+              highlightOccurrences={placedHighlight}
               selectedOccurrenceIndex={selectedOccurrenceIndex}
               occurrenceFaceIndices={occurrenceFaceIndices}
               groupFaceIndices={groupFaceIndices}
@@ -4134,6 +4160,7 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
               heatmapRiskValuesRef={heatmapRiskValuesRef}
               {...(onHeatmapInspect ? { onHeatmapInspect } : {})}
               {...(pickTriangle ? { onTrianglePick: pickTriangle } : {})}
+              modelPickAtRef={modelPickAtRef}
               onLoadStatus={setModelLoadStatus}
             />
             {measureMode !== 'IDLE' && (
@@ -4197,7 +4224,7 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
 
           {highlightOccurrences && (
             <div className="absolute top-12 left-4 z-10 bg-black/70 backdrop-blur-sm border border-white/20 rounded px-2.5 py-1 text-xs flex items-center gap-2 pointer-events-none">
-              <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+              <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0" />
               <span className="font-medium text-white">
                 {highlightLabel(highlightOccurrences)}
               </span>
@@ -4384,7 +4411,7 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
                             setInternalSelectedFeature(next);
                             if (next) setInternalShowFeatures(true);
                           }}
-                          className={`w-full text-left p-0.5 rounded border transition-all ${isSel ? 'border-blue-400 bg-blue-900/30' : 'border-[#666666] bg-[#3f3f3f] hover:bg-[#484848]'}`}
+                          className={`w-full text-left p-0.5 rounded border transition-all ${isSel ? 'border-brand-400 bg-brand-900/30' : 'border-[#666666] bg-[#3f3f3f] hover:bg-[#484848]'}`}
                         >
                           <div className="flex items-center gap-1 mb-0.5">
                             <Crosshair className="h-2.5 w-2.5 shrink-0" style={{ color: featureColor }} />
@@ -4428,8 +4455,8 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
                     <div className="bg-[#3f3f3f] rounded px-1 py-0.5">
                       <div className="text-[7px] text-gray-400 mb-0.5">Recommended Processes</div>
                       {dfmAnalysisData.dfmAnalysis.recommendedProcesses.slice(0, 3).map((p: string, i: number) => (
-                        <div key={i} className="text-[8px] text-blue-300 flex items-center gap-1">
-                          <span className="w-1 h-1 bg-blue-400 rounded-full shrink-0" />{p}
+                        <div key={i} className="text-[8px] text-brand-300 flex items-center gap-1">
+                          <span className="w-1 h-1 bg-brand-400 rounded-full shrink-0" />{p}
                         </div>
                       ))}
                     </div>

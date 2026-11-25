@@ -170,15 +170,18 @@ export const PLASTIC_FORMULAS: readonly FormulaEntry[] = [
     state: 'VALIDATED', implementedIn: 'process/cost-injection-molding-engine.ts',
   },
   {
-    id: 'F-11', version: 1, name: 'Press capability',
-    expression: 'clamp >= F-01, shot >= F-02, tie bars fit part + runner, tool height within the press daylight',
+    id: 'F-11', version: 2, name: 'Press capability',
+    expression: 'clamp >= F-01, shot >= F-02, tie bars fit part + runner, tool height <= the press maximum mold height',
     outputUnit: 'capable | not capable, with reasons',
     inputs: [
       { name: 'press clamp, shot, tie bars, mold height', unit: 'kN, g, mm, mm', source: `${MEM}/machine: limits.*` },
       { name: 'estimated tool height', unit: 'mm', source: 'part longest side + 100 mm (IM_TOOL_HEIGHT_ALLOWANCE_MM)' },
     ],
     dependsOn: ['F-01', 'F-02'], referenceSource: `${MEM}/machine`,
-    assumptions: ['Tool height is the longest part side plus a 100 mm allowance (no mold design exists at quote time).'],
+    assumptions: [
+      'Tool height is the longest part side plus a 100 mm allowance (no mold design exists at quote time).',
+      'A mold thinner than the press minimum mold height is built up to it (thicker clamp plates or a riser plate): the minimum does not rule a press out (v2).',
+    ],
     state: 'ASSUMED', implementedIn: '../shared/capability/machine-selection/press-checks.ts',
   },
   {
@@ -293,8 +296,8 @@ export const PLASTIC_FORMULAS: readonly FormulaEntry[] = [
   },
 
   {
-    id: 'F-25', version: 1, name: 'Mold base and plate steel',
-    expression: 'base = smallest tblStandardMoldBaseSizes holding (layout + borders); A = max(min_A, r x h + border_cav); B = max(min_B, (1 - r) x h + border_core); m = W x L x (clamp_top + A + B + support + clamp_bottom) x rho; cost = m x price x moldBaseCostFactor',
+    id: 'F-25', version: 2, name: 'Mold base and plate steel',
+    expression: 'base = smallest tblStandardMoldBaseSizes holding (layout + borders), over every layoutNumCav layout of the cavity count; A = max(min_A, r x h + border_cav); B = max(min_B, (1 - r) x h + border_core); m = W x L x (clamp_top + A + B + support + clamp_bottom) x rho; cost = m x price x moldBaseCostFactor',
     outputUnit: 'USD',
     inputs: [
       { name: 'layout, between-parts border, edge borders', unit: 'count, mm', source: `${MEM}/lookup: layoutNumCav, tblEdgeMoldBorderX/Y; variables: betweenPartsMoldBorder` },
@@ -417,6 +420,81 @@ export const PLASTIC_FORMULAS: readonly FormulaEntry[] = [
   },
 
   {
+    id: 'F-40', version: 1, name: 'Insert pull test',
+    expression: 'sample s = handling + inserts x (seat + displacement / speed x 60 + approach + record);  time s/part = sample size x sample s / batch;  scrap/part = sample size x tested part cost / batch',
+    outputUnit: 's',
+    inputs: [
+      { name: 'sample size', unit: 'parts per batch', source: 'memory/Secondary process lookup CMMInspection at defaultCMMInspection (AQL special inspection)' },
+      { name: 'speed', unit: 'mm/min', source: 'reference/quality-inspection-reference.csv: 5 mm/min published pull-out test speed' },
+      { name: 'handling, seat, displacement, approach, record', unit: 's, mm', source: 'reference/quality-inspection-reference.csv (costing engineer estimates)' },
+      { name: 'tester rate', unit: 'USD/h', source: 'Mark-10 2026 list price 7,040 USD by the machine-hour pattern of migration 580' },
+    ],
+    dependsOn: [],
+    referenceSource: 'memory/Secondary process + reference/quality-inspection-reference.csv',
+    assumptions: [
+      'No published standard sets the time or the frequency of an insert pull test: the sample is the AQL special level of the reference, the handling times are estimates.',
+      'Each sampled part is destroyed and charged at its material and molding cost.',
+    ],
+    state: 'ASSUMED', implementedIn: 'calculators/plastic-cycle-time-seeds.ts',
+  },
+
+  {
+    id: 'F-38', version: 1, name: 'Gate trimming',
+    expression: 'w = n x sqrt(A) / 30;  time s = gates per cavity x w / trim rate',
+    outputUnit: 's',
+    inputs: [
+      { name: 'A', unit: 'mm2', source: 'CAD part surface area' },
+      { name: 'n', unit: 'constant', source: 'reference/gate-sizing-reference.csv (Pye, Injection Mould Design): 0.6 PE/PS, 0.7 POM/PC/PP, 0.8 PMMA/PA, 0.9 PVC; 0.7 assumed for others' },
+      { name: 'gates per cavity', unit: 'count', source: `${MEM}/variables: defaultNumberOfGatesPerCavity` },
+      { name: 'trim rate', unit: 'mm/s', source: `${MEM}/variables: manualTrimRate (mm/s in memory/Roto & blow molding)` },
+    ],
+    dependsOn: [],
+    referenceSource: 'reference/gate-sizing-reference.csv + memory/Plastic Modeling/variables',
+    assumptions: [
+      'The gate is an edge (standard) gate sized by Pye\'s rule; the cut length is its width. Handling the part is not timed.',
+      'A material Pye does not list (ABS, PET, PBT, PPS, TPE) takes the middle constant 0.7, review required.',
+    ],
+    state: 'ASSUMED', implementedIn: 'calculators/plastic-cycle-time-seeds.ts',
+  },
+
+  {
+    id: 'F-39', version: 1, name: 'First article inspection',
+    expression: 'one-off USD = ((touches x probe s x parts) / efficiency adjustments + touches x programming s + CMM setup) / 3600 x CMM machine and crew rate',
+    outputUnit: 'USD',
+    inputs: [
+      { name: 'touches', unit: 'count', source: 'memory/Secondary process lookup CMMInspectionProbeTouches by CAD feature (else the CAD hole count)' },
+      { name: 'probe s, programming s', unit: 's', source: 'memory/Secondary process variables: defaultCMMProbeTime, CMMProgrammingTimePerTouch' },
+      { name: 'parts', unit: 'count', source: 'Approved default (2026-11-18): 3 first-run parts measured in full' },
+      { name: 'CMM rate, setup', unit: 'USD/h, h', source: 'memory/Secondary process machines: the CMM chosen for the part (Axiom Too 1200, USA)' },
+    ],
+    dependsOn: [],
+    referenceSource: 'memory/Secondary process (2026-Secondary)',
+    assumptions: [
+      'The dimensional inspection of a molded part is its first article inspection: one-off per part number, NRE, not a per-part line.',
+      'Three first-run parts are measured in full, programmed once; the CMM model is the one the CMM Inspection secondary operation uses.',
+    ],
+    state: 'ASSUMED', implementedIn: 'process/cost-injection-molding-engine.ts',
+  },
+
+  {
+    id: 'F-37', version: 1, name: 'Water baffles',
+    expression: 'baffles = 2 x floor(L / spacing);  cost = baffles x (unit cost + assembly h x assembly rate) + (baffles x tapping h + tap setup h) x machining rate',
+    outputUnit: 'USD',
+    inputs: [
+      { name: 'L', unit: 'mm', source: 'the standard mold base length (F-25)' },
+      { name: 'spacing', unit: 'mm', source: 'memory/Assembly plastic molding: baffleSpacing ("linear spacing of baffle holes in cavity and core plate")' },
+      { name: 'unit cost, assembly h, tapping h, tap setup h', unit: 'USD, h', source: 'memory/Assembly plastic molding: waterBafflesCost, assemblyTimeHrsWaterBaffles, baffleTappingTimeHrs, baffleTapSetup' },
+    ],
+    dependsOn: ['F-25'],
+    referenceSource: 'memory/Assembly plastic molding/plastic_molding_variables',
+    assumptions: [
+      'Approved rule (2026-11-18; no baffle count is on file): one row of baffles along each of the cavity and core plates, baffleSpacing apart over the mold base length.',
+      'The tapping setup is charged once per tool when it has baffles; the baffles are tapped and the setup run at the machining rate, assembled at the assembly rate.',
+    ],
+    state: 'ASSUMED', implementedIn: 'calculators/mold-tooling-calculator.ts',
+  },
+
+  {
     id: 'F-36', version: 1, name: 'Material drying',
     expression: 'demand = resin per part x 3600 / press time per part;  dryer = smallest model with nylon throughput >= demand;  dryer hourly = (P (1 - salvage) / life + P x maintenance + P x installation / life) / (6240 x uptime x utilization) + rated kW x electricity;  cost per part = dryer hourly x press time per part / 3600',
     outputUnit: 'USD',
@@ -530,7 +608,6 @@ export const PLASTIC_FORMULAS: readonly FormulaEntry[] = [
     ['G-03', 'Slides and lifters of CAD bundles not recognised or not sized (the sized ones are F-28); the slide movement in the cycle', 'tblSlideSizes; slideCycleRate; costPerHydraulicEjector'],
     ['G-04', 'Rib inserts of CAD ribs not measured, or too large for an insert class (the others are F-31; heat treatment is F-29)', 'machinedRibThreshold; *InsertArea'],
     ['G-05', 'Mold texture', 'cavityTextures; cmToolTexture; toolBlastingRate; toolChemicalEtchingRate; toolMaskingRate; toolDryingTime'],
-    ['G-06', 'Water baffles (no count on file; the cooling lines are F-30)', 'waterBafflesCost'],
     ['G-07', 'Cavity inserts (SPI classes built with inserts) and unscrewing mechanisms (no CAD signal counts them)', 'tblSpiType.Use Insert; costPerUnscrewingMechanism'],
     ['G-08', 'Hot-runner manifold and controller (no price on file; the hot drops are F-33)', 'manifoldPlateThickness; defaultHotDropLayout'],
     ['G-09', 'Handling, setup scrap and plasticizing in the cycle', 'partHandlingTimes; materialHandling; scrapTimeInMinutes_*; plasticizingRateByClampForce; machine plasticizingRateGppsGPerS'],

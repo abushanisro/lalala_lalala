@@ -176,6 +176,11 @@
             "example": "file-path-3d.stp",
             "type": "string"
           },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
+            "type": "string"
+          },
           "fileDxfPath": {
             "example": "file-path-drawing.dxf.gz",
             "type": "string"
@@ -587,6 +592,38 @@
         ],
         "type": "object"
       },
+      "BomItemStarDto": {
+        "properties": {
+          "bomItemId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "starred": {
+            "description": "Whether the caller has the item starred after the call.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bomItemId",
+          "starred"
+        ],
+        "type": "object"
+      },
+      "BomItemStarsDto": {
+        "properties": {
+          "bomItemIds": {
+            "description": "The items of the BOM the caller starred (the caller's own stars only).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "bomItemIds"
+        ],
+        "type": "object"
+      },
       "BomPartDto": {
         "properties": {
           "bomItemId": {
@@ -804,8 +841,20 @@
             "description": "Key inputs the engineer entered (e.g. {\"Hole Diameter\": 6}); they replace the part CAD values when choosing lookup rows",
             "type": "object"
           },
+          "liveTool": {
+            "description": "The calculator runs on a lathe's live tool (milling on the lathe), as the cost engine ran it: its spindle cap is the live tool's",
+            "type": "boolean"
+          },
           "location": {
             "description": "Digital factory location — when given, the part is costed and the calculator gets the inputs the engine used",
+            "type": "string"
+          },
+          "machineId": {
+            "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
+            "type": "string"
+          },
+          "process": {
+            "description": "The process of the line being edited (\"Drilling\"), when several lines run the same calculator (a mill's Drilling line and its mill line): its inputs are that line's",
             "type": "string"
           },
           "runKey": {
@@ -1209,6 +1258,11 @@
           },
           "file3dPath": {
             "example": "file-path-3d.stp",
+            "type": "string"
+          },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
             "type": "string"
           },
           "fileDxfPath": {
@@ -1626,10 +1680,6 @@
           "remarkId",
           "commentText"
         ],
-        "type": "object"
-      },
-      "CreateContainerDto": {
-        "properties": {},
         "type": "object"
       },
       "CreateDailyProductionEntryDto": {
@@ -2371,6 +2421,23 @@
             "example": "uuid",
             "type": "string"
           },
+          "calculatorId": {
+            "description": "The stored calculator that computed cycleTime. Null when the cycle was typed in.",
+            "format": "uuid",
+            "nullable": true,
+            "type": "object"
+          },
+          "calculatorRun": {
+            "description": "The run that computed cycleTime: {trace, lookupMatches}, the calculation as the calculator ran it. Null when the cycle was typed in.",
+            "nullable": true,
+            "type": "object"
+          },
+          "calculatorVersion": {
+            "description": "calculators.version of calculatorId when it computed cycleTime.",
+            "example": 1,
+            "nullable": true,
+            "type": "object"
+          },
           "category": {
             "description": "Real HR Rates machine category this line is costed against (migration 719)",
             "example": "3 Roll Bender",
@@ -3090,6 +3157,11 @@
             "description": "Scrap percentage (additional waste)",
             "example": 0,
             "type": "number"
+          },
+          "stockLabel": {
+            "description": "The blank the cost engine sized for the part, as it describes it",
+            "example": "59×50×49 billet",
+            "type": "string"
           },
           "unitCost": {
             "description": "Unit cost in INR (₹/unit)",
@@ -5652,8 +5724,20 @@
             "description": "Key inputs the engineer entered (e.g. {\"Hole Diameter\": 6}); they replace the part CAD values when choosing lookup rows",
             "type": "object"
           },
+          "liveTool": {
+            "description": "The calculator runs on a lathe's live tool (milling on the lathe), as the cost engine ran it: its spindle cap is the live tool's",
+            "type": "boolean"
+          },
           "location": {
             "description": "Digital factory location — when given, the part is costed and the calculator gets the inputs the engine used",
+            "type": "string"
+          },
+          "machineId": {
+            "description": "The machine chosen in the dialog (mhr_records.id): the inputs the calculator reads from its machine (top spindle speed) are read from it",
+            "type": "string"
+          },
+          "process": {
+            "description": "The process of the line being edited (\"Drilling\"), when several lines run the same calculator (a mill's Drilling line and its mill line): its inputs are that line's",
             "type": "string"
           }
         },
@@ -6027,6 +6111,21 @@
             "description": "Complete calculation breakdown",
             "type": "object"
           },
+          "calculatorId": {
+            "description": "The stored calculator that computed the cycle (migrations 428, 1097). Null when the cycle is not a calculator's.",
+            "nullable": true,
+            "type": "string"
+          },
+          "calculatorRun": {
+            "description": "The run that computed the cycle: {trace, lookupMatches} (migration 1097). Its inputs are what the calculator reopens with. Null when none.",
+            "nullable": true,
+            "type": "object"
+          },
+          "calculatorVersion": {
+            "description": "calculators.version of calculatorId when it computed the cycle.",
+            "nullable": true,
+            "type": "number"
+          },
           "category": {
             "description": "Real HR Rates machine category this line is costed against (migration 719). NULL on engine-generated lines, which identify themselves through operation instead.",
             "example": "3 Roll Bender",
@@ -6270,6 +6369,9 @@
           "chargeBasis",
           "otherCostPerPart",
           "cyclePhases",
+          "calculatorId",
+          "calculatorVersion",
+          "calculatorRun",
           "partsPerCycle",
           "scrap",
           "totalCostPerPart",
@@ -7048,6 +7150,10 @@
             "example": 36.7,
             "type": "number"
           },
+          "stockLabel": {
+            "description": "The blank the cost engine sized for the part; absent when none was recorded",
+            "type": "object"
+          },
           "totalCost": {
             "description": "Total cost in INR",
             "example": 20034.68,
@@ -7355,10 +7461,6 @@
         "required": [
           "bomItemId"
         ],
-        "type": "object"
-      },
-      "RequestQuoteDto": {
-        "properties": {},
         "type": "object"
       },
       "ReviewSandSnapshotDto": {
@@ -7931,6 +8033,10 @@
         "properties": {},
         "type": "object"
       },
+      "SessionStartDto": {
+        "properties": {},
+        "type": "object"
+      },
       "SetCalculatorFieldOverrideDto": {
         "properties": {
           "calculator": {
@@ -8070,10 +8176,6 @@
           "tableName",
           "params"
         ],
-        "type": "object"
-      },
-      "StartUploadDto": {
-        "properties": {},
         "type": "object"
       },
       "SupplierEvaluationGroupDto": {
@@ -8789,6 +8891,11 @@
           },
           "file3dPath": {
             "example": "file-path-3d.stp",
+            "type": "string"
+          },
+          "fileBoardPath": {
+            "description": "The board set (Gerber layers, drill file, Pick Place) kept as one zip",
+            "example": "file-path-board-set.zip",
             "type": "string"
           },
           "fileDxfPath": {
@@ -9778,6 +9885,23 @@
             "description": "BOM item ID to link this cost to",
             "type": "string"
           },
+          "calculatorId": {
+            "description": "The stored calculator that computed cycleTime. Null when the cycle was typed in.",
+            "format": "uuid",
+            "nullable": true,
+            "type": "object"
+          },
+          "calculatorRun": {
+            "description": "The run that computed cycleTime: {trace, lookupMatches}, the calculation as the calculator ran it. Null when the cycle was typed in.",
+            "nullable": true,
+            "type": "object"
+          },
+          "calculatorVersion": {
+            "description": "calculators.version of calculatorId when it computed cycleTime.",
+            "example": 1,
+            "nullable": true,
+            "type": "object"
+          },
           "category": {
             "description": "Real HR Rates machine category this line is costed against (migration 719)",
             "example": "3 Roll Bender",
@@ -10360,6 +10484,10 @@
           "scrap": {
             "description": "Scrap percentage",
             "type": "number"
+          },
+          "stockLabel": {
+            "description": "The blank the cost engine sized for the part, as it describes it",
+            "type": "string"
           },
           "unitCost": {
             "description": "Unit cost in INR (₹/unit)",
@@ -12342,6 +12470,36 @@
         ]
       }
     },
+    "/api/v1/auth/sign-ins": {
+      "post": {
+        "operationId": "AuthController_startSession_v1",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionStartDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A new sign-in: restarts the inactivity clock of its Auth0 session (proven by the sign-in's ID token).",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/v1/balloon-diagrams": {
       "post": {
         "operationId": "ProjectReportsController_createBalloonDiagram_v1",
@@ -12724,6 +12882,117 @@
         "summary": "Update a benchmark session",
         "tags": [
           "Benchmark Sessions"
+        ]
+      }
+    },
+    "/api/v1/bom-item-stars": {
+      "get": {
+        "operationId": "BomItemStarsController_list_v1",
+        "parameters": [
+          {
+            "description": "The BOM whose starred items to list.",
+            "in": "query",
+            "name": "bomId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomItemStarsDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The items of a BOM the caller starred.",
+        "tags": [
+          "BOM Items"
+        ]
+      }
+    },
+    "/api/v1/bom-item-stars/{bomItemId}": {
+      "delete": {
+        "operationId": "BomItemStarsController_unstar_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bomItemId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomItemStarDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Remove the caller's star from a BOM item (an item without one changes nothing).",
+        "tags": [
+          "BOM Items"
+        ]
+      },
+      "put": {
+        "operationId": "BomItemStarsController_star_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bomItemId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomItemStarDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "description": "No such item, or not one the caller can see."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Star a BOM item for the caller (starring a starred item changes nothing).",
+        "tags": [
+          "BOM Items"
         ]
       }
     },
@@ -13844,6 +14113,35 @@
         ]
       }
     },
+    "/api/v1/bom-items/{id}/design-guidance": {
+      "get": {
+        "operationId": "BOMItemsController_getDesignGuidance_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The design guidance"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The part's design guidance: its cost drivers (the DFM findings of its process), its material among the materials the process draws from, its walls against the staged limits, the mold tooling, the machining, the tolerances, the setups, and the hole and fillet sizes. A projection of the analysis, the reference data and the applied cost; a value none of them holds is null with its reason",
+        "tags": [
+          "BOM Items"
+        ]
+      }
+    },
     "/api/v1/bom-items/{id}/dfm-scores": {
       "get": {
         "operationId": "BOMItemsController_getDFMScores_v1",
@@ -14225,7 +14523,7 @@
             "bearer": []
           }
         ],
-        "summary": "Upload 2D/3D/DXF files for BOM item",
+        "summary": "Upload 2D/3D/DXF files or a board set (Gerber, drill, Pick Place) for BOM item",
         "tags": [
           "BOM Items"
         ]
@@ -14258,6 +14556,35 @@
           }
         ],
         "summary": "Force delete a BOM item still used in production lots (organization admins)",
+        "tags": [
+          "BOM Items"
+        ]
+      }
+    },
+    "/api/v1/bom-items/{id}/forging-dfm": {
+      "get": {
+        "operationId": "BOMItemsController_getForgingDfm_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The findings, and every check with its limit, source and status (passed, failed, or not evaluated with why)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Design-for-forging checks of a forged part against the forging reference rules (forging_manufacturabilitySeverity); findings carry the faces to highlight",
         "tags": [
           "BOM Items"
         ]
@@ -14399,6 +14726,35 @@
         ]
       }
     },
+    "/api/v1/bom-items/{id}/machining-dfm": {
+      "get": {
+        "operationId": "BOMItemsController_getMachiningDfm_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The findings, and every check with its limit, source and status (passed, failed, or not evaluated with why)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Design-for-machining checks of a part against the machining reference limits; findings carry the features and faces to highlight",
+        "tags": [
+          "BOM Items"
+        ]
+      }
+    },
     "/api/v1/bom-items/{id}/machining-need": {
       "get": {
         "operationId": "BOMItemsController_getMachiningNeed_v1",
@@ -14510,6 +14866,51 @@
           }
         ],
         "summary": "Tensile, shear and yield strength of the part material, from the row its quote uses",
+        "tags": [
+          "BOM Items"
+        ]
+      }
+    },
+    "/api/v1/bom-items/{id}/material-usage": {
+      "get": {
+        "operationId": "BOMItemsController_getMaterialUsage_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "batchSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "location",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The material usage with its justification (kg, %)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The part's net and gross material usage and scrap at a location and batch size, as Apply would record them, with the working behind each figure: the reference calculator that ran or the rule, and every value it read with where it came from. Nothing is written",
         "tags": [
           "BOM Items"
         ]
@@ -17118,479 +17519,6 @@
         ],
         "tags": [
           "fx"
-        ]
-      }
-    },
-    "/api/v1/electronic-coverage-reports": {
-      "get": {
-        "operationId": "ElectronicsController_coverage_v1",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "For every planned engine: which inputs are sourced, pending confirmation, or a written gap",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-designs": {
-      "get": {
-        "operationId": "ElectronicsController_listDesigns_v1",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Designs of the organization (optionally one project), each with its revisions and their upload status",
-        "tags": [
-          "Electronics costing"
-        ]
-      },
-      "post": {
-        "operationId": "ElectronicsController_createDesign_v1",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateContainerDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Create an empty assembly or sub-assembly (a container for child parts)",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-designs/{designId}": {
-      "delete": {
-        "operationId": "ElectronicsController_deleteDesign_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "designId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Delete a design and everything below it, with its files (permanent)",
-        "tags": [
-          "Electronics costing"
-        ]
-      },
-      "get": {
-        "operationId": "ElectronicsController_getDesign_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "designId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "One design with its revisions and their upload status",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-designs/{designId}/revisions/{revisionId}": {
-      "delete": {
-        "operationId": "ElectronicsController_deleteRevision_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "designId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "revisionId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Delete one revision and its files; the last revision removes the part (permanent)",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-file-formats": {
-      "get": {
-        "operationId": "ElectronicsController_formats_v1",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "The file types an upload accepts, with the role each board file extension has",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-jobs/{jobId}": {
-      "get": {
-        "operationId": "ElectronicsController_job_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "jobId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Status of a parse or quote job",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-quotes": {
-      "post": {
-        "operationId": "ElectronicsController_quote_v1",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RequestQuoteDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Queue routing and costing for a parsed upload",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-results/{resultId}": {
-      "get": {
-        "operationId": "ElectronicsController_result_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "resultId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "A versioned cost result with its full trace",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads": {
-      "post": {
-        "operationId": "ElectronicsController_upload_v1",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/StartUploadDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Store a PCBA or harness upload and queue its parse job",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/features": {
-      "get": {
-        "operationId": "ElectronicsController_features_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "An upload with its file report, extracted feature graph (provenance, unresolved, findings) and attached documents",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/latest-result": {
-      "get": {
-        "operationId": "ElectronicsController_latestResult_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "The most recent cost result of an upload (with the scenario it was priced with), or null",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/preview": {
-      "get": {
-        "operationId": "ElectronicsController_preview_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "The layers of an uploaded board set drawn as SVG on one shared frame",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/reparse": {
-      "post": {
-        "operationId": "ElectronicsController_reparseUpload_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Read the stored files of a revision again",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/scenario-options": {
-      "get": {
-        "operationId": "ElectronicsController_scenarioOptions_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "The assembly steps a scenario can price for this board, whether each applies, and the inputs each reads",
-        "tags": [
-          "Electronics costing"
-        ]
-      }
-    },
-    "/api/v1/electronic-uploads/{uploadId}/thumbnail": {
-      "get": {
-        "operationId": "ElectronicsController_thumbnail_v1",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "uploadId",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "A small SVG picture of the board for list cards, served from storage (svg is null when none can be shown)",
-        "tags": [
-          "Electronics costing"
         ]
       }
     },
@@ -20851,6 +20779,80 @@
           }
         ],
         "summary": "Get one real sm_lookup_* cost-engine table by name (allowlisted tables only) — used by calculator popups' \"view lookup table\" button",
+        "tags": [
+          "Processes"
+        ]
+      }
+    },
+    "/api/v1/processes/source-tables/machine/{id}": {
+      "get": {
+        "operationId": "ProcessesController_getMachineSourceTable_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "column",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The machine a calculator input was read from, among the machines of its class and location, shaped as a lookup table",
+        "tags": [
+          "Processes"
+        ]
+      }
+    },
+    "/api/v1/processes/source-tables/material/{id}": {
+      "get": {
+        "operationId": "ProcessesController_getMaterialSourceTable_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "column",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The material a calculator input was read from, among the materials of its group, shaped as a lookup table",
         "tags": [
           "Processes"
         ]

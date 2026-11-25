@@ -13,7 +13,8 @@ import { Logger } from '../../../common/logger/logger.service';
 import { DatabaseService } from '../../../common/database/database.service';
 import { ExchangeRateService, organizationIdOf } from '../../../common/exchange-rate/exchange-rate.service';
 import { getCurrencyForLocation } from '../../mhr/constants/mhr-calculation.constants';
-import { PERSISTED_PROCESS_COST_COLUMNS, PersistedProcessCostRow, resolvePersistedProcessCost, sumPersistedProcessCost } from '../../bom-items/costing/shared/core/persisted-process-cost';
+import { calculatorColumnsFromClient, NO_CALCULATION } from '../../bom-items/costing/shared/calculator-run';
+import { PERSISTED_PROCESS_COST_COLUMNS, PROCESS_COST_MONEY_COLUMNS, PersistedProcessCostRow, processCostRowsInUsd, resolvePersistedProcessCost, sumPersistedProcessCost } from '../../bom-items/costing/shared/core/persisted-process-cost';
 import {
   CreateProcessCostDto,
   UpdateProcessCostDto,
@@ -121,7 +122,8 @@ export class ProcessCostService {
       return r;
     });
 
-    const records = enriched.map((row) => ProcessCostResponseDto.fromDatabase(row));
+    const inUsd = await this.rowsInUsd(enriched, accessToken);
+    const records = inUsd.map((row) => ProcessCostResponseDto.fromDatabase(row));
     const total = count || 0;
     const totalPages = Math.ceil(total / limit);
 
@@ -183,8 +185,9 @@ export class ProcessCostService {
       };
     }
 
-    // Recalculate to ensure fresh values
-    const recalculatedData = this.recalculateRecord(row);
+    // In USD, as every record is reported (see rowsInUsd), then recalculated to ensure fresh values
+    const [rowUsd] = await this.rowsInUsd([row], accessToken);
+    const recalculatedData = this.recalculateRecord(rowUsd);
 
     return ProcessCostResponseDto.fromDatabase(recalculatedData);
   }
@@ -497,6 +500,8 @@ export class ProcessCostService {
       cycle_time: createDto.cycleTime,
       parts_per_cycle: createDto.partsPerCycle,
       scrap: createDto.scrap,
+      // The calculator the cycle was computed with and its run (migration 1097), and the cycle's phases from that run; none for a typed cycle.
+      ...calculatorColumnsFromClient(createDto),
 
       // Calculated results
       total_cost_per_part: calculationResult.totalCostPerPart,
@@ -614,6 +619,11 @@ export class ProcessCostService {
       this.logger.error(`Process cost not found: ${id}`, 'ProcessCostService');
       throw new NotFoundException(`Process cost record with ID ${id} was not found or you do not have access to it.`);
     }
+    // A route applied in a non-USD factory is stored in that factory's currency (cost_currency_basis 'local'). The edit is made in USD,
+    // so the stored row is read in USD first and, below, written back whole in USD: patching USD rates onto a rupee row mixed the two.
+    const storedCurrency = String(existing.currency ?? 'USD').trim().toUpperCase();
+    const fromForeign = storedCurrency !== 'USD';
+    const [existingUsd] = await this.rowsInUsd([existing], accessToken);
 
     // Only re-derive machine_name/machine_class when mhrId or benchmarkMhrId is
     // actually part of this update payload (new id, same id re-sent, or explicit
@@ -654,12 +664,12 @@ export class ProcessCostService {
     const { currency: updateLocalCurrency } = getCurrencyForLocation(updateDto.location ?? existing.location ?? '');
     const toUsdIfProvided = (v: number | undefined): number | undefined =>
       v !== undefined ? rates.toUsd(v, updateLocalCurrency) : undefined;
-    const directRateUsd   = toUsdIfProvided(updateDto.directRate)   ?? existing.direct_rate;
-    const indirectRateUsd = toUsdIfProvided(updateDto.indirectRate) ?? existing.indirect_rate;
-    const fringeRateUsd   = toUsdIfProvided(updateDto.fringeRate)   ?? existing.fringe_rate;
-    const machineRateUsd  = toUsdIfProvided(updateDto.machineRate)  ?? existing.machine_rate;
-    const machineValueUsd = toUsdIfProvided(updateDto.machineValue) ?? existing.machine_value;
-    const laborRateUsd    = toUsdIfProvided(updateDto.laborRate)    ?? existing.labor_rate;
+    const directRateUsd   = toUsdIfProvided(updateDto.directRate)   ?? existingUsd.direct_rate;
+    const indirectRateUsd = toUsdIfProvided(updateDto.indirectRate) ?? existingUsd.indirect_rate;
+    const fringeRateUsd   = toUsdIfProvided(updateDto.fringeRate)   ?? existingUsd.fringe_rate;
+    const machineRateUsd  = toUsdIfProvided(updateDto.machineRate)  ?? existingUsd.machine_rate;
+    const machineValueUsd = toUsdIfProvided(updateDto.machineValue) ?? existingUsd.machine_value;
+    const laborRateUsd    = toUsdIfProvided(updateDto.laborRate)    ?? existingUsd.labor_rate;
 
     // Merge with update values — already-USD (see toUsdIfProvided above)
     const merged = {
@@ -727,6 +737,13 @@ export class ProcessCostService {
     if (updateDto.batchSize !== undefined) updateData.batch_size = updateDto.batchSize;
     if (updateDto.heads !== undefined) updateData.heads = updateDto.heads;
     if (updateDto.cycleTime !== undefined) updateData.cycle_time = updateDto.cycleTime;
+    // The calculation behind the cycle (migration 1097). Sent: the calculator and run the cycle was computed with (none for a typed
+    // cycle), with the cycle's phases from that run. Not sent while the cycle changes: the stored run no longer describes it, so it goes.
+    if (updateDto.calculatorId !== undefined || updateDto.calculatorRun !== undefined) {
+      Object.assign(updateData, calculatorColumnsFromClient(updateDto));
+    } else if (updateDto.cycleTime !== undefined && updateDto.cycleTime !== Number((existing as { cycle_time?: unknown }).cycle_time)) {
+      Object.assign(updateData, NO_CALCULATION);
+    }
     if (updateDto.partsPerCycle !== undefined) updateData.parts_per_cycle = updateDto.partsPerCycle;
     if (updateDto.scrap !== undefined) updateData.scrap = updateDto.scrap;
     if (updateDto.isActive !== undefined) updateData.is_active = updateDto.isActive;
@@ -735,14 +752,31 @@ export class ProcessCostService {
     if (updateDto.processRouteId !== undefined) updateData.process_route_id = updateDto.processRouteId;
     if (updateDto.bomItemId !== undefined) updateData.bom_item_id = updateDto.bomItemId;
 
-    // Always update calculated fields
-    updateData.total_cost_per_part = calculationResult.totalCostPerPart;
+    // Always update calculated fields. What the line charges beyond machine and crew time (a melt's energy: other_cost_per_part,
+    // migration 1005, "included in total_cost_per_part") stays in the total: the engine recalculates the time cost only.
+    const otherCostPerPart = existingUsd.other_cost_per_part != null ? Number(existingUsd.other_cost_per_part) : 0;
+    const totalCostPerPart = calculationResult.totalCostPerPart + otherCostPerPart;
+    updateData.total_cost_per_part = totalCostPerPart;
     updateData.setup_cost_per_part = calculationResult.setupCostPerPart;
     updateData.total_cycle_cost_per_part = calculationResult.totalCycleCostPerPart;
-    updateData.total_cost_before_scrap = calculationResult.totalCostBeforeScrap;
+    updateData.total_cost_before_scrap = calculationResult.totalCostBeforeScrap + otherCostPerPart;
     updateData.scrap_adjustment = calculationResult.scrapAdjustment;
-    updateData.total_batch_cost = calculationResult.totalBatchCost;
-    updateData.calculation_breakdown = calculationResult;
+    updateData.total_batch_cost = totalCostPerPart * merged.batchSize;
+    updateData.calculation_breakdown = otherCostPerPart > 0
+      ? { ...calculationResult, otherCostPerPart, totalCostPerPart, totalBatchCost: updateData.total_batch_cost }
+      : calculationResult;
+
+    // A row stored in a factory currency is written back whole in USD: every money column the patch did not set, in USD, and the
+    // conversion recorded (migration 707: 'converted' names the local currency and the rate that reached USD).
+    if (fromForeign) {
+      for (const col of PROCESS_COST_MONEY_COLUMNS) {
+        if (updateData[col] === undefined && existingUsd[col] !== undefined) updateData[col] = existingUsd[col];
+      }
+      updateData.currency = 'USD';
+      updateData.cost_currency_basis = 'converted';
+      updateData.cost_currency_local = storedCurrency;
+      updateData.cost_fx_rate_from_local = rates.toUsd(1, storedCurrency);
+    }
 
     // Any manual update via the dialog marks the row as engineer-overridden
     updateData.is_override = true;
@@ -936,6 +970,15 @@ export class ProcessCostService {
   }
 
 
+  /**
+   * Records with their money in USD, the currency this API reports every record in (and that create() and update() store). A route applied in
+   * a non-USD factory is stored in the factory's currency (route-application.service.ts, cost_currency_basis 'local'); each such row is
+   * converted with its own organization's rates, the snapshot the cost engines priced it with.
+   */
+  private rowsInUsd<T extends { currency?: string | null }>(rows: T[], accessToken?: string): Promise<T[]> {
+    return processCostRowsInUsd(rows, (org) => this.exchangeRateService.getSnapshot(accessToken ?? null, org));
+  }
+
   async getBulkTotalCosts(
     bomItemIds: string[],
     accessToken?: string,
@@ -948,7 +991,7 @@ export class ProcessCostService {
     const { data, error } = await this.databaseService
       .getUserClient(accessToken)
       .from('process_cost_records')
-      .select(`bom_item_id, ${PERSISTED_PROCESS_COST_COLUMNS}`)
+      .select(`bom_item_id, organization_id, currency, ${PERSISTED_PROCESS_COST_COLUMNS}`)
       .in('bom_item_id', bomItemIds)
       .eq('is_active', true);
 
@@ -958,7 +1001,7 @@ export class ProcessCostService {
     }
 
     const totals: Record<string, number> = Object.fromEntries(bomItemIds.map(id => [id, 0]));
-    for (const row of data ?? []) {
+    for (const row of await this.rowsInUsd(data ?? [], accessToken)) {
       const { totalCostPerPart } = resolvePersistedProcessCost(row);
       totals[row.bom_item_id] = (totals[row.bom_item_id] ?? 0) + totalCostPerPart;
     }

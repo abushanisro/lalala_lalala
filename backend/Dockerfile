@@ -5,7 +5,7 @@
 #   docker build --build-context core=core -t backend backend      (docker-compose.prod.yml passes it as additional_contexts)
 
 # The true-shape nester: a small static binary the backend runs as a bounded child process (docs/ASSEMBLY_CORE.md).
-FROM rust:1.99-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS nester
+FROM rust:1.100-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS nester
 RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY --from=core Cargo.toml Cargo.lock ./

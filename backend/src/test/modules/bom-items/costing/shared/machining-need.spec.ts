@@ -1,5 +1,7 @@
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { CASTING_LOOKUP_KEYS, holeCastability, holeProximityCastability, resolveCastingReference } from '../../../../../modules/bom-items/costing/casting/casting-reference';
+import { resolveCanonicalOperation } from '../../../../../modules/bom-items/costing/machining/process/canonical-operation';
 import { featureInstances, resolveFeatureRequirements, type ManualTolerance } from '../../../../../modules/bom-items/costing/shared/tolerance/feature-tolerances';
 import { evaluateMachiningNeed, resolveOperationLinks } from '../../../../../modules/bom-items/costing/shared/tolerance/machining-need';
 import { resolveCapabilityTable, resolveIsoTable } from '../../../../../modules/bom-items/costing/shared/tolerance/process-capability';
@@ -128,5 +130,115 @@ describe('other casting features (real memory/Die Casting tables)', () => {
     });
     expect(need.features[0]!.verdict).toBe('needs_machining');
     expect(need.features[0]!.forming?.operation).toBe('Step Drilling');
+  });
+});
+
+describe('a machined part: each feature is judged by the operation that makes it', () => {
+  const machined = {
+    features: [
+      { feature_type: 'SimpleHole', variant: 'blind', occurrences: [
+        { face_ids: [1], source_face_stable_ids: ['m1'], diameter_mm: 4, depth_mm: 10 },
+        { face_ids: [2], source_face_stable_ids: ['m2'], diameter_mm: 4, depth_mm: 10 },
+      ] },
+      { feature_type: 'Edge', variant: 'round', occurrences: [{ face_ids: [3], source_face_stable_ids: ['m3'] }] },
+    ],
+  };
+  const instances = featureInstances(machined);
+  const keyOf = (label: string) => instances.find((i) => i.label === label)!.key!;
+  const capabilityOf = new Map(links.map((l) => [l.operation, l.capabilityProcess]));
+  const operationOf: Record<string, string> = { SimpleHole: 'Drilling', Edge: 'Rounding' };
+  const run = (manualRows: ManualTolerance[]) => evaluateMachiningNeed({
+    primaryProcess: 'Machining',
+    features: resolveFeatureRequirements({ instances, manual: manualRows, policy: { mode: 'assume_achieved' }, callouts: [] }).instances,
+    capability, iso, links,
+    primaryProcessOf: ({ instance }) => capabilityOf.get(operationOf[instance.featureType]!) ?? null,
+  });
+
+  it('with no requirement every feature is held by its operation, and what that operation holds is stated', () => {
+    const r = run([]);
+    expect(r.machiningRequired).toBe(false);
+    const hole = r.features.find((f) => f.label === 'SimpleHole:1')!;
+    expect(hole).toMatchObject({ verdict: 'as_primary', primaryProcess: 'Drilling' });
+    expect(hole.achieved.map((a) => a.category)).toEqual(['diamTolerance', 'positionTolerance', 'roughness']);
+    expect(hole.achieved[0]).toMatchObject({ best: 0.0375, worst: 0.24 });
+  });
+
+  it('a diameter finer than drilling holds needs a finer operation, and drilling itself is not offered again', () => {
+    // +/-0.005 mm on a 4 mm hole: a 10 um band = IT6; drilling holds IT11 at best.
+    const r = run([{ featureKey: keyOf('SimpleHole:1'), category: 'diamTolerance', value: 0.005 }]);
+    const hole = r.features.find((f) => f.label === 'SimpleHole:1')!;
+    expect(hole.verdict).toBe('needs_machining');
+    expect(hole.reasons.join(' ')).toMatch(/IT6; Drilling best is IT11/);
+    expect(hole.candidates.map((c) => c.capabilityProcess)).toEqual(expect.arrayContaining(['Reaming', 'Boring']));
+    expect(hole.candidates.some((c) => c.capabilityProcess === 'Drilling')).toBe(false);
+    expect(r.features.find((f) => f.label === 'SimpleHole:2')!.verdict).toBe('as_primary');
+  });
+
+  it('a feature whose operation has no capability on file is undecided when it carries a requirement, never passed', () => {
+    const r = run([{ featureKey: keyOf('Edge:1'), category: 'tolerance', value: 0.05 }]);
+    const edge = r.features.find((f) => f.label === 'Edge:1')!;
+    expect(edge).toMatchObject({ verdict: 'undecided', primaryProcess: null, achieved: [] });
+    expect(edge.reasons.join(' ')).toMatch(/no operation with a capability on file/);
+  });
+});
+
+describe('a milled keyway is judged by the Milling capability, the link migration 1120 adds for Obround Slot Milling', () => {
+  // The row migration 1120 adds to the staged table, built here beside the links of the reference CSV: the CSV may not hold it.
+  const KEYWAY_LINK = { Operation: 'Obround Slot Milling', 'Capability Process': 'Milling', Basis: 'process family (user decision 2026-11-23)' };
+  const withoutLink = links.filter((l) => l.operation !== KEYWAY_LINK.Operation);
+  const withLink = [...withoutLink, ...resolveOperationLinks([KEYWAY_LINK])];
+
+  const instances = featureInstances({ features: [{ feature_type: 'Keyway', variant: 'default', occurrences: [
+    { face_ids: [1], source_face_stable_ids: ['k1'], extent_mm: 27 },
+    { face_ids: [2], source_face_stable_ids: ['k2'], extent_mm: 27 },
+  ] }] });
+  // +/-0.1 mm at 27 mm is IT11, which milling holds; +/-0.005 mm is IT5, finer than milling's best.
+  const manualRows: ManualTolerance[] = [
+    { featureKey: instances[0]!.key!, category: 'tolerance', value: 0.1 },
+    { featureKey: instances[1]!.key!, category: 'tolerance', value: 0.005 },
+  ];
+  // A machined part as feature-tolerance.service.ts judges it: each feature by the capability its own operation links to.
+  const judge = (linkRows: typeof links, operationOf: (featureType: string, variant: string | null) => string | undefined) => {
+    const capabilityOf = new Map(linkRows.map((l) => [l.operation, l.capabilityProcess]));
+    return evaluateMachiningNeed({
+      primaryProcess: 'Machining',
+      features: resolveFeatureRequirements({ instances, manual: manualRows, policy: { mode: 'assume_achieved' }, callouts: [] }).instances,
+      capability, iso, links: linkRows,
+      primaryProcessOf: ({ instance }) => capabilityOf.get(operationOf(instance.featureType, instance.variant) ?? '') ?? null,
+    }).features;
+  };
+  const labelled = (featureType: string, variant: string | null) => resolveCanonicalOperation(featureType, variant, 'milling')?.split(' // ')[0];
+
+  it('the row is the one the migration writes', () => {
+    const migration = readFileSync(join(__dirname, '../../../../../../migrations/1120_operation_capability_obround_slot_milling.sql'), 'utf8');
+    expect(migration).toContain(JSON.stringify(KEYWAY_LINK));
+  });
+
+  it('a tolerance milling holds is held, and a finer one is short of Milling: neither is left undecided', () => {
+    const [held, short] = judge(withLink, labelled);
+    expect(held).toMatchObject({ verdict: 'as_primary', primaryProcess: 'Milling' });
+    expect(held!.reasons.join(' ')).toMatch(/IT11; Milling holds IT9/);
+    expect(short).toMatchObject({ verdict: 'needs_machining', primaryProcess: 'Milling', shortCategories: ['tolerance'] });
+    expect(short!.reasons.join(' ')).toMatch(/IT5; Milling best is IT9/);
+    // The operation that already mills the keyway is not offered to finish it, and is not turned away for want of a link.
+    expect(short!.candidates.map((c) => c.operation)).not.toContain('Obround Slot Milling');
+    expect(short!.rejected.map((r) => r.operation)).not.toContain('Obround Slot Milling');
+  });
+
+  it('the verdicts are the ones the keyway had while it was labelled Rough Milling', () => {
+    const asRoughMilling = judge(withoutLink, () => 'Rough Milling');
+    const now = judge(withLink, labelled);
+    const verdictOf = ({ rejected: _rejected, ...rest }: (typeof now)[number]) => rest;
+    expect(now.map(verdictOf)).toEqual(asRoughMilling.map(verdictOf));
+    // The one difference: Obround Slot Milling is no longer listed as an operation with no capability linked.
+    expect(asRoughMilling[1]!.rejected.filter((r) => !now[1]!.rejected.some((n) => n.operation === r.operation)))
+      .toEqual([{ operation: 'Obround Slot Milling', reason: 'no capability process linked (operation_capability_process)' }]);
+  });
+
+  it('without the link a keyway with a tolerance is not judged at all', () => {
+    for (const f of judge(withoutLink, labelled)) {
+      expect(f).toMatchObject({ verdict: 'undecided', primaryProcess: null, achieved: [] });
+      expect(f.reasons.join(' ')).toMatch(/no operation with a capability on file makes a Keyway/);
+    }
   });
 });

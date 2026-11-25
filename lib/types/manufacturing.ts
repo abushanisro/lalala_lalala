@@ -341,6 +341,8 @@ export interface FeatureNodeV2 {
   catalog_operations?: string[];
   /** Machining features: geometric variant of feature_type (e.g. "threaded" on a SimpleHole). */
   variant?: string;
+  /** Built from faces alone (no occurrence centroids): the viewer measures where each occurrence is from its triangles. */
+  centroidFromFaces?: boolean;
 }
 
 export interface FeatureGraphV2 {
@@ -369,7 +371,15 @@ export interface FaceGraph {
   edge_graph: { a: number; b: number; convexity: 'convex' | 'concave' | 'smooth'; dihedral_deg: number }[];
 }
 
-export type MeasurementKey = 'pierce_count' | 'bend_line_length' | 'flat_pattern_area' | 'wall_thickness' | 'part_volume';
+export type MeasurementKey = 'pierce_count' | 'bend_line_length' | 'flat_pattern_area' | 'wall_thickness' | 'part_volume'
+  // A part measured along its die or press direction (forging, powder metal): cad-engine forging/feature_extractor.py die_measurements.
+  | 'projected_area' | 'parting_perimeter' | 'die_depth' | 'plan_length' | 'plan_width' | 'tool_area' | 'trim_length' | 'skin_area' | 'layup_height' | 'footprint_length' | 'footprint_width'
+  // An additive build along its build direction: cad-engine additive/feature_extractor.py additive_measurements.
+  | 'build_height' | 'overhang_area' | 'support_volume' | 'plate_contact_area'
+  // A bar, tube or profile: cad-engine bar_tube/feature_extractor.py.
+  | 'developed_length' | 'section_area'
+  // A blow molded or rotomolded shell: cad-engine roto_blow/feature_extractor.py.
+  | 'inside_volume' | 'parting_line';
 
 export interface FeatureMeasurement {
   value: number;

@@ -1,8 +1,8 @@
 # Environment files
 
-**Local development** uses exactly one file: the repo-root `.env` (copy `.env.example`; git-ignored). Next.js, the backend, both
-engines and the tests all read it, so there is no `.env.local`, `.env.development`, `backend/.env` or `cad-engine/.env`. Per-service
-names where one name would collide (`BACKEND_PORT`, `CAD_ENGINE_PORT`, `ECAD_ENGINE_PORT`); `NODE_ENV` is never set (each tool sets
+**Local development** uses exactly one file: the repo-root `.env` (copy `.env.example`; git-ignored). Next.js, the backend, the CAD
+engine and the tests all read it, so there is no `.env.local`, `.env.development`, `backend/.env` or `cad-engine/.env`. Per-service
+names where one name would collide (`BACKEND_PORT`, `CAD_ENGINE_PORT`); `NODE_ENV` is never set (each tool sets
 it). **Deployed environments** below keep one file each, on the host.
 
 One env file per environment, kept **on the host that runs it**, never in git (`env/*.env` is ignored). Copy the template,
@@ -28,7 +28,7 @@ Build the frontend image **per environment**: `NEXT_PUBLIC_*` values are compile
 | `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `AUTH0_CLAIM_NAMESPACE` | the tenant, the API identifier and the post-login Action's claim namespace | Auth0 (docs/CUTOVER_AUTH0_POSTGRES.md) |
 | `AUTH0_TRUSTED_CONNECTIONS` | comma-separated Auth0 connection names whose verified email may link a new login to an invited account: the company SSO connection and the database connection (decision D3). Any other connection is refused unless its login is already linked | Auth0, Authentication (connection names) |
 | `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_SECRET`, `APP_BASE_URL` | the web app's Auth0 application, its session secret and the public app URL; **server only** | Auth0; `AUTH0_SECRET`: `openssl rand -hex 32` |
-| `CAD_ENGINE_API_KEY`, `ECAD_ENGINE_API_KEY` | shared secrets between the backend and the engines | generate: `openssl rand -hex 32` |
+| `CAD_ENGINE_API_KEY` | shared secret between the backend and the CAD engine | generate: `openssl rand -hex 32` |
 | `TUNNEL_TOKEN` | the Cloudflare Tunnel token; the tunnel is the only way into the host (no published ports) | Cloudflare Zero Trust, Tunnels |
 | `ANTHROPIC_API_KEY` | the AI key; **backend only** (every model call goes through AiBudgetService; the web app holds no AI key). Unset = AI features answer 503. | Anthropic console (also set a workspace spend limit) |
 | `AI_DISABLED`, `AI_USER_DAILY_TOKENS`, `AI_ORG_DAILY_TOKENS`, `AI_GLOBAL_DAILY_TOKENS`, `AI_MAX_CONCURRENT_PER_USER` | AI kill switch (`true` refuses every AI call with 503) and spend limits in tokens per UTC day; defaults 2,000,000 / 20,000,000 / 50,000,000 tokens and 2 requests (`backend/src/config/env.validation.ts`). Optional | you |

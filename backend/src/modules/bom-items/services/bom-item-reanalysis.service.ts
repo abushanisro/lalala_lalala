@@ -1,12 +1,15 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
-import { MAX_CAD_FILE_BYTES } from '../../../common/upload-limits';
-import { UpdateBOMItemDto } from '../dto/bom-items.dto';
-import { BOMItemResponseDto } from '../dto/bom-item-response.dto';
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+
 import { BOMItemsService } from '../bom-items.service';
 import { AutoFillService } from './auto-fill.service';
 import { FileStorageService } from './file-storage.service';
 import { PlasticPullDirectionService } from './plastic-pull-direction.service';
+import { PcbBoardAnalysisService, type PcbGeometrySummary } from '../costing/pcb/board-graph/pcb-board-analysis.service';
+import { BOMItemResponseDto } from '../dto/bom-item-response.dto';
+import { UpdateBOMItemDto } from '../dto/bom-items.dto';
+
+/** The name the file was uploaded with: the stored name carries one or two upload timestamps in front of it. */
+const uploadedName = (path: string): string => (path.split('/').pop() ?? path).replace(/^(\d{10,}_)+/, '');
 
 /** Runs the CAD analysis (and the drawing's) on an item's stored files and stores the result on the item. Used by the analysis run (Apply Scenario) and by a changed pull direction. */
 @Injectable()
@@ -18,31 +21,26 @@ export class BomItemReanalysisService {
     private readonly fileStorageService: FileStorageService,
     private readonly autoFillService: AutoFillService,
     private readonly pullDirections: PlasticPullDirectionService,
+    private readonly boards: PcbBoardAnalysisService,
   ) {}
 
   async reanalyze(id: string, userId: string, token: string): Promise<BOMItemResponseDto> {
     const bomItem = await this.bomItemsService.findOne(id, userId, token);
 
-    if (!bomItem.file3dPath && !bomItem.fileStepPath) {
-      throw new BadRequestException('No 3D file found for this item — upload a STEP/STL file first');
+    if (!bomItem.file3dPath && !bomItem.fileStepPath && !bomItem.fileBoardPath) {
+      throw new BadRequestException('No 3D file or board files found for this item — upload a STEP/STL file or the board\'s Gerber set first');
     }
+
+    // A board set (Gerber, drill, Pick Place) is measured by the CAD engine's board routes; the measurement goes into the analysis
+    // beside the 3D model's, or is the analysis when the part has no model.
+    const board = bomItem.fileBoardPath
+      ? await this.boards.measure(bomItem.fileBoardPath, await this.storedFile(bomItem.fileBoardPath, 'board files'))
+      : null;
+    if (!bomItem.file3dPath && !bomItem.fileStepPath && board) return this.storeBoardOnly(id, board, userId, token);
 
     // Prefer the original STEP (full OCC topology) over the browser-viewable STL
     const analysisPath = bomItem.fileStepPath ?? bomItem.file3dPath!;
-    const signedUrl = await this.fileStorageService.getSignedUrl(analysisPath, 3600);
-
-    let fileBuffer: Buffer;
-    try {
-      const response = await axios.get(signedUrl, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-        maxContentLength: MAX_CAD_FILE_BYTES,
-      });
-      fileBuffer = Buffer.from(response.data);
-    } catch (err) {
-      this.logger.error(`[reanalyze] Failed to download file: ${err.message}`);
-      throw new BadRequestException('Failed to download 3D file from storage');
-    }
+    const fileBuffer = await this.storedFile(analysisPath, '3D model');
 
     const fileName = analysisPath.split('/').pop() ?? 'model.stp';
     // Re-analyse as the process the user chose (Create/Edit BOM Item's
@@ -81,8 +79,9 @@ export class BomItemReanalysisService {
     // rather than reused. A no-op re-analysis keeps its valid result.
     const priorNestCache = (bomItem.featureGraph as any)?.summary?.trueNestCostingCache;
     const featureGraph = result.featureGraph as any;
-    const featureGraphWithNestCache = priorNestCache
-      ? { ...featureGraph, summary: { ...(featureGraph?.summary ?? {}), trueNestCostingCache: priorNestCache } }
+    const carried = { ...(priorNestCache ? { trueNestCostingCache: priorNestCache } : {}), ...(board ? { pcbGeometry: board } : {}) };
+    const featureGraphWithNestCache = Object.keys(carried).length
+      ? { ...featureGraph, summary: { ...(featureGraph?.summary ?? {}), ...carried } }
       : featureGraph;
 
     // Sync all geometry + classification fields, not just featureGraph.
@@ -108,6 +107,42 @@ export class BomItemReanalysisService {
     return this.bomItemsService.update(id, updateData, userId, token);
   }
 
+  /**
+   * A part with board files and no 3D model: its analysis is the board set's measurement. The board's outline is the part's length
+   * and width (its thickness is not in a Gerber set).
+   */
+  private storeBoardOnly(id: string, board: PcbGeometrySummary, userId: string, token: string): Promise<BOMItemResponseDto> {
+    const outline = (board.graph['outline'] ?? {}) as { lengthMm?: number; widthMm?: number };
+    const [length, width] = [Number(outline.lengthMm), Number(outline.widthMm)];
+    const updateData: UpdateBOMItemDto = {
+      featureGraph: { summary: { pcbGeometry: board } },
+      ...(length > 0 && width > 0 && { maxLength: Math.max(length, width), maxWidth: Math.min(length, width) }),
+    };
+    return this.bomItemsService.update(id, updateData, userId, token);
+  }
+
+  /**
+   * The item's stored file. A file the row names but storage does not hold is a state the user can act on (upload it again), so
+   * it says that, and which file, instead of "failed to download". A storage outage is not the user's to fix: it is reported as one.
+   * The size limit is enforced when a file is uploaded (FileStorageService), so a stored file is within it.
+   */
+  private async storedFile(path: string, what: '3D model' | '2D drawing' | 'board files'): Promise<Buffer> {
+    let bytes: Buffer | null;
+    try {
+      bytes = await this.fileStorageService.download(path);
+    } catch (err: unknown) {
+      this.logger.error(`[reanalyze] could not read ${path} from storage: ${err instanceof Error ? err.message : String(err)}`);
+      throw new ServiceUnavailableException(`The file storage could not be reached to read this part's ${what}. Try again in a moment.`);
+    }
+    if (bytes === null) {
+      this.logger.warn(`[reanalyze] ${path} is named by the part but not in storage`);
+      throw new NotFoundException(
+        `This part's ${what} (${uploadedName(path)}) is not in file storage, so it cannot be analysed. Upload the file again on the part.`,
+      );
+    }
+    return bytes;
+  }
+
   /** Reads the title block, thread callouts and tolerances of the stored 2D drawing (a vector PDF) and stores them on the item. */
   async analyzeDrawing(id: string, userId: string, token: string): Promise<BOMItemResponseDto> {
     const bomItem = await this.bomItemsService.findOne(id, userId, token);
@@ -117,15 +152,7 @@ export class BomItemReanalysisService {
     if (!bomItem.file2dPath.toLowerCase().endsWith('.pdf')) {
       throw new BadRequestException('Drawing intelligence extraction requires a vector PDF (text extraction, not OCR) — this file is not a PDF');
     }
-    const signedUrl = await this.fileStorageService.getSignedUrl(bomItem.file2dPath, 3600);
-    let fileBuffer: Buffer;
-    try {
-      const response = await axios.get(signedUrl, { responseType: 'arraybuffer', timeout: 60000, maxContentLength: MAX_CAD_FILE_BYTES });
-      fileBuffer = Buffer.from(response.data);
-    } catch (err: unknown) {
-      this.logger.error(`[analyze-drawing] Failed to download file: ${err instanceof Error ? err.message : String(err)}`);
-      throw new BadRequestException('Failed to download 2D file from storage');
-    }
+    const fileBuffer = await this.storedFile(bomItem.file2dPath, '2D drawing');
     const drawingResult = await this.autoFillService.analyzeDrawing(fileBuffer, bomItem.partNumber);
     return this.bomItemsService.update(id, { drawingIntelligence: drawingResult as unknown as Record<string, any> }, userId, token);
   }

@@ -46,8 +46,8 @@
 // Rate have no formula in memory and are not used.
 
 import type { CalculatorRunDto, ProcessLineCost } from '../../dto/cost-breakdown.dto';
-import { runReferenceCalculator, type ReferenceCalculators } from '../shared/calculators/reference-calculator';
-import { castingSeed, runOnLine, runView, SeedSet } from './casting-calculator-seeds';
+import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
+import { castingSeed, runView, SeedSet } from './casting-calculator-seeds';
 import { gap, line, type CostContext, type FinishingMachine } from './casting-finishing';
 import { machineChoice, type ChoiceEval } from './machine-choice';
 
@@ -194,7 +194,7 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
     }
     if (reasons.length) return { m, reasons, run: null, sec: 0, blow: 0, box: null, boxMaterial: mat, sandType, sandRow: null, cost: Infinity };
     const run = runReferenceCalculator(calcs, 'Coremaking', {
-      'Base Cycle Time': castingSeed.machine(m.name, 'Base Cycle Time (s)', blow!),
+      'Base Cycle Time': castingSeed.machine(m, 'base_cycle_time_s', 'Base Cycle Time (s)', blow!),
       'Core Count': coreCountSeed,
     });
     if (run.value == null) return { m, reasons: run.missing, run: null, sec: 0, blow: 0, box: null, boxMaterial: mat, sandType, sandRow: null, cost: Infinity };
@@ -240,7 +240,8 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
   else {
     lines.push({
       process: 'Core Sand', processGroup: GROUP, processRoute: 'Coremaking', operation: 'Core Sand',
-      setupCost: 0, runCost: r2(sandRun.value), totalCost: r2(sandRun.value), cycleTimeMin: 0,
+      // Unrounded, as every per-part charge: a small core's sand is a fraction of a cent, not 0.00.
+      setupCost: 0, runCost: sandRun.value, totalCost: sandRun.value, cycleTimeMin: 0,
       hourlyRate: 0, rateSource: 'consumable_allowance', machineClass: 'die_casting_coremaking', machineName: cm.m.name,
       commodityCode: null, labourRate: null,
       featureBreakdown: [{ name: `${r3(sandRun.outputs['Sand Weight']!)} kg ${cm.sandType} × $${cm.sandRow.newCostUsdPerKg}/kg (sand New Cost)`, featureType: 'Part', timeSec: 0, count: 1 }],
@@ -312,9 +313,9 @@ export function priceCoreRoute(input: CoreRouteInput): CoreRouteResult {
     if (reasons.length) return { ...o, reasons, run: null, sec: 0, cost: Infinity };
     const run = runReferenceCalculator(calcs, o.kind, {
       ...common, ...o.extra,
-      'Bed Length': castingSeed.machine(o.m.name, 'Bed Length (mm)', dims.L!),
-      'Bed Width': castingSeed.machine(o.m.name, 'Bed Width (mm)', dims.W!),
-      'Bed Height': castingSeed.machine(o.m.name, 'Bed Height (mm)', dims.H!),
+      'Bed Length': castingSeed.machine(o.m, 'bed_length_mm', 'Bed Length (mm)', dims.L!),
+      'Bed Width': castingSeed.machine(o.m, 'bed_width_mm', 'Bed Width (mm)', dims.W!),
+      'Bed Height': castingSeed.machine(o.m, 'bed_height_mm', 'Bed Height (mm)', dims.H!),
     });
     if (run.value == null) return { ...o, reasons: run.missing, run: null, sec: 0, cost: Infinity };
     if (!(run.outputs['Parts per Load']! >= 1)) return { ...o, reasons: ['the bed does not hold one part core set'], run: null, sec: 0, cost: Infinity };

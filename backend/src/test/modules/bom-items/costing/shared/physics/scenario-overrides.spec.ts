@@ -2,7 +2,7 @@ import {
   resolveEffective, resolveEffectiveSheetThicknessMm,
   resolveScenarioCurrency, resolveScenarioFxSnapshot, resolveScenarioAskPrice,
   resolveScenarioBatchSize, resolveScenarioLocation, resolveScenarioProductionLifeYears,
-  resolveScenarioStockForm,
+  resolveScenarioStockForm, resolveScenarioStockAllowanceMm, resolveScenarioStockSnap, resolveScenarioStockRemnantMm, resolveScenarioStockScrapCredit,
 } from '../../../../../../modules/bom-items/costing/shared/physics/scenario-overrides';
 
 describe('resolveEffective', () => {
@@ -154,12 +154,12 @@ describe('resolveScenarioProductionLifeYears', () => {
 });
 
 // Root-caused live (2026-09-17): the Machining "Blank Stock" panel had no
-// way to force a specific stock form — it always trusted BlankOptimizerService's
-// auto-decide result, matching the reference USA Digital Factory tool's own
+// way to force a specific stock form — it always trusted the auto-decided
+// stock, matching the reference USA Digital Factory tool's own
 // "Let [system] Decide" default but missing its explicit Round Bar/Hex
 // Bar/Rectangular Bar/Billet override options entirely.
 describe('resolveScenarioStockForm', () => {
-  it('reads each real, sourced stock form BlankOptimizerService can honor', () => {
+  it('reads each real, sourced stock form the stock model can size', () => {
     expect(resolveScenarioStockForm({ stockForm: 'round_bar' })).toBe('round_bar');
     expect(resolveScenarioStockForm({ stockForm: 'hex_bar' })).toBe('hex_bar');
     expect(resolveScenarioStockForm({ stockForm: 'rectangular_bar' })).toBe('rectangular_bar');
@@ -170,13 +170,51 @@ describe('resolveScenarioStockForm', () => {
     expect(resolveScenarioStockForm(undefined)).toBeNull();
     expect(resolveScenarioStockForm(null)).toBeNull();
   });
-  it('rejects forms with no real stock data rather than silently coercing them', () => {
-    // 'plate' has a schema column (migration 350) but zero real seeded rows;
-    // 'square_bar'/'round_tube' are not real distinct forms in stock_profiles
-    // at all — see StockForm's own doc comment in blank-stock-candidates.ts.
-    expect(resolveScenarioStockForm({ stockForm: 'plate' })).toBeNull();
-    expect(resolveScenarioStockForm({ stockForm: 'square_bar' })).toBeNull();
-    expect(resolveScenarioStockForm({ stockForm: 'round_tube' })).toBeNull();
+  it('accepts every stock form the reference prices for machining stock (plate, square bar, round tube: sized from the preferred-size series)', () => {
+    expect(resolveScenarioStockForm({ stockForm: 'plate' })).toBe('plate');
+    expect(resolveScenarioStockForm({ stockForm: 'square_bar' })).toBe('square_bar');
+    expect(resolveScenarioStockForm({ stockForm: 'round_tube' })).toBe('round_tube');
+  });
+
+  it('treats a value that is not a stock form as unset, never coercing it into one', () => {
+    expect(resolveScenarioStockForm({ stockForm: 'i_beam' })).toBeNull();
     expect(resolveScenarioStockForm({ stockForm: 123 as any })).toBeNull();
+  });
+});
+
+// The Cost Guide's stock settings of a part machined from stock (costing/stock): each replaces a rule of memory/Stock Maching, and each is
+// null when unset so the rule itself applies.
+describe('the stock settings of a part machined from stock', () => {
+  it('the stock on each side and the bar end are lengths of 0 or more: 0 is a choice (the stock as supplied, a bar used to its end), not "unset"', () => {
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: 1.5 })).toBe(1.5);
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: 0 })).toBe(0);
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: 100 })).toBe(100);
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: 0 })).toBe(0);
+  });
+
+  it('snapping to preferred sizes and the scrap credit are true or false', () => {
+    expect(resolveScenarioStockSnap({ stockSnap: false })).toBe(false);
+    expect(resolveScenarioStockSnap({ stockSnap: true })).toBe(true);
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: true })).toBe(true);
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: false })).toBe(false);
+  });
+
+  it('are null when unset, so the data\'s rule applies', () => {
+    for (const read of [resolveScenarioStockAllowanceMm, resolveScenarioStockSnap, resolveScenarioStockRemnantMm, resolveScenarioStockScrapCredit]) {
+      expect(read({})).toBeNull();
+      expect(read(null)).toBeNull();
+      expect(read(undefined)).toBeNull();
+    }
+  });
+
+  it('a value of another kind is unset, never coerced: a negative or text length, a text or numeric flag', () => {
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: -1 })).toBeNull();
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: '2' as any })).toBeNull();
+    expect(resolveScenarioStockAllowanceMm({ stockAllowanceMm: Number.NaN })).toBeNull();
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: -152.4 })).toBeNull();
+    expect(resolveScenarioStockRemnantMm({ stockRemnantMm: Infinity })).toBeNull();
+    expect(resolveScenarioStockSnap({ stockSnap: 'false' as any })).toBeNull();
+    expect(resolveScenarioStockSnap({ stockSnap: 0 as any })).toBeNull();
+    expect(resolveScenarioStockScrapCredit({ stockScrapCredit: 'yes' as any })).toBeNull();
   });
 });

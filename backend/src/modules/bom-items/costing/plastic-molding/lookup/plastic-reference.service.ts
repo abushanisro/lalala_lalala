@@ -1,4 +1,5 @@
 import { PROCESS_COMPATIBILITY_KEYS, parseProcessCompatibility, type ProcessCompatibility } from '../process-compatibility';
+import type { MachineRecord } from '../calculators/plastic-input-sources';
 import { Injectable } from '@nestjs/common';
 import type { DbClient } from '../../../../../common/db/postgrest-client';
 import { DatabaseService } from '../../../../../common/database/database.service';
@@ -8,6 +9,9 @@ import {
   PLASTIC_VARIABLE_KEYS,
   SECONDARY_PROCESS_SOURCE_VERSION,
   SECONDARY_VARIABLE_KEYS,
+  SECONDARY_LOOKUP_KEYS,
+  MOLD_COMPONENT_SOURCE_VERSION,
+  MOLD_COMPONENT_VARIABLE_KEYS,
   resolvePlasticReference,
   canonicalReferenceRows,
   type CanonicalReferenceRows,
@@ -30,6 +34,10 @@ interface PressRecord {
   dryCycleTimeS: number | null;
   /** good_part_yield (migration 633): share of shots that are good parts. */
   goodPartYield: number | null;
+  /** specs.table_configuration (insert presses: Rotary, Shuttle or No table); null for a press that names none. */
+  tableConfiguration: string | null;
+  /** The record itself (id, name, class, location): a calculator input read from it opens it. */
+  record: MachineRecord;
 }
 
 /**
@@ -49,23 +57,29 @@ export class PlasticReferenceService {
   async getReference(): Promise<{ reference: PlasticReference | null; missing: string[] }> {
     if (this.cached) return this.cached;
     const db = this.database.getPrivilegedClient('reference-data: machining_reference_data, public-read');
-    const [vars, secondaryVars, lookups, gpps] = await Promise.all([
+    const [vars, secondaryVars, componentVars, lookups, secondaryLookups, gpps] = await Promise.all([
       db.from('machining_reference_data').select('key, value')
         .eq('category', 'variable').eq('source_version', PLASTIC_REFERENCE_SOURCE_VERSION)
         .in('key', [...PLASTIC_VARIABLE_KEYS]),
       db.from('machining_reference_data').select('key, value')
         .eq('category', 'variable').eq('source_version', SECONDARY_PROCESS_SOURCE_VERSION)
         .in('key', [...SECONDARY_VARIABLE_KEYS]),
+      db.from('machining_reference_data').select('key, value')
+        .eq('category', 'variable').eq('source_version', MOLD_COMPONENT_SOURCE_VERSION)
+        .in('key', [...MOLD_COMPONENT_VARIABLE_KEYS]),
       db.from('machining_reference_data').select('key, raw')
         .eq('category', 'lookup_table').eq('source_version', PLASTIC_REFERENCE_SOURCE_VERSION)
         .in('key', [...PLASTIC_LOOKUP_KEYS]),
+      db.from('machining_reference_data').select('key, raw')
+        .eq('category', 'lookup_table').eq('source_version', SECONDARY_PROCESS_SOURCE_VERSION)
+        .in('key', [...SECONDARY_LOOKUP_KEYS]),
       this.loadGpps(db),
     ]);
-    const error = vars.error ?? secondaryVars.error ?? lookups.error ?? gpps.error;
+    const error = vars.error ?? secondaryVars.error ?? componentVars.error ?? lookups.error ?? secondaryLookups.error ?? gpps.error;
     if (error) return { reference: null, missing: [`Plastic reference data (${error.message})`] };
     const rows = {
-      variables: [...(vars.data ?? []), ...(secondaryVars.data ?? [])],
-      lookups: Object.fromEntries((lookups.data ?? []).map((r: any) => [r.key, Array.isArray(r.raw?.rows) ? r.raw.rows : undefined])),
+      variables: [...(vars.data ?? []), ...(secondaryVars.data ?? []), ...(componentVars.data ?? [])],
+      lookups: Object.fromEntries([...(lookups.data ?? []), ...(secondaryLookups.data ?? [])].map((r: any) => [r.key, Array.isArray(r.raw?.rows) ? r.raw.rows : undefined])),
       gppsMaterial: gpps.data ?? undefined,
     };
     this.cached = resolvePlasticReference(rows);
@@ -135,13 +149,16 @@ export class PlasticReferenceService {
   async getPressRecords(client: DbClient, mhrIds: string[]): Promise<Map<string, PressRecord>> {
     const ids = [...new Set(mhrIds.filter(Boolean))];
     if (ids.length === 0) return new Map();
-    const { data, error } = await client.from('mhr_records').select('id, press_cycle_time_s, good_part_yield, specs').in('id', ids);
+    const { data, error } = await client.from('mhr_records').select('id, machine_name, machine_class, location, press_cycle_time_s, good_part_yield, specs').in('id', ids);
     if (error) return new Map();
     const num = (v: unknown) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
     return new Map((data ?? []).map((r: any) => [String(r.id), {
       injectionRateMm3PerS: num(r.specs?.injection_rate_mm3_per_s),
       dryCycleTimeS: num(r.press_cycle_time_s),
       goodPartYield: num(r.good_part_yield),
+      // An insert press loads while it molds when it has a rotary or shuttle table (specs.table_configuration, memory/Assembly molding).
+      tableConfiguration: typeof r.specs?.table_configuration === 'string' ? r.specs.table_configuration : null,
+      record: { id: String(r.id), name: String(r.machine_name ?? ''), machineClass: String(r.machine_class ?? ''), location: r.location == null ? null : String(r.location) },
     }]));
   }
 }

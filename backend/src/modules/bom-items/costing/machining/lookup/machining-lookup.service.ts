@@ -1,16 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../../../common/database/database.service';
 import type { MaterialClass } from '../process/cost-machining-engine';
-import type { DrillingTable } from './drilling-table';
+import type { MillingFinishingRow } from '../operation/operation-sequencer';
+import type { WorkbookTable } from './workbook-cutting-data';
 import type { HobbingReference, KeywayBroachReference, RotaryBroachReference, SurfaceGrindingParams } from '../calculators/machining-lookup-seeds';
 import type { GearQualityRow } from '../operation/gear-routing';
 import {
-  MACHINING_MATERIAL_HARDNESS_HB,
+  MACHINING_MATERIAL,
   nearestByHardness,
   nearestByDiameterThenHardness,
   nearestByDiameterKey,
 } from './machining-material-hardness';
+import { readAllRows } from '../../../../../common/database/read-all-rows';
 import { MACHINING_REFERENCE_SOURCE_VERSION } from './machining-lookup-tables';
+import { rowKeys } from '../calculators/machining-source-refs';
 import { SETUP_AXIS_VARIABLE_KEYS, resolveSetupAxisRule, type SetupAxisRule } from '../setup-axis-rule';
 import { ReferenceMemo } from '../../../../../common/cache/reference-memo';
 import {
@@ -28,7 +31,7 @@ import {
 // real logic directly without depending on this injectable service class.
 // Re-exported here for any existing caller of this file expecting them
 // from this module.
-export { MACHINING_MATERIAL_HARDNESS_HB, nearestByHardness, nearestByDiameterThenHardness };
+export { MACHINING_MATERIAL, nearestByHardness, nearestByDiameterThenHardness };
 
 interface DrillingPhysicsParams {
   cuttingSpeedMPerMin: number;
@@ -54,6 +57,8 @@ interface EdgeToolParams {
   dataFound: boolean;
   /** The material cut code of the row the speed came from. */
   materialCutCode?: string;
+  /** The staged table and row the speed came from (the trace's lookup match). */
+  match?: { table: string; row: Record<string, string | number> };
 }
 
 interface CylindricalGrindingParams {
@@ -98,32 +103,32 @@ interface WireEdmParams {
   materialCutCode?: string;
 }
 
-interface TurningParams {
-  roughCutDepthMm: number;
-  roughCuttingSpeedMPerMin: number;
-  roughFeedMmPerRev: number;
-  finishCutDepthMm: number;
-  finishCuttingSpeedMPerMin: number;
-  finishFeedMmPerRev: number;
-  dataFound: boolean;
-  materialCutCode?: string;
+/** The tblDeburring row of the given deburring tool type for a material, or null (no tool type, no such tool, or no row of the material). */
+export function edgeDeburrRow(rows: any[], toolType: string | null | undefined, materialClass: MaterialClass): any | null {
+  if (!toolType) return null;
+  const row = nearestByHardness(rows.filter((r) => r.tool_type === toolType), MACHINING_MATERIAL[materialClass]);
+  return row && typeof row.linear_speed_mm_s === 'number' ? row : null;
 }
 
 @Injectable()
 export class MachiningLookupService {
   constructor(private readonly database: DatabaseService) {}
 
-  // In-process cache: these 4 tables are large (up to ~380KB) whole-file
-  // JSONB blobs staged once per table, not per-row — never change within a
-  // running process, so fetched at most once per table per process
-  // lifetime, matching loadCalculatorCatalog's own cachedRead discipline
-  // elsewhere in this module (just a plain Map here since there's no
-  // per-request invalidation need for static reference data).
+  // In-process cache: these tables are large (up to ~380KB) whole-file
+  // JSONB blobs staged once per table, not per-row. A staged table does not
+  // change within a running process, so it is fetched once. A table that is
+  // not staged is NOT remembered: a migration can stage it while the process
+  // runs, and the next request must see it without a restart.
+  /** The machining reference data is global and shared (no user rows): every read of it goes through this one privileged client. */
+  private get referenceDb() {
+    return this.database.getPrivilegedClient('reference-data: machining lookup tables, global shared');
+  }
+
   private tableCache = new Map<string, any>();
 
   private async loadTable(key: string): Promise<any[] | null> {
     if (this.tableCache.has(key)) return this.tableCache.get(key) as any[] | null;
-    const db = this.database.getPrivilegedClient('reference-data: machining lookup tables, global shared');
+    const db = this.referenceDb;
     const { data, error } = await db
       .from('machining_reference_data')
       .select('raw')
@@ -131,16 +136,11 @@ export class MachiningLookupService {
       .eq('source_version', MACHINING_REFERENCE_SOURCE_VERSION)
       .eq('key', key)
       .maybeSingle();
-    // A read error (network, timeout) is not cached: the next request reads
-    // again. Only a genuinely absent row is remembered as null.
-    if (error) return null;
-    if (!data?.raw) {
-      this.tableCache.set(key, null);
-      return null;
-    }
+    // Neither a read error nor an absent row is cached: the next request reads again.
+    if (error || !data?.raw) return null;
     const raw = data.raw as any;
     const rows: any[] | null = Array.isArray(raw) ? raw : Array.isArray(raw.rows) ? raw.rows : null;
-    this.tableCache.set(key, rows);
+    if (rows) this.tableCache.set(key, rows);
     return rows;
   }
 
@@ -152,7 +152,7 @@ export class MachiningLookupService {
   // key is ever fetched through both loaders).
   private async loadObjectTable(key: string): Promise<any | null> {
     if (this.tableCache.has(key)) return this.tableCache.get(key);
-    const db = this.database.getPrivilegedClient('reference-data: machining lookup tables, global shared');
+    const db = this.referenceDb;
     const { data, error } = await db
       .from('machining_reference_data')
       .select('raw')
@@ -162,16 +162,15 @@ export class MachiningLookupService {
       .maybeSingle();
     if (error) return null; // transient read failure: not cached, retried next request
     const raw = data?.raw && typeof data.raw === 'object' && !Array.isArray(data.raw) ? data.raw : null;
-    this.tableCache.set(key, raw);
+    if (raw) this.tableCache.set(key, raw); // an absent table is read again next request
     return raw;
   }
 
-  // ── Straight drilling (tblDrilling — whole source object staged as `raw`:
-  // a materials array plus table-level construction/depth-by-diameter maps).
-  // Returned whole; the per-hole match (resolveDrillingParams, drilling-table.ts)
-  // runs in the pure cost engine, once per real hole diameter on the part.
-  async getDrillingTable(): Promise<DrillingTable | null> {
-    return this.loadObjectTable('tblDrilling');
+  // ── The machining workbook's cutting data (migration 1137): speeds, feeds,
+  // tool prices and the material map the workbook-form calculators read.
+  // Rows are matched by the pure resolvers in workbook-cutting-data.ts.
+  async getWorkbookTable<T>(key: WorkbookTable): Promise<T[] | null> {
+    return (await this.loadTable(key)) as T[] | null;
   }
 
   // ── Operation size ranges (tblOperationSizeRanges): per-operation L/D and
@@ -182,8 +181,7 @@ export class MachiningLookupService {
    *  read error is not cached; a genuinely missing variable is named. */
   async getSetupAxisRule(): Promise<{ rule: SetupAxisRule | null; missing: string[] }> {
     if (this.setupAxisRule) return this.setupAxisRule;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data, error } = await this.referenceDb
       .from('machining_reference_data')
       .select('key, value')
       .eq('category', 'variable')
@@ -199,8 +197,7 @@ export class MachiningLookupService {
   private deburrPassesPerEdge: number | null = null;
   async getDeburrPassesPerEdge(): Promise<number | null> {
     if (this.deburrPassesPerEdge != null) return this.deburrPassesPerEdge;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data, error } = await this.referenceDb
       .from('machining_reference_data')
       .select('value')
       .eq('category', 'variable')
@@ -219,8 +216,7 @@ export class MachiningLookupService {
    *  variables plus tblGtolProcessCapabilities. A read error is not cached. */
   async getCapabilityRules(): Promise<{ rules: MachiningCapabilityRules | null; missing: string[] }> {
     if (this.capabilityRules) return this.capabilityRules;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data, error } = await this.referenceDb
       .from('machining_reference_data')
       .select('key, value')
       .eq('category', 'variable')
@@ -234,8 +230,76 @@ export class MachiningLookupService {
     return this.capabilityRules;
   }
 
+  /** Every reference catalog operation key, "<Process>:<Operation>//<Feature>" (memory/Machining/operations_full__operations.csv); null when not staged or unreadable. */
+  private operationCatalog: string[] | null = null;
+  async getOperationCatalog(): Promise<string[] | null> {
+    if (this.operationCatalog) return this.operationCatalog;
+    // 1174 rows: more than one PostgREST page, so it is read in pages (a single read would stop at 1000).
+    const db = this.referenceDb;
+    const { data, error } = await readAllRows<{ key: string }>((from, to) => db
+      .from('machining_reference_data').select('key')
+      .eq('category', 'operation').eq('source_version', MACHINING_REFERENCE_SOURCE_VERSION)
+      .order('id').range(from, to));
+    if (error || !data.length) return null;
+    this.operationCatalog = data.map((r) => r.key);
+    return this.operationCatalog;
+  }
+
+  /** The material class's milling removal rate (tblMillingRemovalRate, mm^3/min), or null when the table or the row is not staged. */
+  async getMillingRemovalRate(materialClass: MaterialClass): Promise<number | null> {
+    const row = ((await this.loadTable('tblMillingRemovalRate')) ?? []).find((r) => r.MaterialClass === materialClass);
+    const rate = Number(row?.RemovalRateMm3PerMin);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  }
+
+  /** The material class's finishing cutter (tblMillingFinishing), or null when the table or a value of the row is not staged. */
+  async getMillingFinishing(materialClass: MaterialClass): Promise<MillingFinishingRow | null> {
+    const row = ((await this.loadTable('tblMillingFinishing')) ?? []).find((r) => r.MaterialClass === materialClass);
+    const finishing = {
+      toolDiameterMm: Number(row?.ToolDiameterMm), teeth: Number(row?.Teeth),
+      cuttingSpeedMPerMin: Number(row?.CuttingSpeedMPerMin), feedPerToothPerDiameter: Number(row?.FeedPerToothPerDiameter),
+    };
+    return Object.values(finishing).every((v) => Number.isFinite(v) && v > 0) ? finishing : null;
+  }
+
+  /** A staged lookup table by name, for a calculator whose spec names the table (specLookupSeeds). */
+  async getTable(name: string): Promise<any[] | null> {
+    return this.loadTable(name);
+  }
+
+  /** The named machining variables as numbers; a variable that is absent or not a number is null. */
+  async getVariables(names: readonly string[]): Promise<Record<string, number | null>> {
+    if (names.length === 0) return {};
+    const { data } = await this.referenceDb
+      .from('machining_reference_data').select('key, value')
+      .eq('category', 'variable').eq('source_version', MACHINING_REFERENCE_SOURCE_VERSION).in('key', [...names]);
+    const byKey = new Map(((data ?? []) as Array<{ key: string; value: string | null }>).map((r) => [r.key, Number(r.value)]));
+    return Object.fromEntries(names.map((n) => [n, Number.isFinite(byKey.get(n)) ? byKey.get(n)! : null]));
+  }
+
+  /** The material class's cut code, read from tblReaming (every cut code, each with its hardness): for tables with no hardness column. */
+  async getMaterialCutCode(materialClass: MaterialClass): Promise<number | null> {
+    const row = nearestByHardness((await this.loadTable('tblReaming')) ?? [], MACHINING_MATERIAL[materialClass]) as any;
+    const code = Number(row?.MaterialCutCodeName);
+    return Number.isFinite(code) ? code : null;
+  }
+
   async getOperationSizeRanges(): Promise<any[] | null> {
     return this.loadTable('tblOperationSizeRanges');
+  }
+
+  /** The material class's recommended and feasible minimum wall, mm (tblMachiningMinWall), or null when the table or the row is not staged. */
+  async getMachiningMinWall(materialClass: MaterialClass): Promise<{ recommendedMm: number; feasibleMm: number } | null> {
+    const row = ((await this.loadTable('tblMachiningMinWall')) ?? []).find((r) => r.MaterialClass === materialClass);
+    const wall = { recommendedMm: Number(row?.RecommendedMinWallMm), feasibleMm: Number(row?.FeasibleMinWallMm) };
+    return Number.isFinite(wall.recommendedMm) && wall.recommendedMm > 0 && Number.isFinite(wall.feasibleMm) && wall.feasibleMm > 0 ? wall : null;
+  }
+
+  /** The standard drill diameters, mm (tblDrillSizeChart), or null when the chart is not staged. */
+  async getDrillSizesMm(): Promise<number[] | null> {
+    const sizes = (await this.loadObjectTable('tblDrillSizeChart'))?.sizes;
+    if (!Array.isArray(sizes)) return null;
+    return sizes.map((r: { drill_size_mm?: unknown }) => Number(r.drill_size_mm)).filter((d) => Number.isFinite(d) && d > 0);
   }
 
   // ── Part load / unload / reorientation by equipment, weight and size (componentLoadTime).
@@ -254,12 +318,18 @@ export class MachiningLookupService {
     return this.loadTable('tblVirtualPartoffInsertCutData');
   }
 
+  // ── Grooving (tblGrooving, 182 real rows, migration 746). Returned whole; the insert is chosen per groove in the pure engine
+  // (resolveGroovingParams), as the part-off insert is.
+  async getGroovingTable(): Promise<any[] | null> {
+    return this.loadTable('tblGrooving');
+  }
+
   // ── Counterboring (tblCounterboring_lookup_table.json, 364 real rows) ────
   async getCounterboreParams(diameterMm: number, materialClass: MaterialClass): Promise<CounterboreParams> {
     const noData: CounterboreParams = { cuttingSpeedMPerMin: 0, feedMmPerRev: 0, depthMaxMm: null, dataFound: false };
     const rows = await this.loadTable('tblCounterboring');
     if (!rows?.length) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const row = nearestByDiameterThenHardness(rows, diameterMm, targetHb);
     if (!row || typeof row.cutting_speed_m_min !== 'number' || typeof row.feed_mm_rev !== 'number') return noData;
     return {
@@ -270,17 +340,6 @@ export class MachiningLookupService {
     };
   }
 
-  // Raw rows, for callers that need to resolve MULTIPLE real diameters in
-  // one request (e.g. operation-sequencer.ts matching each real counterbore
-  // occurrence on the part, which can have different real diameters) —
-  // fetched once here (this table is cached after the first call, see
-  // loadTable), matched per-occurrence with the exported nearestByDiameterThenHardness
-  // in that pure, no-DB-calls sync function rather than one DB round trip
-  // per occurrence.
-  async getCounterboreTable(): Promise<any[] | null> {
-    return this.loadTable('tblCounterboring');
-  }
-
   // ── Reaming (tblReaming.json, 316 real rows, bare top-level array,
   // CamelCase field names — a genuinely different real source-file shape
   // from tblCounterboring, not a typo) ──────────────────────────────────
@@ -288,7 +347,7 @@ export class MachiningLookupService {
     const noData: ReamParams = { cuttingSpeedMPerMin: 0, feedMm: 0, dataFound: false };
     const rows = await this.loadTable('tblReaming');
     if (!rows?.length) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const row = nearestByDiameterThenHardness(rows, diameterMm, targetHb);
     if (!row || typeof row.CuttingSpeedMPerMin !== 'number' || typeof row.FeedMm !== 'number') return noData;
     return {
@@ -296,13 +355,6 @@ export class MachiningLookupService {
       feedMm: row.FeedMm,
       dataFound: true,
     };
-  }
-
-  // Raw rows — cost-machining-engine.ts resolves the real diameter to ream AFTER
-  // choosing the smallest real hole group (see computeReamCycleSec's own
-  // doc comment), so it needs the table, not a single pre-resolved rate.
-  async getReamTable(): Promise<any[] | null> {
-    return this.loadTable('tblReaming');
   }
 
   // ── Hobbing — tblHobbing (809), tblAnsiHobbing (740), variables
@@ -320,8 +372,7 @@ export class MachiningLookupService {
   async getHobbingReference(): Promise<HobbingReference | null> {
     const [hobRows, ansiRows] = await Promise.all([this.loadTable('tblHobbing'), this.loadTable('tblAnsiHobbing')]);
     if (!hobRows?.length && !ansiRows?.length) return null;
-    const { data } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data } = await this.referenceDb
       .from('machining_reference_data')
       .select('value')
       .eq('category', 'variable')
@@ -343,8 +394,7 @@ export class MachiningLookupService {
   })
   async getGearReference(): Promise<{ qualityRows: GearQualityRow[]; defaultQuality: string | null; shaving: { rows: any[]; maxWorkpieceRpm: number | null } }> {
     const [quality, shavingRows] = await Promise.all([this.loadObjectTable('tblGearQuality'), this.loadTable('tblShaving')]);
-    const { data } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data } = await this.referenceDb
       .from('machining_reference_data')
       .select('key, value')
       .eq('category', 'variable')
@@ -371,8 +421,7 @@ export class MachiningLookupService {
     const rows = await this.loadTable('tblRotaryBroaching');
     if (!rows?.length) return null;
     const keys = ['rotaryBroachFeedAdjustment', 'pilotRotaryBroachHoleDiamPercentIncreaseHex', 'pilotRotaryBroachHoleDiamPercentIncreaseSquare', 'pilotRotaryBroachHoleLengthPercentIncrease'];
-    const { data } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data } = await this.referenceDb
       .from('machining_reference_data')
       .select('key, value')
       .eq('category', 'variable')
@@ -392,13 +441,6 @@ export class MachiningLookupService {
     };
   }
 
-  // ── Tapping (tblTapping, migration 809) — raw rows; the calculator's
-  // cutting speed is chosen per thread by material hardness and pitch
-  // (machining-lookup-seeds.ts resolveTappingRow).
-  async getTappingTable(): Promise<any[] | null> {
-    return this.loadTable('tblTapping');
-  }
-
   // ── Chamfering (tblChamfering_lookup_table.json, 92 real rows) ──────────
   // No diameter axis in the real source data (chamfer tools are rated by
   // linear edge speed, not a bore diameter) — hardness-only match.
@@ -406,19 +448,28 @@ export class MachiningLookupService {
     const noData: EdgeToolParams = { linearSpeedMmPerSec: 0, dataFound: false };
     const rows = await this.loadTable('tblChamfering');
     if (!rows?.length) return noData;
-    const row = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[materialClass]);
+    const row = nearestByHardness(rows, MACHINING_MATERIAL[materialClass]);
     if (!row || typeof row.linear_speed_mm_s !== 'number') return noData;
     return { linearSpeedMmPerSec: row.linear_speed_mm_s, dataFound: true, materialCutCode: row.material_cut_code_name };
   }
 
   // ── Deburring (tblDeburring_lookup_table.json, 1182 real rows) ──────────
+  // A material code has one row per deburring tool (13 tool types). The tool is the reference's default
+  // edge-deburring tool (variables defaultExternalEdgeDeburrToolType, "Wire Wheel Brush"); the internal-edge
+  // default (Wire Tube Brush) has the same speed on every material code. Taking the table's first row read the
+  // "Deburring Brush", which the table itself marks deburr_type "Unused".
   async getDeburrParams(materialClass: MaterialClass): Promise<EdgeToolParams> {
     const noData: EdgeToolParams = { linearSpeedMmPerSec: 0, dataFound: false };
     const rows = await this.loadTable('tblDeburring');
     if (!rows?.length) return noData;
-    const row = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[materialClass]);
-    if (!row || typeof row.linear_speed_mm_s !== 'number') return noData;
-    return { linearSpeedMmPerSec: row.linear_speed_mm_s, dataFound: true, materialCutCode: row.material_cut_code_name };
+    const { data } = await this.referenceDb
+      .from('machining_reference_data').select('value')
+      .eq('category', 'variable').eq('source_version', MACHINING_REFERENCE_SOURCE_VERSION)
+      .eq('key', 'defaultExternalEdgeDeburrToolType').maybeSingle();
+    const row = edgeDeburrRow(rows, (data as { value?: string } | null)?.value, materialClass);
+    if (!row) return noData;
+    const match = { table: 'tblDeburring', row: rowKeys(row, ['material_cut_code_name', 'deburr_type', 'tool_series']) };
+    return { linearSpeedMmPerSec: row.linear_speed_mm_s, dataFound: true, materialCutCode: row.material_cut_code_name, match };
   }
 
   // ── Corner Rounding Mill (tblCornerRoundingMill.json, 91 real rows) —
@@ -434,7 +485,7 @@ export class MachiningLookupService {
     const noData: EdgeToolParams = { linearSpeedMmPerSec: 0, dataFound: false };
     const rows = await this.loadTable('tblCornerRoundingMill');
     if (!rows?.length) return noData;
-    const row = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[materialClass]) as any;
+    const row = nearestByHardness(rows, MACHINING_MATERIAL[materialClass]) as any;
     if (!row || typeof row.LinearSpeedMmPerS !== 'number') return noData;
     return { linearSpeedMmPerSec: row.LinearSpeedMmPerS, dataFound: true };
   }
@@ -448,7 +499,7 @@ export class MachiningLookupService {
     const noData: DrillingPhysicsParams = { cuttingSpeedMPerMin: 0, feedMmPerRev: 0, dataFound: false };
     const rows = await this.loadTable('tblGunDrilling');
     if (!rows?.length) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const row = nearestByDiameterThenHardness(rows, diameterMm, targetHb);
     const speed = row?.['Cutting Speed (m / min)'];
     const feed = row?.['Feed (mm / rev)'];
@@ -476,7 +527,7 @@ export class MachiningLookupService {
     const noData: DrillingPhysicsParams = { cuttingSpeedMPerMin: 0, feedMmPerRev: 0, dataFound: false };
     const materials = await this.getDeepBoreMaterials();
     if (!materials?.length) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const row = nearestByHardness(materials, targetHb);
     const speed = row?.cutting_speed_m_min;
     const feed = nearestByDiameterKey(row?.feed_mm_rev_by_diameter, diameterMm);
@@ -519,7 +570,7 @@ export class MachiningLookupService {
     const turningTable = await this.loadObjectTable('tblGeneralTurning');
     const turningMaterials: any[] | undefined = turningTable?.materials;
     if (!Array.isArray(turningMaterials) || turningMaterials.length === 0) return null;
-    const code = nearestByHardness(turningMaterials, MACHINING_MATERIAL_HARDNESS_HB[materialClass])?.material_cut_code;
+    const code = nearestByHardness(turningMaterials, MACHINING_MATERIAL[materialClass])?.material_cut_code;
     if (!code) return null;
     const rows = await this.loadTable('tblReciprocatingSurfaceGrinding');
     const row = rows?.find((r: any) => r.MaterialCutCodeName != null && Number(r.MaterialCutCodeName) === Number(code));
@@ -550,7 +601,7 @@ export class MachiningLookupService {
     const turningTable = await this.loadObjectTable('tblGeneralTurning');
     const turningMaterials: any[] | undefined = turningTable?.materials;
     if (!Array.isArray(turningMaterials) || turningMaterials.length === 0) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const code = nearestByHardness(turningMaterials, targetHb)?.material_cut_code;
     if (!code) return noData;
 
@@ -605,8 +656,7 @@ export class MachiningLookupService {
       this.loadTable('tblShimTypeKeywayBroach'),
     ]);
     if (!pullRows?.length && !shimRows?.length) return null;
-    const { data } = await this.database
-      .getPrivilegedClient('reference-data: machining lookup tables, global shared')
+    const { data } = await this.referenceDb
       .from('machining_reference_data')
       .select('key, value')
       .eq('category', 'variable')
@@ -643,7 +693,7 @@ export class MachiningLookupService {
     const turningTable = await this.loadObjectTable('tblGeneralTurning');
     const turningMaterials: any[] | undefined = turningTable?.materials;
     if (!Array.isArray(turningMaterials) || turningMaterials.length === 0) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
+    const targetHb = MACHINING_MATERIAL[materialClass];
     const code = nearestByHardness(turningMaterials, targetHb)?.material_cut_code;
     if (!code) return noData;
 
@@ -660,55 +710,12 @@ export class MachiningLookupService {
     return { roughFeedRateMmPerMin: roughFeed, finishFeedRateMmPerMin: finishFeed, dataFound: true, materialCutCode: code };
   }
 
-  // ── General Turning depth-of-cut (tblGeneralTurning / general_turning_
-  // lookup.json, 91 real materials) — this table carries its own real
-  // hardness column directly (unlike tblCylindricalGrinding), so a single
-  // nearestByHardness bridge resolves the row -- no 2-hop needed. Each real
-  // material row's own `operations.medium_rough_turning`/`finish_turning`
-  // sub-objects give real per-pass cut_depth_mm/cutting_speed_m_min/
-  // feed_rate_mm_rev -- replaces the previous flat, uncited TURNING_MRR
-  // table + fixed x1.2 fudge factor with a genuine rough/finish pass model
-  // (real max roughing depth -> real pass count, same "L/F x N" physics
-  // the reference methodology for this domain describes).
-  async getTurningParams(materialClass: MaterialClass): Promise<TurningParams> {
-    const noData: TurningParams = {
-      roughCutDepthMm: 0, roughCuttingSpeedMPerMin: 0, roughFeedMmPerRev: 0,
-      finishCutDepthMm: 0, finishCuttingSpeedMPerMin: 0, finishFeedMmPerRev: 0,
-      dataFound: false,
-    };
-    const turningTable = await this.loadObjectTable('tblGeneralTurning');
-    const turningMaterials: any[] | undefined = turningTable?.materials;
-    if (!Array.isArray(turningMaterials) || turningMaterials.length === 0) return noData;
-    const targetHb = MACHINING_MATERIAL_HARDNESS_HB[materialClass];
-    const row = nearestByHardness(turningMaterials, targetHb) as any;
-    const rough = row?.operations?.medium_rough_turning;
-    const finish = row?.operations?.finish_turning;
-    if (
-      !rough || !finish
-      || typeof rough.cut_depth_mm !== 'number' || rough.cut_depth_mm <= 0
-      || typeof rough.cutting_speed_m_min !== 'number' || rough.cutting_speed_m_min <= 0
-      || typeof rough.feed_rate_mm_rev !== 'number' || rough.feed_rate_mm_rev <= 0
-      || typeof finish.cut_depth_mm !== 'number' || finish.cut_depth_mm <= 0
-      || typeof finish.cutting_speed_m_min !== 'number' || finish.cutting_speed_m_min <= 0
-      || typeof finish.feed_rate_mm_rev !== 'number' || finish.feed_rate_mm_rev <= 0
-    ) {
-      return noData;
-    }
-    return {
-      roughCutDepthMm: rough.cut_depth_mm,
-      roughCuttingSpeedMPerMin: rough.cutting_speed_m_min,
-      roughFeedMmPerRev: rough.feed_rate_mm_rev,
-      finishCutDepthMm: finish.cut_depth_mm,
-      finishCuttingSpeedMPerMin: finish.cutting_speed_m_min,
-      finishFeedMmPerRev: finish.feed_rate_mm_rev,
-      dataFound: true,
-      materialCutCode: row.material_cut_code,
-    };
-  }
-
   // ── Multi-spindle op-splitting (tblMultiSpindleOpSplitting /
-  // tblMultiSpindleOpSplittingThresholds, migration 785, source:
-  // memory/machining/lookup/) — real spindle-count-driven station-split
+  // tblMultiSpindleOpSplittingThresholds, staged by migration 748 under the
+  // reference export's own column names: Feature, Operation, MachineSpindles,
+  // NumberOfOperations, EnableOperationSplitting, Threshold. Migration 785's
+  // snake_case copy never replaced those rows, so these are the names read.
+  // Source: memory/machining/lookup/) — real spindle-count-driven station-split
   // rules for a Simultaneous Turning machine. Exact match on real spindle
   // count (the real table only has entries for 2/6/8, and every real
   // machine in simultaneous_turning_usa.csv reports a spindle count in
@@ -727,17 +734,17 @@ export class MachiningLookupService {
       this.loadTable('tblMultiSpindleOpSplittingThresholds'),
     ]);
     const thresholdRow = thresholdRows?.find(
-      (r: any) => r.feature === feature && r.operation === operation,
+      (r: any) => r.Feature === feature && r.Operation === operation,
     );
-    if (!thresholdRow || thresholdRow.enable_operation_splitting !== true) return noData;
+    if (!thresholdRow || thresholdRow.EnableOperationSplitting !== true) return noData;
     const splitRow = splitRows?.find(
-      (r: any) => r.feature === feature && r.operation === operation && Number(r.machine_spindles) === spindleCount,
+      (r: any) => r.Feature === feature && r.Operation === operation && Number(r.MachineSpindles) === spindleCount,
     );
     if (!splitRow) return noData;
     return {
       shouldSplit: true,
-      numberOfOperations: Number(splitRow.number_of_operations) || 1,
-      thresholdRatio: Number(thresholdRow.threshold),
+      numberOfOperations: Number(splitRow.NumberOfOperations) || 1,
+      thresholdRatio: Number(thresholdRow.Threshold),
       dataFound: true,
     };
   }

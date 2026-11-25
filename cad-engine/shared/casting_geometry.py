@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +115,24 @@ def _plane_basis(axis: Sequence[float]) -> Tuple[Tuple[float, float, float], Tup
     return u, v  # type: ignore[return-value]
 
 
-def parting_plane_silhouette(shape: Any, pull_axis: Sequence[float], linear_deflection: float = 0.1) -> Dict[str, Any]:
+def _tri_normal(t: Sequence[Sequence[float]]) -> Tuple[float, float, float]:
+    """The normal of a mesh triangle by its winding (out of the material, as the face's triangles are oriented)."""
+    a, b, c = t[0], t[1], t[2]
+    e1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    e2 = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    return (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+
+
+def parting_plane_silhouette(shape: Any, pull_axis: Sequence[float], linear_deflection: float = 0.1, with_faces: bool = False) -> Dict[str, Any]:
     """The part's silhouette on the plane normal to pull_axis: its exact area
     (mm^2), the extents of that silhouette along the plane's two in-plane
     axes (mm) -- the footprint a die has to straddle between the tie bars --
     and the part's extent along the pull axis itself (mm), the depth the die
     halves have to enclose. parting_perimeter_mm is the length of the
     silhouette's outer boundary: the parting line, where flash forms between
-    the die halves (inner boundaries -- through-openings -- are not counted)."""
+    the die halves (inner boundaries -- through-openings -- are not counted).
+    with_faces adds the faces behind those numbers, for the 3D highlight of a calculator input: silhouette_face_ids, the faces seen along
+    +pull_axis whose projection makes up the silhouette, and parting_face_ids, the faces that reach its outer boundary."""
     from shapely.geometry import Polygon  # type: ignore
     from shapely.ops import unary_union  # type: ignore
 
@@ -133,7 +143,10 @@ def parting_plane_silhouette(shape: Any, pull_axis: Sequence[float], linear_defl
     n = (n[0] / n_len, n[1] / n_len, n[2] / n_len)
     polys = []
     depth_lo, depth_hi = math.inf, -math.inf
-    for face in _faces(shape):
+    face_points: List[Tuple[int, List[Tuple[float, float]]]] = []
+    seen_from_pull: set = set()
+    for index, face in enumerate(_faces(shape)):
+        pts_of_face: List[Tuple[float, float]] = []
         for t in _face_triangles(face):
             for p in t:
                 d = _dot(p, n)
@@ -143,18 +156,163 @@ def parting_plane_silhouette(shape: Any, pull_axis: Sequence[float], linear_defl
             # Triangles edge-on to the projection plane have no area to add.
             if poly.area > 1e-9:
                 polys.append(poly)
+                if with_faces and _dot(_tri_normal(t), n) > 0:
+                    seen_from_pull.add(index)
+            pts_of_face.extend(pts2)
+        if with_faces:
+            face_points.append((index, pts_of_face))
     if not polys:
         return {"area_mm2": 0.0, "footprint_mm": [0.0, 0.0], "pull_extent_mm": 0.0, "parting_perimeter_mm": 0.0}
     union = unary_union(polys)
     minx, miny, maxx, maxy = union.bounds
     parts = list(union.geoms) if hasattr(union, "geoms") else [union]
     perimeter = sum(p.exterior.length for p in parts if hasattr(p, "exterior"))
-    return {
+    out = {
         "area_mm2": float(union.area),
         "footprint_mm": [float(maxx - minx), float(maxy - miny)],
         "pull_extent_mm": float(depth_hi - depth_lo),
         "parting_perimeter_mm": float(perimeter),
     }
+    if with_faces:
+        from shapely.geometry import Point  # type: ignore
+        outline = unary_union([p.exterior for p in parts if hasattr(p, "exterior")])
+        tol = max(linear_deflection * 2.0, 1e-3)
+        out["silhouette_face_ids"] = sorted(seen_from_pull)
+        out["parting_face_ids"] = [i for i, pts in face_points if any(outline.distance(Point(q)) <= tol for q in pts)]
+    return out
+
+
+def _planar_face_outline(face: Any, u: Sequence[float], v: Sequence[float], linear_deflection: float):
+    """A planar face projected on the (u, v) plane from its own boundary (exact up to the edge sampling): its outer wire
+    and every opening, as a shapely polygon, with the sampled 3D boundary points. None when a wire does not close."""
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Curve  # type: ignore
+    from OCC.Core.BRepTools import BRepTools_WireExplorer, breptools  # type: ignore
+    from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_WIRE  # type: ignore
+    from OCC.Core.TopExp import TopExp_Explorer  # type: ignore
+    from OCC.Core.TopoDS import topods  # type: ignore
+    from shapely.geometry import Polygon  # type: ignore
+
+    def ring(wire) -> List[Tuple[float, float, float]]:
+        pts: List[Tuple[float, float, float]] = []
+        exp = BRepTools_WireExplorer(wire, face)
+        while exp.More():
+            curve = BRepAdaptor_Curve(exp.Current())
+            sampler = GCPnts_QuasiUniformDeflection(curve, linear_deflection)
+            if sampler.IsDone() and sampler.NbPoints() >= 2:
+                seg = [sampler.Value(i) for i in range(1, sampler.NbPoints() + 1)]
+            else:
+                seg = [curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter())]
+            seg_pts = [(p.X(), p.Y(), p.Z()) for p in seg]
+            if exp.Orientation() == TopAbs_REVERSED:
+                seg_pts.reverse()
+            pts.extend(seg_pts if not pts else seg_pts[1:])
+            exp.Next()
+        return pts
+
+    outer = breptools.OuterWire(face)
+    shell: List[Tuple[float, float, float]] = []
+    holes: List[List[Tuple[float, float, float]]] = []
+    exp = TopExp_Explorer(face, TopAbs_WIRE)
+    while exp.More():
+        w = topods.Wire(exp.Current())
+        pts = ring(w)
+        if len(pts) < 3:
+            return None
+        if w.IsSame(outer):
+            shell = pts
+        else:
+            holes.append(pts)
+        exp.Next()
+    if not shell:
+        return None
+    to2d = lambda pts: [(_dot(p, u), _dot(p, v)) for p in pts]  # noqa: E731
+    poly = Polygon(to2d(shell), [to2d(h) for h in holes])
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    return poly, shell + [p for h in holes for p in h]
+
+
+def projected_outline(shape: Any, pull_axis: Sequence[float], linear_deflection: float = 0.1,
+                      face_ids: Optional[Iterable[int]] = None, front_only: bool = False,
+                      edge_deflection: Optional[float] = None) -> Dict[str, Any]:
+    """The silhouette itself, for callers that measure its shape rather than only its area: the part (or the faces
+    face_ids, TopExp_Explorer order: one region of it) projected on the plane normal to pull_axis, as a shapely geometry
+    in that plane's (u, v) frame, with the frame and the span of the faces along the axis. Openings through the
+    silhouette stay open.
+
+    A planar face is projected from its own boundary (its outline and openings, sampled at edge_deflection, by default
+    linear_deflection), a curved face from its mesh triangles (the mesh parting_plane_silhouette uses; a face without one is meshed). A cylinder
+    whose axis is the pull axis (a bore) is edge-on and adds no area. front_only: a closed solid's silhouette is the
+    projection of the faces that face +pull_axis alone (every line along the axis that meets the solid leaves it
+    through one), so only those are projected -- the same silhouette for about half the work. Only for the whole of a
+    closed solid: a region of faces is projected from both sides."""
+    import numpy as np  # type: ignore
+    import shapely  # type: ignore
+    from OCC.Core.BRep import BRep_Tool  # type: ignore
+    from OCC.Core.BRepAdaptor import BRepAdaptor_Surface  # type: ignore
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane  # type: ignore
+    from OCC.Core.TopAbs import TopAbs_REVERSED  # type: ignore
+    from OCC.Core.TopLoc import TopLoc_Location  # type: ignore
+
+    u, v = _plane_basis(pull_axis)
+    n = tuple(float(x) for x in pull_axis)
+    n_len = _norm(n)
+    n = (n[0] / n_len, n[1] / n_len, n[2] / n_len)
+    wanted = None if face_ids is None else set(face_ids)
+    pieces: List[Any] = []
+    meshed: List[Any] = []  # faces projected from their triangles
+    lo, hi = math.inf, -math.inf
+    for index, face in enumerate(_faces(shape)):
+        if wanted is not None and index not in wanted:
+            continue
+        adaptor = BRepAdaptor_Surface(face)
+        kind = adaptor.GetType()
+        if kind == GeomAbs_Plane:
+            d = adaptor.Plane().Axis().Direction()
+            facing = _dot((d.X(), d.Y(), d.Z()), n) * (-1.0 if face.Orientation() == TopAbs_REVERSED else 1.0)
+            outline = _planar_face_outline(face, u, v, edge_deflection or linear_deflection)
+            if outline is not None:
+                poly, pts = outline
+                along = [_dot(p, n) for p in pts]
+                lo, hi = min(lo, min(along)), max(hi, max(along))
+                # A face edge-on to the projection plane has no area to add.
+                if abs(facing) > 1e-9 and not (front_only and facing < 0) and not poly.is_empty:
+                    pieces.append(poly)
+                continue
+        elif kind == GeomAbs_Cylinder:
+            axis = adaptor.Cylinder().Axis()
+            d = axis.Direction()
+            if abs(abs(_dot((d.X(), d.Y(), d.Z()), n)) - 1.0) <= 1e-9:
+                # Edge-on: only its span along the axis counts, at the ends of its axial (V) range.
+                loc = axis.Location()
+                base = _dot((loc.X(), loc.Y(), loc.Z()), n)
+                step = _dot((d.X(), d.Y(), d.Z()), n)
+                ends = (base + adaptor.FirstVParameter() * step, base + adaptor.LastVParameter() * step)
+                lo, hi = min(lo, *ends), max(hi, *ends)
+                continue
+        meshed.append(face)
+    tris: List[Any] = []
+    if meshed:
+        if any(BRep_Tool.Triangulation(f, TopLoc_Location()) is None for f in meshed):
+            _ensure_mesh(shape, linear_deflection)
+        for face in meshed:
+            face_tris = _face_triangles(face)
+            for t in face_tris:
+                for p in t:
+                    a = _dot(p, n)
+                    lo, hi = min(lo, a), max(hi, a)
+            tris.extend(t for t in face_tris if not front_only or _dot(_tri_normal(t), n) > 0)
+    if lo > hi:
+        return {"geometry": None, "u": u, "v": v, "pull_lo": 0.0, "pull_hi": 0.0}
+    if tris:
+        pts = np.asarray(tris, dtype=float)  # (triangles, 3 vertices, xyz)
+        coords = np.stack([pts @ np.asarray(u), pts @ np.asarray(v)], axis=-1)
+        polys = shapely.polygons(np.concatenate([coords, coords[:, :1, :]], axis=1))
+        # Triangles edge-on to the projection plane have no area to add.
+        pieces.extend(polys[shapely.area(polys) > 1e-9])
+    geometry = shapely.union_all(np.asarray(pieces, dtype=object)) if pieces else None
+    return {"geometry": geometry, "u": u, "v": v, "pull_lo": float(lo), "pull_hi": float(hi)}
 
 
 def projected_area_mm2(shape: Any, pull_axis: Sequence[float], linear_deflection: float = 0.1) -> float:
@@ -188,9 +346,20 @@ def wall_thickness_profile(shape: Any, linear_deflection: float = 0.1) -> Dict[s
             intersector.Perform(gp_Lin(gp_Pnt(*start), gp_Dir(*inward)), 0.0, 1e9)
             if not intersector.IsDone() or intersector.NbPnt() == 0:
                 continue
-            hit = min(intersector.WParameter(i) for i in range(1, intersector.NbPnt() + 1))
-            samples.append((hit + _RAY_START_OFFSET_MM, area))
-            rays.append((hit + _RAY_START_OFFSET_MM, c, inward))
+            hits = sorted(range(1, intersector.NbPnt() + 1), key=intersector.WParameter)
+            # A flat triangle of a concave face (the wall of a bore) lies just outside the metal, by up to the mesh deflection. A ray
+            # cast inward from it first crosses its own face: that crossing is the surface, where the wall starts, not a wall a few
+            # microns thick. The wall is measured from there to the next surface.
+            entry = intersector.WParameter(hits[0])
+            if entry <= 2.0 * linear_deflection and intersector.Face(hits[0]).IsSame(face):
+                hits = hits[1:]
+                if not hits:
+                    continue
+                thickness = intersector.WParameter(hits[0]) - entry
+            else:
+                thickness = entry + _RAY_START_OFFSET_MM
+            samples.append((thickness, area))
+            rays.append((thickness, c, inward))
 
     if not samples:
         return {

@@ -1,15 +1,27 @@
 "use client";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Text, DefaultZIndexes, type BaseTickContentProps } from "recharts";
+
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from "recharts";
-import type { BOMMetricEntry } from "../../types";
+
+
 import { safeNum } from "../../utils";
+
+import type { BOMMetricEntry } from "../../types";
 
 interface Props {
   bomMetrics: BOMMetricEntry[];
 }
+
+// recharts 3 sorts tooltip rows by name; a constant key keeps them in the order the series are declared.
+const keepSeriesOrder = () => 0;
+
+// recharts 3 centres the side labels of the angle axis on their ticks; recharts 2 set every label on its baseline.
+const renderAngleTick = (props: BaseTickContentProps) => (
+  <Text {...props} verticalAnchor="end" className="recharts-polar-angle-axis-tick-value">{props.payload.value}</Text>
+);
 
 export function ComplexityTab({ bomMetrics }: Props) {
   // Assembly complexity analysis
@@ -159,14 +171,15 @@ export function ComplexityTab({ bomMetrics }: Props) {
         <CardContent>
           <div className="h-80 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={assemblyData}>
+              <BarChart accessibilityLayer={false} data={assemblyData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
                 <YAxis />
-                <Tooltip />
-                <Bar dataKey="assemblyParts" stackId="a" fill="#3b82f6" name="Assembly Parts" />
-                <Bar dataKey="subAssemblyParts" stackId="a" fill="#f26822" name="Sub-Assembly Parts" />
-                <Bar dataKey="childParts" stackId="a" fill="#06b6d4" name="Child Parts" />
+                <Tooltip itemSorter={keepSeriesOrder} />
+                {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+                <Bar dataKey="assemblyParts" stackId="a" fill="hsl(var(--chart-4))" name="Assembly Parts" zIndex={DefaultZIndexes.axis + 1} />
+                <Bar dataKey="subAssemblyParts" stackId="a" fill="hsl(var(--chart-3))" name="Sub-Assembly Parts" zIndex={DefaultZIndexes.axis + 1} />
+                <Bar dataKey="childParts" stackId="a" fill="hsl(var(--chart-1))" name="Child Parts" zIndex={DefaultZIndexes.axis + 1} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -182,10 +195,11 @@ export function ComplexityTab({ bomMetrics }: Props) {
         <CardContent>
           <div className="h-96 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <RadarChart data={radarData}>
+              <RadarChart accessibilityLayer={false} data={radarData}>
                 <PolarGrid />
-                <PolarAngleAxis dataKey="bom" />
-                <PolarRadiusAxis angle={90} domain={[0, 100]} />
+                <PolarAngleAxis dataKey="bom" tick={renderAngleTick} />
+                {/* recharts 3 draws no radius axis or grid for a fixed domain unless a series has values or data may overflow it. */}
+                <PolarRadiusAxis angle={90} domain={[0, 100]} allowDataOverflow />
                 {bomMetrics.map((bd, idx) => (
                   <Radar
                     key={bd.bom.id}
@@ -197,7 +211,7 @@ export function ComplexityTab({ bomMetrics }: Props) {
                     strokeWidth={2}
                   />
                 ))}
-                <Tooltip />
+                <Tooltip itemSorter={keepSeriesOrder} />
               </RadarChart>
             </ResponsiveContainer>
           </div>
@@ -266,19 +280,19 @@ export function ComplexityTab({ bomMetrics }: Props) {
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <div className="text-muted-foreground">Machined Parts</div>
-                      <div className="text-lg font-semibold text-orange-600">{data.machinedParts}</div>
+                      <div className="text-lg font-semibold text-warning">{data.machinedParts}</div>
                     </div>
                     <div>
                       <div className="text-muted-foreground">Tolerance Critical</div>
-                      <div className="text-lg font-semibold text-red-600">{data.toleranceCritical}</div>
+                      <div className="text-lg font-semibold text-destructive">{data.toleranceCritical}</div>
                     </div>
                     <div>
                       <div className="text-muted-foreground">Complex Geometry</div>
-                      <div className="text-lg font-semibold text-brand-600">{data.complexGeometry}</div>
+                      <div className="text-lg font-semibold text-primary">{data.complexGeometry}</div>
                     </div>
                     <div>
                       <div className="text-muted-foreground">Custom Parts</div>
-                      <div className="text-lg font-semibold text-blue-600">{data.customParts}</div>
+                      <div className="text-lg font-semibold text-primary">{data.customParts}</div>
                     </div>
                   </div>
                   <div className="mt-3">

@@ -33,9 +33,20 @@ describe('selectMoldBase', () => {
   it('several cavities: laid out as layoutNumCav says, with the steel between the parts', () => {
     const r = selectMoldBase({ partLengthMm: 50, partWidthMm: 30, cavities: 4, clampKn: 1000, ref: MB });
     if ('missing' in r) throw new Error(r.missing.join());
-    const layout = MB.layouts.find((l) => l.cavities === 4)!;
+    const { layout } = r;
+    expect(MB.layouts).toContainEqual({ cavities: 4, ...layout });
     expect(r.regionWidthMm).toBeCloseTo((layout.widthWise * 50 + (layout.widthWise - 1) * 76.2) * layout.runnerCoefficient, 6);
     expect(r.regionLengthMm).toBeCloseTo(layout.lengthWise * 30 + (layout.lengthWise - 1) * 76.2, 6);
+  });
+
+  it('of the layouts layoutNumCav gives a count (4: 1 x 4, 2 x 2, 4 x 1), the one with the smallest standard base is the mold', () => {
+    const r = selectMoldBase({ partLengthMm: 150, partWidthMm: 97, cavities: 4, clampKn: 1400, ref: MB });
+    if ('missing' in r) throw new Error(r.missing.join());
+    expect(r.layout).toMatchObject({ widthWise: 2, lengthWise: 2 });
+    for (const l of MB.layouts.filter((x) => x.cavities === 4)) {
+      const other = selectMoldBase({ partLengthMm: 150, partWidthMm: 97, cavities: 4, clampKn: 1400, ref: { ...MB, layouts: [l] } });
+      if (!('missing' in other)) expect(other.base.widthMm * other.base.lengthMm).toBeGreaterThanOrEqual(r.base.widthMm * r.base.lengthMm);
+    }
   });
 
   it('names what is missing: no layout for the cavity count, no press force, no standard base big enough', () => {

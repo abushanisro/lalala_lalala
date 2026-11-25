@@ -8,6 +8,8 @@ import {
 import type { NestingResult } from '../../sheet-metal/machine/sheet-metal-nesting.engine';
 import type { CostSummaryDto, ProcessLineCost, ProcessCO2, SustainabilitySummaryDto, PhysicsGap, ConfidenceLevel } from '../../../dto/cost-breakdown.dto';
 import type { SurfaceTreatmentDbRate } from './default-rates.constants';
+import { NO_COST_FEATURE, isPerPartCharge } from './engine-kernel';
+
 export { eMithranTerms } from './engine-kernel';
 export type { EMithranTermsArgs, EMithranTermsResult } from './engine-kernel';
 // Platform Architecture Remediation Phase 1 (engine registry unification,
@@ -19,6 +21,7 @@ import { computePressBrakeCost } from '../../sheet-metal/process/press-brake-eng
 import { composeFeatureDrivenOperations, composeOperationSequence } from '../../sheet-metal/operation/feature-driven-operations';
 import { computeLaserCuttingCost } from '../../sheet-metal/process/laser-cutting-engine';
 import { overlayRejectionReason, type PersistedCostCurrencyBasis } from './persisted-currency-contract';
+import { calculationOfRow } from '../calculator-run';
 
 // Where a line's labour rate came from. Labour is only ever the selected
 // machine's own usd_lhr_total (memory/-backed mhr_records row, migration 805);
@@ -77,6 +80,13 @@ export interface MHRRateInput {
   transferTimeS?: number | null;
   stockFeedTimeS?: number | null;
   speedSynchronizationTimeS?: number | null;
+  // The selected machine's top main-spindle and driven-tool speeds
+  // (mhr_records.specs, migrations 1093 / 1136). A cutting calculator caps
+  // n = 1000 v / (pi D) at these; null when the machine has none staged.
+  maxSpindleRpm?: number | null;
+  liveToolingMaxRpm?: number | null;
+  // The selected machine's rapid traverse rate (mm/min, mhr_records.specs, migration 1141): the milling line's rapids between features.
+  rapidTraverseMmPerMin?: number | null;
   // The selected machine's own mhr_records.setup_time_hr (via
   // MachineCandidate — see its own doc comment). Generic across any class;
   // Compression Molding / Reaction Injection Molding are the first real
@@ -102,6 +112,8 @@ export interface MHRRateInput {
   // realBench branches) — lets a persisted process_cost_records row link back
   // to it as mhrId, same as every machineSelection-based class already can.
   mhrRecordId?: string | null;
+  /** The machine's setup hours as its memory reference record states them, where 0 is a recorded zero (resolveSetupMinutes referenceSetupTimeHr). Absent when not looked up. */
+  referenceSetupTimeHr?: number | null;
   // 'bm-mhr-<id>' — mhr_benchmark_rates row id, prefixed exactly like
   // mhr.service.ts#getBenchmarkRates() already does, when this rate came from
   // the benchmark fallback instead of a real imported machine. Without either
@@ -737,6 +749,15 @@ export interface AppliedProcessCostRecord {
   line_labour_rate?: number | string | null;
   engine_version?: string | null;
   setup_time_source?: ProcessLineCost['setupTimeSource'] | null;
+  /**
+   * 'per_part' for a charge with no machine time (migration 890): a waterjet's garnet or nozzle wear, a turret's material handling. Such a
+   * row shares its machine class with the operation it belongs to, so it is told apart by this and named by its operation.
+   */
+  charge_basis?: string | null;
+  /** The calculation behind the cycle (migration 1097): read back onto the line as the engine line had it. NULL on older rows. */
+  calculator_id?: string | null;
+  calculator_version?: number | null;
+  calculator_run?: unknown;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -903,6 +924,9 @@ export function selectAppliedGeneration(
 // machineClass — an exact key the engine already puts on every line — so a
 // newly registered process is covered with no edit here.
 
+/** True for a row written from a per-part charge line (isPerPartCharge): no machine time, its money is total_cost_per_part. */
+const isPerPartRow = (row: AppliedProcessCostRecord): boolean => row.charge_basis === 'per_part';
+
 function buildLineFromAppliedRecord(
   row: AppliedProcessCostRecord,
   processLabelForClass: Readonly<Record<string, string>>,
@@ -914,7 +938,13 @@ function buildLineFromAppliedRecord(
     // persisted catalog fields are the fallback only: process_route is the
     // route GROUP for some families ("Bending/Floating /Forming"), not a
     // process name, so it cannot be the primary source.
-    process: processLabelForClass[row.machine_class] ?? row.process_route ?? row.operation ?? row.machine_class,
+    // A No Cost Feature (an operation the route could not cost, written at $0 with its reason as the operation) reads as one, never as the
+    // free operation its machine class would name.
+    // A per-part charge (a waterjet's garnet, its nozzle wear) shares its machine class with the operation it belongs to: the class's
+    // label would name it "Waterjet Cutting". Its own name is the operation it was written with, which is the engine line's process.
+    process: row.process_route === NO_COST_FEATURE ? NO_COST_FEATURE
+      : isPerPartRow(row) && row.operation ? row.operation
+      : processLabelForClass[row.machine_class] ?? row.process_route ?? row.operation ?? row.machine_class,
     processGroup: row.process_group ?? undefined,
     processRoute: row.process_route ?? undefined,
     operation: row.operation ?? undefined,
@@ -955,10 +985,14 @@ function buildLineFromAppliedRecord(
       : r2(Number(row.direct_rate ?? 0)),
     labourRate: row.line_labour_rate != null ? Number(row.line_labour_rate) : undefined,
     setupTimeSource: row.setup_time_source ?? undefined,
-    rateSource: row.mhr_id ? 'mhr_database' : 'no_db_rate',
+    // A per-part charge has no machine by design: read back as "no rate on file" it was reported as a machine missing from HR Rates.
+    rateSource: isPerPartRow(row) ? 'consumable_allowance' : row.mhr_id ? 'mhr_database' : 'no_db_rate',
     machineClass: row.machine_class,
     machineName: row.machine_name ?? null,
     commodityCode: null,
+    // The calculator that computed the cycle and its run, as persisted from the engine line (migration 1097): a line rebuilt from its row
+    // reads the same calculation as the line it was written from.
+    ...calculationOfRow(row),
   };
 }
 
@@ -1007,7 +1041,10 @@ export function detectAppliedGenerationDrift(
 ): AppliedGenerationDrift[] {
   const drift: AppliedGenerationDrift[] = [];
   for (const row of appliedRows) {
-    const live = liveLines.find((l) => l.machineClass === row.machine_class);
+    // A machine class can carry more than one line: the operation and its per-part charges (waterjet cutting, its garnet, its nozzle
+    // wear). Each row is compared with the live line of its own kind, a per-part charge by its name, never with the class's first line.
+    const perPart = isPerPartRow(row);
+    const live = liveLines.find((l) => l.machineClass === row.machine_class && isPerPartCharge(l) === perPart && (!perPart || l.process === row.operation));
     if (!live) continue; // the engine no longer composes this operation at all
     const persisted = Number(row.total_cost_per_part ?? 0);
     const current = Number(live.totalCost ?? 0);
@@ -1015,7 +1052,7 @@ export function detectAppliedGenerationDrift(
     if (Math.abs(current - persisted) > tolerance) {
       drift.push({
         machineClass: row.machine_class,
-        process: processLabelForClass[row.machine_class] ?? row.operation ?? row.machine_class,
+        process: perPart && row.operation ? row.operation : processLabelForClass[row.machine_class] ?? row.operation ?? row.machine_class,
         persistedTotalCost: persisted,
         liveTotalCost: current,
       });

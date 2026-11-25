@@ -1,5 +1,5 @@
 import { loadLocationElectricity } from '../../shared/location-electricity';
-import { sandFeaturesFromCastingResult, type SandFeature } from './sand-catalog-operations';
+import { castingFeatureFaces, sandFeaturesFromCastingResult, type SandFeature } from './sand-catalog-operations';
 import { Injectable } from '@nestjs/common';
 import type { DbClient } from '../../../../../common/db/postgrest-client';
 import { escapeLikePattern, quoteFilterValue } from '../../../../../common/db/postgrest-filter';
@@ -47,6 +47,8 @@ export interface SandCostRequest {
   /** The BOM item and its current 3D file path: a casting analysis of that file, when there is one, measures the part instead. */
   bomItemId: string;
   sourcePath: string | null;
+  /** The cad-engine's stable face ids (feature_graph_v2.metadata.stable_face_ids): the analysis's features are found on its mesh by them. */
+  stableFaceIds?: Readonly<Record<string, string>> | null;
   overrides: Record<string, unknown> | null | undefined;
   batchSize: number;
   annualVolume: number | null;
@@ -93,7 +95,7 @@ export class SandCostService {
     if (!g) return null;
     const { data, error } = await client
       .from('raw_materials')
-      .select(['name', 'grade', 'material_type', ...SAND_MATERIAL_COLUMNS].join(', '))
+      .select(['id', 'name', 'grade', 'material_type', ...SAND_MATERIAL_COLUMNS].join(', '))
       .eq('material_group', SAND_MATERIAL_GROUP)
       .or(`name.ilike.${quoteFilterValue(escapeLikePattern(g))},grade.ilike.${quoteFilterValue(escapeLikePattern(g))}`)
       .limit(2);
@@ -134,7 +136,11 @@ export class SandCostService {
       if (fromAnalysis.measurements) {
         measurements = fromAnalysis.measurements;
         measuredBy = 'casting analysis';
-        analysisFeatures = sandFeaturesFromCastingResult(analysis.result) ?? undefined;
+        analysisFeatures = sandFeaturesFromCastingResult(analysis.result, req.stableFaceIds) ?? undefined;
+        const onMesh = castingFeatureFaces(analysis.result, req.stableFaceIds);
+        if (onMesh && onMesh.matched < onMesh.used) {
+          warnings.push(`${onMesh.used - onMesh.matched} of ${onMesh.used} faces of the casting analysis could not be matched to the 3D model: those are not highlighted.`);
+        }
         warnings.push(`Measured by the casting analysis (worker ${analysis.workerVersion}) on the exact solid.`);
       } else {
         warnings.push(`The casting analysis could not be used (${fromAnalysis.missing.join('; ')}): the cad-engine's measurements are used.`);

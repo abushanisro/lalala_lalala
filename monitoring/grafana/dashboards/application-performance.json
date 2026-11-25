@@ -33,7 +33,7 @@
       "id": 19,
       "type": "stat",
       "title": "Service health",
-      "description": "1 = the probe succeeded. live: process answers. ready: database, engines and queue answer. database: the database entry of /ready. engines: cad / ecad /ready.",
+      "description": "1 = the probe succeeded. live: process answers. ready: database, engines and queue answer. database: the database entry of /ready. engines: the CAD engine's /ready.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

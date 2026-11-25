@@ -16,12 +16,12 @@ import { classifyMachineRecord, fitScore, isCapable, selectMachine } from '../..
 import type { MachineCandidate } from '../../../../../../../modules/bom-items/dto/machine-selection.dto';
 import { EMPTY_CAPABILITY, lookupSeedCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
 import type { MachineCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
-import { BOMItemsService } from '../../../../../../../modules/bom-items/bom-items.service';
+import { BomItemCostingService } from '../../../../../../../modules/bom-items/bom-item-costing.service';
 
 // buildPartRequirements also reads reference data for the laser power
 // (Phase 2) and deburr time rates (Phase 4). These tests are about the other
 // requirement kinds, so those lookups report "nothing on file".
-function withNoLaserPowerData(svc: BOMItemsService): BOMItemsService {
+function withNoLaserPowerData(svc: BomItemCostingService): BomItemCostingService {
   (svc as any).smLookup = { getMinLaserPowerRequirement: async () => null, getDeslagSecPerMmByMachine: async () => ({}) };
   (svc as any).machiningLookup = {
     getDeburrParams: async () => ({ linearSpeedMmPerSec: 0, dataFound: false }),
@@ -70,7 +70,10 @@ function candidate(overrides: {
     transferTimeS: null,
     stockFeedTimeS: null,
     speedSynchronizationTimeS: null,
+    maxSpindleRpm: null,
+    liveToolingMaxRpm: null, rapidTraverseMmPerMin: null,
     setupTimeHr: null,
+    machinePowerKw: null,
   directOverheadRate: null,
   indirectOverheadRate: null,
   };
@@ -84,6 +87,23 @@ describe('physics', () => {
     expect(classifyLaserMaterial('IS2062 Gr B')).toBe('MS');
     expect(classifyLaserMaterial('C110 Copper')).toBe('CU');
     expect(classifyLaserMaterial(null)).toBe('OTHER');
+  });
+
+  it('reads an alloy written by its elements by its base metal, the first one named', () => {
+    // Ti-6Al-4V is titanium with 6 % aluminium. It was read as aluminium, so a titanium part was gated and cut on aluminium's limits.
+    expect(classifyLaserMaterial('Ti-6Al-4V')).toBe('OTHER');
+    expect(classifyLaserMaterial('Titanium, Ti-6Al-4V Grade 5')).toBe('OTHER');
+    expect(classifyLaserMaterial('Ti-3Al-2.5V')).toBe('OTHER');
+    expect(classifyLaserMaterial('Magnesium, Mg-Al-Zn AZ31B')).toBe('OTHER');
+    // Aluminium named first is aluminium, whatever it is alloyed with.
+    expect(classifyLaserMaterial('Al-Cu-Mg-Ni 2618')).toBe('AL');
+    expect(classifyLaserMaterial('Aluminum, ANSI 6061')).toBe('AL');
+    expect(classifyLaserMaterial('AA7075 (Al-Zn-Mg-Cu)')).toBe('AL');
+    // A bronze or a brass is a copper alloy, with aluminium in its name or not.
+    expect(classifyLaserMaterial('Aluminium Bronze')).toBe('CU');
+    expect(classifyLaserMaterial('Nickel Aluminium Bronze C95800')).toBe('CU');
+    // A nickel word after a steel one changes nothing: there is no aluminium token to decide.
+    expect(classifyLaserMaterial('Mild Steel, nickel plated')).toBe('MS');
   });
 
   it('classifies the JIS carbon-steel sheet family as MS, coated or not', () => {
@@ -602,7 +622,7 @@ describe('P0.4 — integration: buildPartRequirements() feeds selectMachine() wi
   const location = 'India';
 
   function callBuildPartRequirements(input: Record<string, unknown>) {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (svc as any).buildPartRequirements({ location: 'India', accessToken: 'test-token', ...input });
   }
@@ -772,7 +792,7 @@ describe('Machine Economics — shear gets its own real ShearRequirement', () =>
   });
 
   it('production wiring: buildPartRequirements() produces a real ShearRequirement for shear, not a shared LaserRequirement', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -832,7 +852,7 @@ describe('Machine Economics — plasma_cut gets its own real PlasmaCutRequiremen
   });
 
   it('production wiring: buildPartRequirements() produces a real PlasmaCutRequirement for plasma_cut, not a shared LaserRequirement', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -864,7 +884,7 @@ describe('Machine Economics — plasma_cut gets its own real PlasmaCutRequiremen
 // shear/plasma_cut before their fixes).
 describe('Machine Economics — plasma_punch correctly gets a generic requirement, not a shared LaserRequirement', () => {
   it('production wiring: buildPartRequirements() assigns kind:generic for plasma_punch', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -956,7 +976,7 @@ describe('Machine Economics — laser_punch gets its own real LaserPunchRequirem
   });
 
   it('production wiring: buildPartRequirements() produces a real LaserPunchRequirement for laser_punch, not a shared LaserRequirement', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -1063,7 +1083,7 @@ describe('Machine Economics — standard_press/tandem_press get their own real P
   });
 
   it('production wiring: buildPartRequirements() produces real PressRequirements for standard_press/tandem_press/progressive_die_press, not the generic fallback', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -1125,7 +1145,7 @@ describe('Machine Economics — roll_bending_2/3/4 get their own real RollBendin
   });
 
   it('production wiring: buildPartRequirements() produces real RollBendingRequirements for roll_bending_2/3/4, not the generic fallback', async () => {
-    const svc = withNoLaserPowerData(Object.create(BOMItemsService.prototype) as BOMItemsService);
+    const svc = withNoLaserPowerData(Object.create(BomItemCostingService.prototype) as BomItemCostingService);
     const requirements = await (svc as any).buildPartRequirements({
       family: 'sheet_metal',
       grade: 'CRCA',
@@ -1257,7 +1277,7 @@ describe('fiber laser selection by power and bed (Phase 2)', () => {
 describe('Phase 2 wiring: buildPartRequirements attaches the laser power requirement', () => {
   it('asks the fiber rows for fiber_laser and the CO2 rows for co2_laser, and no other class', async () => {
     const calls: Array<[string | null, number, string]> = [];
-    const svc = Object.create(BOMItemsService.prototype) as BOMItemsService;
+    const svc = Object.create(BomItemCostingService.prototype) as BomItemCostingService;
     (svc as any).smLookup = {
       getMinLaserPowerRequirement: async (grade: string | null, t: number, tech: 'fiber' | 'co2') => {
         calls.push([grade, t, tech]);

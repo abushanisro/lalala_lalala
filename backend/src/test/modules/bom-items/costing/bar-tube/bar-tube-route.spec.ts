@@ -1,0 +1,365 @@
+import { barTubeCalculatorsByName, loadBarTubeCalculatorSpec } from '../../../../../modules/bom-items/costing/bar-tube/calculators/bar-tube-calculator-spec';
+import { barTubePart, enclosingBar } from '../../../../../modules/bom-items/costing/bar-tube/bar-tube-cost.service';
+import { buildBarTubeCostSummary } from '../../../../../modules/bom-items/costing/bar-tube/bar-tube-cost-summary';
+import { barTubeRouteFor } from '../../../../../modules/bom-items/costing/bar-tube/bar-tube-route-comparison';
+import {
+  buildBarTubeRoutes, chooseBarTubeRoute, rotaryDrawCapacityMm, type BarTubePart, type BarTubeRoute, type BarTubeRouteInput,
+} from '../../../../../modules/bom-items/costing/bar-tube/bar-tube-route';
+import { machineValue } from '../../../../../modules/bom-items/costing/casting/sand/sand-machines';
+import type { CostSummaryResponseDto } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import { allBarTubeMachines, barTubeMaterial, realBarTubeReference } from './bar-tube-test-data';
+
+const ZERO = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
+const A36 = 'Steel, Hot Worked, ASTM A36';
+// A 1 m length of 25 x 1.5 mm round tube, square at both ends: metal area π/4 (25² − 22²) = 110.74 mm².
+const AREA = (Math.PI / 4) * (25 ** 2 - 22 ** 2);
+const TUBE: BarTubePart = {
+  stockForm: 'ROUND_TUBE',
+  section: { areaMm2: AREA, widthMm: 25, heightMm: 25, outerPerimeterMm: Math.PI * 25, odMm: 25, wallMm: 1.5, circumscribingDiameterMm: 25 },
+  developedLengthMm: 1000, bends: [], holes: [], complexHoles: [], cutouts: [],
+  ends: [{ end: 'start', variant: 'square', cutAngleDeg: 0, cutPerimeterMm: Math.PI * 25 }, { end: 'end', variant: 'square', cutAngleDeg: 0, cutPerimeterMm: Math.PI * 25 }],
+  forms: [],
+};
+const input = (part: BarTubePart = TUBE, over: Partial<BarTubeRouteInput> = {}): BarTubeRouteInput => ({
+  ref: realBarTubeReference(), spec: loadBarTubeCalculatorSpec(), calculators: barTubeCalculatorsByName(), material: barTubeMaterial(A36, part.stockForm),
+  part, machinesByClass: allBarTubeMachines(), scenario: { batchSize: 100, route: null }, costContext: ZERO, ...over,
+});
+const routeOf = (key: string, part: BarTubePart = TUBE) => {
+  const r = buildBarTubeRoutes(input(part)).routes.find((x) => x.key === key);
+  if (!r) throw new Error(`no ${key} route`);
+  return r;
+};
+const processes = (r: BarTubeRoute) => r.lines.map((l) => l.process);
+const gapsOf = (r: BarTubeRoute) => r.lines.filter((l) => l.physicsGap).map((l) => `${l.process}: ${(l.physicsGap as { reason?: string }).reason}`);
+
+describe('saw and punch, a 25 x 1.5 A36 round tube 1 m long', () => {
+  const saw = routeOf('saw');
+
+  it('is cut on a band saw (saw_routing_evaluation allows only the band saw for a round tube; a shear does not cut one) and is complete', () => {
+    expect(processes(saw)).toEqual(['Band Saw']);
+    expect(saw.complete).toBe(true);
+  });
+
+  // The batch of 100 needs ceil(100 / 6) = 17 lengths, so 17 are cut at once (the saw holds 20 x 16 of them, maxPartsPerBundleBandSaw is 18).
+  // They lie 17 x 25 = 425 mm wide in the cut, so the blade cuts at the 500 mm row's rate. Every tube's own section is cut; the bundle shares
+  // one index of 1 m and one load and unload.
+  it('cycle: each tube\'s section at the band saw rate for the bundle\'s width, plus its share of the bundle\'s index, load and unload', () => {
+    const line = saw.lines[0]!;
+    const m = allBarTubeMachines()['bar_tube_fab_band_saw']!.find((x) => x.name === line.machineName)!;
+    const ref = realBarTubeReference();
+    const rateAt = (width: number) => Number(ref.table('saw_cut_rate').find((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === '1' && Number(r['Material Width (mm)']) === width)!['Cutting Rate (mm^2 / min)']);
+    expect(rateAt(50)).toBe(6451.6);
+    const across = Math.floor(machineValue(m, 'max_stock_width_mm')! / 25);
+    const holds = across * Math.floor(machineValue(m, 'max_stock_height_mm')! / 25);
+    const bundle = Math.min(holds, ref.number('maxPartsPerBundleBandSaw')!, Math.ceil(100 / 6));
+    expect(bundle).toBe(17);
+    expect(Math.min(bundle, across) * 25).toBe(425);
+    const sec = AREA / rateAt(500) * 60 + (1000 / machineValue(m, 'axial_feed_rate_mm_per_s')! + machineValue(m, 'load_plus_unload_time_s')!) / bundle;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(sec, 1);
+  });
+
+  it('a batch one length makes is not bundled: the tube is cut alone, at the rate for its own width', () => {
+    const line = buildBarTubeRoutes(input(TUBE, { scenario: { batchSize: 6, route: null } })).routes.find((r) => r.key === 'saw')!.lines[0]!;
+    const m = allBarTubeMachines()['bar_tube_fab_band_saw']!.find((x) => x.name === line.machineName)!;
+    const sec = AREA / 6451.6 * 60 + 1000 / machineValue(m, 'axial_feed_rate_mm_per_s')! + machineValue(m, 'load_plus_unload_time_s')!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(sec, 1);
+  });
+
+  it('a bundle never saws faster than the blade cuts: the cut of each part stays, whatever the bundle', () => {
+    const cycle = (batchSize: number) => buildBarTubeRoutes(input(TUBE, { scenario: { batchSize, route: null } })).routes.find((r) => r.key === 'saw')!.lines[0]!.cycleTimeMin * 60;
+    const ref = realBarTubeReference();
+    const slowest = Math.min(...ref.table('saw_cut_rate').filter((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === '1').map((r) => Number(r['Cutting Rate (mm^2 / min)'])));
+    // 18 to a bundle (the reference's limit) at a batch of 1,000: more than the cut alone, far less than a tube cut on its own.
+    expect(cycle(1000)).toBeGreaterThan(AREA / 6451.6 * 60);
+    expect(cycle(1000)).toBeLessThan(cycle(6) / 10);
+    expect(cycle(1000)).toBeLessThanOrEqual(AREA / slowest * 60 + (1000 / 75 + 60) / 18 + 0.05);
+  });
+
+  it('stock: floor((6096 − 75) / (1000 + 3 mm band saw kerf)) = 6 parts per 6096 mm length; a sixth of the length at the round tube price', () => {
+    const mat = barTubeMaterial(A36, 'ROUND_TUBE');
+    expect(saw.material.partsPerStock).toBe(6);
+    const perPartKg = (6096 * AREA * 7850) / 1e9 / 6;
+    expect(saw.material.massKg).toBeCloseTo(perPartKg, 3);
+    expect(saw.material.costUsd).toBeCloseTo(perPartKg * mat.stockPricePerKgUsd!, 4);
+    expect(saw.material.partKg).toBeCloseTo((1000 * AREA * 7850) / 1e9, 3);
+  });
+});
+
+describe('a stainless bar is sawn as stainless', () => {
+  it('cut code 5.21 is family 5 in saw_cut_rate (stainless), not 52 (thermosets, which saw about four times faster)', () => {
+    const ss = barTubeMaterial('Stainless Steel, AISI 441', 'ROUND_TUBE');
+    expect(ss.cutCode).toBe(5.21);
+    expect(ss.cutCodeFamily).toBe('5');
+    const rate = (family: string) => Number(realBarTubeReference().table('saw_cut_rate').find((r) => r['Process Name'] === 'Band Saw' && String(r['Material Cut Code Family']) === family)?.['Cutting Rate (mm^2 / min)']);
+    expect(rate('5')).toBeLessThan(rate('52') / 3);
+  });
+});
+
+describe('the tube laser route', () => {
+  it('steel is cut on the tube laser\'s steel table (memory lists it under family 9) at the carbon steel factor; both routes are complete', () => {
+    const laser = routeOf('laser');
+    expect(laser.complete).toBe(true);
+    expect(JSON.stringify(laser.lines[0]!.calculationTrace ?? laser.lines[0])).toMatch(/Tube Laser steel feed \(family 9\) x 1/);
+  });
+
+  it('an aluminium tube is cut at the IPG aluminium-over-steel factor; past what the chart cuts at the power, it says so', () => {
+    const al = barTubeMaterial('Aluminum, ANSI 6061', 'ROUND_TUBE');
+    const r = buildBarTubeRoutes(input(TUBE, { material: al })).routes.find((x) => x.key === 'laser')!;
+    expect(gapsOf(r)).toEqual([]);
+    expect(JSON.stringify(r.lines[0])).toMatch(/aluminium over carbon steel at 1\.5 mm/);
+    const thick = { ...TUBE, section: { ...TUBE.section, wallMm: 8, areaMm2: Math.PI / 4 * (25 ** 2 - 9 ** 2) } };
+    expect(gapsOf(buildBarTubeRoutes(input(thick, { material: al })).routes.find((x) => x.key === 'laser')!).join(' ')).toMatch(/laser cuts aluminium up to \d+ mm/);
+  });
+
+  it('copper has no fiber laser chart at these powers: a named gap, the saw route quoted', () => {
+    const cu = barTubeMaterial('Copper, UNS C11000', 'ROUND_TUBE');
+    const { routes } = buildBarTubeRoutes(input(TUBE, { material: cu }));
+    expect(gapsOf(routes.find((x) => x.key === 'laser')!).join(' ')).toMatch(/no published fiber laser chart for Copper/);
+  });
+
+  it('a solid bar is not a tube laser route (sawn), and says why', () => {
+    const bar: BarTubePart = { ...TUBE, stockForm: 'ROUND_BAR', section: { ...TUBE.section, areaMm2: Math.PI / 4 * 625, wallMm: null } };
+    const { routes, gaps } = buildBarTubeRoutes(input(bar));
+    expect(routes.map((r) => r.key)).toEqual(['saw']);
+    expect(gaps).toContainEqual({ key: 'laser', label: 'Tube laser', reason: 'a tube laser cuts tubes and open profiles, not round bar' });
+  });
+
+  it('the saw route is quoted: the only complete one', () => {
+    const { routes, gaps } = buildBarTubeRoutes(input());
+    const { route, note } = chooseBarTubeRoute(routes, gaps, null);
+    expect(routes.every((r) => r.complete)).toBe(true);
+    expect(route!.totalUsd).toBe(Math.min(...routes.map((r) => r.totalUsd!)));
+    expect(note).toMatch(/is quoted .* the cheapest complete route/);
+  });
+});
+
+describe('openings, end forms and bends', () => {
+  it('holes through the wall are punched, one hit each, indexed from the first to the last', () => {
+    const holed = { ...TUBE, holes: [{ featureType: 'SimpleHole', diameterMm: 6, stationMm: 100 }, { featureType: 'SimpleHole', diameterMm: 6, stationMm: 900 }] };
+    const saw = routeOf('saw', holed);
+    expect(processes(saw)).toEqual(['Band Saw', 'Punching']);
+    const punch = saw.lines[1]!;
+    expect(punch.physicsGap).toBeUndefined();
+    expect(JSON.stringify(punch.calculationTrace ?? punch)).toMatch(/2 hole\(s\)/);
+  });
+
+  it('a flared end is formed on a flaring machine on either route', () => {
+    const flared = { ...TUBE, forms: [{ end: 'end' as const, variant: 'flare' }] };
+    expect(processes(routeOf('saw', flared))).toEqual(['Band Saw', 'Flaring']);
+    expect(processes(routeOf('laser', flared))).toEqual(['Tube Laser', 'Flaring']);
+  });
+
+  it('a notched end is notched on the saw route and profiled by the tube laser', () => {
+    const notched = { ...TUBE, ends: [TUBE.ends[0]!, { ...TUBE.ends[1]!, variant: 'notch' }] };
+    expect(processes(routeOf('saw', notched))).toEqual(['Band Saw', 'Notching']);
+    expect(processes(routeOf('laser', notched))).toEqual(['Tube Laser']);
+  });
+
+
+  it('an end cut steeper than maxSawableCutoutAngle (45) is not sawn, though the DoAll vertical saw swings to 90; a shear cuts square only', () => {
+    const steep = { ...TUBE, ends: [{ ...TUBE.ends[0]!, cutAngleDeg: 80 }, TUBE.ends[1]!] };
+    expect(gapsOf(routeOf('saw', steep)).join(' ')).toMatch(/an end is cut at 80 degrees, beyond the reference's maxSawableCutoutAngle of 45/);
+    const angled = { ...TUBE, ends: [{ ...TUBE.ends[0]!, cutAngleDeg: 30 }, TUBE.ends[1]!] };
+    expect(routeOf('saw', angled).complete).toBe(true);
+  });
+});
+
+describe('what the cad-engine measured, as the routes take it', () => {
+  it('not measured, not stock with no box, plate and extrusion each say why (never priced as something else)', () => {
+    expect(barTubePart(null).missing[0]).toMatch(/press Refresh analysis/);
+    expect(barTubePart({ extractionVersion: 'bar-tube-1', stockForm: null, reason: 'not one cross-section along a straight or bent line, and not a flat plate' }).missing[0])
+      .toBe('the part is not a length of bar, tube or profile: not one cross-section along a straight or bent line, and not a flat plate');
+    expect(barTubePart({ extractionVersion: 'bar-tube-1', stockForm: null }, { sidesMm: [0, 0, 0], volumeMm3: null }).part).toBeNull();
+    expect(barTubePart({ extractionVersion: 'bar-tube-1', stockForm: 'PLATE' }).missing[0]).toMatch(/the plate measurements/);
+    const plate = barTubePart({ extractionVersion: 'bar-tube-1', stockForm: 'PLATE', plate: { thickness_mm: 6, cut_length_mm: 700, pierce_count: 3, blank_length_mm: 200, blank_width_mm: 100, face_area_mm2: 18000 } }).part;
+    expect(plate).toMatchObject({ stockForm: 'PLATE', plate: { thicknessMm: 6, cutLengthMm: 700, pierces: 3, blankLengthMm: 200, blankWidthMm: 100, faceAreaMm2: 18000 } });
+  });
+
+  it('reads the cad-engine output (snake case) into the part', () => {
+    const { part } = barTubePart({
+      extractionVersion: 'bar-tube-1', stockForm: 'ROUND_TUBE', developedLengthMm: 1000,
+      section: { area_mm2: AREA, width_mm: 25, height_mm: 25, outer_perimeter_mm: 78.54, od_mm: 25, wall_mm: 1.5 },
+      bends: [{ clr_mm: 50, angle_deg: 90 }], holes: [{ feature_type: 'SimpleHole', diameter_mm: 6, station_mm: 100 }],
+      ends: [{ end: 'start', variant: 'angled', cut_angle_deg: 30, cut_perimeter_mm: 90 }], forms: [{ end: 'end', variant: 'flare' }],
+    });
+    expect(part).toMatchObject({
+      stockForm: 'ROUND_TUBE', developedLengthMm: 1000, section: { wallMm: 1.5, odMm: 25 }, bends: [{ clrMm: 50, angleDeg: 90 }],
+      holes: [{ diameterMm: 6, stationMm: 100 }], ends: [{ end: 'start', variant: 'angled', cutAngleDeg: 30 }], forms: [{ end: 'end', variant: 'flare' }],
+    });
+  });
+});
+
+describe('the cost summary and the route comparison', () => {
+  const { routes, gaps } = buildBarTubeRoutes(input());
+  const { route, note } = chooseBarTubeRoute(routes, gaps, null);
+  const summary = buildBarTubeCostSummary({
+    barTube: { route, routes, gaps, part: TUBE, note, missing: [], warnings: [] }, materialGrade: A36, materialCostPerKg: 1, materialSource: 'db', batchSize: 100, warnings: [], ratesSource: 'test',
+  });
+
+  it('totals the stock and the saw line, and lists both routes with the laser\'s reason', () => {
+    expect(summary.family).toBe('bar_tube');
+    expect(summary.totalCost).toBeCloseTo(route!.totalUsd!, 2);
+    expect(summary.barTube).toMatchObject({ stockForm: 'ROUND_TUBE', complete: true });
+    expect(summary.barTube!.options.map((o) => o.complete)).toEqual([true, true]);
+  });
+
+  it('the comparison entry of the quoted route carries its lines; the other, priced on its own summary, is not this one', () => {
+    const quoted = route!.key;
+    const other = quoted === 'saw' ? 'laser' : 'saw';
+    expect(barTubeRouteFor(quoted, summary as CostSummaryResponseDto)).toMatchObject({ routeId: `bar-tube-${quoted}`, isFeasible: true });
+    expect(barTubeRouteFor(other, summary as CostSummaryResponseDto)).toMatchObject({ routeId: `bar-tube-${other}`, isFeasible: false, processLines: [] });
+  });
+
+  it('a part that is not stock is one named, uncosted line', () => {
+    const s = buildBarTubeCostSummary({
+      barTube: { route: null, routes: [], gaps: [], part: null, note: null, missing: ['a part cut from plate: plate cutting (laser, plasma, oxyfuel) is not costed yet'], warnings: [] },
+      materialGrade: A36, materialCostPerKg: 1, materialSource: 'db', batchSize: 100, warnings: [], ratesSource: 'test',
+    });
+    expect(s.processLines).toHaveLength(1);
+    expect(s.processLines[0]!.physicsGap).toMatchObject({ reason: 'Bar and Tube Fabrication cannot be costed: a part cut from plate: plate cutting (laser, plasma, oxyfuel) is not costed yet' });
+  });
+});
+
+describe('bending: each bend on the cheapest method that can make it', () => {
+  it('2 D bends of the 25 x 1.5 tube are rotary drawn over a mandrel (tool key B1: wall factor 20, D of bend 2), on the preferred 75 mm bender', () => {
+    const saw = routeOf('saw', { ...TUBE, bends: [{ clrMm: 50, angleDeg: 90 }, { clrMm: 50, angleDeg: 45, clockAngleDeg: 90 }] });
+    expect(saw.complete).toBe(true);
+    expect(saw.bendPlan.map((b) => [b.method, b.toolKey, b.mandrel])).toEqual([['Rotary Draw Bending', 'B1', true], ['Rotary Draw Bending', 'B1', true]]);
+    // usePreferredMachines is true: memory marks the three Rotary Draw Benders preferred and the Pines models not, so the cheapest preferred
+    // bender that takes the tube is used, not Pines Model 1 (which costs no more).
+    expect(saw.lines.find((l) => l.process === 'Rotary Draw Bending')?.machineName).toBe('Rotary Draw Bender - 75mm Max Tube Diameter');
+  });
+
+  it('usePreferredMachines decides it: switched off, the cheapest capable bender is used (Silfax SE 32 LR, no dearer than the preferred one)', () => {
+    const part = { ...TUBE, bends: [{ clrMm: 50, angleDeg: 90 }] };
+    const bend = (ref: BarTubeRouteInput['ref']) => buildBarTubeRoutes(input(part, { ref })).routes.find((x) => x.key === 'saw')
+      ?.lines.find((l) => l.process === 'Rotary Draw Bending');
+    const preferred = bend(realBarTubeReference());
+    const cheapest = bend(realBarTubeReference().withOverrides(new Map([['usePreferredMachines', 'false']])));
+    // Silfax, Pines Model 1 and the preferred bender all cost 0.72 a part to the cent: the machine and labour cost per part, kept finer, is
+    // Silfax's lowest, so it is the cheapest (the name used to decide the tie).
+    expect([preferred?.machineName, cheapest?.machineName]).toEqual(['Rotary Draw Bender - 75mm Max Tube Diameter', 'Silfax SE 32 LR']);
+    expect(cheapest?.totalCost).toBeLessThanOrEqual(preferred?.totalCost ?? 0);
+  });
+
+  it('a bend tighter than bending_difficulty_factor lists (0.4 D) has no method: a named gap with each method\'s reason', () => {
+    const saw = routeOf('saw', { ...TUBE, bends: [{ clrMm: 10, angleDeg: 90 }] });
+    expect(saw.complete).toBe(false);
+    expect(gapsOf(saw)[0]).toMatch(/^Bending: bend 1 \(10 mm CLR, 90 degrees\): no method can make it .*0\.4 D bend .* tighter than bending_difficulty_factor/);
+  });
+
+  it('a 24 D arc is beyond draw bending (12 D at most) and is rolled', () => {
+    const saw = routeOf('saw', { ...TUBE, bends: [{ clrMm: 600, angleDeg: 120 }] });
+    expect(saw.complete).toBe(true);
+    expect(saw.bendPlan[0]!.method).toMatch(/Roll Bending$/);
+  });
+
+  it('a 50 x 6 flat bar is bent in the bend brake (CLR 12 = 2 x thickness, within maxBendBrakeRadius 42)', () => {
+    const flat: BarTubePart = { ...TUBE, stockForm: 'RECTANGULAR_BAR', section: { areaMm2: 300, widthMm: 50, heightMm: 6, outerPerimeterMm: 112, odMm: null, wallMm: null, circumscribingDiameterMm: null }, bends: [{ clrMm: 12, angleDeg: 90 }] };
+    expect(routeOf('saw', flat).bendPlan[0]!.method).toBe('Bar Bend Brake');
+  });
+
+  it('reads a rotary draw bender\'s capacity from its name (no diameter column in the machine files)', () => {
+    expect(rotaryDrawCapacityMm('Rotary Draw Bender - 150mm Max Tube Diameter')).toBe(150);
+    expect(rotaryDrawCapacityMm('Silfax SE 32 LR')).toBe(32);
+    expect(rotaryDrawCapacityMm('Pines Model 1')).toBe(25.4);
+    expect(rotaryDrawCapacityMm('Pines Model 1 1/4')).toBe(31.75);
+    expect(rotaryDrawCapacityMm('Pines Model 3/4')).toBe(19.05);
+  });
+});
+
+describe('a part cut from plate', () => {
+  const PLATE: BarTubePart = {
+    ...TUBE, stockForm: 'PLATE', developedLengthMm: 200, ends: [],
+    section: { areaMm2: 600, widthMm: 100, heightMm: 6, outerPerimeterMm: 212, odMm: null, wallMm: 6, circumscribingDiameterMm: null },
+    plate: { thicknessMm: 6, cutLengthMm: 700, pierces: 3, blankLengthMm: 200, blankWidthMm: 100, faceAreaMm2: 18000 },
+  };
+  it('is cut by laser, plasma and oxyfuel, each priced; the plate per part from a standard sheet', () => {
+    const { routes, gaps } = buildBarTubeRoutes(input(PLATE));
+    expect(routes.map((r) => [r.key, r.complete])).toEqual([['plate_laser', true], ['plate_plasma', true], ['plate_oxyfuel', true]]);
+    expect(gaps.map((g) => g.key)).toEqual(['saw', 'laser', 'extrusion']);
+    // Sheet 2438.4 x 1219.2: floor(2438.4 / 206) x floor(1219.2 / 106) = 11 x 11 = 121 blanks of 200 x 100 with the 6 mm thickness between.
+    expect(routes[0]!.material.partsPerStock).toBe(121);
+    const { route } = chooseBarTubeRoute(routes, gaps, null);
+    expect(route!.totalUsd).toBe(Math.min(...routes.map((r) => r.totalUsd!)));
+  });
+});
+
+describe('an extruded profile', () => {
+  const PROFILE: BarTubePart = {
+    ...TUBE, stockForm: 'GENERIC_EXTRUSION', developedLengthMm: 500,
+    section: { areaMm2: 200, widthMm: 30, heightMm: 20, outerPerimeterMm: 120, odMm: null, wallMm: 2, circumscribingDiameterMm: 36 },
+  };
+  it('is extruded from a billet, preheated, cut off on the reciprocating saw (saw_routing_evaluation), material from the billet', () => {
+    const { routes, gaps } = buildBarTubeRoutes(input(PROFILE, { material: barTubeMaterial('Aluminum, ANSI 6061', 'GENERIC_EXTRUSION', 6.618) }));
+    expect(gaps.map((g) => g.key)).toEqual(['plate_laser', 'plate_plasma', 'plate_oxyfuel', 'saw', 'laser']);
+    const ex = routes[0]!;
+    expect(processes(ex)).toEqual(['Extrusion', 'Billet Preheat', 'Die Preheat', 'Reciprocating Saw']);
+    expect(ex.lines[0]!.machineName).toMatch(/76.2mm Billet/);
+    expect(ex.material.partsPerStock).toBeGreaterThan(1);
+    expect(ex.tooling.map((t) => t.key)).toEqual(['extrusion-die']);
+  });
+
+  it('an alloy with no exit speed is not extruded, and says why', () => {
+    const { routes, gaps } = buildBarTubeRoutes(input(PROFILE, { material: barTubeMaterial('Steel, Hot Worked, ASTM A36', 'GENERIC_EXTRUSION') }));
+    expect(routes).toEqual([]);
+    expect(gaps.find((g) => g.key === 'extrusion')!.reason).toMatch(/no extrusion exit speed/);
+  });
+});
+
+describe('the tooling a route needs, kept out of the piece cost', () => {
+  it('a bend die set per tube size and CLR drawn; the mandrel and wiper named, not priced (no published price)', () => {
+    const saw = buildBarTubeRoutes(input({ ...TUBE, bends: [{ clrMm: 50, angleDeg: 90 }, { clrMm: 50, angleDeg: 45 }] }, { scenario: { batchSize: 100, route: null, amortizationParts: 5000 } })).routes.find((r) => r.key === 'saw')!;
+    expect(saw.tooling.map((t) => [t.key, t.costUsd, t.perPartUsd])).toEqual([['bend-die-50', 739, 0.1478], ['mandrel-wiper', null, null]]);
+  });
+
+  it('an extruded profile\'s die by the press and its voids: a hollow 30 x 20 profile on the 3 in press, 2,350 USD', () => {
+    const profile: BarTubePart = { ...TUBE, stockForm: 'GENERIC_EXTRUSION', developedLengthMm: 500, section: { areaMm2: 200, widthMm: 30, heightMm: 20, outerPerimeterMm: 120, odMm: null, wallMm: 2, circumscribingDiameterMm: 36, hollows: 1 } };
+    const ex = buildBarTubeRoutes(input(profile, { material: barTubeMaterial('Aluminum, ANSI 6061', 'GENERIC_EXTRUSION', 6.618), scenario: { batchSize: 100, route: null, amortizationParts: 10000 } })).routes[0]!;
+    expect(ex.tooling).toEqual([expect.objectContaining({ key: 'extrusion-die', costUsd: 2350, perPartUsd: 0.235 })]);
+  });
+
+  it('a stainless plate is not cut by oxyfuel (it says why); the laser cuts it at the stainless factor', () => {
+    const PLATE: BarTubePart = {
+      ...TUBE, stockForm: 'PLATE', developedLengthMm: 200, ends: [],
+      section: { areaMm2: 300, widthMm: 100, heightMm: 3, outerPerimeterMm: 206, odMm: null, wallMm: 3, circumscribingDiameterMm: null },
+      plate: { thicknessMm: 3, cutLengthMm: 700, pierces: 3, blankLengthMm: 200, blankWidthMm: 100, faceAreaMm2: 18000 },
+    };
+    const ss = barTubeMaterial('Stainless Steel, AISI 304', 'PLATE');
+    const { routes } = buildBarTubeRoutes(input(PLATE, { material: ss }));
+    expect(gapsOf(routes.find((r) => r.key === 'plate_oxyfuel')!).join(' ')).toMatch(/oxyfuel cuts carbon and low-alloy steel only/);
+    expect(gapsOf(routes.find((r) => r.key === 'plate_laser')!)).toEqual([]);
+  });
+});
+
+/**
+ * Apply never fails (the user's decision 2026-11-20): a measured part that is not a length of stock (the Carriage Mount, a 33 x 24 x 22 mm PETG
+ * bracket) is priced as the bar that encloses it, sawn to length, and the shape it has within the bar is a No Cost Feature, never a refusal.
+ */
+describe('a part that is not a length of stock: priced as the bar that encloses it', () => {
+  const NOT_STOCK = 'not one cross-section along a straight or bent line, and not a flat plate';
+  const carriageMount = { sidesMm: [33, 24, 22], volumeMm3: 5178.74 };
+
+  it('the box\'s two shorter sides are the section (square when they are equal), the longest the length', () => {
+    const { part, missing } = barTubePart({ extractionVersion: 'bar-tube-1', stockForm: null, reason: NOT_STOCK }, carriageMount);
+    expect(missing).toEqual([]);
+    expect(part).toMatchObject({
+      stockForm: 'RECTANGULAR_BAR', developedLengthMm: 33, section: { areaMm2: 24 * 22, widthMm: 24, heightMm: 22, wallMm: null },
+      enclosing: { reason: NOT_STOCK, partVolumeMm3: 5178.74 },
+    });
+    expect(enclosingBar({ sidesMm: [20.2, 60, 20], volumeMm3: null }, NOT_STOCK)).toMatchObject({ stockForm: 'SQUARE_BAR', developedLengthMm: 60, enclosing: { partVolumeMm3: null } });
+  });
+
+  it('sawn to length, complete, and its shape a $0 No Cost Feature on the route (not a gap); the part weighs its own volume, the bar is bought', () => {
+    const part = enclosingBar(carriageMount, NOT_STOCK)!;
+    const saw = buildBarTubeRoutes({ ...input(part), material: barTubeMaterial('Aluminum, ANSI 6061', part.stockForm) }).routes.find((r) => r.key === 'saw')!;
+    expect(saw.complete).toBe(true);
+    const shape = saw.lines.find((l) => l.process === 'No Cost Feature')!;
+    expect(shape).toMatchObject({ totalCost: 0, rateSource: 'no_cost_feature', processGroup: 'Bar and Tube Fabrication' });
+    expect(shape.physicsGap).toBeUndefined();
+    expect(shape.operation).toBe(`The part's shape within the 24 x 22 mm rectangular bar it is sawn from: not a bar and tube operation (the part is not a length of bar, tube or profile: ${NOT_STOCK})`);
+    expect(saw.material.partKg).toBeCloseTo((5178.74 * 2700) / 1e9, 3);
+    expect(saw.material.massKg).toBeGreaterThan((33 * 24 * 22 * 2700) / 1e9);
+    expect(saw.totalUsd).toBeGreaterThan(0);
+  });
+});

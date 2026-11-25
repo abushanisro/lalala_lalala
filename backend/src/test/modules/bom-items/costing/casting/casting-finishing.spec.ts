@@ -72,7 +72,7 @@ describe('trim (press cycle time, press force)', () => {
     maxWeightKg: Number(r['Max Weight (kg)']), partingLineThicknessMm: Number(r['Parting Line Thickness (mm)']),
   }));
   const shear = Number(csv('Raw Material/materials_master.csv').find((r) => r['Name'] === 'Aluminum, AA 3105')!['Shear Strength (MPa)']);
-  const base = { machines: presses, calculators, alloyName: 'Aluminum, AA 3105', partsPerStroke: parts, dimensions: dims, batchSize: 250, processGroup: 'Die Casting', machineClass: 'die_casting_trim', costContext: ctx };
+  const base = { machines: presses, calculators, alloy: { id: null, name: 'Aluminum, AA 3105' }, partsPerStroke: parts, dimensions: dims, batchSize: 250, processGroup: 'Die Casting', machineClass: 'die_casting_trim', costContext: ctx };
 
   it('per part = the cheapest capable press cycle time / parts per stroke; force = perimeter x flash x shear', () => {
     const r = trimLine({ ...base, partingPerimeterMm: 336.36, partMassKg: 0.404, shearStrengthMpa: shear });
@@ -191,8 +191,8 @@ describe('melting (per kg, ductile-iron basis)', () => {
   const di = Number(casting('Machine/pmmelting_machines.csv').find((r) => r['Name'] === 'Induction - DI')!['Conversion Cost (USD/kg)']);
   const v = (k: string) => Number(csv('Die casting_variables.csv').find((r) => r['Variable Name'] === k)!['String Value']);
   const base = {
-    furnaces, calculators, ductileIron: { name: 'Induction - DI', costPerKg: di }, regionConvFactor: v('regionConvFactor'),
-    furnaceCapacitySafetyFactor: v('furnaceCapacitySafetyFactor'), alloyName: 'Aluminum, AA 380.0', densityKgM3: 0.42 / 155_000 * 1e9,
+    furnaces, calculators, ductileIron: { id: 'induction-di', name: 'Induction - DI', costPerKg: di }, regionConvFactor: v('regionConvFactor'),
+    furnaceCapacitySafetyFactor: v('furnaceCapacitySafetyFactor'), alloy: { id: null, name: 'Aluminum, AA 380.0' }, densityKgM3: 0.42 / 155_000 * 1e9,
     shotVolumeMm3: 310_000, cavities: 2, batchSize: 250, processGroup: 'Die Casting', machineClass: 'die_casting_melting',
   };
 
@@ -212,6 +212,15 @@ describe('melting (per kg, ductile-iron basis)', () => {
     // A copper alloy (1100 C) cannot go in a crucible furnace (700 C).
     const hot = meltingLine({ ...base, injectionTempC: 1100 });
     expect(Number(furnaces.find((x) => x.name === hot.line.machineName)!.specs['max_temperature_c'])).toBeGreaterThanOrEqual(1100);
+  });
+
+  it('a small part\'s melt is a fraction of a cent: charged unrounded, never 0.00 (which read as no charge and refused the Apply)', () => {
+    // The Carriage Mount as a magnesium die casting: 5178.74 mm3 per part, one cavity.
+    const r = meltingLine({ ...base, densityKgM3: 1800, shotVolumeMm3: 5178.74, cavities: 1, injectionTempC: 650 });
+    expect(r.line.physicsGap).toBeUndefined();
+    expect(r.line.totalCost).toBeGreaterThan(0);
+    expect(r.line.totalCost).toBeLessThan(0.005);
+    expect(r.line.totalCost).toBeCloseTo(r.meltedKg! * v('regionConvFactor') * di, 9);
   });
 
   it('no conversion cost on file for the location: a named gap', () => {

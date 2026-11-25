@@ -8,7 +8,7 @@ TMP="$(mktemp -d)"; ID="localdata-$$"
 export COMPOSE_PROJECT_NAME="emithran-localtest-$$" LOCAL_PG_PORT=54392 LOCAL_API_PORT=3091 LOCAL_S3_PORT=8393 LOCAL_ENV_FILE="$TMP/.env" LOCAL_BACKUP_DIR="$TMP"
 cleanup() { [ -f "$TMP/backend.pid" ] && kill "$(cat "$TMP/backend.pid")" >/dev/null 2>&1 || true; bash scripts/local-data.sh reset --yes >/dev/null 2>&1 || true; docker rm -f "$ID-src" >/dev/null 2>&1 || true; docker network rm "$ID" >/dev/null 2>&1 || true; rm -rf "$TMP"; }
 trap cleanup EXIT
-IMAGE="postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b"
+IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b}"
 docker network create "$ID" >/dev/null
 docker run -d --rm --name "$ID-src" --network "$ID" -e POSTGRES_PASSWORD=pw -v "$PWD/migrations":/migrations:ro -v "$PWD/test/sql":/sqltest:ro "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do docker exec "$ID-src" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break; sleep 1; done
@@ -44,15 +44,84 @@ CREATE TABLE public.calculator_fields (
 CREATE TABLE public.process_calculator_mappings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), process_group varchar(255) NOT NULL, process_route varchar(255) NOT NULL, operation varchar(255) NOT NULL,
   calculator_id uuid REFERENCES public.calculators(id) ON DELETE CASCADE, calculator_name varchar(255), is_active boolean DEFAULT true,
-  display_order integer DEFAULT 0, CONSTRAINT unique_process_calculator_mapping UNIQUE (process_group, process_route, operation)
+  display_order integer DEFAULT 0, updated_at timestamptz DEFAULT now(), -- migration 024; 1058 stamps the rows it activates
+  CONSTRAINT unique_process_calculator_mapping UNIQUE (process_group, process_route, operation)
 );
 INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
 SELECT 'Sand Casting', n, n, false FROM unnest(ARRAY['Cleaning','CO2 Cured','Cooling','Core Refractory Coat','Degating','Finishing','Horizontal Automatic','Hot Box',
   'Isocure Gas','Manual Coremaking','Manual Floor Moldmaking','Manual Pit Moldmaking','Manual Std Moldmaking','Melting','Mold Refractory Coat','No Bake','Oil Core','Pour',
   'Refractory Coat Air Dry','Refractory Coat Oven Dry','Shakeout','Shell','Stock Core','Vertical Automatic','Visual Inspection']) AS n;
+-- the investment casting catalog rows migration 871 seeds: migration 1046 links the investment casting calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Casting Investment', n, n, false FROM unnest(ARRAY['Band Saw','Belt Sand','Cooling','Drying','Flash Fire De-Waxing','Knockout','Metal Pouring','Mold Burnout',
+  'Mold Preheating','Primary Sand Coating','Primary Slurry Dipping','Robotic Assist','Secondary Sand Coating','Secondary Slurry Dipping','Steam Autoclave De-Waxing',
+  'Wax Pattern Molding']) AS n;
+-- the forging catalog rows migration 790 seeds: migrations 1051, 1053 and 1054 link the forging calculators to them and fail if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Forging', n, n, false FROM unnest(ARRAY['Band Saw','Conveyor Induction Heat','Press','Mechanical Press','Trim','Hammer','Open Die Press','Preheat','Ring Rolling']) AS n;
+-- the powder metal catalog rows: migration 1060 links the powder metal calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Powder Metal', n, n, false FROM unnest(ARRAY['Compaction Pressing','Furnace Sintering']) AS n;
+-- the composites catalog rows migration 790 seeds: migrations 1064 and 1065 give them a machine class and link the composites calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Composites', n, n, false FROM unnest(ARRAY['Tool Clean','Mold Preparation','Ultrasonic Cut','Hand Layup','Automated Tape Layup',
+  'Automated Fiber Placement','Vacuum Bag','Final Vacuum Bag','Autoclave Cure','Bench Operation']) AS n;
+-- the additive catalog rows migration 790 seeds: migrations 1071 and 1073 give them a machine class and link the additive calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Additive Manufacturing', n, n, false FROM unnest(ARRAY['Breakoff','Cleaning','Laser Sintering','Manual Tool Base Removal','Metal Sintering',
+  'Part Curing','Powder Loading','Power Tool Base Removal','Printing','Resin Curing','Sieving']) AS n;
+-- the assembly molding catalog rows migration 862 seeds: migration 1080 links Insert Injection Molding to the injection calculator, and 1081
+-- links the insert loading calculator to Insert Pick and Place and fails if its row is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Assembly Molding', n, n, false FROM unnest(ARRAY['Insert Injection Molding','Insert Pick and Place']) AS n;
+-- the assembly catalog rows migration 790 seeds: migrations 1076 and 1078 give them a machine class and link the assembly calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Assembly', n, n, false FROM unnest(ARRAY['Pick and Place','Mechanical Assembly','Threaded Insert','Lock Bolt','Rivet','Manual MIG Welding',
+  'Robotic MIG Welding','Manual TIG Welding','Robotic TIG Welding','Manual Spot Welding','Robotic Spot Welding','Electron Beam Welding','Laser Welding',
+  'Ultrasonic Welding','Adhesive Bonding','Fay Sealing','Fillet Sealing','Cap Sealing','Weld Prep','Weld Clean Up']) AS n;
 -- and the four Plastic Molding rows the older seed migrations create: migrations 975 and 976 link the molding cycle-time calculators to them and fail if one is missing
 INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
 SELECT 'Plastic Molding', n, n, true FROM unnest(ARRAY['Injection Molding','Structural foam molding','Compression Molding','Reaction Injection Molding']) AS n;
+-- the assembly plastic molding catalog rows migration 862 seeds: migrations 1086 and 1087 link the component loading and the injection
+-- cycle-time calculators to them, and 1086 fails if its row is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Assembly Plastic Molding', n, n, false FROM unnest(ARRAY['Multi-Shot Molding','Pick and Place']) AS n;
+-- the bar and tube catalog rows migration 862 seeds: migration 1091 links the bar and tube calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Bar and Tube Fabrication', n, n, false FROM unnest(ARRAY['Band Saw','Circular Saw','Reciprocating Saw','Shear','Tube Laser','Punching',
+  'Flaring','Flanging','Expansion','Reduction','Flattening','Knurling','Bar Forming','Notching','Slotting','Rotary Draw Bending','Compression Bending',
+  'Bar Bend Brake','2 Roll Bending','3 Roll Bending','4 Roll Bending','Profile 3 Roll Bend','Profile CNC Bend','Sheet Laser Cut','Sheet Plasma Cut',
+  'Sheet OxyFuel Cut','Plasma CNC Cut','Plasma Torch Cut','Oxyfuel Torch Cut','Extrusion','Billet Preheat','Die Preheat']) AS n;
+-- the part assembly catalog rows migration 790 seeds: migration 1099 gives them a machine class and 1100 links the part assembly
+-- calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Part Assembly', n, n, false FROM unnest(ARRAY['Bevel Cutting','Finish Grinding','Grinding','Laser Seam Welding','Manual MIG Welding',
+  'Manual Spot Welding','Robotic MIG Welding','Robotic Spot Welding','Wire Brushing']) AS n;
+-- the rapid prototyping and roto & blow molding catalog rows migrations 790 and 862 seed: migrations 1105 and 1108 link their calculators to
+-- them and fail if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Rapid Prototyping', n, n, false FROM unnest(ARRAY['Laser Sintering','Printing','Resin Curing','Part Curing','Cleaning']) AS n;
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Roto & Blow Molding', n, n, false FROM unnest(ARRAY['Extrusion Blow Mold','Rotational Mold','Grind','Router','Saw']) AS n;
+-- the hydroforming catalog rows migration 792 seeds: migration 1110 links the Hydroform and Offline Blank calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Sheet Metal - Hydroforming', n, n, false FROM unnest(ARRAY['Hydroform','Offline Blank']) AS n;
+-- the roll forming catalog rows migration 862 seeds (inactive, no calculator): migration 1113 links its calculators to all ten and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Sheet Metal Roll Forming', n, n, false FROM unnest(ARRAY['Coil Flattener','Coil Material Stock','Cut-Off Press','Integrated HFI Welding',
+  'Integrated Laser Welding','Integrated Rotary Spot Welding','Integrated TIG Welding','Punch Press','Roll Forming Mill','Uncoiler']) AS n;
+-- the Stock Machining catalog rows migration 790 seeds (inactive, no machine class, no calculator): migration 1115 classes both and 1116 links its
+-- calculators to them and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'Stock Machining', n, n, false FROM unnest(ARRAY['Band Saw','Material Stock']) AS n;
+-- the PCB catalog rows migration 790 seeds (inactive, no machine class, no calculator): migration 1129 classes them and 1132 links the PCB
+-- calculators to every one but Material Stock and fails if one is missing
+INSERT INTO public.process_calculator_mappings (process_group, process_route, operation, is_active)
+SELECT 'PCB', n, n, false FROM unnest(ARRAY['Apply Photo Resist','Automated Optical Inspection','Automated Vision Inspection','Bed of Nails','Bench Operation',
+  'Copper Plate and Tin Coat','Cure Plugged Vias','Cure Solder Mask','DES','Desmear and Plate Through Holes','Develop Solder Mask','Dissolve Unexposed Photo Resist',
+  'Drill Circuit Holes','Drill Registration Holes','Electroless Nickel Immersion Gold','Film Imaging','Flying Probe','Hot Air Solder Leveling','Laser Drill Vias',
+  'Material Stock','Organic Solderability Preservative','Oven Cure Layers','Photolithography','Plug Vias','Router','SES','Screen Printing','Silkscreen Cure','Stamp',
+  'Surface Preparation','Tack Dry Solder Mask','Wet Film Solder Mask']) AS n;
 -- the catalog columns and the process taxonomy as the real database has them (migrations 367-371, 424, 725), and the four
 -- secondary-operation calculators the baseline holds: migration 984 restores their catalog rows and fails if a calculator is missing
 ALTER TABLE public.process_calculator_mappings ADD COLUMN machine_class varchar(100), ADD COLUMN applicable_families text[],
@@ -61,16 +130,151 @@ CREATE TABLE public.process_taxonomy (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), process_group varchar(255) NOT NULL, process_name varchar(255) NOT NULL, machine_class varchar(100),
   roadmap_status varchar(20), is_active boolean DEFAULT true, display_order integer DEFAULT 0, CONSTRAINT unique_process_taxonomy_row UNIQUE (process_group, process_name)
 );
+-- the route role column as the real database has it (migration 780): migration 1033 gives Simultaneous Turning its role
+ALTER TABLE public.process_taxonomy ADD COLUMN machining_route_role varchar(30);
 INSERT INTO public.calculators (id, name, is_global) VALUES
   ('edccd27a-c91c-479d-a440-d00053249a3a', 'Sheet Metal - Counterboring', true), ('0f7d6451-3937-472d-9a4c-3f8f3ebf59d8', 'Sheet Metal - Countersinking', true),
   ('72f84130-a741-425f-8fa9-9b027541801c', 'Sheet Metal - PEM Insertion', true), ('fe42139c-5675-4a82-94d5-7f2d440ae9bf', 'Machining - Tapping', true);
 -- the materials table as the real database has it (migration 352 adds cut_code): migration 978 writes the cut code of the plastics onto it
 CREATE TABLE public.raw_materials (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name varchar(255) NOT NULL, cut_code decimal(10,2));
+-- the material columns as the real database has them (migration 069 on): migrations 1090 and 1092 fill the bar and tube materials' strengths and specific heat
+ALTER TABLE public.raw_materials ADD COLUMN material_group varchar(255), ADD COLUMN shear_strength_mpa numeric, ADD COLUMN yield_strength_mpa numeric,
+  ADD COLUMN uts_mpa numeric, ADD COLUMN specific_heat_rt_j_kg_k numeric, ADD COLUMN updated_at timestamptz DEFAULT now();
+-- the density columns as the real database has them: migration 1102 fills the powder metal powders' density
+ALTER TABLE public.raw_materials ADD COLUMN density numeric(10,4), ADD COLUMN density_kg_m3 numeric(10,2);
+-- the material groups of each process group (migration 879): migration 1090 adds Bar and Tube Fabrication's, and 1094 gives Multi-Spindle Machining
+-- Machining's and fails if Machining has none
+\i /migrations/879_process_material_groups.sql
 INSERT INTO public.raw_materials (name) VALUES ('Generic Nylon, Type 11 40% Glass');
+-- the price columns as the real database has them (migrations 069, 350), the two rows entered in local currency (422, 463) and the
+-- active INR budget rate (exchange_rates, 803): migration 1123 converts the two prices to USD per kg
+ALTER TABLE public.raw_materials ADD COLUMN grade varchar(255), ADD COLUMN cost numeric(10,4), ADD COLUMN cost_usa numeric(10,4),
+  ADD COLUMN cost_india numeric(10,4), ADD COLUMN cost_china numeric(10,4);
+INSERT INTO public.raw_materials (name, grade, cost, cost_usa, cost_india, cost_china) VALUES
+  ('304', 'SS304', 190, 3.40, 190, 3.00), ('Generic Aluminum, ANSI 6101', 'Generic Aluminum, ANSI 6101', NULL, 2.70, 296, 18.22);
+CREATE TABLE public.exchange_rates (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), from_currency text NOT NULL, to_currency text NOT NULL,
+  rate numeric NOT NULL, rate_type text NOT NULL, effective_date date NOT NULL, is_active boolean NOT NULL DEFAULT true);
+INSERT INTO public.exchange_rates (from_currency, to_currency, rate, rate_type, effective_date) VALUES ('USD', 'INR', 93.93, 'budget', '2026-11-16');
+-- a material of each group migration 855 fills: migrations 1104 and 1107 link Rapid Prototyping and Roto & Blow Molding to their own group
+-- and fail when the group holds no material
+INSERT INTO public.raw_materials (name, material_group) VALUES ('Accura 60', 'Rapid Prototyping'), ('HDPE, Blow Molding', 'Roto & Blow Molding');
 -- the machine table (00_stubs.sql has it), plus the columns migration 981 reads and writes: a Black Oxide machine with no labor rate, and two machines of its wage grade that agree on one
-ALTER TABLE public.mhr_records ADD COLUMN machine_class varchar(100), ADD COLUMN usd_labor_rate_per_hr numeric, ADD COLUMN usd_lhr_total numeric;
+-- machine_name (migration 130) and updated_at as the real database has them: migration 1043 matches each turning machine by class and name
+ALTER TABLE public.mhr_records ADD COLUMN machine_class varchar(100), ADD COLUMN usd_labor_rate_per_hr numeric, ADD COLUMN usd_lhr_total numeric,
+  ADD COLUMN machine_name varchar(255), ADD COLUMN updated_at timestamptz;
 INSERT INTO public.mhr_records (machine_class, location, usd_labor_rate_per_hr, usd_lhr_total) VALUES
   ('surface_black_oxide', 'USA', NULL, NULL), ('surface_oven_cure', 'USA', 29.95, 29.95), ('surface_shot_blast', 'USA', 29.95, 29.95);
+-- process_group as the real database has it (migration 330): migrations 1044 and 1047 find each India machine's USA row by it (none here, so they add nothing);
+-- and the machine columns migration 1048 fills for the conveyor conversion coating machines
+ALTER TABLE public.mhr_records ADD COLUMN process_group varchar, ADD COLUMN landed_machine_cost numeric, ADD COLUMN power_kwh_per_hour numeric,
+  ADD COLUMN electricity_cost_per_kwh numeric, ADD COLUMN wage_grade varchar, ADD COLUMN machine_price_usd numeric, ADD COLUMN manufacturer_country varchar,
+  ADD COLUMN setup_time_hr numeric, ADD COLUMN currency_code varchar, ADD COLUMN country_code char(2), ADD COLUMN max_y_mm numeric, ADD COLUMN max_z_mm numeric,
+  ADD COLUMN capability_source varchar, ADD COLUMN benchmark_labor_rate_usd_hr numeric, ADD COLUMN benchmark_source_key text, ADD COLUMN labor_time_standard numeric,
+  ADD COLUMN avg_utilization numeric, ADD COLUMN good_part_yield numeric, ADD COLUMN machine_width_mm numeric, ADD COLUMN machine_life_yr numeric,
+  ADD COLUMN machine_power_kw numeric, ADD COLUMN machine_uptime_pct numeric, ADD COLUMN annual_maintenance_factor_pct numeric,
+  ADD COLUMN footprint_allowance_factor numeric, ADD COLUMN installation_factor_pct numeric, ADD COLUMN supplies_cost_per_year numeric,
+  ADD COLUMN salvage_value_factor_pct numeric, ADD COLUMN work_center_labor_rate_factor numeric, ADD COLUMN specs jsonb;
+-- the press columns as the real database has them (migration 633): migration 1080 fills them for the insert molding presses from their specs
+ALTER TABLE public.mhr_records ADD COLUMN max_tonnage numeric, ADD COLUMN shot_capacity_grams integer, ADD COLUMN press_cycle_time_s numeric,
+  ADD COLUMN min_mold_height_mm integer, ADD COLUMN max_mold_height_mm integer, ADD COLUMN tie_bar_x_mm integer, ADD COLUMN tie_bar_y_mm integer;
+-- the Assembly Plastic Molding machines migration 862 seeds for the USA: migration 1085 twins each one in India and fails if one is missing.
+-- Their class and name are read from 1085's own list (an applied migration never changes) rather than copied here: 78 presses, 19 loaders.
+INSERT INTO public.mhr_records (machine_class, machine_name, location)
+SELECT m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1085_assembly_plastic_molding_machines.sql'),
+  '\(\$str\$(assembly_plastic_molding_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+-- the Powder Metal machines migration 862 seeds for the USA: migration 1101 sets their crews, twins each one in India and fails unless all 16
+-- are. Read from 1101's own list (it names each machine twice, for the crew and for the check): 13 presses, 3 sintering furnaces.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
+SELECT DISTINCT 'Powder Metal', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1101_powder_metal_machines.sql'),
+  '\(\$str\$(powder_metal_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+-- the Rapid Prototyping and Roto & Blow Molding machines migration 862 seeds for the USA: migrations 1103 and 1106 twin each one in India and
+-- fail if one is missing. Read from each migration's own list (1103 names a machine again where it renames its specs).
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
+SELECT DISTINCT 'Rapid Prototyping', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1103_rapid_prototyping_machines.sql'),
+  '\(\$str\$(rapid_prototyping_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
+SELECT DISTINCT 'Roto & Blow Molding', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1106_roto_blow_machines_india.sql'),
+  '\(\$str\$(roto_blow_molding_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+-- the overhead columns as the real database has them (migrations 001-542): migration 1109 rates the hydroform presses in them
+ALTER TABLE public.mhr_records ADD COLUMN direct_overhead_rate numeric, ADD COLUMN indirect_overhead_rate numeric,
+  ADD COLUMN benchmark_direct_overhead_rate_usd_hr numeric, ADD COLUMN benchmark_indirect_overhead_rate_usd_hr numeric;
+-- the Sheet Metal - Hydroforming machines migration 828 seeds for the USA (no rate on the presses): migration 1109 rates the presses, twins
+-- all 56 in India and fails unless every one is rated. Read from 1109's own twin list: 38 hydroform presses, 18 offline blanking presses.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location, specs)
+SELECT DISTINCT 'Sheet Metal - Hydroforming', m[1], m[2], 'USA', '{}'::jsonb FROM regexp_matches(pg_read_file('/migrations/1109_hydroforming_machines.sql'),
+  '\$str\$IN\$str\$, \$str\$(hydroform[a-z_]*)\$str\$, \$str\$([^$]+)\$str\$', 'g') AS m;
+-- the Sheet Metal Roll Forming machines migration 862 seeds for the USA at the memory files' World Average rates: migration 1112 rates the
+-- ones still at those rates, twins all 125 in India and fails unless every one is rated. Read from 1112's own list with the seeded rates.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location, specs, direct_overhead_rate, indirect_overhead_rate, usd_labor_rate_per_hr)
+SELECT 'Sheet Metal Roll Forming', m[1], m[2], 'USA', '{}'::jsonb, m[3]::numeric, m[4]::numeric, m[5]::numeric
+FROM regexp_matches(pg_read_file('/migrations/1112_roll_forming_machines.sql'),
+  '\(\$str\$(sheet_roll_forming_[a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+::numeric, [0-9.]+::numeric, [0-9.]+::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric, ([0-9.]+)::numeric', 'g') AS m;
+-- the row timestamp as the real database has it (timestamptz, default now()): migration 1129 copies the oldest USA row of a machine
+ALTER TABLE public.mhr_records ADD COLUMN created_at timestamptz DEFAULT now();
+-- the PCB fabrication machines migration 797 seeds for the USA: migration 1129 twins each one in India and fails if one is missing.
+-- Read from 1129's own list: 98 machines in 32 classes.
+INSERT INTO public.mhr_records (process_group, machine_class, machine_name, location)
+SELECT DISTINCT 'PCB', m[1], m[2], 'USA' FROM regexp_matches(pg_read_file('/migrations/1129_pcb_machines_india_and_classes.sql'),
+  '\(\$str\$([a-z_]+)\$str\$, \$str\$([^$]+)\$str\$, [0-9.]+, [0-9.]+, [0-9.]+, \$str\$', 'g') AS m;
+-- the rest of the machine columns the memory seeds write (migrations 797, 862: memory-machine-seed.js COLUMNS) as the real database has them:
+-- migration 1133 seeds the PCB assembly machines with them; IF NOT EXISTS keeps the ones above
+ALTER TABLE public.mhr_records ADD COLUMN IF NOT EXISTS machine_description text, ADD COLUMN IF NOT EXISTS source_type varchar,
+  ADD COLUMN IF NOT EXISTS operators numeric, ADD COLUMN IF NOT EXISTS direct_overhead_rate numeric, ADD COLUMN IF NOT EXISTS indirect_overhead_rate numeric,
+  ADD COLUMN IF NOT EXISTS benchmark_direct_overhead_rate_usd_hr numeric, ADD COLUMN IF NOT EXISTS benchmark_indirect_overhead_rate_usd_hr numeric,
+  ADD COLUMN IF NOT EXISTS total_machine_hour_rate numeric, ADD COLUMN IF NOT EXISTS mhr_usd_per_hour numeric, ADD COLUMN IF NOT EXISTS machine_length_mm numeric,
+  ADD COLUMN IF NOT EXISTS max_x_mm numeric, ADD COLUMN IF NOT EXISTS max_workpiece_weight_kg numeric;
+-- and the taxonomy's tool shop column (migration 609): migration 1133 adds the PCB assembly processes with it
+ALTER TABLE public.process_taxonomy ADD COLUMN IF NOT EXISTS default_tool_shop_name varchar(200);
+-- a material of its group (migration 855): migration 1112 links Sheet Metal Roll Forming to its own group and fails when the group holds none
+INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 1100', 'Sheet Metal Roll Forming');
+-- the machine envelope columns as the real database has them (migration 755 fills them for the lathes): migration 1093 fills them for the multi-spindle machines
+ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COLUMN max_length_mm numeric(10,2);
+-- the taxonomy columns as the real database has them (migration 609): migration 1094 adds the Multi-Spindle Machining > Simultaneous Turning row
+ALTER TABLE public.process_taxonomy ADD COLUMN default_machine_name varchar(200), ADD COLUMN notes text;
+-- the operation catalog as the real database has it (migration 609, with its tenant column), and the six lathes' Thread Turning//Ring rows
+-- (migration 754): migration 1153 adds Knurling//Ring beside each and fails if one is missing
+CREATE TABLE public.process_taxonomy_operations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), canonical_process_id uuid NOT NULL REFERENCES public.process_taxonomy(id) ON DELETE CASCADE,
+  operation_category varchar(150), feature_type varchar(100), raw_compound_string text NOT NULL, notes text, created_at timestamptz DEFAULT now(),
+  organization_id uuid, CONSTRAINT unique_process_taxonomy_operation UNIQUE (canonical_process_id, raw_compound_string)
+);
+WITH lathe AS (
+  INSERT INTO public.process_taxonomy (process_group, process_name, machine_class, roadmap_status) VALUES
+    ('Machining', '2 Axis Lathe', '2_axis_lathe', 'production'), ('Machining', '3 Axis Lathe', '3_axis_lathe', 'production'),
+    ('Machining', '2 Axis Bar Feed Lathe with Sub Spindle', '2_axis_bar_feed_lathe_with_sub_spindle', 'production'),
+    ('Machining', '3 Axis Bar Feed Lathe with Sub Spindle', '3_axis_bar_feed_lathe_with_sub_spindle', 'production'),
+    ('Machining', 'MillTurn', 'machining_millturn', 'thin'), ('Machining', 'Simultaneous Turning', 'simultaneous_turning', 'thin')
+  RETURNING id, process_name
+)
+INSERT INTO public.process_taxonomy_operations (canonical_process_id, operation_category, feature_type, raw_compound_string)
+SELECT id, 'Thread Turning', 'Ring', process_name || ':Thread Turning//Ring' FROM lathe;
+-- the three mills and their Edge Rounding rows (migration 754): migration 1156 adds Concave Fillet Milling//Edge beside each and fails if one is missing
+WITH mill AS (
+  INSERT INTO public.process_taxonomy (process_group, process_name, machine_class, roadmap_status) VALUES
+    ('Machining', '3 Axis Mill', '3_axis_mill', 'production'), ('Machining', '4 Axis Mill', '4_axis_mill', 'production'),
+    ('Machining', '5 Axis Mill', '5_axis_mill', 'production')
+  RETURNING id, process_name
+)
+INSERT INTO public.process_taxonomy_operations (canonical_process_id, operation_category, feature_type, raw_compound_string)
+SELECT id, 'Rounding', 'Edge', process_name || ':Rounding//SimpleHole:Rounding//Edge' FROM mill;
+-- the Stock Machining catalog rows migration 790 seeds (no machine class): migration 1114 classes both and fails if one stays without
+INSERT INTO public.process_taxonomy (process_group, process_name, roadmap_status) VALUES ('Stock Machining', 'Band Saw', 'not_modeled'), ('Stock Machining', 'Material Stock', 'non_mfg');
+-- the machine table's currency, catalog and capacity columns and its rate sources as the real database has them (migrations 322, 330, 542 and
+-- after): migration 1145 seeds the XRF work centres with them; IF NOT EXISTS keeps the ones above
+ALTER TABLE public.mhr_records ADD COLUMN IF NOT EXISTS currency text DEFAULT 'USD', ADD COLUMN IF NOT EXISTS process_family varchar(30),
+  ADD COLUMN IF NOT EXISTS data_version varchar(20) DEFAULT 'FY2025-26', ADD COLUMN IF NOT EXISTS is_global boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS availability_status varchar(24) DEFAULT 'available', ADD COLUMN IF NOT EXISTS mhr_source text DEFAULT 'legacy_import',
+  ADD COLUMN IF NOT EXISTS shifts_per_day numeric DEFAULT 3, ADD COLUMN IF NOT EXISTS hours_per_shift numeric DEFAULT 8,
+  ADD COLUMN IF NOT EXISTS working_days_per_year numeric DEFAULT 260, ADD COLUMN IF NOT EXISTS capacity_utilization_rate numeric DEFAULT 95,
+  ADD COLUMN IF NOT EXISTS direct_overhead_source varchar(24), ADD COLUMN IF NOT EXISTS indirect_overhead_source varchar(24),
+  ADD COLUMN IF NOT EXISTS labor_rate_source varchar(24);
+-- the material cost record table as the real database has it (migration 040): migration 1041 adds the stock label to it
+CREATE TABLE public.raw_material_cost_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid NOT NULL, user_id uuid NOT NULL, is_active boolean DEFAULT true);
+-- the machining reference table as the real database has it (migration 638): migration 1026 completes its tblTapping row from its tblReaming row
+CREATE TABLE public.machining_reference_data (
+  id serial PRIMARY KEY, category varchar(20) NOT NULL, source_region varchar(10) NOT NULL, source_version varchar(20) NOT NULL, key text NOT NULL,
+  value text, unit_type text, notes text, raw jsonb, imported_at timestamptz DEFAULT now(), UNIQUE (category, source_region, source_version, key)
+);
 -- the process cost table as the real database has it (migration 034 on): migration 970 adds columns to it and redefines the function that fills it
 CREATE TABLE public.process_cost_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), bom_item_id uuid, is_active boolean DEFAULT true, cycle_time numeric(12,2));
 INSERT INTO public.projects (user_id, name) VALUES ('11111111-1111-4111-8111-111111111111','Alice project');
@@ -83,6 +287,15 @@ printf 'ADMIN_FALLBACK_EMAIL=alice@example.com\nKEEP_ME=1\n' > "$TMP/.env"
 bash scripts/local-data.sh load "$TMP/baseline" 2>&1 | tail -4
 LOCAL_ENV_FILE="$TMP/.env" bash scripts/local-data.sh use >/dev/null
 fail=0
+# Every migration has run. New tables are granted to signed-in users by default (migration 930), so one that gets row-level security
+# and no policy is closed to everyone while it looks open: a read answers with nothing and nobody notices (migrations 1121, 1122).
+# A table is either given its policies or, when it is service-only, has its grants to signed-in users revoked.
+closed="$(docker compose -f ../docker-compose.local-data.yml exec -T postgres psql -U postgres -d postgres -At -c "
+  select coalesce(string_agg(c.relname, ', ' order by c.relname), '') from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relrowsecurity and not exists (select 1 from pg_policy p where p.polrelid = c.oid)
+    and (has_table_privilege('authenticated', c.oid, 'SELECT, INSERT, UPDATE, DELETE') or has_table_privilege('anon', c.oid, 'SELECT, INSERT, UPDATE, DELETE'))")"
+if [ -z "$closed" ]; then echo "ok   no table is granted to signed-in users and closed to everyone by row-level security without a policy"
+else echo "FAIL granted to signed-in users, with row-level security and no policy: $closed (add its policies, or revoke the grants if it is service-only)"; fail=1; fi
 for k in ALLOW_DEV_AUTH_BYPASS=true S3_FORCE_PATH_STYLE=true KEEP_ME=1; do grep -q "^$k$" "$TMP/.env" && echo "ok   .env has $k" || { echo "FAIL .env lacks $k"; fail=1; }; done
 npx ts-node -r tsconfig-paths/register -r reflect-metadata test/local-data/smoke.ts || fail=1
 # A process already on the backend's port would answer for it (with a stack that no longer exists): refuse to run beside one.
@@ -90,7 +303,7 @@ if (exec 3<>/dev/tcp/127.0.0.1/4529) 2>/dev/null; then echo "FAIL port 4529 is a
 # The real backend, built from source, in development mode against this stack, with NO Supabase setting at all (a clean copy of dist/, so the repo's .env cannot leak in).
 npx nest build >/dev/null 2>&1
 APP="$TMP/app/backend"; mkdir -p "$APP"; cp -r dist "$APP/dist"; cp package.json "$APP/"; ln -s "$PWD/node_modules" "$APP/node_modules"
-( cd "$APP" && exec env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development APP_ENV=local BACKEND_PORT=4529 CAD_UPLOAD_RUNNER=off ELECTRONICS_QUEUE_DRIVER=memory \
+( cd "$APP" && exec env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development APP_ENV=local BACKEND_PORT=4529 CAD_UPLOAD_RUNNER=off \
     POSTGREST_URL="http://127.0.0.1:$LOCAL_API_PORT" DB_JWT_SECRET="$(grep '^DB_JWT_SECRET=' "$TMP/.env" | cut -d= -f2-)" \
     S3_BUCKET=emithran S3_REGION=us-east-1 S3_ENDPOINT="http://127.0.0.1:$LOCAL_S3_PORT" S3_FORCE_PATH_STYLE=true S3_ACCESS_KEY_ID=test S3_SECRET_ACCESS_KEY=testtesttest \
     AUTH0_DOMAIN=t.eu.auth0.com AUTH0_AUDIENCE=https://api.example.com AUTH0_CLAIM_NAMESPACE=https://example.com/ AUTH0_TRUSTED_CONNECTIONS=company-sso \

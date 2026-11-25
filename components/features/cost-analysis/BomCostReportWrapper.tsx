@@ -1,15 +1,17 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+
 import { Badge } from '@/components/ui/badge';
-import { FileDown, RefreshCw } from 'lucide-react';
-import { useCostData } from '@/lib/providers/cost-data-provider';
-import { exportService } from '@/lib/services/export-service';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { FileDown, RefreshCw } from '@/components/ui/icons';
+import { Mark } from '@/components/ui/status-mark';
 import { apiClient } from '@/lib/api/client';
 import type { BOMItem } from '@/lib/api/hooks/useBOMItems';
+import { useCostData } from '@/lib/providers/cost-data-provider';
 import type { CostBreakdown } from '@/lib/services/cost-engine';
+import { exportService } from '@/lib/services/export-service';
 
 const UNKNOWN_COST_BREAKDOWN: CostBreakdown = {
   rawMaterialCost: null,
@@ -265,10 +267,10 @@ export const BomCostReportWrapper: React.FC<BomCostReportWrapperProps> = ({
                   
                   const getItemTypeColor = (type: string) => {
                     switch (type) {
-                      case 'assembly': return 'bg-blue-100 text-blue-800';
-                      case 'sub_assembly': return 'bg-brand-100 text-brand-800';
+                      case 'assembly': return 'bg-primary/10 text-primary';
+                      case 'sub_assembly': return 'bg-primary/10 text-primary';
                       case 'child_part': return 'bg-green-100 text-green-800';
-                      default: return 'bg-gray-100 text-gray-800';
+                      default: return 'bg-muted text-foreground';
                     }
                   };
                   
@@ -296,12 +298,12 @@ export const BomCostReportWrapper: React.FC<BomCostReportWrapperProps> = ({
                             </div>
                           )}
                           {bomItem.material && (
-                            <div className="text-xs text-blue-600 font-mono">
+                            <div className="text-xs text-primary font-mono">
                               Material: {bomItem.material}
                             </div>
                           )}
                           {bomItem.makeBuy && (
-                            <Badge variant="outline" className={`text-xs ${bomItem.makeBuy === 'make' ? 'bg-orange-50 text-orange-700' : 'bg-indigo-50 text-indigo-700'}`}>
+                            <Badge variant="outline" className={`text-xs ${bomItem.makeBuy === 'make' ? 'bg-orange-50 text-orange-700' : 'bg-primary/10 text-primary'}`}>
                               {bomItem.makeBuy.toUpperCase()}
                             </Badge>
                           )}
@@ -346,7 +348,7 @@ export const BomCostReportWrapper: React.FC<BomCostReportWrapperProps> = ({
                       <td className="p-2 text-sm border-r border-border">
                         <div className="space-y-1">
                           <div className="flex items-center gap-2">
-                            <Badge className="text-xs bg-gray-100 text-gray-800">
+                            <Badge className="text-xs bg-muted text-foreground">
                               UNKNOWN
                             </Badge>
                             <span className="font-medium">#{index + 1}</span>
@@ -594,8 +596,8 @@ export const BomCostReportWrapper: React.FC<BomCostReportWrapperProps> = ({
                           {grandTotal === null || aggregated.totalCost === null
                             ? 'Total unknown: some items have no cost'
                             : grandTotal === aggregated.totalCost
-                              ? '✓ Matches aggregated total'
-                              : `⚠ Difference: ${formatCurrency(Math.abs(grandTotal - aggregated.totalCost))}`}
+                              ? <><Mark kind="ok" /> Matches aggregated total</>
+                              : <><Mark kind="warn" /> Difference: {formatCurrency(Math.abs(grandTotal - aggregated.totalCost))}</>}
                         </div>
                       </div>
                     </div>

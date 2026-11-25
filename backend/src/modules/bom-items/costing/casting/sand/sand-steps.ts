@@ -4,7 +4,7 @@
 // with the shared casting line builder. Ported from the retired petrus-demo prototype (its design records, D-numbers, are archived outside the repo) (D122, D128-D130).
 //
 // Nothing is substituted: a missing input, an unstaged table or a machine without a rate is named in the reasons.
-import type { MachineChoiceDto } from '../../../dto/cost-breakdown.dto';
+import type { MachineChoiceDto, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { ProcessLineCost } from '../../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
@@ -27,6 +27,8 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /** The part's sand-casting material, as the raw_materials row (columns by name). */
 export interface SandMaterial {
+  /** raw_materials.id: the record the calculator dialog opens for a material input. */
+  id: string;
   name: string;
   materialType: string | null;
   /** raw_materials columns the calculators read (density_kg_m3, heat_of_fusion_j_kg, ...). */
@@ -60,8 +62,8 @@ export interface SandRouteContext {
   cavities: number;
   /** Cores in each casting; a mould has `cavities` times this many. */
   coresPerCasting: number;
-  /** Metal poured: the casting with its risers and gating (kg), per casting and per mould. */
-  poured: { perCastingKg: number; perMouldKg: number };
+  /** Metal poured: the casting with its risers and gating (kg), per casting and per mould, and the calculation behind it once it is run. */
+  poured: { perCastingKg: number; perMouldKg: number; ref?: SourceRef };
   /** USD per kWh: the Cost Guide's, else the location's sourced electricity price; null when neither exists (energy not charged). */
   energyPricePerKwh: number | null;
   /** Where the energy price comes from, for the trace. */
@@ -77,12 +79,21 @@ export type StepOutcome =
 
 const fail = (...reasons: string[]): StepOutcome => ({ ok: false, reasons });
 
+/** The metal poured, per casting or per mould, with the metal-per-casting calculation behind it (its ref) when it has been run. */
+function pouredSeed(ctx: SandRouteContext, per: 'casting' | 'mould'): CalcSeed {
+  return {
+    value: per === 'casting' ? ctx.poured.perCastingKg : ctx.poured.perMouldKg,
+    source: per === 'casting' ? 'metal per casting: net, risers and gating' : 'metal per casting x cavities',
+    ...(ctx.poured.ref ? { ref: ctx.poured.ref } : {}),
+  };
+}
+
 /** One calculator run: seed every input from its declared source, run it, or say what is missing. */
 export function runStep(
   ctx: SandRouteContext,
   calculator: string,
   machine: SandMachine | null,
-  engine: Record<string, { value: number; source: string }>,
+  engine: Record<string, CalcSeed>,
   extra: SeedProviders = {},
   output = 'Cycle Time',
 ): { run: ReferenceCalcRun } | { reasons: string[] } {
@@ -90,11 +101,17 @@ export function runStep(
   if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
   const materialProvider: SeedProvider = (key) => {
     const value = ctx.material.columns[key];
-    return value == null ? null : { value, source: `${ctx.material.name}: ${key}` };
+    return value == null ? null : {
+      value, source: `${ctx.material.name}: ${key}`,
+      ref: { kind: 'material', materialId: ctx.material.id, materialName: ctx.material.name, column: key },
+    };
   };
   const machineProvider: SeedProvider = (key) => {
     const value = machine ? machineValue(machine, key) : null;
-    return value == null || !machine ? null : { value, source: `machine ${machine.name}: ${key}` };
+    return value == null || !machine ? null : {
+      value, source: `machine ${machine.name}: ${key}`,
+      ref: { kind: 'machine', machineId: machine.id, machineName: machine.name, machineClass: machine.machineClass, location: machine.location, column: key },
+    };
   };
   const { seeds, missing } = seedsFor(calc, {
     variable: variableProvider(ctx.ref),
@@ -161,7 +178,7 @@ export function mouldStep(ctx: SandRouteContext, mould: SandMachine): StepOutcom
   if (cureMin == null) return fail(`sand variable ${cure}`);
   const r = runStep(ctx, MOULDING_MANUAL, mould, {
     cavities: cavitiesSource(ctx),
-    poured_per_mould_kg: { value: ctx.poured.perMouldKg, source: 'metal per casting x cavities' },
+    poured_per_mould_kg: pouredSeed(ctx, 'mould'),
     sand_cure_min: { value: cureMin, source: `Sand casting variable ${cure}` },
   });
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
@@ -190,7 +207,7 @@ export function meltStep(ctx: SandRouteContext, furnace: SandMachine): StepOutco
   const priced = ctx.energyPricePerKwh != null;
   const r = runStep(
     ctx, MELTING, furnace,
-    { poured_kg: { value: ctx.poured.perCastingKg, source: 'metal per casting: net, risers and gating' } },
+    { poured_kg: pouredSeed(ctx, 'casting') },
     { scenario: valuesProvider({ energy_price: { value: priced ? ctx.energyPricePerKwh! : 0, source: priced ? ctx.energyPriceSource ?? 'energy price (USD/kWh)' : 'no energy price: none set in the Cost Guide and none for the location' } }) },
   );
   if (!('run' in r)) return fail(...r.reasons);
@@ -211,7 +228,7 @@ export function pourStep(ctx: SandRouteContext, ladle: SandMachine): StepOutcome
   if ('missing' in coefficient) return fail(coefficient.missing);
   const r = runStep(
     ctx, POUR, ladle,
-    { poured_per_mould_kg: { value: ctx.poured.perMouldKg, source: 'metal per casting x cavities' }, cavities: cavitiesSource(ctx) },
+    { poured_per_mould_kg: pouredSeed(ctx, 'mould'), cavities: cavitiesSource(ctx) },
     { lookup: (key) => (key === 'tblPouringCoefficients.Coefficient' ? { value: coefficient.value, source: coefficient.source, lookup: true } : null) },
   );
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
@@ -254,30 +271,41 @@ export function selectAndCost(input: {
   costContext: CostContext;
   ref: SandReference;
   criteria: string[];
+  /** The process group of the line; sand casting when absent (the other casting routes that cost their steps the same way name their own). */
+  processGroup?: string;
+  /** What one part of the route is called in the line's breakdown ("12 s per casting"); a casting when absent, a forging for the forging route. */
+  partName?: string;
+  /** The line's process route when it is not the process itself (memory's Hydroform:Hydroform Deep Draw); the process when absent. */
+  processRoute?: string;
 }): CostedStep {
+  const processGroup = input.processGroup ?? SAND_PROCESS_GROUP;
   const warnings: string[] = [];
   const evaluated = input.machines.map((m) => {
     if (m.machineRatePerHr == null) return { m, outcome: fail('no machine hour rate on file, and the HR Rates engine could not price it') as StepOutcome, costed: null as ProcessLineCost | null };
     const outcome = input.evaluate(m);
     if (!outcome.ok) return { m, outcome, costed: null };
     const base = line({
-      process: input.process, processGroup: SAND_PROCESS_GROUP, processRoute: input.process, machineClass: input.machineClass,
+      process: input.process, processGroup, processRoute: input.processRoute ?? input.process, machineClass: input.machineClass,
       machine: asFinishingMachine(m), sec: outcome.sec, batchSize: input.batchSize, costContext: input.costContext, warnings: [], run: outcome.run,
-      breakdown: `${input.process}: ${roundSec(outcome.sec)} s per casting${m.rateSource === 'engine' ? ' (machine hour rate from the HR Rates engine)' : ''}`,
+      breakdown: `${input.process}: ${roundSec(outcome.sec)} s per ${input.partName ?? 'casting'}${m.rateSource === 'engine' ? ' (machine hour rate from the HR Rates engine)' : ''}`,
     });
     // Charged beyond time: the step's energy and material, its own figure on the line (stored and shown), kept below a cent.
     const material = outcome.materialCostUsd ?? 0;
     const other = outcome.energyCostUsd + material;
     const detail = [outcome.energyCostUsd ? `energy ${roundPerPart(outcome.energyCostUsd)}` : '', material ? `material ${roundPerPart(material)}` : ''].filter(Boolean).join(' + ');
     const costed: ProcessLineCost = other
-      ? { ...base, runCost: roundLineCost(base.runCost + other), totalCost: roundLineCost(base.totalCost + other), otherCostPerPartUsd: roundPerPart(other), otherCostDetail: `${detail} USD per casting${outcome.energyBasis ? ` at ${outcome.energyBasis}` : ''}` }
+      ? { ...base, runCost: roundLineCost(base.runCost + other), totalCost: roundLineCost(base.totalCost + other), otherCostPerPartUsd: roundPerPart(other), otherCostDetail: `${detail} USD per ${input.partName ?? 'casting'}${outcome.energyBasis ? ` at ${outcome.energyBasis}` : ''}` }
       : base;
     return { m, outcome, costed };
   });
   const capable = evaluated.filter((e) => e.costed);
-  const preferOnly = input.ref.number('usePreferredMachines') === 1 && capable.some((e) => e.m.preferred);
+  // The data writes the switch as true/false (every memory domain: true), so it is read as a flag: read as a number it was never on.
+  const preferOnly = input.ref.flag('usePreferredMachines') === true && capable.some((e) => e.m.preferred);
   const pool = preferOnly ? capable.filter((e) => e.m.preferred) : capable;
-  const best = [...pool].sort((a, b) => a.costed!.totalCost - b.costed!.totalCost || a.m.name.localeCompare(b.m.name))[0];
+  // The line's cost is rounded to the cent, so two machines can tie on it while one costs less: the cycle's machine and labour cost per part,
+  // kept finer, decides between them before the name does.
+  const fine = (c: ProcessLineCost) => (c.machineCostPerPart ?? 0) + (c.laborCostPerPart ?? 0);
+  const best = [...pool].sort((a, b) => a.costed!.totalCost - b.costed!.totalCost || fine(a.costed!) - fine(b.costed!) || a.m.name.localeCompare(b.m.name))[0];
   const evals: ChoiceEval[] = evaluated.map((e) => ({
     name: e.m.name,
     reasons: e.outcome.ok ? (preferOnly && !e.m.preferred ? ['not a preferred machine (usePreferredMachines)'] : []) : e.outcome.reasons,
@@ -292,7 +320,10 @@ export function selectAndCost(input: {
   if (!best) {
     const first = evaluated.find((e) => !e.outcome.ok);
     const why = first && !first.outcome.ok ? `${first.m.name}: ${first.outcome.reasons.join('; ')}` : `no machines of class ${input.machineClass}`;
-    return { line: { ...gap(input.process, SAND_PROCESS_GROUP, input.machineClass, `no ${input.process} machine fits (${why})`), machineChoice: choice }, machine: null, outcome: null, warnings };
+    return {
+      line: { ...gap(input.process, processGroup, input.machineClass, `no ${input.process} machine fits (${why})`), processRoute: input.processRoute ?? input.process, machineChoice: choice },
+      machine: null, outcome: null, warnings,
+    };
   }
   const outcome = best.outcome as Extract<StepOutcome, { ok: true }>;
   warnings.push(...outcome.notes);

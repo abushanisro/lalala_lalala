@@ -1,20 +1,31 @@
-import { machiningStockPriceForm, resolveStockPrice, type StockPriceRow } from '../costing/machining/stock-price';
+import { closestStockPrice, machiningStockPriceForm, REFERENCE_STOCK_PRICE_LOCATION, STOCK_PRICE_FORMS, stockPriceOfForm, type StockPrice, type StockPriceForm, type StockPriceRow } from '../costing/machining/stock-price';
 import type { MaterialClampProperties } from '../costing/plastic-molding/clamp-force';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../../common/database/database.service';
 import type { RateSnapshot } from '../../../common/exchange-rate/exchange-rate.service';
 import { resolveUtsMpa, isSheetFormableMaterial } from '../costing/shared/core/default-rates.constants';
-import { CAD_FAMILY_TO_PROCESS_GROUP } from '../costing/shared/core/part-family-process-group';
+import { rawMaterialPricePerKg } from '../costing/shared/core/material-location-price';
+import { ASSEMBLY_FAMILY, CAD_FAMILY_TO_PROCESS_GROUP, costedProcessGroups, familiesOfProcessGroup } from '../costing/shared/core/part-family-process-group';
+import { isMaterialNamed, ownMaterialGroup, pricedGradeFor, type OwnMaterial, type PricedGrade, type ProcessMaterial } from '../costing/shared/core/process-materials';
 import { isPlasticGrade } from '../costing/plastic-molding/process/process-tree';
 import { isDiscouragedShapeForFamily } from '../../raw-materials/constants/material-shape-ranking';
 import type { BOMItemResponseDto } from '../dto/bom-item-response.dto';
+import { BOMItemType } from '../dto/bom-items.dto';
 import {
   rankMaterialMatches,
   pickUnambiguousBest,
   type RankedMaterial,
 } from '../../raw-materials/material-search-ranking';
 import { expandSearchTermSpellingVariants } from '../../raw-materials/material-search-spelling';
+import { polymerNamesIn } from '../../raw-materials/material-polymer-symbols';
 import { escapeLikePattern, ilikeContains } from '../../../common/db/postgrest-filter';
+
+/** The raw_materials column density, UTS and shear strength were read from, for a calculator input's source (SourceRef 'material'). */
+export interface MaterialSourceColumns {
+  densityKgM3: 'density_kg_m3' | 'density' | null;
+  utsMpa: 'uts_mpa' | 'ultimate_tensile_strength' | null;
+  shearStrengthMpa: 'shear_strength_mpa' | 'shearing_strength' | null;
+}
 
 interface MatchedMaterialRow {
   id: string;
@@ -23,8 +34,12 @@ interface MatchedMaterialRow {
   stockForm: string | null; matlState: string | null;
   astmStandard: string | null; dinStandard: string | null; enStandard: string | null; jisStandard: string | null;
   hasCost: boolean;
+  // locCost: the location's price (its LOCATION_INFO column); indiaCost: cost_india, else cost. Both USD per kg, as every raw_materials
+  // price is (material-location-price.ts).
   shape: string | null; locCost: number | null; indiaCost: number | null; densityKgM3: number | null;
   shearStrengthMpa: number | null; utsMpa: number | null; yieldStrengthMpa: number | null;
+  /** The raw_materials column each of these values was read from (newer column first, then the legacy one); null when neither holds it. */
+  sourceColumns: MaterialSourceColumns;
   meltingTempC: number | null; moldTempC: number | null; ejectDeflectionTempC: number | null;
   specificHeatMeltJgC: number | null; thermalConductivityMeltWMK: number | null;
   cureTimeMinFromMaterial: number | null;
@@ -67,7 +82,29 @@ interface MaterialMatch {
   note: string | null;
   /** Set when the query was too under-specified to pick a grade; replaces the "not found" wording. */
   ambiguityNote: string | null;
+  /** The rows the query fits equally well when it is ambiguous (none is priced); empty otherwise. */
+  ambiguous?: MatchedMaterialRow[];
 }
+
+/** A row of a process's material group, as gradeForProcess reads it: with what the molding engine judges a material by (enginePrices). */
+interface MaterialGroupRow {
+  name: string | null;
+  grade: string | null;
+  material_type: string | null;
+  density_kg_m3: number | string | null;
+  density: number | string | null;
+  stock_form: string | null;
+  matl_state: string | null;
+  melting_temp_c: number | string | null;
+  mold_temp_c: number | string | null;
+  cure_time_min?: number | string | null;
+  im_injection_pressure_max_mpa?: number | string | null;
+  im_flow_length_ratio?: number | string | null;
+  im_density_of_melt_kg_m3?: number | string | null;
+}
+
+/** The family of a part whose chosen Process has no cost model: no engine prices it. */
+export const UNCOSTED_PROCESS_FAMILY = 'unknown';
 
 @Injectable()
 export class MaterialResolutionService {
@@ -111,6 +148,32 @@ export class MaterialResolutionService {
     return rows;
   }
 
+  // The material type and density of the materials a location prices as stock, by their stock price name (raw_materials.grade): what
+  // the closest-material rule compares (closestStockPrice). Reference data, cached per location; none for the reference's own location.
+  private stockPriceMaterials = new Map<string, Map<string, { materialType: string | null; densityKgM3: number | null }>>();
+  private async loadStockPriceMaterials(client: ReturnType<DatabaseService['getClient']>, location: string, rows: readonly StockPriceRow[]) {
+    const hit = this.stockPriceMaterials.get(location);
+    if (hit) return hit;
+    const names = [...new Set(rows.map((r) => r.raw_material_name).filter((n): n is string => !!n))];
+    const out = new Map<string, { materialType: string | null; densityKgM3: number | null }>();
+    if (location === REFERENCE_STOCK_PRICE_LOCATION || names.length === 0) return out;
+    // A grade has a row in several process groups; the one read is the general catalog's (the row that prices India, cost_india), then
+    // the first group by name, so the same inputs always compare the same values.
+    const { data, error } = await client.from('raw_materials').select('grade, material_type, density_kg_m3, density, cost_india, material_group')
+      .in('grade', names).order('material_group').order('id');
+    if (error) return out;
+    type Row = { grade: string | null; material_type: string | null; density_kg_m3: unknown; density: unknown; cost_india: unknown };
+    const general = (r: Row) => Number(r.cost_india) > 0;
+    for (const r of ((data ?? []) as Row[]).sort((a, b) => Number(general(b)) - Number(general(a)))) {
+      const key = r.grade?.toLowerCase();
+      const density = Number(r.density_kg_m3) > 0 ? Number(r.density_kg_m3) : Number(r.density) > 0 ? Number(r.density) * 1000 : null;
+      if (!key || out.has(key) || density == null) continue;
+      out.set(key, { materialType: r.material_type ?? null, densityKgM3: density });
+    }
+    this.stockPriceMaterials.set(location, out);
+    return out;
+  }
+
   private async checkMaterialCureTimeColumnAvailable(client: ReturnType<DatabaseService['getClient']>): Promise<boolean> {
     if (this.materialCureTimeColumnAvailable != null) return this.materialCureTimeColumnAvailable;
     const { error } = await client.from('raw_materials').select('cure_time_min').limit(1);
@@ -127,24 +190,29 @@ export class MaterialResolutionService {
   // silent ~80-90× error.
   // ── Family resolution ───────────────────────────────────────────────────────
   // Single precedence chain used by BOTH costing endpoints (summary ≡ route
-  // invariant): user override > material physics > geometry classifier.
+  // invariant): user override > chosen process > material physics > geometry.
   //
   // Geometry alone cannot distinguish a machined plate from a molded cover of
   // the identical shape — the material can. This is the eMithran routing model:
-  // geometry proposes, material routes, user override is final.
+  // geometry proposes, material routes, the engineer's choice is final.
   //   1. manufacturing_family_override — explicit user intent, always wins
   //      (e.g. machined-PEEK prototype pinned to milled).
-  //   2. Thermoplastic grade → plastic_molded, whatever the shape classifier
+  //   2. The Process the engineer chose (scenario_overrides.processGroup, the
+  //      one the page shows and the CAD analysis ran as). The part is costed as
+  //      that process; a material the process cannot run is that engine's named
+  //      gap, never a silent switch to another process. A Process with no cost
+  //      model is not costed at all, and says which processes are.
+  //   3. Thermoplastic grade → plastic_molded, whatever the shape classifier
   //      guessed (a PA66 cover and an aluminium cover are the same geometry).
-  //   3. Non-sheet-formable alloy on a sheet-shaped part → milled (flat
+  //   4. Non-sheet-formable alloy on a sheet-shaped part → milled (flat
   //      bronze casting can never run a laser + press-brake route).
-  //   4. Geometry classifier result.
+  //   5. Geometry classifier result.
   resolveEffectiveFamily(input: {
     item: BOMItemResponseDto;
     fg: any;
     grade: string | null;
     sheetThicknessMm: number;
-  }): { family: string; familySource: 'override' | 'material' | 'geometry'; warning: string | null } {
+  }): { family: string; familySource: 'override' | 'process' | 'material' | 'geometry'; warning: string | null } {
     const override = (input.item.manufacturingFamilyOverride ?? '').trim();
     if (override) return { family: override, familySource: 'override', warning: null };
 
@@ -154,6 +222,26 @@ export class MaterialResolutionService {
       // A thickness is a family only for a part costed from entered values. With a 3D model the classifier has not run yet,
       // and a guess would price the part as sheet metal before its geometry is known.
       (!input.item.file3dPath && input.sheetThicknessMm > 0 ? 'sheet_metal' : 'unknown');
+
+    const chosenGroup = input.item.scenarioOverrides?.['processGroup'];
+    if (typeof chosenGroup === 'string' && chosenGroup.trim() !== '') {
+      const chosenFamilies = familiesOfProcessGroup(chosenGroup);
+      // A Process with no cost model is not costed: the part's material or an earlier analysis as another process must not price it as that one.
+      if (chosenFamilies.length === 0) {
+        return {
+          family: UNCOSTED_PROCESS_FAMILY, familySource: 'process',
+          warning: `The Process "${chosenGroup}" has no cost model yet, so this part is not costed. Set its Process to one that has: ${costedProcessGroups().join(', ')}.`,
+        };
+      }
+      // Machining holds several families (milled / turned / mill-turn): the geometry picks among them.
+      const family = chosenFamilies.includes(geoFamily) ? geoFamily : chosenFamilies[0];
+      return { family, familySource: 'process', warning: null };
+    }
+
+    // An assembly or sub-assembly with no Process of its own is costed as its assembly work (costing/assembly): its parts are its children.
+    if (input.item.itemType === BOMItemType.ASSEMBLY || input.item.itemType === BOMItemType.SUB_ASSEMBLY) {
+      return { family: ASSEMBLY_FAMILY, familySource: 'process', warning: null };
+    }
 
     if (isPlasticGrade(input.grade) && geoFamily !== 'plastic_molded') {
       return {
@@ -324,12 +412,17 @@ export class MaterialResolutionService {
       // The old .limit(12) (arbitrary order) could drop the right row before
       // any ranking; the cap is now large enough to hold every plausible
       // candidate and the fetch is ordered so it is reproducible.
+      // A plastic's ISO 1043-1 symbol is a word of the grade ("PC/ABS") and is
+      // fetched as the words the reference data names it with ("PA66", "POM-C":
+      // "Nylon, Type 66", "Acetal"; the ranker scores the grade with them in
+      // place), never as itself when shorter than three letters ("PC" is inside
+      // every "SPCC").
       const tokens = g
         .split(/[\s\-\/]+/)
         .map((t) => t.replace(/[(),]/g, ''))
-        .filter((t) => t.length >= 3);
+        .filter((t) => t.length >= 3 || polymerNamesIn(t).length > 0);
       const terms = tokens.length > 1 ? tokens : [g.replace(/[(),]/g, '')];
-      const orClause = terms
+      const orClause = [...terms.filter((t) => t.length >= 3 || terms.length === 1), ...polymerNamesIn(g)]
         .flatMap((t) => expandSearchTermSpellingVariants(t))
         .flatMap((v) => {
           const pattern = ilikeContains(v);
@@ -374,9 +467,15 @@ export class MaterialResolutionService {
       const thermalConductivityMeltWMK = (row.thermal_conductivity_melt as number | null) ?? null;
       const cureTimeMinFromMaterial = (row.cure_time_min as number | null) ?? null;
       const numOrNull = (v: unknown) => (v == null ? null : Number(v));
+      const sourceColumns: MaterialSourceColumns = {
+        densityKgM3: row.density_kg_m3 != null ? 'density_kg_m3' : densityGCm3 != null ? 'density' : null,
+        utsMpa: row.uts_mpa != null ? 'uts_mpa' : row.ultimate_tensile_strength != null ? 'ultimate_tensile_strength' : null,
+        shearStrengthMpa: row.shear_strength_mpa != null ? 'shear_strength_mpa' : row.shearing_strength != null ? 'shearing_strength' : null,
+      };
       return {
         // ranker identity
         id: row.id as string,
+        sourceColumns,
         material: (row.grade as string | null) ?? null,
         materialGrade: (row.name as string | null) ?? null,
         materialGroup: (row.material_group as string | null) ?? null,
@@ -424,6 +523,7 @@ export class MaterialResolutionService {
           `Material "${g}" is ambiguous — it matches ${pick.ambiguous.length} equally specific grades with different densities ` +
           `(${pick.ambiguous.slice(0, 4).map(fmt).join(', ')}${pick.ambiguous.length > 4 ? ', …' : ''}). ` +
           `Select a specific grade; no weight or cost is assumed.`,
+        ambiguous: pick.ambiguous.map((r) => r.row),
       };
     }
     const best = pick.best ?? ranked[0];
@@ -442,6 +542,49 @@ export class MaterialResolutionService {
         `others: ${pick.divergentAlternatives.map(fmt).join(', ')}.`;
     }
     return { row: best.row, note, ambiguityNote: null };
+  }
+
+  /**
+   * The grade `family`'s engine prices for the part's `grade` (process-materials.ts): the grade itself, or, when the process prices only its
+   * own materials and the grade is not one of them, the closest of its materials its engine can price, with a note saying so. The grade's
+   * own row is read with the same ranked search the quote resolves materials with. `processGroup`: the part's Process, for a group costed as another's family
+   * that prices from materials of its own (Rapid Prototyping).
+   */
+  async gradeForProcess(accessToken: string, grade: string, family: string, processGroup?: string | null): Promise<PricedGrade> {
+    const group = ownMaterialGroup(family, processGroup);
+    if (!group) return { grade, note: null };
+    const client = this.databaseService.getClient(accessToken);
+    // The columns the molding engine judges a material by, so that a stand-in is one the engine can price (process-materials.ts enginePrices).
+    const cureTime = (await this.checkMaterialCureTimeColumnAvailable(client)) ? ', cure_time_min' : '';
+    const injection = (await this.checkMaterialImColumnsAvailable(client)) ? ', im_injection_pressure_max_mpa, im_flow_length_ratio, im_density_of_melt_kg_m3' : '';
+    const selectCols = `name, grade, material_type, density_kg_m3, density, stock_form, matl_state, melting_temp_c, mold_temp_c${cureTime}${injection}`;
+    const { data, error } = await client.from('raw_materials').select(selectCols).eq('material_group', group).order('name');
+    if (error) throw new Error(`Failed to read the ${group} materials: ${error.message}`);
+    // Cast via unknown: the column list is dynamic, which the client's select() parser cannot type.
+    const rows = data as unknown as MaterialGroupRow[];
+    const num = (v: number | string | null | undefined) => (v == null ? null : Number(v));
+    const materials: ProcessMaterial[] = rows.map((r) => ({
+      name: r.name ?? r.grade ?? '',
+      grade: r.grade,
+      materialType: r.material_type,
+      densityKgM3: r.density_kg_m3 != null ? Number(r.density_kg_m3) : r.density != null ? Number(r.density) * 1000 : null,
+      molding: {
+        stockForm: r.stock_form, matlState: r.matl_state,
+        injectionPressureMaxMpa: num(r.im_injection_pressure_max_mpa), flowLengthRatio: num(r.im_flow_length_ratio),
+        meltingTempC: num(r.melting_temp_c), moldTempC: num(r.mold_temp_c), densityOfMeltKgM3: num(r.im_density_of_melt_kg_m3),
+        cureTimeMin: num(r.cure_time_min),
+      },
+    }));
+    if (materials.some((m) => isMaterialNamed(m, grade))) return { grade, note: null };
+    // What the search found the grade to be: its row, or the rows it fits equally well when it cannot tell them apart (the general lookup
+    // prices none of those; the stand-in can still be chosen by what they share), or nothing.
+    const match = await this.matchBestRawMaterialRow(client, grade.trim(), family, 'cost');
+    const own: OwnMaterial[] = (match.row ? [match.row] : match.ambiguous ?? []).map((row) => ({
+      name: row.materialGrade, grade: row.material, materialGroup: row.materialGroup, materialType: row.materialType, densityKgM3: row.densityKgM3,
+    }));
+    // Named as the Process whose own materials these are (Rapid Prototyping), else as the family's process group.
+    const processLabel = processGroup && group !== ownMaterialGroup(family, null) ? processGroup : CAD_FAMILY_TO_PROCESS_GROUP[family] ?? group;
+    return pricedGradeFor({ family, processGroup, processLabel, grade, own, materials });
   }
 
   // Real, single density lookup for a grade — used wherever a caller needs
@@ -510,9 +653,23 @@ export class MaterialResolutionService {
     locCurrencyCode: string;
     /** Quote location (e.g. India): picks the stock-form price (material_stock_prices). */
     location: string;
+    /** The scenario's Stock Form choice (resolveScenarioStockForm): the stock form the material is priced on; unset = the family's own. */
+    stockForm?: string | null;
+    /**
+     * The exact stock form the material is priced on, when the stock model chose the stock (a machined part: stock-price.ts
+     * stockPriceFormOf). Unset: the scenario's Stock Form, else the family's own form (machiningStockPriceForm).
+     */
+    stockPriceForm?: StockPriceForm | null;
     warnings: string[];
   }): Promise<{
     materialCostPerKg: number; materialDensityKgM3: number; materialSource: 'db' | 'default';
+    /**
+     * The price per kg of each stock form for this material at the location, in the location's currency, by the rule materialCostPerKg
+     * follows: the form's stock price when one is on file, else the material's own price. Empty when no row matched.
+     */
+    stockFormPricesPerKg: Partial<Record<StockPriceForm, number>>;
+    /** The material a form's price is borrowed from, where the location's stock prices do not hold this one (closestStockPrice). */
+    stockFormPriceBorrowedFrom: Partial<Record<StockPriceForm, string>>;
     // UTS/shear strength — resolved from the SAME raw_materials row density/cost
     // came from (same exact-then-tokenized match), so machine selection (press-
     // brake tonnage) and $ costing can never diverge onto two different material
@@ -543,8 +700,11 @@ export class MaterialResolutionService {
     matlState: string | null;
     /** Reference clamp properties (migration 831); nulls when not on file for this material. */
     clampProperties: MaterialClampProperties;
+    /** The matched raw_materials record, and the column each property was read from; null when no row matched. */
+    materialRecord: { id: string; name: string; columns: MaterialSourceColumns } | null;
   }> {
-    const { accessToken, grade, family, materialCol, rates, locCurrencyCode, location, warnings } = input;
+    const { accessToken, grade, family, materialCol, rates, locCurrencyCode, location, warnings, stockForm } = input;
+    const priceForm = input.stockPriceForm ?? machiningStockPriceForm(family, stockForm);
 
     let ambiguityNote: string | null = null;
     if (grade) {
@@ -602,20 +762,37 @@ export class MaterialResolutionService {
           // price at this location when one is on file (stock-price.ts), converted
           // at today's FX snapshot; else the material's raw_materials price.
           const locationStockPrices = await this.loadStockPrices(client, location);
-          const stock = resolveStockPrice(locationStockPrices, best.material, family, location);
-          if (stock) {
+          // A material the location's stock prices do not hold, where they are a partial copy of the reference's (India): its closest
+          // material's price in the same form, named (closestStockPrice).
+          const own = { name: best.materialGrade, grade: best.material, materialGroup: best.materialGroup, materialType: best.materialType, densityKgM3: best.densityKgM3 };
+          const properties = await this.loadStockPriceMaterials(client, location, locationStockPrices);
+          const stockPriceIn = (form: StockPriceForm | null): StockPrice | null =>
+            stockPriceOfForm(locationStockPrices, best.material, form, location) ?? closestStockPrice(locationStockPrices, own, form, location, properties);
+          const stock = stockPriceIn(priceForm);
+          if (stock?.borrowed) {
+            warnings.push(
+              `No ${stock.form.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}: priced as "${stock.borrowed.from}", `
+              + `its closest material priced there (${stock.borrowed.by}): ${stock.pricePerKg} ${stock.currencyCode}/kg (${stock.source}).`,
+            );
+          } else if (stock) {
             warnings.push(
               `Material priced on ${stock.form.replace('_', ' ')} stock for ${location}: ${stock.pricePerKg} ${stock.currencyCode}/kg (${stock.source}).`,
             );
-          } else if (machiningStockPriceForm(family) && locationStockPrices.length > 0) {
-            warnings.push(`No ${machiningStockPriceForm(family)!.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
+          } else if (priceForm && locationStockPrices.length > 0) {
+            warnings.push(`No ${priceForm.replace('_', ' ')} stock price on file for "${best.material ?? grade}" in ${location}; priced from raw_materials.`);
           }
+          // A form's price: its stock price when one is on file, else the material's own (the location's price, else India's or the
+          // general one), held in USD per kg and converted to the quote's currency like any other.
+          const priceOf = (s: StockPrice | null) => (s
+            ? s.pricePerKg * rates.convertStrict(s.currencyCode, locCurrencyCode)
+            : rawMaterialPricePerKg(best.locCost, locCurrencyCode, rates) ?? rawMaterialPricePerKg(best.indiaCost, locCurrencyCode, rates) ?? 0);
           return {
-            materialCostPerKg: stock
-              ? stock.pricePerKg * rates.convertStrict(stock.currencyCode, locCurrencyCode)
-              : hasCost
-                ? (best.locCost != null && best.locCost > 0 ? best.locCost : (best.indiaCost as number) * rates.convertStrict('INR', locCurrencyCode))
-                : 0,
+            materialCostPerKg: priceOf(stock),
+            stockFormPricesPerKg: Object.fromEntries(STOCK_PRICE_FORMS.map((f) => [f, priceOf(stockPriceIn(f))])),
+            stockFormPriceBorrowedFrom: Object.fromEntries(STOCK_PRICE_FORMS.flatMap((f) => {
+              const from = stockPriceIn(f)?.borrowed?.from;
+              return from ? [[f, from]] : [];
+            })),
             materialDensityKgM3: best.densityKgM3 as number,
             materialSource: 'db',
             utsMpa: strengths.utsMpa,
@@ -637,6 +814,7 @@ export class MaterialResolutionService {
               flowLengthRatio: best.imFlowLengthRatio,
               referenceMaterial: best.imReferenceMaterial,
             },
+            materialRecord: { id: best.id, name: best.materialGrade ?? best.material ?? grade, columns: best.sourceColumns },
           };
         }
       } catch {
@@ -661,6 +839,8 @@ export class MaterialResolutionService {
     );
     return {
       materialCostPerKg: 0,
+      stockFormPricesPerKg: {},
+      stockFormPriceBorrowedFrom: {},
       materialDensityKgM3: 0,
       materialSource: 'default',
       utsMpa: notFoundFamilyUts,
@@ -675,6 +855,7 @@ export class MaterialResolutionService {
       stockForm: null,
       matlState: null,
       clampProperties: { injectionPressureMaxMpa: null, flowLengthRatio: null, referenceMaterial: null },
+      materialRecord: null,
     };
   }
 }

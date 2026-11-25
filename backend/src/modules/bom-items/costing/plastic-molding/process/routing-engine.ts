@@ -48,6 +48,9 @@ export interface InjectionMoldingSignals {
   sideActionBlocks?: SideActionSignals['blocks'] | null;
   /** The longest slide bundle stroke (mm), side-action-signals.ts. */
   maxSlideStrokeMm?: number | null;
+  /** The bundle that stroke is, and the sized bundles by kind (plastic feature graph ids): what their calculator inputs light. */
+  maxSlideStrokeBundleId?: string | null;
+  sideActionBundleIds?: { slide: string[]; lifter: string[] } | null;
   /** The ribs the CAD engine measured (rib-inserts.ts); null when the graph has no plastic features. */
   ribs?: RibSignals | null;
   insertCount: number | null;
@@ -72,9 +75,20 @@ function op(id: IMOperationId, reason: string): IMRoutedOperation {
   return { id, label: def.label, level: def.level, reason };
 }
 
+/**
+ * The secondary checks a molded part is quoted with only when they are asked for (user decision 2026-11-25): the insert pull test and the
+ * weight check are switched on per part in the Cost Guide (scenario overrides moldingInsertPullTest, moldingWeightCheck).
+ */
+export interface MoldingSecondaryChecks {
+  insertPullTest: boolean;
+  weightCheck: boolean;
+}
+export const NO_SECONDARY_CHECKS: MoldingSecondaryChecks = Object.freeze({ insertPullTest: false, weightCheck: false });
+
 export function buildInjectionMoldingRoute(
   signals: InjectionMoldingSignals,
   moldingSubtype: MoldingSubtype = 'standard',
+  checks: MoldingSecondaryChecks = NO_SECONDARY_CHECKS,
 ): IMProcessTree {
   const operations: IMRoutedOperation[] = [];
   const routingWarnings: string[] = [];
@@ -191,8 +205,10 @@ export function buildInjectionMoldingRoute(
       const ic = signals.insertCount!;
       operations.push(op('insert_loading',
         `${ic} insert(s) — in-mold placement before shot; +${ic * 20}s cycle penalty (manual loading)`));
-      operations.push(op('insert_inspection',
-        `Pull test / torque verification on ${ic} insert(s) per part (sampled)`));
+      if (checks.insertPullTest) {
+        operations.push(op('insert_inspection',
+          `Pull test / torque verification on ${ic} insert(s) per part (sampled), asked for in the Cost Guide`));
+      }
     } else {
       operations.push(op('insert_installation',
         `${signals.insertCount!} insert candidate(s) detected — post-mold press/heat-stake installation`));
@@ -213,8 +229,10 @@ export function buildInjectionMoldingRoute(
       : 'Baseline molding QC — splay, sink, short shot, flash, color streaks'));
   operations.push(op('dimensional_inspection',
     'Critical dimensions vs drawing — shrinkage compensation verification'));
-  operations.push(op('weight_check',
-    'Shot weight monitoring — detects short shots and pack pressure drift'));
+  if (checks.weightCheck) {
+    operations.push(op('weight_check',
+      'Shot weight monitoring — detects short shots and pack pressure drift, asked for in the Cost Guide'));
+  }
 
   return {
     family: 'plastic_molding',

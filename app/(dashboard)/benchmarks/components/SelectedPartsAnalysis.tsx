@@ -1,10 +1,6 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Download, Info, TriangleAlert, Zap } from "lucide-react";
+import { useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -12,6 +8,7 @@ import {
   Bar,
   CartesianGrid,
   Cell,
+  DefaultZIndexes,
   PieChart,
   Pie,
   ResponsiveContainer,
@@ -19,8 +16,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { BOMMetricEntry, EnrichedBOMItem, HighCostPart } from "../types";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ArrowLeft, Download, Info, TriangleAlert, Zap } from '@/components/ui/icons';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+
 import { itemCost, itemWeight, safeNum, formatPrice } from "../utils";
+
+import type { BOMMetricEntry, EnrichedBOMItem, HighCostPart } from "../types";
 
 type ResolvedBOMMetricEntry = Omit<BOMMetricEntry, 'items'> & { items: EnrichedBOMItem[] };
 
@@ -31,17 +37,17 @@ interface Props {
 }
 
 export function SelectedPartsAnalysis({ bomMetrics, selectedParts, onBack }: Props) {
-  // Filter BOM metrics to only selected parts
-  const filteredBomMetrics: ResolvedBOMMetricEntry[] = bomMetrics.map((bd) => ({
+  // Filter BOM metrics to only selected parts. Kept between renders so the weight pie below is not redrawn for nothing.
+  const filteredBomMetrics: ResolvedBOMMetricEntry[] = useMemo(() => bomMetrics.map((bd) => ({
     ...bd,
     items: (bd.items ?? []).filter((item) => {
       const key = item.partNumber ?? item.name ?? `item-${item.id}`;
       return selectedParts.has(key);
     }),
-  }));
+  })), [bomMetrics, selectedParts]);
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="animate-fade-in space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -99,6 +105,31 @@ export function SelectedPartsAnalysis({ bomMetrics, selectedParts, onBack }: Pro
 // ─── Cost & Weight content ────────────────────────────────────────────────────
 
 function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: ResolvedBOMMetricEntry[] }) {
+  // recharts 3 replays a pie's animation, hiding its labels meanwhile, every time the chart re-renders; recharts 2 kept them
+  // in place. The chart element is therefore reused until the selected parts change.
+  const weightPie = useMemo(() => (
+    <PieChart accessibilityLayer={false}>
+      <Pie
+        data={filteredBomMetrics.map((bd) => ({
+          name: bd.bom.name,
+          value: bd.items.reduce((s, i) => s + itemWeight(i), 0),
+        }))}
+        cx="50%"
+        cy="50%"
+        labelLine={false}
+        label={({ name, value }) => `${name}: ${value.toFixed(1)}kg`}
+        outerRadius={80}
+        dataKey="value"
+      >
+        {filteredBomMetrics.map((_, index) => (
+          <Cell key={index} fill={`hsl(${220 + index * 40}, 70%, ${45 + index * 10}%)`} />
+        ))}
+      </Pie>
+      {/* recharts 3 colours a pie's tooltip row like its slice; it was black before. */}
+      <Tooltip itemStyle={{ color: "#000" }} formatter={(v) => [`${Number(v).toFixed(2)}kg`, "Weight"]} />
+    </PieChart>
+  ), [filteredBomMetrics]);
+
   return (
     <>
       {/* Cost analysis table */}
@@ -218,10 +249,10 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
       </Card>
 
       {/* Cost data status */}
-      <Card className="border-slate-600 bg-slate-800">
+      <Card className="border-border bg-card">
         <CardHeader>
-          <CardTitle className="text-slate-100">Cost Data Status</CardTitle>
-          <CardDescription className="text-slate-300">
+          <CardTitle className="text-foreground">Cost Data Status</CardTitle>
+          <CardDescription className="text-foreground/80">
             Cost analysis coverage for selected parts
           </CardDescription>
         </CardHeader>
@@ -236,37 +267,37 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
             return (
               <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="text-center p-4 bg-slate-700 rounded border border-slate-500">
-                    <div className="text-2xl font-bold text-blue-400">{totalParts}</div>
-                    <div className="text-sm text-slate-200">Total Parts</div>
+                  <div className="text-center p-4 bg-muted rounded border border-border">
+                    <div className="text-2xl font-bold text-primary">{totalParts}</div>
+                    <div className="text-sm text-foreground">Total Parts</div>
                   </div>
-                  <div className="text-center p-4 bg-slate-700 rounded border border-slate-500">
-                    <div className="text-2xl font-bold text-green-400">{costedParts}</div>
-                    <div className="text-sm text-slate-200">With Cost Data</div>
+                  <div className="text-center p-4 bg-muted rounded border border-border">
+                    <div className="text-2xl font-bold text-success">{costedParts}</div>
+                    <div className="text-sm text-foreground">With Cost Data</div>
                   </div>
-                  <div className="text-center p-4 bg-slate-700 rounded border border-slate-500">
-                    <div className="text-2xl font-bold text-red-400">{missing}</div>
-                    <div className="text-sm text-slate-200">Missing Cost Data</div>
+                  <div className="text-center p-4 bg-muted rounded border border-border">
+                    <div className="text-2xl font-bold text-destructive">{missing}</div>
+                    <div className="text-sm text-foreground">Missing Cost Data</div>
                   </div>
                 </div>
                 {missing > 0 && (
-                  <div className="bg-amber-900 border border-amber-600 rounded p-4">
+                  <div className="bg-warning/10 border border-warning/40 rounded p-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <TriangleAlert className="h-4 w-4 text-amber-400" />
-                      <span className="text-sm font-semibold text-amber-100">Cost Data Required</span>
+                      <TriangleAlert className="h-4 w-4 text-warning" />
+                      <span className="text-sm font-semibold text-warning">Cost Data Required</span>
                     </div>
-                    <p className="text-xs text-amber-200">
+                    <p className="text-xs text-muted-foreground">
                       {missing} parts are missing unit cost information.
                     </p>
                   </div>
                 )}
                 {costedParts === 0 && (
-                  <div className="bg-blue-900 border border-blue-600 rounded p-4">
+                  <div className="bg-primary/15 border border-primary/40 rounded p-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <Info className="h-4 w-4 text-blue-400" />
-                      <span className="text-sm font-semibold text-blue-100">Alternative Analysis</span>
+                      <Info className="h-4 w-4 text-primary" />
+                      <span className="text-sm font-semibold text-primary">Alternative Analysis</span>
                     </div>
-                    <p className="text-xs text-blue-200">
+                    <p className="text-xs text-primary">
                       While cost analysis is unavailable, you can still analyze Materials,
                       Processes, Assembly complexity, and VAVE opportunities.
                     </p>
@@ -297,6 +328,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
             <h3 className="text-sm font-semibold mb-4">Total Cost by BOM</h3>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart
+                accessibilityLayer={false}
                 data={filteredBomMetrics.map((bd) => ({
                   name: bd.bom.name,
                   cost: bd.items.reduce((s, i) => s + itemCost(i), 0),
@@ -306,7 +338,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={70} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v) => [`$${Number(v).toFixed(0)}`, "Total Cost"]} />
-                <Bar dataKey="cost" fill="hsl(220, 70%, 45%)" radius={[4, 4, 0, 0]} />
+                {/* recharts 3 draws the axes over the series; the bars cover the axis line again, as before. */}
+                <Bar dataKey="cost" fill="hsl(var(--chart-4))" radius={[4, 4, 0, 0]} zIndex={DefaultZIndexes.axis + 1} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
@@ -314,25 +347,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
           <Card className="p-4">
             <h3 className="text-sm font-semibold mb-4">Weight Distribution</h3>
             <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie
-                  data={filteredBomMetrics.map((bd) => ({
-                    name: bd.bom.name,
-                    value: bd.items.reduce((s, i) => s + itemWeight(i), 0),
-                  }))}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, value }) => `${name}: ${Number(value).toFixed(1)}kg`}
-                  outerRadius={80}
-                  dataKey="value"
-                >
-                  {filteredBomMetrics.map((_, index) => (
-                    <Cell key={index} fill={`hsl(${220 + index * 40}, 70%, ${45 + index * 10}%)`} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}kg`, "Weight"]} />
-              </PieChart>
+              {weightPie}
             </ResponsiveContainer>
           </Card>
 
@@ -340,6 +355,7 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
             <h3 className="text-sm font-semibold mb-4">Cost per Kilogram</h3>
             <ResponsiveContainer width="100%" height={260}>
               <AreaChart
+                accessibilityLayer={false}
                 data={filteredBomMetrics.map((bd) => {
                   const totalCost = bd.items.reduce((s, i) => s + itemCost(i), 0);
                   const totalWeight = bd.items.reduce((s, i) => s + itemWeight(i), 0);
@@ -359,6 +375,8 @@ function CostWeightContent({ filteredBomMetrics }: { filteredBomMetrics: Resolve
                   stroke="hsl(160, 60%, 40%)"
                   fill="hsl(160, 60%, 40%)"
                   fillOpacity={0.6}
+                  // recharts 3 draws the axes and the hover line over the area; recharts 2 drew both behind it.
+                  zIndex={DefaultZIndexes.cursorLine + 1}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -422,7 +440,7 @@ function PartDetailsTable({ filteredBomMetrics }: { filteredBomMetrics: Resolved
             return (
               <tr
                 key={idx}
-                className={`border-b hover:bg-muted/25 ${!hasAnyCost ? "bg-red-900/20" : ""}`}
+                className={`border-b hover:bg-muted/25 ${!hasAnyCost ? "bg-destructive/10" : ""}`}
               >
                 <td className="py-3 px-2 font-medium">{part.name}</td>
                 <td className="py-3 px-2 text-muted-foreground">{part.partNumber ?? "-"}</td>
@@ -453,11 +471,11 @@ function PartDetailsTable({ filteredBomMetrics }: { filteredBomMetrics: Resolved
                       <div className="space-y-1">
                         <div className="text-sm font-medium">{item.quantity}</div>
                         {safeNum(item.unitCost) > 0 ? (
-                          <div className="text-xs text-green-600">
+                          <div className="text-xs text-success">
                             {formatPrice(safeNum(item.unitCost))}
                           </div>
                         ) : (
-                          <div className="text-xs text-red-500">Need cost</div>
+                          <div className="text-xs text-destructive">Need cost</div>
                         )}
                       </div>
                     ) : (
@@ -797,9 +815,9 @@ function VAVEContent({ filteredBomMetrics }: { filteredBomMetrics: ResolvedBOMMe
 
   if (highCostParts.length > 0) {
     opportunities.push(
-      <Card key="high-cost" className="p-4 bg-red-900/20 border-red-600">
-        <h4 className="text-sm font-semibold mb-2 text-red-100">High Cost Parts Review</h4>
-        <p className="text-xs text-red-200 mb-3">
+      <Card key="high-cost" className="p-4 bg-destructive/10 border-destructive/40">
+        <h4 className="text-sm font-semibold mb-2 text-destructive">High Cost Parts Review</h4>
+        <p className="text-xs text-muted-foreground mb-3">
           {highCostParts.length} parts with cost &gt; $500
         </p>
         <div className="space-y-2">
@@ -820,10 +838,10 @@ function VAVEContent({ filteredBomMetrics }: { filteredBomMetrics: ResolvedBOMMe
 
   if (materialCount > 3) {
     opportunities.push(
-      <Card key="materials" className="p-4 bg-blue-50 border-blue-200">
-        <h4 className="text-sm font-semibold mb-2 text-blue-800">Material Standardization</h4>
-        <p className="text-xs text-blue-700 mb-3">{materialCount} different materials used</p>
-        <div className="text-xs text-blue-600">
+      <Card key="materials" className="p-4 bg-primary/10 border-primary/40">
+        <h4 className="text-sm font-semibold mb-2 text-primary">Material Standardization</h4>
+        <p className="text-xs text-primary mb-3">{materialCount} different materials used</p>
+        <div className="text-xs text-primary">
           Consider standardizing on fewer material types for volume benefits
         </div>
       </Card>
@@ -841,12 +859,12 @@ function VAVEContent({ filteredBomMetrics }: { filteredBomMetrics: ResolvedBOMMe
 
   if (makeCount > buyCount * 2) {
     opportunities.push(
-      <Card key="makebuy" className="p-4 bg-yellow-50 border-yellow-200">
-        <h4 className="text-sm font-semibold mb-2 text-yellow-800">Make vs Buy Review</h4>
-        <p className="text-xs text-yellow-700 mb-3">
+      <Card key="makebuy" className="p-4 bg-warning/10 border-warning/40">
+        <h4 className="text-sm font-semibold mb-2 text-warning">Make vs Buy Review</h4>
+        <p className="text-xs text-warning mb-3">
           {makeCount} make parts vs {buyCount} buy parts
         </p>
-        <div className="text-xs text-yellow-600">
+        <div className="text-xs text-warning">
           Consider outsourcing some make parts for cost optimization
         </div>
       </Card>

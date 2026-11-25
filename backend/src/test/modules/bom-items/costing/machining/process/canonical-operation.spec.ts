@@ -2,6 +2,7 @@ import {
   machiningRouteFamilyOf,
   resolveCanonicalOperation,
 } from '../../../../../../modules/bom-items/costing/machining/process/canonical-operation';
+import { KEYWAY_MILLING } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import { isReferenceOperation } from '../../../../../../modules/bom-items/costing/shared/reference-features.generated';
 
 // canonical-operation.ts verifies every pairing against the generated
@@ -25,6 +26,23 @@ describe('resolveCanonicalOperation', () => {
   it('uses the lathe-specific chamfer operation on turning routes', () => {
     expect(resolveCanonicalOperation('Edge', 'chamfer', 'milling')).toBe('Chamfering // Edge');
     expect(resolveCanonicalOperation('Edge', 'chamfer', 'turning')).toBe('Mill Chamfering // Edge');
+  });
+
+  it('labels a keyway by the operation the cost engine mills it by, so the feature and its cost row carry one name', () => {
+    for (const family of ['milling', 'turning'] as const) {
+      expect(resolveCanonicalOperation('Keyway', 'default', family)).toBe('Obround Slot Milling // Keyway');
+      expect(resolveCanonicalOperation('Keyway', 'default', family)).toBe(`${KEYWAY_MILLING} // Keyway`);
+    }
+  });
+
+  it('labels a flat on a turned diameter by the operation the cost engine mills it by, Rough Milling', () => {
+    for (const family of ['milling', 'turning'] as const) {
+      expect(resolveCanonicalOperation('Flat', 'default', family)).toBe('Rough Milling // Flat');
+    }
+    // The catalog gives it only as a step of the machine's setup ("3 Axis Lathe:Setup:Rough Milling//Flat"): the vocabulary's name for the
+    // operation carries the step, the label does not.
+    expect(isReferenceOperation('machining', 'Flat', 'Setup:Rough Milling')).toBe(true);
+    expect(isReferenceOperation('machining', 'Flat', 'Rough Milling')).toBe(false);
   });
 
   it('treats a missing variant as "default"', () => {

@@ -460,6 +460,29 @@ describe('provisional rules for what the drawing does not state', () => {
     expect(run('Mask-Spray').status).toBe('not_applicable');
   });
 
+  it('mask spray on a machined part: each hole is masked to its own measured depth, with no wall thickness needed', () => {
+    // Cannula Holder Left: tapped holes of three sizes, each with the depth the analysis measured; a solid part has no wall thickness.
+    const holes = [
+      { id: 'h1', feature_type: 'SimpleHole', diameter_mm: 3.2, occurrences: [{ depth_mm: 6 }, { depth_mm: 6 }] },
+      { id: 'h2', feature_type: 'SimpleHole', diameter_mm: 2.5, occurrences: [{ depth_mm: 4.5 }] },
+    ];
+    const r = run('Mask-Spray', { ...part, wallThicknessMm: null, features: holes, holeDiametersMm: [3.2, 2.5] });
+    const area = 2 * Math.PI * 3.2 * 6 + Math.PI * 2.5 * 4.5;
+    expect(r.status).toBe('costed');
+    expect(r.trace.find((t) => t.label === 'Masked area')?.value).toBeCloseTo(area, 0);
+    expect(r.trace.find((t) => t.label === 'Masked area')?.source).toMatch(/measured depth/);
+    expect(r.warnings.join(' ')).toMatch(/at its measured depth/);
+  });
+
+  it('mask spray with a hole whose depth is not measured falls back to the wall, and with neither is a stated gap', () => {
+    const noDepth = [{ id: 'h1', feature_type: 'SimpleHole', diameter_mm: 4, occurrences: [{ depth_mm: 6 }, {}] }];
+    const byWall = run('Mask-Spray', { ...part, wallThicknessMm: 2, features: noDepth, holeDiametersMm: [4, 4] });
+    expect(byWall.trace.find((t) => t.label === 'Masked area')?.value).toBeCloseTo(2 * Math.PI * 4 * 2, 0);
+    const gap = run('Mask-Spray', { ...part, wallThicknessMm: null, features: noDepth, holeDiametersMm: [4, 4] });
+    expect(gap.status).toBe('gap');
+    expect(gap.reason).toMatch(/no measured depth/);
+  });
+
   it('Black Oxide has a wage grade in memory/ and every other machine of that grade carries one labor rate (migration 981 gives it)', () => {
     const grades = new Map(parseCsv('surface_treatment_wage_grades.csv').map((x) => [x['Process Name']!, x['Wage Grade Name']!]));
     expect(grades.get('Black Oxide')).toBe('2 - Metal');
@@ -473,5 +496,57 @@ describe('provisional rules for what the drawing does not state', () => {
     }
     expect([...rates]).toEqual(['29.95']);
     expect(fs.readFileSync(path.resolve(__dirname, '../../../../../../migrations/981_black_oxide_wage_grade_labor_rate.sql'), 'utf-8')).toMatch(/HAVING count\(DISTINCT usd_labor_rate_per_hr\) = 1/);
+  });
+});
+
+// The three processes that were never costed on a metal part (Cannula Holder Left, a stainless casting).
+describe('laser engraving and conveyor conversion coating on a metal part', () => {
+  // The washers have no file in memory/SurfaceTreatment/Machine: migration 1048 seeds them from the country exports, and this reads one from it.
+  const seed = fs.readFileSync(path.join(__dirname, '../../../../../../migrations/1048_conveyor_conversion_coating_machines.sql'), 'utf8');
+  const washerSpecs = JSON.parse(/\$str\$10 Stage Conveyor Pretreatment Washer - 2\.1m x 1\.5m\$str\$.*\$jsonb\$(\{.*?\})\$jsonb\$/.exec(seed)![1]!) as Record<string, number>;
+  const washer: SecondaryMachine = {
+    id: 'washer-10', name: '10 Stage Conveyor Pretreatment Washer - 2.1m x 1.5m', machineClass: 'surface_conveyor_conversion_coating',
+    mhrUsd: 64.38, lhrUsd: 29.95, operators: 0, laborTimeStandard: 1, setupHr: 0.5, goodPartYield: 1,
+    maxXmm: null, maxYmm: washerSpecs['opening_width_mm']!, maxZmm: washerSpecs['max_nesting_height_mm']!, maxLengthMm: null, maxWorkpieceKg: null,
+    specs: washerSpecs, engineRateDefaults: [],
+  };
+  const lasers = machines('laser_engraving_machines.csv', 'Laser Engraving', ['Bed Length (mm)', 'Bed Width (mm)', 'Max Height (mm)']);
+  const casting: SecondaryPartFacts = {
+    bboxMm: { length: 80.3, width: 65.5, height: 22.5 }, surfaceAreaMm2: 11_274, weightKg: 0.12, wallThicknessMm: 3,
+    materialCutCode: null, materialTypeName: 'Stainless Steel', features: [], batchSize: 250,
+  };
+  const run = (process: string, part = casting) => computeSurfaceTreatments(part, reference, [...lasers, washer]).find((r) => r.process === process)!;
+
+  it('laser engraving is costed on stainless steel: the table lists the materials the process is NOT used on', () => {
+    const r = run('Laser Engraving');
+    expect(r.status).toBe('costed');
+    // 10 mm wide at a 0.15 mm step is 67 scan lines of 50 mm, one pass, at 600 mm/s: 5.58 s before efficiency and yield.
+    expect(r.trace.find((t) => t.label === 'Scan lines')?.value).toBe(Math.ceil(v('defaultLaserEngravingWidth') / v('defaultLaserEngravingStepInterval')));
+  });
+
+  it('laser engraving does not apply to a flame-retardant plastic, and says the table excludes it', () => {
+    const r = run('Laser Engraving', { ...casting, materialTypeName: 'Polycarbonate, FR' });
+    expect(r.status).toBe('not_applicable');
+    expect(r.reason).toMatch(/"Polycarbonate, FR" is not laser engraved/);
+  });
+
+  it('conveyor conversion coating runs at the speed its rinse and drain times allow, one part per pitch', () => {
+    const r = run('Conveyor Conversion Coating');
+    expect(r.status).toBe('costed');
+    // Rinse stage 1800 mm / 120 s = 15 mm/s; drain zone 1590 mm / 120 s = 13.25 mm/s: the slower.
+    const speed = Math.min(washerSpecs['rinse_stage_length_mm']! / v('conversionCoatingMinRinseTime'), washerSpecs['drain_zone_length_mm']! / v('conversionCoatingMinDrainTime'));
+    expect(speed).toBeCloseTo(13.25, 2);
+    expect(r.trace.find((t) => t.label === 'Line speed')?.value).toBeCloseTo(speed, 3);
+    expect(r.trace.find((t) => t.label === 'Coat the material takes')?.value).toBe('Chromate or Phosphate');
+    expect(r.warnings.join(' ')).toMatch(/solutions are not priced/);
+    expect(r.warnings.join(' ')).toMatch(/has no machine hour rate on file: 64\.38 USD\/hr is the HR Rates engine's rate/);
+  });
+
+  it('conveyor conversion coating does not apply to a material that takes neither coat, and is a gap with no washer on file', () => {
+    // No row of tblConversionCoating has both coats false, so the rule is shown on a row with one coat: bronze takes chromate only.
+    expect(run('Conveyor Conversion Coating', { ...casting, materialTypeName: 'Bronze' }).trace.find((t) => t.label === 'Coat the material takes')?.value).toBe('Chromate');
+    const none = computeSurfaceTreatments(casting, reference, lasers).find((x) => x.process === 'Conveyor Conversion Coating')!;
+    expect(none.status).toBe('gap');
+    expect(none.reason).toMatch(/No conveyor pretreatment washer is on file/);
   });
 });

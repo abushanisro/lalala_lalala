@@ -16,17 +16,19 @@ import { DrawingIntelligenceDto } from '../dto/drawing-intelligence.dto';
 // Bumped whenever drawing-intelligence.dto.ts's expected shape changes, so a
 // stored drawing_intelligence row can be told apart from one written under a
 // future, differently-shaped parser response.
-const DRAWING_PARSER_VERSION = 'v1';
+// v2: threads keep countStated, pitchStated, toleranceClass, threadKind and lengthMm; knurl callouts (knurls).
+const DRAWING_PARSER_VERSION = 'v2';
 import { machiningRouteFamilyOf, resolveCanonicalOperation } from '../costing/machining/process/canonical-operation';
 import { REFERENCE_FEATURE_OPERATIONS } from '../costing/shared/reference-features.generated';
 import { MachiningLookupService } from '../costing/machining/lookup/machining-lookup.service';
 import { requiredMilledClassFromToolAxes } from '../costing/machining/setup-axis-rule';
 import { machiningFeatureCounts } from '../costing/machining/operation/machining-feature-counts';
-import { CAD_FAMILY_TO_PROCESS_GROUP } from '../costing/shared/core/part-family-process-group';
+import { CAD_FAMILY_TO_PROCESS_GROUP, familyHintOfProcessGroup } from '../costing/shared/core/part-family-process-group';
 import { DEFAULT_CAD_ENGINE_URL } from '../../../common/engine-urls';
 import { currentFeatureGraphVersion } from '../analysis-status';
 import { plasticCostDrivers } from '../costing/plastic-molding/plastic-cost-drivers';
 import { parseFlatPatternBlanks, type FlatPatternBlank } from '../costing/sheet-metal/machine/flat-pattern-blanks';
+import type { MachiningStockSummary } from '../costing/stock/stock-envelope';
 
 export interface RawGeometry {
   volume: number;
@@ -152,6 +154,148 @@ export interface RawGeometry {
   bendLengths: number[];
   bendAngles: number[];
   featureSource: 'step_topology' | 'mesh_inference';
+}
+
+/**
+ * What a sheet-metal part is measured for hydroforming (cad-engine sheet_metal/features/hydroform.py, its "hydroform" result), as
+ * feature_graph.summary.hydroformGeometry: the top-level keys camelCase, the objects inside (plan, mainSurface, drawn, blank, flanges,
+ * holes) as the engine writes them, snake_case -- as rotoBlowGeometry carries its engine objects. null when the engine did not measure
+ * the part (an analysis from before hf_v1, or a part with no sheet frame).
+ */
+export function hydroformGeometry(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const hf = raw as HydroformMeasurement;
+  if (typeof hf.version !== 'string') return null;
+  return {
+    extractionVersion: hf.version,
+    normal: hf.normal ?? null,
+    formingDepthMm: hf.forming_depth_mm ?? null,
+    plan: hf.plan ?? null,
+    projectedAreaMm2: hf.projected_area_mm2 ?? null,
+    developedAreaMm2: hf.developed_area_mm2 ?? null,
+    mainSurface: hf.main_surface ?? null,
+    drawn: hf.drawn ?? null,
+    blank: hf.blank ?? null,
+    flanges: hf.flanges ?? null,
+    holes: hf.holes ?? null,
+  };
+}
+
+/** The engine's "hydroform" result as it arrives (its values are passed on as measured). */
+interface HydroformMeasurement {
+  version?: unknown;
+  normal?: unknown;
+  forming_depth_mm?: unknown;
+  plan?: unknown;
+  projected_area_mm2?: unknown;
+  developed_area_mm2?: unknown;
+  main_surface?: unknown;
+  drawn?: unknown;
+  blank?: unknown;
+  flanges?: unknown;
+  holes?: unknown;
+}
+
+/**
+ * What a sheet-metal part is measured for roll forming (cad-engine sheet_metal/features/roll_form.py, its "roll_form" result), as
+ * feature_graph.summary.rollFormGeometry: the top-level keys camelCase, the objects inside (section, stripWidthCheck, bends, tube, curve,
+ * features, ends) as the engine writes them, snake_case -- as hydroformGeometry(). null when the engine found the part is not a profile (no cross-section
+ * bends running one way, or flat) or did not measure it (an analysis from before rf_v3).
+ */
+export function rollFormGeometry(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rf = raw as RollFormMeasurement;
+  if (typeof rf.version !== 'string') return null;
+  return {
+    extractionVersion: rf.version,
+    axis: rf.axis ?? null,
+    axisSource: rf.axis_source ?? null,
+    lengthMm: rf.length_mm ?? null,
+    constantSection: rf.constant_section ?? null,
+    stockFraction: rf.stock_fraction ?? null,
+    section: rf.section ?? null,
+    stripWidthMm: rf.strip_width_mm ?? null,
+    stripWidthNeutralMm: rf.strip_width_neutral_mm ?? null,
+    stripWidthCheck: rf.strip_width_check ?? null,
+    thicknessMm: rf.thickness_mm ?? null,
+    bends: rf.bends ?? null,
+    lastFlangeMm: rf.last_flange_mm ?? null,
+    tube: rf.tube ?? null,
+    curve: rf.curve ?? null,
+    features: rf.features ?? null,
+    ends: rf.ends ?? null,
+  };
+}
+
+/** The engine's "roll_form" result as it arrives (its values are passed on as measured). */
+interface RollFormMeasurement {
+  version?: unknown;
+  axis?: unknown;
+  axis_source?: unknown;
+  length_mm?: unknown;
+  constant_section?: unknown;
+  stock_fraction?: unknown;
+  section?: unknown;
+  strip_width_mm?: unknown;
+  strip_width_neutral_mm?: unknown;
+  strip_width_check?: unknown;
+  thickness_mm?: unknown;
+  bends?: unknown;
+  last_flange_mm?: unknown;
+  tube?: unknown;
+  curve?: unknown;
+  features?: unknown;
+  ends?: unknown;
+}
+
+/**
+ * What a machined part is measured for its raw stock (cad-engine machining/stock_envelope.py, the "stock" of its machining_features), as
+ * feature_graph.summary.machiningStock: the top-level keys camelCase, the objects inside (round, rect, hex, bore, endFaces, stockSurface,
+ * plate) as the engine writes them, snake_case -- as rollFormGeometry(). null when the engine could not measure the part.
+ */
+export function machiningStock(raw: unknown): MachiningStockSummary | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const stock = raw as MachiningStockMeasurement;
+  if (typeof stock.version !== 'string') return null;
+  return {
+    extractionVersion: stock.version,
+    axis: stock.axis ?? null,
+    axisSource: stock.axis_source ?? null,
+    lengthMm: stock.length_mm ?? null,
+    round: stock.round ?? null,
+    rect: stock.rect ?? null,
+    hex: stock.hex ?? null,
+    bore: stock.bore ?? null,
+    endFaces: stock.end_faces ?? null,
+    stockSurface: stock.stock_surface ?? null,
+    plate: machiningPlate(stock.plate),
+  };
+}
+
+/**
+ * The stock's "plate" block (the part as a piece cut out of plate: its thinnest direction, its thickness and its outline seen along it), as
+ * the engine wrote it. null when the measurement has none (an analysis made before the block, or the engine could not measure it) and when
+ * it carries no version: not the engine's block.
+ */
+function machiningPlate(raw: unknown): Readonly<Record<string, unknown>> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const plate = raw as Record<string, unknown>;
+  return typeof plate.version === 'string' ? plate : null;
+}
+
+/** The engine's "stock" result as it arrives (its values are passed on as measured). */
+interface MachiningStockMeasurement {
+  version?: unknown;
+  axis?: unknown;
+  axis_source?: unknown;
+  length_mm?: unknown;
+  round?: unknown;
+  rect?: unknown;
+  hex?: unknown;
+  bore?: unknown;
+  end_faces?: unknown;
+  stock_surface?: unknown;
+  plate?: unknown;
 }
 
 @Injectable()
@@ -535,6 +679,152 @@ export class AutoFillService {
         // are present when extraction_version >= im_v2_phase2 and fall back to safe
         // defaults (0 / null) so older CAD engine responses keep working unchanged.
         ...imSummary,
+        // Closed-die forging and powder metal: measured along the die (press) direction (cad-engine forging/feature_extractor.py). The forging
+        // cost reads the outline and its parting line, the powder metal cost the outline, height and plan; the rest is shown and judged against
+        // the reference. null = not measured, never 0.
+        ...(family.family === 'forged' || family.family === 'powder_metal' ? {
+          forgingExtractionVersion:   cadMI?.features?.extraction_version ?? null,
+          forgingDieDirection:        cadMI?.features?.die_direction?.vector ?? null,
+          forgingUndercutAreaMm2:     cadMI?.features?.die_direction?.undercut_area_mm2 ?? null,
+          forgingProjectedAreaMm2:    cadMI?.features?.projected_area_mm2 ?? null,
+          forgingPartingPerimeterMm:  cadMI?.features?.parting_perimeter_mm ?? null,
+          forgingPartingFootprintMm:  cadMI?.features?.parting_footprint_mm ?? null,
+          forgingDieDepthMm:          cadMI?.features?.die_depth_mm ?? null,
+          forgingPlanLengthMm:        cadMI?.features?.plan?.length_mm ?? null,
+          forgingPlanWidthMm:         cadMI?.features?.plan?.width_mm ?? null,
+          forgingSectionMinMm:        cadMI?.features?.section_thickness?.min_mm ?? null,
+          forgingSectionMaxMm:        cadMI?.features?.section_thickness?.max_mm ?? null,
+          // What the forging DFM judges, per face (forging-dfm.ts): each wall's draft to the die direction and how much of it is covered from its
+          // own die half, the section behind each face, the rounded edges, the edges with no radius, and the trapped volumes.
+          forgingDraftFaces: ((cadMI?.features?.draft?.faces ?? null) as Array<Record<string, unknown>> | null)?.map((f) => ({
+            faceId: Number(f.face_id), draftDeg: f.draft_deg == null ? null : Number(f.draft_deg), undercutFraction: Number(f.undercut_fraction ?? 0),
+          })) ?? null,
+          forgingThicknessFaces: ((cadMI?.features?.section_thickness?.faces ?? null) as Array<Record<string, unknown>> | null)?.map((f) => ({
+            faceId: Number(f.face_id), thicknessMm: Number(f.thickness_mm),
+          })) ?? null,
+          forgingRadii: ((cadMI?.features?.radii ?? null) as Array<Record<string, unknown>> | null)?.map((r) => ({
+            kind: r.kind === 'corner' ? 'corner' : 'fillet', radiusMm: Number(r.radius_mm), faceIds: (r.face_ids ?? []) as number[],
+          })) ?? null,
+          forgingSharpEdges: cadMI?.features?.sharp_edges ? {
+            internal: ((cadMI.features.sharp_edges.internal_edges ?? []) as Array<Record<string, unknown>>).map((e) => ({ faceIds: (e.face_ids ?? []) as number[], lengthMm: Number(e.length_mm) })),
+            externalCount: Number(cadMI.features.sharp_edges.external_count ?? 0),
+          } : null,
+          forgingTrappedVolumeCount:  cadMI?.features?.trapped_volumes?.count ?? null,
+          // The holes, with their angle to the die direction: a bore along it makes a ring; one too small or across it is machined.
+          forgingHoles: ((cadMI?.features?.holes ?? []) as Array<Record<string, unknown>>).map((h) => ({
+            diameterMm: Number(h.diameter_mm), depthMm: h.depth_mm == null ? null : Number(h.depth_mm),
+            angleToDieDeg: h.angle_to_die_deg == null ? null : Number(h.angle_to_die_deg), variant: String(h.variant ?? ''),
+          })).filter((h) => Number.isFinite(h.diameterMm) && h.diameterMm > 0),
+        } : {}),
+        // A laid-up composite: the laminate on its tool (cad-engine composites/feature_extractor.py). The composites cost reads the skins, the
+        // thickness levels (the plies and the core are read from them), the outline and the curvature. null = not measured, never 0.
+        ...(family.family === 'composite' ? {
+          compositeLaminate: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            layupDirection: cadMI.features.layup_direction?.vector ?? null,
+            toolAreaMm2: cadMI.features.surfaces?.tool_area_mm2 ?? null,
+            bagAreaMm2: cadMI.features.surfaces?.bag_area_mm2 ?? null,
+            outerAreaMm2: cadMI.features.outline?.outer_area_mm2 ?? null,
+            trimLengthMm: cadMI.features.outline?.trim_length_mm ?? null,
+            openingsAreaMm2: ((cadMI.features.outline?.openings ?? []) as Array<{ area_mm2?: number }>).reduce((s, o) => s + Number(o.area_mm2 ?? 0), 0),
+            footprintMm: cadMI.features.outline?.footprint_mm ?? null,
+            heightMm: cadMI.features.outline?.height_mm ?? null,
+            curvaturePerM: cadMI.features.curvature?.average_per_m ?? null,
+            holeCount: Array.isArray(cadMI.features.holes) ? cadMI.features.holes.length : 0,
+            levels: ((cadMI.features.thickness?.levels ?? []) as Array<Record<string, unknown>>).map((l) => ({
+              thicknessMm: Number(l.thickness_mm), regionAreaMm2: Number(l.region_area_mm2), regionPerimeterMm: Number(l.region_perimeter_mm),
+              faceIds: (l.face_ids ?? []) as number[],
+            })),
+          } : null,
+        } : {}),
+        // An additive build (cad-engine additive/feature_extractor.py): each of the six build directions with its height, footprint and, at each
+        // self-supporting angle, the overhang, supports and plate contact; the additive cost picks the direction at the material's own angle.
+        // The holes and voids (additive/voids.py) are what Rapid Prototyping's cleaning is timed by; an analysis before them has no voids.
+        ...(family.family === 'additive' ? {
+          additiveBuild: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            holes: cadMI.features.holes ?? null,
+            voids: cadMI.features.voids ?? null,
+            axis: cadMI.features.build_direction?.axis ?? null,
+            partVolumeMm3: cadMI.features.part_volume_mm3 ?? null,
+            surfaceAreaMm2: cadMI.features.surface_area_mm2 ?? null,
+            candidates: Object.fromEntries(Object.entries((cadMI.features.candidates ?? {}) as Record<string, Record<string, any>>).map(([axis, c]) => [axis, {
+              buildHeightMm: Number(c.build_height_mm), footprintMm: (c.footprint_mm ?? []) as number[],
+              byAngle: Object.fromEntries(Object.entries((c.by_angle ?? {}) as Record<string, Record<string, any>>).map(([deg, a]) => [deg, {
+                overhangAreaMm2: Number(a.overhang_area_mm2 ?? 0), overhangProjectedAreaMm2: Number(a.overhang_projected_area_mm2 ?? 0),
+                supportVolumeMm3: Number(a.support_volume_mm3 ?? 0), plateContactAreaMm2: Number(a.plate_contact_area_mm2 ?? 0), overhangRegions: Number(a.overhang_regions ?? 0),
+              }])),
+            }])),
+          } : null,
+        } : {}),
+        // A printed circuit board given as a 3D model (cad-engine pcb/feature_extractor.py): the board found among the model's bodies, its
+        // thickness, outline, holes, cutouts and the bodies on each side. The PCB cost reads it when the item has no board files (pcbGeometry).
+        ...(family.family === 'pcb' ? {
+          pcbModelGeometry: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            board: cadMI.features.board ?? null,
+            holes: cadMI.features.holes ?? [],
+            cutouts: cadMI.features.cutouts ?? [],
+            components: cadMI.features.components ?? null,
+            unresolved: cadMI.features.unresolved ?? [],
+          } : null,
+        } : {}),
+        // A blow molded or rotomolded shell (cad-engine roto_blow/feature_extractor.py): its envelope, wall, the air it closes in, spouts, parting
+        // line and perimeter, holes and voids. The Roto & Blow Molding cost prices both routes and the operations its features take from it.
+        ...(family.family === 'roto_blow' ? {
+          rotoBlowGeometry: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            envelopeMm: cadMI.features.envelope_mm ?? null,
+            partVolumeMm3: cadMI.features.part_volume_mm3 ?? null,
+            surfaceAreaMm2: cadMI.features.surface_area_mm2 ?? null,
+            wall: cadMI.features.wall ?? null,
+            hollow: cadMI.features.hollow ?? null,
+            inside: cadMI.features.inside ?? null,
+            partingLineMm: cadMI.features.parting_line_mm ?? null,
+            perimeterMm: cadMI.features.perimeter_mm ?? null,
+            spouts: cadMI.features.spouts ?? null,
+            holes: cadMI.features.holes ?? null,
+            voids: cadMI.features.voids ?? null,
+          } : null,
+        } : {}),
+        // What every sheet-metal part is measured for hydroforming (cad-engine sheet_metal/features/hydroform.py): the press axis, forming
+        // depth, plan, projected and developed area, the main surface, the drawn form, the blank, the straight and curved flanges and the
+        // holes. The Sheet Metal - Hydroforming cost routes and prices from it; null until the part is analysed by an engine that measures
+        // it (press Refresh analysis). See hydroformGeometry().
+        //
+        // What every sheet-metal part is measured for roll forming (cad-engine sheet_metal/features/roll_form.py): the long axis and length,
+        // whether it is one section along it, the section, the strip width, the cross-section bends in order across the strip with the flat
+        // before each and their level, the curve along the length, the punched features at their stations and the end cuts. The Sheet Metal
+        // Roll Forming cost prices from it; null when the part is not a profile, or until it is analysed by an engine that measures it (press
+        // Refresh analysis). See rollFormGeometry().
+        ...(isSheetMetal ? {
+          hydroformGeometry: hydroformGeometry((cadMI as { features?: { hydroform?: unknown } } | undefined)?.features?.hydroform),
+          rollFormGeometry: rollFormGeometry((cadMI as { features?: { roll_form?: unknown } } | undefined)?.features?.roll_form),
+        } : {}),
+        // What every machined part is measured for its raw stock (cad-engine machining/stock_envelope.py): the axis the stock runs along, its
+        // length, the round, rectangle and hexagon around the part, a through bore, the end faces and the faces already on the stock's
+        // surface; and, as a piece cut out of plate, its outline seen along its thinnest direction (plate). The Stock Machining cost
+        // chooses and prices the stock from it. Absent until the part is analysed by an engine that measures it (press Refresh analysis);
+        // null when that engine could not. See machiningStock().
+        ...(machiningFeatures && 'stock' in machiningFeatures ? { machiningStock: machiningStock(machiningFeatures.stock) } : {}),
+        // A bar, tube or profile (cad-engine bar_tube/feature_extractor.py): its stock form and section, the centreline's developed length, the
+        // bends, the holes and openings through the wall, the end cuts and the end forms. The bar and tube cost prices its stock and routes from it.
+        ...(family.family === 'bar_tube' ? {
+          barTubeGeometry: cadMI?.features?.extraction_version ? {
+            extractionVersion: cadMI.features.extraction_version,
+            stockForm: cadMI.features.stock_form ?? null,
+            reason: cadMI.features.reason ?? null,
+            section: cadMI.features.section ?? null,
+            developedLengthMm: cadMI.features.developed_length_mm ?? null,
+            bends: cadMI.features.bends ?? [],
+            holes: cadMI.features.holes ?? [],
+            complexHoles: cadMI.features.complex_holes ?? [],
+            cutouts: cadMI.features.cutouts ?? [],
+            ends: cadMI.features.ends ?? [],
+            forms: cadMI.features.forms ?? [],
+            plate: cadMI.features.plate ?? null,
+          } : null,
+        } : {}),
         // Die Casting Phase 1 — promoted from DieCastingFeatureExtractor output
         // (cadMI.features). Detection + highlighting only; process routing and
         // costing are a later phase (see the Die Casting Phase 1 plan).
@@ -1187,18 +1477,20 @@ export class AutoFillService {
   private static readonly CAD_FAMILY_TO_PROCESS_GROUP = CAD_FAMILY_TO_PROCESS_GROUP;
 
   /**
-   * The cad-engine family_hint for a user-chosen process_group label — the
-   * inverse of CAD_FAMILY_TO_PROCESS_GROUP, so the forward and reverse
-   * mappings can never drift apart. Machining covers milled/turned/mill_turn;
-   * the first entry (milled) is the general one; Sand Casting is sand_cast. A
-   * group with no CAD family (Assembly, ...) returns undefined: there is no
-   * extractor to force, so the real classifier chain runs.
+   * The cad-engine family_hint for a user-chosen process_group label
+   * (familyHintOfProcessGroup, part-family-process-group.ts): the family the
+   * group is costed as, so the analysis and the costing can never disagree.
+   * Machining covers milled/turned/mill_turn, so its hint is "machined": the
+   * part is analysed as a machined part and the geometry picks the family
+   * (a shaft is turned, not forced to milled). Sand Casting is sand_cast;
+   * Casting is analysed as a die casting. A group with no cost model, or
+   * whose family the cad-engine has no extractor for (Assembly and Part
+   * Assembly: costed from the BOM children and the Cost Guide, with no model
+   * of their own to read), returns undefined: there is no extractor to force,
+   * so the real classifier chain runs.
    */
   familyHintForProcessGroup(processGroup: string | null | undefined): string | undefined {
-    if (!processGroup) return undefined;
-    const entry = Object.entries(AutoFillService.CAD_FAMILY_TO_PROCESS_GROUP)
-      .find(([, group]) => group === processGroup);
-    return entry?.[0];
+    return familyHintOfProcessGroup(processGroup);
   }
 
   /**

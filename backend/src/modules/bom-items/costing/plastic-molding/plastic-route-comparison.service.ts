@@ -11,20 +11,17 @@ import type { MaterialResolutionService } from '../../services/material-resoluti
 import { CalculatorCatalogService } from '../../services/calculator-catalog.service';
 import { PlasticReferenceService } from './lookup/plastic-reference.service';
 import { injectionMoldabilityGap } from '../../../raw-materials/material-moldability';
-import { buildMoldingCommonInput, cadFaceCount, partBboxLongestFirst, type MoldingSummary } from './molding-input';
-import { estimatedToolHeightMm } from '../shared/capability/machine-selection/press-checks';
-import { mhrRateFromCandidate } from '../shared/capability/machine-selection/rate-from-candidate';
+import { buildMoldingCommonInput, cadFaceCount, type MoldingSummary } from './molding-input';
 import { fetchMachinePool } from '../shared/capability/machine-selection/selector';
 import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL } from '../shared/core/default-rates.constants';
 import { findRouteDataGaps } from '../shared/core/engine-kernel';
 import { resolveScenarioCavityCount } from '../shared/physics/scenario-overrides';
 import { undercutCountFromDraftSummary, type DraftSummary } from './draft-signals';
-import { selectIMmachinesByTier, type IMSelectionRequirements } from './machine/machine-selector-im';
+import { injectionPressRequirements, moldingPressOf, selectIMmachinesByTier } from './machine/machine-selector-im';
 import { computeCompressionMoldingCost } from './process/cost-compression-molding-engine';
-import { computeInjectionMoldedCostSummary, type InjectionMoldingCostInput } from './process/cost-injection-molding-engine';
+import { computeInjectionMoldedCostSummary, costMoldOnPresses, type InjectionMoldingCostInput } from './process/cost-injection-molding-engine';
 import { computeReactionInjectionMoldingCost } from './process/cost-reaction-injection-molding-engine';
 import { processCompatibilityGap, type MoldingProcess } from './process-compatibility';
-import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './shot-size';
 import { sideActionSignals } from './side-action-signals';
 import type { PlasticFeatureGraph } from './operation/plastic-catalog-operations.service';
 
@@ -110,32 +107,10 @@ export class PlasticRouteComparisonService {
       densityOfMeltKgM3: rcDensityOfMeltKgM3,
     };
     const client = this.database.getClient(accessToken);
-    const imBboxRC = partBboxLongestFirst(item);
-    const projectedAreaMm2 = imBboxRC[0] * imBboxRC[1] > 0 ? imBboxRC[0] * imBboxRC[1] : null;
     const partVolumeMm3 = (item.volume ?? 0) as number;
 
     const plasticRefSet = await this.plasticReference.getReference();
     const plasticRef = plasticRefSet.reference;
-    // Presses are pre-selected on a single-cavity basis (cavities depend on the
-    // press); each tier's engine run then sizes cavities against its real press.
-    const imReq: Omit<IMSelectionRequirements, 'clampModel'> = {
-      projectedAreaMm2,
-      cavityCount: 1,
-      // Same shot rule the engine uses (shot-size.ts), cold runner, one cavity.
-      shotGppsGPerCavity: shotGppsGramsPerCavity({
-        shotWeightKg: shotWeightKgPerPart((partVolumeMm3 / 1e9) * materialDensityKgM3, 'cold'),
-        meltDensityKgM3: rcDensityOfMeltKgM3,
-        reference: plasticRef,
-      }),
-      material: rcClampProperties,
-      materialLabel: grade ?? 'this material',
-      runner: 'cold',
-      partLengthMm: imBboxRC[0] > 0 ? imBboxRC[0] : null,  // largest bbox dim
-      partWidthMm: imBboxRC[1] > 0 ? imBboxRC[1] : null,
-      partHeightMm: imBboxRC[2] > 0 ? imBboxRC[2] : null,
-      estimatedToolHeightMm: estimatedToolHeightMm(imBboxRC[0]),
-    };
-
     // Fetch machine pool and run tier-based 4-constraint selection.
     // Each tier (Small ≤120T / Standard 121–350T / Large 351T+) picks the best
     // real HR Rates press in range. A tier with no real press — or whose press
@@ -145,15 +120,16 @@ export class PlasticRouteComparisonService {
     if (!plasticRef) {
       comparisonWarnings.push(`Injection presses not evaluated: Plastic reference data missing (${plasticRefSet.missing.join('; ')}).`);
     }
-    const tiers = (plasticRef ? selectIMmachinesByTier(pool, {
-      ...imReq,
-      clampModel: plasticRef.clampModel,
-    }) : []);
+    // Presses are pre-selected on a single-cavity basis; each tier's engine run then sizes cavities against its real presses.
+    const tiers = plasticRef
+      ? selectIMmachinesByTier(pool, injectionPressRequirements({ item, grade, material: input.material, reference: plasticRef }))
+      : [];
     const sfmCandidate = mhrRates.structuralFoamMolding.selection?.balanced?.candidate;
     const rimCandidate = mhrRates.reactionInjectionMolding.selection?.balanced?.candidate;
+    const compressionCandidate = mhrRates.compressionMolding.selection?.balanced?.candidate;
     const pressRecordsRC = await this.plasticReference.getPressRecords(
       client,
-      [...tiers.flatMap((t) => t.candidates.map((e) => e.candidate.machineId ?? '')), sfmCandidate?.machineId ?? '', rimCandidate?.machineId ?? ''],
+      [...tiers.flatMap((t) => t.candidates.map((e) => e.candidate.machineId ?? '')), sfmCandidate?.machineId ?? '', rimCandidate?.machineId ?? '', compressionCandidate?.machineId ?? ''],
     );
     const rcUsdToLocal = locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code);
     const imCommon = buildMoldingCommonInput({
@@ -161,6 +137,7 @@ export class PlasticRouteComparisonService {
       material: {
         materialCostPerKg, materialDensityKgM3, materialSource, materialType: rcMaterialType, materialStockForm: rcStockForm,
         materialMatlState: rcMatlState, materialClamp: rcClampProperties, realResinInputs: rcRealResinInputs,
+        materialRecord: input.material.materialRecord,
       },
       plasticReference: { plasticReference: plasticRef, plasticReferenceMissing: plasticRefSet.missing },
       electricity: electricityUsd(await loadLocationElectricity(client, location), location,
@@ -179,10 +156,12 @@ export class PlasticRouteComparisonService {
       moldTempC: rcRealResinInputs?.moldTempC ?? null,
       densityOfMeltKgM3: rcRealResinInputs?.densityOfMeltKgM3 ?? null,
       cureTimeMin: null,
+      materialType: rcMaterialType ?? null,
     });
-    // Each tier offers the press with the lowest cost per part among its
-    // capable real presses, costed by the engine itself: no utilization sweet
-    // spot or score weights (the mold is the same whichever press runs it). A
+    // Each tier offers its capable real presses to the engine, which prices
+    // every cavity layout each press holds and keeps the lowest cost per part
+    // (with no user count and a priced mold, the mold's cost per part counts
+    // too: costMoldOnPresses). No utilization sweet spot or score weights. A
     // tier with no capable press shows its largest press as not feasible, with
     // the reasons.
     const realTiers = tiers.flatMap((tier) => {
@@ -192,20 +171,9 @@ export class PlasticRouteComparisonService {
         return [];
       }
       const capablePresses = real.filter((e) => e.capable);
-      const costed = (capablePresses.length > 0 ? capablePresses : [real[0]!]).map((ev) => {
-        const cand = ev.candidate;
-        const cost = computeInjectionMoldedCostSummary({
-          ...imCommon,
-          mhrRate: mhrRateFromCandidate(cand, 'injection_molding', rcUsdToLocal),
-          machineClampTonnes: cand.capability.maxTonnage, machineShotCapacityG: cand.capability.shotCapacityGrams,
-          pressTiming: cand.machineId ? pressRecordsRC.get(cand.machineId) ?? null : null,
-          goodPartYield: cand.machineId ? pressRecordsRC.get(cand.machineId)?.goodPartYield ?? null : null,
-        });
-        const complete = cost.processLines.every((l) => !l.physicsGap);
-        return { tier, ev, cost, complete };
-      });
-      costed.sort((a, b) => (a.complete !== b.complete ? (a.complete ? -1 : 1) : a.cost.totalCost - b.cost.totalCost));
-      return [costed[0]!];
+      const offered = capablePresses.length > 0 ? capablePresses : [real[0]!];
+      const { result: cost, press } = costMoldOnPresses(imCommon, offered.map((ev) => moldingPressOf(ev.candidate, pressRecordsRC, rcUsdToLocal)));
+      return [{ tier, ev: offered[Math.max(press, 0)]!, cost }];
     });
 
     const TIER_ROUTE_IDS: Record<string, 'im-small-50t' | 'im-standard-200t' | 'im-large-500t'> = {
@@ -220,7 +188,7 @@ export class PlasticRouteComparisonService {
       // With a material gap, the press-level "not derivable" reasons are that same gap repeated: the note carries it.
       const repeatsMaterialGap = (r: string) => materialNote != null && /^(Clamp force|Shot size) not derivable/.test(r);
       const tierReasons = ev.blockReasons.filter((r) => !repeatsMaterialGap(r));
-      if (!ev.capable) cost.warnings.push(...tierReasons.map((r) => `⚠ ${r}`));
+      if (!ev.capable) cost.warnings.push(...tierReasons);
 
       const capable = ev.capable;
       const routeLabel = `${tier.tierLabel} — ${cand.machineName}`;
@@ -262,12 +230,13 @@ export class PlasticRouteComparisonService {
         // above, now exposed so the frontend can show the actual tonnage
         // math instead of just the pass/fail badge.
         injectionMolding: {
-          clampRequiredT: ev.clampRequiredT ?? null,
+          // At the cavities costed (the engine's sizing), else the press check of one cavity.
+          clampRequiredT: cost.injectionMolding?.clampRequiredT ?? ev.clampRequiredT ?? null,
           clampMachineT: ev.clampMachineT,
-          clampUtilPct: ev.clampUtil != null ? Math.round(ev.clampUtil * 1000) / 10 : null,
-          shotRequiredG: ev.shotRequiredG ?? null,
+          clampUtilPct: cost.injectionMolding?.clampUtilPct ?? (ev.clampUtil != null ? Math.round(ev.clampUtil * 1000) / 10 : null),
+          shotRequiredG: cost.injectionMolding?.shotRequiredG ?? ev.shotRequiredG ?? null,
           shotMachineG: ev.shotMachineG ?? null,
-          shotUtilPct: ev.shotUtil != null ? Math.round(ev.shotUtil * 1000) / 10 : null,
+          shotUtilPct: cost.injectionMolding?.shotUtilPct ?? (ev.shotUtil != null ? Math.round(ev.shotUtil * 1000) / 10 : null),
           cavityCount: cost.injectionMolding?.cavityCount ?? 1,
           gateType: cost.injectionMolding?.gateType ?? 'edge',
           machineDataSource: 'imported',
@@ -294,6 +263,9 @@ export class PlasticRouteComparisonService {
       // Real per-grade cure_time_min — same resolved material row as
       // materialCostPerKg above (rcCureTimeMinFromMaterial, Phase 1).
       cureTimeMinFromMaterial: rcCureTimeMinFromMaterial,
+      // The press's HR Rates record, for its open/close time's source (the rate itself comes from the same record through the rate resolver).
+      machineRecord: compressionCandidate?.machineId ? pressRecordsRC.get(compressionCandidate.machineId)?.record ?? null : null,
+      materialRecord: input.material.materialRecord,
       calculators, calculatorOverrides,
     });
     // A route is a real alternative only on a material the dataset flags for that process, and only where a real machine rate resolved.
@@ -340,6 +312,8 @@ export class PlasticRouteComparisonService {
       // The fill time is the CAD part volume (mm3) over the selected machine's staged injection rate (mm3/s): formula registry F-19.
       partVolumeMm3: partVolumeMm3 > 0 ? partVolumeMm3 : null,
       injectionRateMm3PerS: rimCandidate?.machineId ? pressRecordsRC.get(rimCandidate.machineId)?.injectionRateMm3PerS ?? null : null,
+      machineRecord: rimCandidate?.machineId ? pressRecordsRC.get(rimCandidate.machineId)?.record ?? null : null,
+      materialRecord: input.material.materialRecord,
       calculators, calculatorOverrides,
     });
     const rimGap = compatGap('reaction_injection');

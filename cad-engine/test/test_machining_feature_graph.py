@@ -69,8 +69,27 @@ def test_toroidal_features_bucket_by_major_diameter(ftype, variant):
     assert (entry["feature_type"], entry["variant"]) == (ftype, variant)
     assert entry["diameter_mm"] == pytest.approx(30.0)
     assert entry["occurrences"][0]["radius_mm"] == pytest.approx(3.0)
-    # No fabricated removed volume -- the arc sweep is not extracted.
+    # No fabricated removed volume -- the volume a blend or groove takes off is not measured.
     assert entry["occurrences"][0]["material_removed_mm3"] == 0.0
+    # A feature that states no sweep / profile / path (an analysis from before geo_v89) gets none invented.
+    assert not {"sweep_deg", "profile_deg", "path_length_mm", "depth_mm", "width_mm", "concave"} & set(entry["occurrences"][0])
+
+
+def test_toroidal_occurrences_carry_the_measured_sweep_profile_and_path():
+    fillet = {"centroid": (5.0, 5.0, 0.0), "major_diameter_mm": 36.0, "radius_mm": 2.0, "sweep_deg": 14.0, "profile_deg": 90.0,
+              "path_length_mm": 4.398, "concave": True, "axis": [1.0, 0.0, 0.0]}
+    groove = {"centroid": (0.0, 0.0, 20.0), "major_diameter_mm": 20.0, "radius_mm": 2.0, "sweep_deg": 360.0, "profile_deg": 180.0,
+              "path_length_mm": 62.832, "depth_mm": 2.0, "width_mm": 4.0, "concave": True, "axis": [0.0, 0.0, 1.0]}
+    shoulder = {**fillet, "major_diameter_mm": 20.0, "sweep_deg": 360.0, "path_length_mm": 62.832, "turned_shoulder": True}
+    graph = _graph(_feat("Edge", "round", fillet), _feat("Ring", "groove", groove), _feat("Edge", "round", shoulder))
+    by = {(e["feature_type"], e["diameter_mm"]): e["occurrences"][0] for e in graph["features"]}
+    occ = by[("Edge", 36.0)]
+    assert {k: occ[k] for k in ("radius_mm", "sweep_deg", "profile_deg", "path_length_mm", "concave", "axis")} == {
+        "radius_mm": 2.0, "sweep_deg": 14.0, "profile_deg": 90.0, "path_length_mm": 4.398, "concave": True, "axis": [1.0, 0.0, 0.0]}
+    assert "depth_mm" not in occ and "turned_shoulder" not in occ  # a fillet states no groove section
+    assert (by[("Ring", 20.0)]["depth_mm"], by[("Ring", 20.0)]["width_mm"]) == (2.0, 4.0)
+    assert by[("Edge", 20.0)]["turned_shoulder"] is True
+    assert all(o["material_removed_mm3"] == 0.0 for o in by.values())
 
 
 # ── SimpleHole / pcd_pattern ─────────────────────────────────────────────────
@@ -99,22 +118,41 @@ def test_pcd_pattern_without_a_diameter_buckets_at_zero():
 
 # ── _classify_cone ───────────────────────────────────────────────────────────
 
+# A cone as _collect_cones lists it (face 7, next to faces 3 and 8) and a bore whose wall is face 3.
+
+def _cone(concave, adjacent_faces=(3, 8)):
+    return {"centroid": (10.0, 20.0, 5.0), "half_angle_deg": 45.0, "ref_radius": 3.0,
+            "concave": concave, "adjacent_faces": list(adjacent_faces), "face_indices": [7]}
+
+
+_BORE = {"kind": "blind_hole", "centroid": (10.0, 20.0, 4.9), "radius": 1.5, "face_indices": [3]}
+
+
 def test_classify_cone_chamfer_carries_centroid():
-    cone = {"centroid": (10.0, 20.0, 5.0), "half_angle_deg": 45.0, "ref_radius": 3.0}
-    variant, params, _ = _classify_cone(cone, cylinders=[])
+    variant, params, _ = _classify_cone(_cone(concave=False), cylinders=[])
     assert variant == "chamfer"
     assert params["centroid"] == (10.0, 20.0, 5.0)
     assert params["diameter_mm"] == pytest.approx(6.0)
 
 
 def test_classify_cone_countersink_carries_centroid_and_bore_data():
-    cone = {"centroid": (10.0, 20.0, 5.0), "half_angle_deg": 45.0, "ref_radius": 3.0}
-    coaxial_bore = {"kind": "blind_hole", "centroid": (10.0, 20.0, 4.9), "radius": 1.5}
-    variant, params, _ = _classify_cone(cone, cylinders=[coaxial_bore])
+    variant, params, _ = _classify_cone(_cone(concave=True), cylinders=[_BORE])
     assert variant == "countersink"
     assert params["centroid"] == (10.0, 20.0, 5.0)
     assert params["entry_diameter_mm"] == pytest.approx(6.0)
     assert params["bore_diameter_mm"] == pytest.approx(3.0)
+
+
+def test_classify_cone_a_convex_cone_beside_a_bore_is_a_chamfer():
+    # The material is inside the cone: it is cut on the outside of a diameter, whatever hole shares its axis.
+    variant, params, _ = _classify_cone(_cone(concave=False), cylinders=[_BORE])
+    assert variant == "chamfer"
+    assert params["diameter_mm"] == pytest.approx(6.0)
+
+
+def test_classify_cone_a_concave_cone_that_does_not_touch_the_bore_is_a_chamfer():
+    variant, _params, _ = _classify_cone(_cone(concave=True, adjacent_faces=(8, 9)), cylinders=[_BORE])
+    assert variant == "chamfer"
 
 
 # ── _detect_counterbores ─────────────────────────────────────────────────────
@@ -165,18 +203,54 @@ def test_classify_prismatic_keyway_carries_length_mm():
     assert params["depth_mm"] == pytest.approx(2.0)
 
 
-def test_classify_prismatic_turned_keyway_carries_length_mm():
-    pocket = {"dims": [2.0, 6.0, 40.0], "normal": (0, 0, 1), "centroid": (1.0, 1.0, 1.0)}
-    ftype, variant, params = _classify_prismatic_turned(pocket, main_axis=(0, 0, 1))
-    assert (ftype, variant) == ("Keyway", "default")
-    assert params["length_mm"] == pytest.approx(40.0)
+def _floor_along_the_axis(**over):
+    """A recess floor facing along a turning axis along Z, as the collector hands it over: 6 wide, 40 long, walled on both sides."""
+    return {"dims": [2.0, 6.0, 40.0], "normal": (0, 0, 1), "centroid": (1.0, 1.0, 1.0), "long_direction": (1, 0, 0),
+            "area_mm2": 240.0, "walled_fraction": 0.87, "width_confined": True, **over}
+
+
+def test_classify_prismatic_turned_channel_facing_along_the_axis_is_a_radial_slot_not_a_keyway():
+    # It lies across the axis (a drive slot in an end face): nothing cut there runs along the shaft.
+    ftype, variant, params = _classify_prismatic_turned(_floor_along_the_axis(), main_axis=(0, 0, 1))
+    assert (ftype, variant) == ("Slot", "radial")
+    assert (params["length_mm"], params["width_mm"], params["depth_mm"]) == (40.0, 6.0, 2.0)
+    assert (params["area_mm2"], params["walled_fraction"], params["width_confined"]) == (240.0, 0.87, True)
+
+
+def test_classify_prismatic_turned_end_wall_of_a_flat_is_neither_a_keyway_nor_a_slot():
+    # Walled on one side only, however elongated: the shoulder a milled flat leaves.
+    assert _classify_prismatic_turned(_floor_along_the_axis(width_confined=False, walled_fraction=0.47), main_axis=(0, 0, 1)) is None
+
+
+def test_classify_prismatic_turned_squarish_floor_facing_along_the_axis_is_not_a_slot():
+    # 12 x 6: the bottom of a socket or of a face groove, walled all round.
+    assert _classify_prismatic_turned(_floor_along_the_axis(dims=[2.0, 6.0, 12.0], walled_fraction=1.0), main_axis=(0, 0, 1)) is None
+
+
+def _floor_across_the_axis(long_direction, **over):
+    """A recess floor facing across a turning axis along Z, as the collector hands it over: 5 wide, 12 long, walled on both sides."""
+    return {"dims": [2.0, 5.0, 12.0], "normal": (1, 0, 0), "centroid": (1.0, 1.0, 1.0), "long_direction": long_direction,
+            "area_mm2": 60.0, "walled_fraction": 0.706, "width_confined": True, **over}
 
 
 def test_classify_prismatic_turned_radial_slot():
-    pocket = {"dims": [2.0, 5.0, 30.0], "normal": (1, 0, 0), "centroid": (1.0, 1.0, 1.0)}
-    ftype, variant, params = _classify_prismatic_turned(pocket, main_axis=(0, 0, 1))
+    # Long side across the axis.
+    ftype, variant, params = _classify_prismatic_turned(_floor_across_the_axis((0, 1, 0)), main_axis=(0, 0, 1))
     assert (ftype, variant) == ("Slot", "radial")
     assert params["centroid"] == (1.0, 1.0, 1.0)
+    assert params["walled_fraction"] == 0.706 and params["width_confined"] is True
+
+
+def test_classify_prismatic_turned_floor_across_the_axis_is_a_keyway_when_its_long_side_runs_along_it():
+    # 12 / 5 = 2.4: a keyway is named by its direction, whatever its proportions.
+    ftype, variant, params = _classify_prismatic_turned(_floor_across_the_axis((0, 0, 1)), main_axis=(0, 0, 1))
+    assert (ftype, variant) == ("Keyway", "default")
+    assert (params["length_mm"], params["width_mm"], params["depth_mm"]) == (12.0, 5.0, 2.0)
+    assert (params["area_mm2"], params["walled_fraction"], params["width_confined"]) == (60.0, 0.706, True)
+
+
+def test_classify_prismatic_turned_open_flat_across_the_axis_is_not_a_channel():
+    assert _classify_prismatic_turned(_floor_across_the_axis((0, 0, 1), width_confined=False), main_axis=(0, 0, 1)) is None
 
 
 # ── _extract_diam_depth ──────────────────────────────────────────────────────

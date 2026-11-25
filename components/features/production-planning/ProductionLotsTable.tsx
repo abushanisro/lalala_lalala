@@ -1,16 +1,10 @@
 'use client';
 
+import { format } from 'date-fns';
 import { useRouter } from 'next/navigation';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Button } from '@/components/ui/button';
+
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { 
   DropdownMenu, 
   DropdownMenuContent, 
@@ -28,8 +22,15 @@ import {
   Calendar,
   Package,
   TrendingUp
-} from 'lucide-react';
-import { format } from 'date-fns';
+} from '@/components/ui/icons';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import type { ProductionLot } from '@/lib/api/hooks/useProductionPlanning';
 import { useDeleteProductionLot } from '@/lib/api/hooks/useProductionPlanning';
 
@@ -44,7 +45,7 @@ export function ProductionLotsTable({ lots, isLoading }: ProductionLotsTableProp
 
   const getStatusBadge = (status: string) => {
     const statusConfig = {
-      planned: { variant: 'outline', color: 'text-blue-600', bg: 'bg-blue-100' },
+      planned: { variant: 'outline', color: 'text-primary', bg: 'bg-primary/10' },
       materials_ordered: { variant: 'secondary', color: 'text-yellow-600', bg: 'bg-yellow-100' },
       in_production: { variant: 'default', color: 'text-green-600', bg: 'bg-green-100' },
       completed: { variant: 'default', color: 'text-green-800', bg: 'bg-green-200' },
@@ -66,8 +67,8 @@ export function ProductionLotsTable({ lots, isLoading }: ProductionLotsTableProp
 
   const getPriorityBadge = (priority: string) => {
     const priorityConfig = {
-      low: { variant: 'outline', color: 'text-gray-600' },
-      medium: { variant: 'secondary', color: 'text-blue-600' },
+      low: { variant: 'outline', color: 'text-muted-foreground' },
+      medium: { variant: 'secondary', color: 'text-primary' },
       high: { variant: 'default', color: 'text-orange-600' },
       urgent: { variant: 'destructive', color: 'text-red-600' },
     } as const;

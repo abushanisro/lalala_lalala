@@ -9,7 +9,7 @@
  *  - every data row carries source_url (http/https) and source_date (a real ISO date, not in the
  *    future); a row without a source is rejected, never accepted as "unknown";
  *  - numbers are plain positive numbers in the unit the column name states;
- *  - package_class comes from the contract vocabulary (ecad-engine/contract/schemas), never free text;
+ *  - package_class comes from the contract vocabulary (cad-engine/pcb/contract/schemas), never free text;
  *  - the footprint lookup is by exact footprint name, one row per name.
  *
  * `inputKeys` ties each file to the engine inputs it can close
@@ -33,7 +33,7 @@ const oneOf = (name, values, required = false) => ({ name, type: 'enum', values,
 
 function packageClasses() {
   const schema = JSON.parse(
-    fs.readFileSync(path.resolve(__dirname, '../../../ecad-engine/contract/schemas/board_feature_graph.v1.schema.json'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '../../../cad-engine/pcb/contract/schemas/board_feature_graph.v1.schema.json'), 'utf8'),
   );
   return schema.properties.placements.items.properties.packageClass.enum.filter((c) => c !== 'unknown');
 }

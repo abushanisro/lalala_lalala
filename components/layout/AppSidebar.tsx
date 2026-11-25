@@ -1,27 +1,38 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import {
-  LayoutDashboard,
-  FolderKanban,
-  Users,
-  Database,
-  Calculator,
-  Table,
-  Sigma,
-  GitCompare,
-  Lightbulb,
-  Settings,
-  SlidersHorizontal,
-  Building2,
-  LayoutGrid,
-  HelpCircle,
-  Info,
-  LogOut,
-  ChevronRight,
-} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+
+import { EmithranMark } from '@/components/brand/EmithranLogo';
 import { NavLink } from '@/components/common/nav-link';
-import { useAuth } from '@/lib/providers/auth';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  DuoBuilding,
+  DuoCalculator,
+  DuoCompare,
+  DuoDashboard,
+  DuoDatabase,
+  DuoGrid,
+  DuoHelp,
+  DuoInfo,
+  DuoLightbulb,
+  DuoLogOut,
+  DuoPreferences,
+  DuoProjects,
+  DuoSettings,
+  DuoSigma,
+  DuoTable,
+  DuoUsers,
+} from '@/components/ui/duotone-icons';
+import { ChevronsUpDown } from '@/components/ui/icons';
 import {
   Sidebar,
   SidebarContent,
@@ -33,35 +44,46 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
   useSidebar,
 } from '@/components/ui/sidebar';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useProfile } from '@/lib/api/hooks/useProfile';
-import { Separator } from '@/components/ui/separator';
-import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/providers/auth';
+
 
 // ─── nav config ──────────────────────────────────────────────
-const mainItems = [
-  { title: 'Dashboard',    url: '/',           icon: LayoutDashboard, exact: true },
-  { title: 'Projects',     url: '/projects',   icon: FolderKanban },
-  { title: 'Benchmarking', url: '/benchmarks', icon: GitCompare },
-  { title: 'VAVE',         url: '/vave',       icon: Lightbulb },
-];
+type NavItem = {
+  title: string;
+  url: string;
+  icon: React.ComponentType<{ className?: string }>;
+  exact?: boolean;
+};
 
-const databaseItems = [
-  { title: 'Vendors',       url: '/vendors',       icon: Users },
-  { title: 'Raw Materials', url: '/raw-materials', icon: Database },
-  { title: 'HR Rates',       url: '/hr-rates',      icon: Calculator },
-  { title: 'Calculators',   url: '/calculators',   icon: Sigma },
-  { title: 'Process',       url: '/process',       icon: Table },
+export const navGroups: { label: string; items: NavItem[] }[] = [
+  {
+    label: 'Work',
+    items: [
+      { title: 'Dashboard', url: '/', icon: DuoDashboard, exact: true },
+      { title: 'Projects', url: '/projects', icon: DuoProjects },
+    ],
+  },
+  {
+    label: 'Insights',
+    items: [
+      { title: 'Benchmarking', url: '/benchmarks', icon: DuoCompare },
+      { title: 'VAVE', url: '/vave', icon: DuoLightbulb },
+    ],
+  },
+  {
+    label: 'Master Data',
+    items: [
+      { title: 'Vendors', url: '/vendors', icon: DuoUsers },
+      { title: 'Raw Materials', url: '/raw-materials', icon: DuoDatabase },
+      { title: 'HR Rates', url: '/hr-rates', icon: DuoCalculator },
+      { title: 'Process', url: '/process', icon: DuoTable },
+      { title: 'Calculators', url: '/calculators', icon: DuoSigma },
+    ],
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -98,28 +120,19 @@ export function AppSidebar() {
     || user?.email?.[0]?.toUpperCase()
     || 'U';
 
-  const navItem = (item: { title: string; url: string; icon: React.ComponentType<{ className?: string }>; exact?: boolean }) => {
+  const navItem = (item: NavItem) => {
     const active = isActive(item.url, item.exact);
     return (
       <SidebarMenuItem key={item.title}>
-        <SidebarMenuButton asChild isActive={active}>
-          <NavLink
-            to={item.url}
-            end={!!item.exact}
-            className={`sidebar-item group relative flex items-center gap-3 rounded-lg px-2.5 py-2 transition-all ${
-              active
-                ? 'bg-primary/10 text-primary shadow-xs'
-                : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'
-            }`}
-            activeClassName="sidebar-item-active"
-          >
-            {active && (
-              <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
-            )}
-            <item.icon className={`h-4 w-4 shrink-0 transition-colors ${
-              active ? 'text-primary' : 'text-sidebar-foreground/60 group-hover:text-sidebar-foreground'
-            }`} />
-            {!collapsed && <span className="text-sm font-medium">{item.title}</span>}
+        <SidebarMenuButton
+          asChild
+          isActive={active}
+          tooltip={item.title}
+          className="data-[active=true]:[&>svg]:text-primary"
+        >
+          <NavLink to={item.url} end={!!item.exact}>
+            <item.icon />
+            <span>{item.title}</span>
           </NavLink>
         </SidebarMenuButton>
       </SidebarMenuItem>
@@ -127,74 +140,70 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar className="border-r border-sidebar-border bg-sidebar">
-      <SidebarHeader className="p-4">
-        {!collapsed ? (
-          <div className="flex-1 min-w-0">
-            <h2 className="font-bold text-lg text-sidebar-foreground tracking-tight">mithran</h2>
-            <p className="text-xs text-sidebar-foreground/50">One-Stop Solution</p>
-          </div>
-        ) : (
-          <div className="flex items-center justify-center">
-            <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-              <span className="text-sm font-bold text-primary">m</span>
-            </div>
-          </div>
-        )}
+    <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              size="lg"
+              className="cursor-default hover:bg-transparent active:bg-transparent"
+            >
+              <div>
+                <div className="flex aspect-square size-8 shrink-0 items-center justify-center text-sidebar-foreground">
+                  <EmithranMark className="h-7" />
+                </div>
+                <div className="grid flex-1 text-left leading-tight">
+                  <span className="truncate font-display text-sm font-semibold tracking-tight text-sidebar-foreground">EMITHRAN</span>
+                  <span className="truncate text-xs text-sidebar-foreground/60">Manufacturing intelligence</span>
+                </div>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
 
-      <Separator className="bg-sidebar-border/50" />
-
-      <SidebarContent className="px-3 py-4">
-        <SidebarGroup>
-          <SidebarGroupLabel className="text-sidebar-foreground/50 text-[10.5px] uppercase tracking-widest font-semibold px-2.5 mb-1.5">
-            Main
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">{mainItems.map(navItem)}</SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarGroup className="mt-5">
-          <SidebarGroupLabel className="text-sidebar-foreground/50 text-[10.5px] uppercase tracking-widest font-semibold px-2.5 mb-1.5">
-            Database
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">{databaseItems.map(navItem)}</SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+      <SidebarContent>
+        {navGroups.map((group) => (
+          <SidebarGroup key={group.label}>
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>{group.items.map(navItem)}</SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
 
       {/* ── Profile footer with account dropdown ── */}
-      <SidebarFooter className="border-t border-sidebar-border p-3">
+      <SidebarFooter>
+        <SidebarMenu>
+        <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 hover:bg-sidebar-accent transition-colors outline-hidden">
-              <Avatar className="h-8 w-8 shrink-0 border border-sidebar-border">
+            <SidebarMenuButton
+              size="lg"
+              tooltip={String(getUserDisplayName())}
+              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+            >
+              <Avatar className="h-8 w-8 shrink-0 rounded-lg border border-sidebar-border">
                 <AvatarImage src={profile?.avatarUrl ?? undefined} alt={getUserDisplayName()} />
-                <AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">
+                <AvatarFallback className="rounded-lg bg-primary/10 text-primary text-sm font-medium">
                   {userInitials}
                 </AvatarFallback>
               </Avatar>
-              {!collapsed && (
-                <>
-                  <div className="flex-1 min-w-0 text-left">
-                    <p className="text-sm font-medium text-sidebar-foreground truncate leading-tight">
-                      {getUserDisplayName()}
-                    </p>
-                    <p className="text-xs text-sidebar-foreground/50 truncate leading-tight">
-                      {user?.email}
-                    </p>
-                  </div>
-                  <ChevronRight className="h-4 w-4 text-sidebar-foreground/30 shrink-0" />
-                </>
-              )}
-            </button>
+              <div className="grid flex-1 text-left leading-tight">
+                <span className="truncate text-sm font-medium text-sidebar-foreground">
+                  {getUserDisplayName()}
+                </span>
+                <span className="truncate text-xs text-sidebar-foreground/60">{user?.email}</span>
+              </div>
+              <ChevronsUpDown className="ml-auto size-4 shrink-0 text-sidebar-foreground/50" />
+            </SidebarMenuButton>
           </DropdownMenuTrigger>
 
           <DropdownMenuContent
-            side="top"
-            align="start"
+            side={collapsed ? 'right' : 'top'}
+            align={collapsed ? 'end' : 'start'}
             sideOffset={8}
             className="w-64 rounded-xl border border-border bg-popover shadow-xl shadow-black/15 p-1"
           >
@@ -209,7 +218,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => router.push('/settings')}
             >
-              <Settings className="h-4 w-4 text-muted-foreground" />
+              <DuoSettings className="h-4 w-4 text-muted-foreground" />
               Settings
             </DropdownMenuItem>
 
@@ -217,7 +226,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => router.push('/settings?tab=preferences')}
             >
-              <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+              <DuoPreferences className="h-4 w-4 text-muted-foreground" />
               Preferences
             </DropdownMenuItem>
 
@@ -225,7 +234,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => router.push('/settings?tab=organization')}
             >
-              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <DuoBuilding className="h-4 w-4 text-muted-foreground" />
               Organization
             </DropdownMenuItem>
 
@@ -233,7 +242,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => router.push('/settings?tab=workspaces')}
             >
-              <LayoutGrid className="h-4 w-4 text-muted-foreground" />
+              <DuoGrid className="h-4 w-4 text-muted-foreground" />
               Workspaces
             </DropdownMenuItem>
 
@@ -243,7 +252,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => window.open('mailto:support@mithran.dev', '_blank')}
             >
-              <HelpCircle className="h-4 w-4 text-muted-foreground" />
+              <DuoHelp className="h-4 w-4 text-muted-foreground" />
               Get help
             </DropdownMenuItem>
 
@@ -251,7 +260,7 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer"
               onSelect={() => window.open('/docs', '_blank')}
             >
-              <Info className="h-4 w-4 text-muted-foreground" />
+              <DuoInfo className="h-4 w-4 text-muted-foreground" />
               Learn more
             </DropdownMenuItem>
 
@@ -261,12 +270,15 @@ export function AppSidebar() {
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/10"
               onSelect={() => signOut().catch(() => {})}
             >
-              <LogOut className="h-4 w-4" />
+              <DuoLogOut className="h-4 w-4" />
               Log out
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }

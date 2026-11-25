@@ -6,6 +6,23 @@ import type { ReferenceCalculators } from '../costing/shared/calculators/referen
 import type { DomainCalculatorSpec } from '../costing/shared/calculators/domain-calculator-spec';
 import { loadHeatTreatmentCalculatorSpec } from '../costing/heat/calculators/heat-treatment-calculator-spec';
 import { loadSandCastingCalculatorSpec } from '../costing/casting/sand/calculators/sand-casting-calculator-spec';
+import { loadInvestmentCastingCalculatorSpec } from '../costing/casting/investment/calculators/investment-casting-calculator-spec';
+import { loadPowderMetalCalculatorSpec } from '../costing/powder-metal/calculators/powder-metal-calculator-spec';
+import { loadCompositesCalculatorSpec } from '../costing/composites/calculators/composites-calculator-spec';
+import { loadAdditiveCalculatorSpec } from '../costing/additive/calculators/additive-calculator-spec';
+import { loadRapidPrototypingCalculatorSpec } from '../costing/additive/calculators/rapid-prototyping-calculator-spec';
+import { loadBarTubeCalculatorSpec } from '../costing/bar-tube/calculators/bar-tube-calculator-spec';
+import { loadRotoBlowCalculatorSpec } from '../costing/roto-blow/calculators/roto-blow-calculator-spec';
+import { loadPcbCalculatorSpec } from '../costing/pcb/calculators/pcb-calculator-spec';
+import { loadMultiSpindleCalculatorSpec } from '../costing/multi-spindle/calculators/multi-spindle-calculator-spec';
+import { loadPartAssemblyCalculatorSpec } from '../costing/part-assembly/calculators/part-assembly-calculator-spec';
+import { loadAssemblyCalculatorSpec } from '../costing/assembly/calculators/assembly-calculator-spec';
+import { loadAssemblyMoldingCalculatorSpec } from '../costing/plastic-molding/insert/calculators/assembly-molding-calculator-spec';
+import { loadAssemblyPlasticMoldingCalculatorSpec } from '../costing/plastic-molding/multi-shot/calculators/assembly-plastic-molding-calculator-spec';
+import { loadForgingCalculatorSpec } from '../costing/forging/calculators/forging-calculator-spec';
+import { loadHydroformingCalculatorSpec } from '../costing/hydroforming/calculators/hydroforming-calculator-spec';
+import { loadRollFormingCalculatorSpec } from '../costing/roll-forming/calculators/roll-forming-calculator-spec';
+import { loadStockMachiningCalculatorSpec } from '../costing/stock-machining/calculators/stock-machining-calculator-spec';
 import { loadPlasticMoldingCalculatorSpec } from '../costing/plastic-molding/calculators/plastic-molding-calculator-spec';
 
 @Injectable()
@@ -168,8 +185,95 @@ export class CalculatorCatalogService {
    * step that needs it is a named gap.
    */
   loadSandCastingCalculators(accessToken: string): Promise<ReferenceCalculators> {
-    return cachedRead('sand-casting-calculators', async () => {
-      const spec = loadSandCastingCalculatorSpec();
+    return this.loadSpecCalculators('sand-casting-calculators', loadSandCastingCalculatorSpec(), accessToken);
+  }
+
+  /** The investment-casting calculators (migration 1046) keyed by their own name, as the sand ones are: one not in the database is absent. */
+  loadInvestmentCastingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('investment-casting-calculators', loadInvestmentCastingCalculatorSpec(), accessToken);
+  }
+
+  /** The global, current database calculator of each calculator a domain spec names, with its fields, keyed by name; read once per request. */
+  /** The forging calculators (migration 1050) keyed by their own name, as the sand ones are: one not in the database is absent. */
+  loadForgingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('forging-calculators', loadForgingCalculatorSpec(), accessToken);
+  }
+
+  loadPowderMetalCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('powder-metal-calculators', loadPowderMetalCalculatorSpec(), accessToken);
+  }
+
+  /** The composites calculators (migration 1065) keyed by their own name: one not in the database is absent. */
+  loadCompositesCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('composites-calculators', loadCompositesCalculatorSpec(), accessToken);
+  }
+
+  /** The assembly molding (insert molding) calculators (migration 1081), from the database. */
+  loadAssemblyMoldingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('assembly-molding-calculators', loadAssemblyMoldingCalculatorSpec(), accessToken);
+  }
+
+  /** The assembly plastic molding (multi-shot) calculators (migration 1086), from the database. */
+  loadAssemblyPlasticMoldingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('assembly-plastic-molding-calculators', loadAssemblyPlasticMoldingCalculatorSpec(), accessToken);
+  }
+
+  /** The assembly calculators (migration 1078), from the database. */
+  loadAssemblyCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('assembly-calculators', loadAssemblyCalculatorSpec(), accessToken);
+  }
+
+  /** The additive manufacturing calculators (migration 1073), from the database. */
+  loadAdditiveCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('additive-calculators', loadAdditiveCalculatorSpec(), accessToken);
+  }
+
+  /** The Rapid Prototyping calculators (migration 1105), from the database. */
+  loadRapidPrototypingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('rapid-prototyping-calculators', loadRapidPrototypingCalculatorSpec(), accessToken);
+  }
+
+  /** The bar and tube fabrication calculators (migration 1091), from the database. */
+  loadBarTubeCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('bar-tube-calculators', loadBarTubeCalculatorSpec(), accessToken);
+  }
+
+  /** The Roto & Blow Molding calculators (migration 1108), from the database. */
+  loadRotoBlowCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('roto-blow-calculators', loadRotoBlowCalculatorSpec(), accessToken);
+  }
+
+  loadPcbCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('pcb-calculators', loadPcbCalculatorSpec(), accessToken);
+  }
+
+  /** The Sheet Metal - Hydroforming calculators (migration 1110), from the database. */
+  loadHydroformingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('hydroforming-calculators', loadHydroformingCalculatorSpec(), accessToken);
+  }
+
+  /** The Sheet Metal Roll Forming calculators (migration 1113), from the database. */
+  loadRollFormingCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('roll-forming-calculators', loadRollFormingCalculatorSpec(), accessToken);
+  }
+
+  /** The Stock Machining calculators (migration 1116), from the database. */
+  loadStockMachiningCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('stock-machining-calculators', loadStockMachiningCalculatorSpec(), accessToken);
+  }
+
+  /** The Multi-Spindle Machining calculators (migration 1095), from the database. */
+  loadMultiSpindleCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('multi-spindle-calculators', loadMultiSpindleCalculatorSpec(), accessToken);
+  }
+
+  /** The Part Assembly calculators (migration 1100), from the database. */
+  loadPartAssemblyCalculators(accessToken: string): Promise<ReferenceCalculators> {
+    return this.loadSpecCalculators('part-assembly-calculators', loadPartAssemblyCalculatorSpec(), accessToken);
+  }
+
+  private loadSpecCalculators(cacheKey: string, spec: DomainCalculatorSpec, accessToken: string): Promise<ReferenceCalculators> {
+    return cachedRead(cacheKey, async () => {
       const client = this.databaseService.getClient(accessToken);
       const { data: calcs } = await client
         .from('calculators')

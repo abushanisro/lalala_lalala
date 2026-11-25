@@ -10,28 +10,20 @@ declare global {
 
 
 
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
 // useBOMItems and useBOMs imported but unused - kept for future use
 // import { useBOMItems } from '@/lib/api/hooks/useBOMItems';
 // import { useBOMs } from '@/lib/api/hooks/useBOM';
-import { useAuth } from '@/lib/providers/auth';
 import { useQuery } from '@tanstack/react-query';
-import {
-  useSaveDetailedInspectionReport,
-  useDetailedInspectionReport,
-  useUpdateQualityInspection,
-  useQualityInspection
-} from '@/lib/api/hooks/useQualityControl';
-import type { DetailedInspectionReport } from '@/lib/api/hooks/useQualityControl';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { useParams, useRouter } from 'next/navigation';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { toast } from 'sonner';
+
+import { ProjectNav } from '@/components/features/projects/ProjectNav';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Textarea } from '@/components/ui/textarea';
 import {
-  Shield,
   FileText,
   Save,
   Send,
@@ -44,9 +36,20 @@ import {
   CheckCircle,
   Clock,
   XCircle
-} from 'lucide-react';
-import { toast } from 'sonner';
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ListSkeleton } from '@/components/ui/loading-skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { apiConfig } from '@/lib/api/config';
+import type { DetailedInspectionReport } from '@/lib/api/hooks/useQualityControl';
+import {
+  useSaveDetailedInspectionReport,
+  useDetailedInspectionReport,
+  useUpdateQualityInspection,
+  useQualityInspection
+} from '@/lib/api/hooks/useQualityControl';
+import { useAuth } from '@/lib/providers/auth';
 
 // This page's raw API fetches go same-origin through the BFF, which attaches the session's token.
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -101,7 +104,7 @@ function DisplayField({
     <div className={`space-y-2 ${className}`}>
       <Label className="flex items-center gap-1">
         {label}
-        {required && <span className="text-red-500">*</span>}
+        {required && <span className="text-destructive">*</span>}
       </Label>
 
       {isEditing && onChange ? (
@@ -146,7 +149,7 @@ function DisplayTextarea({
     <div className={`space-y-2 ${className}`}>
       <Label className="flex items-center gap-1">
         {label}
-        {required && <span className="text-red-500">*</span>}
+        {required && <span className="text-destructive">*</span>}
       </Label>
 
       {isEditing && onChange ? (
@@ -273,9 +276,9 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
 
         if (balloonCoordinates.length > 0) {
           const successfulExtractions = tableData.successfulExtractions || tableData.inspectionRows.filter((row: any) => row.nominal && row.nominal !== '').length;
-          toast.success(`Extracted ${successfulExtractions}/${balloonCoordinates.length} dimensions from balloon locations!`);
+          toast.success(`Extracted ${successfulExtractions}/${balloonCoordinates.length} dimensions from balloon locations.`);
         } else {
-          toast.success(`Extracted ${tableData.inspectionRows.length} inspection items from PDF!`);
+          toast.success(`Extracted ${tableData.inspectionRows.length} inspection items from PDF.`);
         }
       } else {
         if (balloonCoordinates.length > 0) {
@@ -572,7 +575,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
       // Add annotation metadata
       pdfDoc.setTitle(`${bomItem.partNumber || bomItem.name || 'Drawing'} - Balloon Annotated`);
       pdfDoc.setSubject('Technical Drawing with Balloon Annotations');
-      pdfDoc.setCreator('Mithran Quality Control System');
+      pdfDoc.setCreator('EMITHRAN Quality Control System');
       pdfDoc.setProducer('PDF-lib');
       pdfDoc.setCreationDate(new Date());
       pdfDoc.setModificationDate(new Date());
@@ -723,16 +726,13 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
       {/* PDF viewer — no padding, edge-to-edge */}
       <div className="w-full overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center p-8 bg-muted/30 rounded-lg">
-            <div className="text-center">
-              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">Loading 2D Drawing...</p>
-            </div>
+          <div className="p-8 bg-muted/30 rounded-lg">
+            <ListSkeleton rows={3} label="Loading 2D Drawing..." />
           </div>
         ) : error ? (
           <div className="flex flex-col items-center justify-center p-8 bg-muted/30 rounded-lg">
             <FileText className="h-12 w-12 mb-3 text-muted-foreground" />
-            <p className="text-sm text-red-500 mb-2">Failed to load PDF</p>
+            <p className="text-sm text-destructive mb-2">Failed to load PDF</p>
             <p className="text-xs text-muted-foreground mb-3">{error}</p>
             <Button onClick={loadPDF} variant="outline" size="sm">Try Again</Button>
           </div>
@@ -751,7 +751,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                   onClick={toggleAnnotationMode}
                   variant={isAnnotationMode ? 'destructive' : 'default'}
                   size="sm"
-                  className={isAnnotationMode ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}
+                  className={isAnnotationMode ? 'bg-destructive hover:bg-destructive/90 text-white' : 'bg-primary hover:bg-primary/90 text-primary-foreground'}
                 >
                   <Edit3 className="h-4 w-4 lg:mr-1" />
                   <span className="hidden lg:inline">
@@ -778,12 +778,12 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                       }}
                       className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 font-medium transition-all ${
                         activeShape === 'circle'
-                          ? 'bg-red-50 text-red-600 border border-red-300 font-bold shadow-xs'
+                          ? 'bg-destructive/10 text-destructive border border-destructive/40 font-bold shadow-xs'
                           : 'hover:bg-muted text-foreground'
                       }`}
                       title="Circle Outline"
                     >
-                      <span className="w-3 h-3 rounded-full border-2 border-red-600 inline-block bg-white" />
+                      <span className="w-3 h-3 rounded-full border-2 border-destructive/40 inline-block bg-card" />
                       <span className="hidden sm:inline">Circle</span>
                     </button>
                     <button
@@ -794,12 +794,12 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                       }}
                       className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 font-medium transition-all ${
                         activeShape === 'square'
-                          ? 'bg-red-50 text-red-600 border border-red-300 font-bold shadow-xs'
+                          ? 'bg-destructive/10 text-destructive border border-destructive/40 font-bold shadow-xs'
                           : 'hover:bg-muted text-foreground'
                       }`}
                       title="Square Outline"
                     >
-                      <span className="w-3 h-3 rounded-[2px] border-2 border-red-600 inline-block bg-white" />
+                      <span className="w-3 h-3 rounded-[2px] border-2 border-destructive/40 inline-block bg-card" />
                       <span className="hidden sm:inline">Square</span>
                     </button>
                     <button
@@ -810,24 +810,24 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                       }}
                       className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 font-medium transition-all ${
                         activeShape === 'diamond'
-                          ? 'bg-red-50 text-red-600 border border-red-300 font-bold shadow-xs'
+                          ? 'bg-destructive/10 text-destructive border border-destructive/40 font-bold shadow-xs'
                           : 'hover:bg-muted text-foreground'
                       }`}
                       title="Diamond Outline"
                     >
-                      <span className="w-3 h-3 rotate-45 border-2 border-red-600 inline-block bg-white transform scale-90" />
+                      <span className="w-3 h-3 rotate-45 border-2 border-destructive/40 inline-block bg-card transform scale-90" />
                       <span className="hidden sm:inline">Diamond</span>
                     </button>
                   </div>
                 )}
                 {pdfUrl && (
-                  <div className="flex items-center gap-1 bg-blue-50/80 border border-blue-200 rounded-md px-2 py-0.5 shadow-xs">
-                    <span className="text-[11px] font-bold text-blue-900 hidden sm:inline">Sheet:</span>
+                  <div className="flex items-center gap-1 bg-primary/80 border border-primary/40 rounded-md px-2 py-0.5 shadow-xs">
+                    <span className="text-[11px] font-bold text-primary hidden sm:inline">Sheet:</span>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-6 w-6 p-0 font-bold hover:bg-blue-100 text-blue-900"
+                      className="h-6 w-6 p-0 font-bold hover:bg-primary/10 text-primary"
                       disabled={currentPage <= 1}
                       onClick={() => {
                         setCurrentPage(prev => Math.max(1, prev - 1));
@@ -837,14 +837,14 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                     >
                       ‹
                     </Button>
-                    <span className="text-xs font-extrabold px-2 py-0.5 bg-white border border-blue-300 rounded text-blue-900 shadow-inner">
+                    <span className="text-xs font-extrabold px-2 py-0.5 bg-card border border-primary/40 rounded text-primary shadow-inner">
                       {currentPage} / {totalPages}
                     </span>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-6 w-6 p-0 font-bold hover:bg-blue-100 text-blue-900"
+                      className="h-6 w-6 p-0 font-bold hover:bg-primary/10 text-primary"
                       onClick={() => {
                         setCurrentPage(prev => {
                           const next = prev + 1;
@@ -860,7 +860,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                   </div>
                 )}
                 {isAnnotationMode && (
-                  <span className="hidden xl:inline text-xs text-red-600 font-medium">
+                  <span className="hidden xl:inline text-xs text-destructive font-medium">
                     {isDragging ? 'Dragging…' : `Click to add • Sheet ${currentPage}`}
                   </span>
                 )}
@@ -894,7 +894,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                   variant="default"
                   size="sm"
                   disabled={!pdfUrl || isExtractingTable}
-                  className="bg-green-600 hover:bg-green-700"
+                  className="bg-success text-success-foreground hover:bg-success/90"
                   title="Extract Table Data"
                 >
                   {isExtractingTable ? (
@@ -963,7 +963,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                       className={`absolute transform -translate-x-1/2 -translate-y-1/2 transition-all select-none ${isAnnotationMode
                         ? (isDragging && selectedBalloon === balloon.id ? 'cursor-grabbing' : 'cursor-grab')
                         : 'cursor-default'
-                        } ${selectedBalloon === balloon.id && isAnnotationMode ? 'ring-4 ring-blue-500 ring-opacity-50' : ''
+                        } ${selectedBalloon === balloon.id && isAnnotationMode ? 'ring-4 ring-primary/40 ring-opacity-50' : ''
                         } ${isDragging && selectedBalloon === balloon.id ? 'z-50 scale-110' : ''
                         }`}
                       style={{ left: `${balloon.x}%`, top: `${balloon.y}%`, zIndex: 10 }}
@@ -979,8 +979,8 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                           <div
                             className={`w-6 h-6 rounded-[2px] border-2 flex items-center justify-center text-[11px] font-bold shadow-md transition-all ${
                               selectedBalloon === balloon.id && isAnnotationMode
-                                ? 'border-red-600 bg-red-50 text-red-600 scale-110 ring-2 ring-red-500/30'
-                                : `border-red-600 bg-white/95 text-red-600 ${isAnnotationMode ? 'hover:bg-red-50' : ''}`
+                                ? 'border-destructive/40 bg-destructive/10 text-destructive scale-110 ring-2 ring-red-500/30'
+                                : `border-destructive/40 bg-card/95 text-destructive ${isAnnotationMode ? 'hover:bg-destructive/10' : ''}`
                             } ${isDragging && selectedBalloon === balloon.id ? 'shadow-2xl scale-110' : ''}`}
                           >
                             {editingNumber === balloon.id ? (
@@ -995,7 +995,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                                 }}
                                 onClick={(e) => e.stopPropagation()}
                                 autoFocus
-                                className="w-6 h-6 text-xs text-center bg-transparent text-red-600 border-0 outline-0 appearance-none font-bold"
+                                className="w-6 h-6 text-xs text-center bg-transparent text-destructive border-0 outline-0 appearance-none font-bold"
                                 min="1" max="99"
                               />
                             ) : balloon.number}
@@ -1009,8 +1009,8 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                             <div
                               className={`absolute inset-0 w-7 h-7 m-auto rotate-45 rounded-[2px] border-2 shadow-md transition-all ${
                                 selectedBalloon === balloon.id && isAnnotationMode
-                                  ? 'border-red-600 bg-red-50 ring-2 ring-red-500/30'
-                                  : `border-red-600 bg-white/95 ${isAnnotationMode ? 'hover:bg-red-50' : ''}`
+                                  ? 'border-destructive/40 bg-destructive/10 ring-2 ring-red-500/30'
+                                  : `border-destructive/40 bg-card/95 ${isAnnotationMode ? 'hover:bg-destructive/10' : ''}`
                               }`}
                             />
                             <div className="relative z-10 flex items-center justify-center">
@@ -1026,11 +1026,11 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                                   }}
                                   onClick={(e) => e.stopPropagation()}
                                   autoFocus
-                                  className="w-6 h-6 text-xs text-center bg-transparent text-red-600 border-0 outline-0 appearance-none font-bold"
+                                  className="w-6 h-6 text-xs text-center bg-transparent text-destructive border-0 outline-0 appearance-none font-bold"
                                   min="1" max="99"
                                 />
                               ) : (
-                                <span className="text-xs font-bold text-red-600">{balloon.number}</span>
+                                <span className="text-xs font-bold text-destructive">{balloon.number}</span>
                               )}
                             </div>
                           </div>
@@ -1038,8 +1038,8 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                           <div
                             className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-xs font-bold shadow-md transition-all ${
                               selectedBalloon === balloon.id && isAnnotationMode
-                                ? 'border-red-600 bg-red-50 text-red-600 scale-110 ring-2 ring-red-500/30'
-                                : `border-red-600 bg-white/95 text-red-600 ${isAnnotationMode ? 'hover:bg-red-50' : ''}`
+                                ? 'border-destructive/40 bg-destructive/10 text-destructive scale-110 ring-2 ring-red-500/30'
+                                : `border-destructive/40 bg-card/95 text-destructive ${isAnnotationMode ? 'hover:bg-destructive/10' : ''}`
                             } ${isDragging && selectedBalloon === balloon.id ? 'shadow-2xl scale-110' : ''}`}
                           >
                             {editingNumber === balloon.id ? (
@@ -1054,7 +1054,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                                 }}
                                 onClick={(e) => e.stopPropagation()}
                                 autoFocus
-                                className="w-6 h-6 text-xs text-center bg-transparent text-red-600 border-0 outline-0 appearance-none font-bold"
+                                className="w-6 h-6 text-xs text-center bg-transparent text-destructive border-0 outline-0 appearance-none font-bold"
                                 min="1" max="99"
                               />
                             ) : balloon.number}
@@ -1063,7 +1063,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                         {selectedBalloon === balloon.id && isAnnotationMode && (
                           <button
                             onClick={(e) => { e.stopPropagation(); deleteBalloon(balloon.id); }}
-                            className="absolute -top-1 -right-1 w-4 h-4 bg-gray-800 text-white rounded-full flex items-center justify-center text-xs hover:bg-gray-900 z-20"
+                            className="absolute -top-1 -right-1 w-4 h-4 bg-card text-foreground rounded-full flex items-center justify-center text-xs hover:bg-accent z-20"
                           >
                             ×
                           </button>
@@ -1074,11 +1074,11 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
 
                   {balloons.filter(b => (b.page || 1) === currentPage).length === 0 && isAnnotationMode && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/10" style={{ zIndex: 5 }}>
-                      <div className="bg-white/95 rounded-lg p-4 text-center border border-red-200 shadow-lg">
-                        <div className="w-8 h-8 bg-white rounded-full border-2 border-red-600 flex items-center justify-center mx-auto mb-2 shadow-xs">
-                          <span className="text-red-600 font-bold text-sm">{balloons.length + 1}</span>
+                      <div className="bg-card/95 rounded-lg p-4 text-center border border-destructive/40 shadow-lg">
+                        <div className="w-8 h-8 bg-card rounded-full border-2 border-destructive/40 flex items-center justify-center mx-auto mb-2 shadow-xs">
+                          <span className="text-destructive font-bold text-sm">{balloons.length + 1}</span>
                         </div>
-                        <p className="text-sm font-semibold text-gray-800">Click anywhere on Sheet {currentPage} to place balloon #{balloons.length + 1}</p>
+                        <p className="text-sm font-semibold text-foreground">Click anywhere on Sheet {currentPage} to place balloon #{balloons.length + 1}</p>
                         <p className="text-xs text-muted-foreground mt-1">Choose shape (Circle, Square, Diamond) or Sheet above</p>
                       </div>
                     </div>
@@ -1097,7 +1097,7 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                         setCurrentPage(prev => Math.max(1, prev - 1));
                         setSelectedBalloon(null);
                       }}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 z-40 bg-white/95 hover:bg-blue-50 border border-blue-300 text-blue-900 rounded-full w-10 h-10 flex items-center justify-center shadow-lg transition-all text-lg font-extrabold hover:scale-105 select-none"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 z-40 bg-card/95 hover:bg-primary/10 border border-primary/40 text-primary rounded-full w-10 h-10 flex items-center justify-center shadow-lg transition-all text-lg font-extrabold hover:scale-105 select-none"
                       title="Previous Sheet (Scroll up)"
                     >
                       ‹
@@ -1114,15 +1114,15 @@ function InlinePDFViewer({ bomItem, onBalloonsChanged, inspectionId, onSaveToDat
                       });
                       setSelectedBalloon(null);
                     }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 z-40 bg-white/95 hover:bg-blue-50 border border-blue-300 text-blue-900 rounded-full w-10 h-10 flex items-center justify-center shadow-lg transition-all text-lg font-extrabold hover:scale-105 select-none"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 z-40 bg-card/95 hover:bg-primary/10 border border-primary/40 text-primary rounded-full w-10 h-10 flex items-center justify-center shadow-lg transition-all text-lg font-extrabold hover:scale-105 select-none"
                     title="Next Sheet (Scroll down)"
                   >
                     ›
                   </button>
 
                   {/* Floating sheet switcher badge */}
-                  <div className="absolute bottom-4 right-4 z-40 bg-white/95 backdrop-blur-sm border border-blue-200 rounded-lg shadow-lg px-3 py-1.5 flex items-center gap-2 select-none">
-                    <span className="text-xs font-bold text-gray-700">Sheet {currentPage} of {totalPages}</span>
+                  <div className="absolute bottom-4 right-4 z-40 bg-card/95 backdrop-blur-sm border border-primary/40 rounded-lg shadow-lg px-3 py-1.5 flex items-center gap-2 select-none">
+                    <span className="text-xs font-bold text-foreground">Sheet {currentPage} of {totalPages}</span>
                     <div className="flex items-center gap-1">
                       <Button
                         type="button"
@@ -1703,7 +1703,7 @@ export default function QualityInspectionPage() {
         }
       } else {
         if (!silent) {
-          toast.success(`Inspection report ${isDraft ? 'saved as draft' : 'submitted'} successfully!`);
+          toast.success(`Inspection report ${isDraft ? 'saved as draft' : 'submitted'} successfully.`);
         }
       }
     } catch (error) {
@@ -1751,7 +1751,7 @@ export default function QualityInspectionPage() {
   const copyFormattedOutput = () => {
     const output = generateFormattedOutput();
     navigator.clipboard.writeText(output).then(() => {
-      toast.success("Formatted output copied to clipboard!");
+      toast.success("Formatted output copied to clipboard.");
     }).catch(() => {
       toast.error("Failed to copy to clipboard");
     });
@@ -1997,7 +1997,7 @@ export default function QualityInspectionPage() {
         doc.setPage(i);
         doc.setFontSize(8);
         doc.text(`Page ${i} of ${totalPages}`, pageWidth - 30, pageHeight - 10);
-        doc.text('Generated by Mithran QC System', 20, pageHeight - 10);
+        doc.text('Generated by EMITHRAN QC System', 20, pageHeight - 10);
       }
 
       // Save the PDF specifically for this 1 part
@@ -2005,7 +2005,7 @@ export default function QualityInspectionPage() {
       const filename = `QC-Part-Report-${safePartName}-${new Date().toISOString().split('T')[0]}.pdf`;
       doc.save(filename);
 
-      toast.success(`QC Report exported for ${activeBomItem?.partNumber || activeBomItem?.name || 'this part'}!`);
+      toast.success(`QC Report exported for ${activeBomItem?.partNumber || activeBomItem?.name || 'this part'}.`);
 
     } catch (error) {
       toast.error('Failed to generate PDF report');
@@ -2053,7 +2053,7 @@ export default function QualityInspectionPage() {
         setSampleCount(tableData.sampleCount);
       }
 
-      toast.success(`Successfully extracted ${extractedRows.length} inspection items from PDF!`);
+      toast.success(`Successfully extracted ${extractedRows.length} inspection items from PDF.`);
     }
   };
 
@@ -2080,42 +2080,26 @@ export default function QualityInspectionPage() {
     <div className="flex flex-col gap-4 sm:gap-6 w-full min-w-0 max-w-full">
       {/* Page Header */}
       <div className="flex flex-col gap-2">
-        <div className="flex flex-col gap-2 mb-3 sm:mb-4">
-          {/* Breadcrumb */}
-          <div className="flex items-center gap-2 text-xs sm:text-sm text-muted-foreground">
-            <button
-              onClick={() => router.push(`/projects/${projectId}/quality-control`)}
-              className="hover:text-foreground transition-colors flex items-center gap-1"
-            >
-              Create Quality Report
-            </button>
-            <span>›</span>
-            <span className="truncate">{inspection?.name ?? MISSING}</span>
-          </div>
-
-          {/* Main Header */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3">
-            <Button
-              variant="ghost"
-              onClick={() => router.push(`/projects/${projectId}/quality-control`)}
-              className="flex items-center gap-2 self-start"
-              size="sm"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">Create Quality Report</span>
-              <span className="sm:hidden">Back</span>
-            </Button>
-            <div className="flex-1 min-w-0 w-full sm:w-auto">
-              <h1 className="text-lg sm:text-xl lg:text-2xl font-bold flex items-center gap-2">
-                <Shield className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
-                <span className="truncate">QC Inspection Report</span>
-              </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground truncate">
-                {inspection?.name ?? MISSING}
-              </p>
-            </div>
+        <div className="flex items-start gap-3 mb-3 sm:mb-4">
+          <Button
+            variant="outline"
+            size="icon"
+            className="mt-0.5 h-8 w-8 shrink-0"
+            aria-label="Back to inspections"
+            onClick={() => router.push(`/projects/${projectId}/quality-control`)}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="min-w-0 flex-1">
+            <PageHeader
+              title="QC Inspection Report"
+              description={inspection?.name ?? MISSING}
+            />
           </div>
         </div>
+
+        {/* Project sections: shared tab bar, Quality is the active tab */}
+        <ProjectNav projectId={projectId} className="mb-3 sm:mb-4" />
 
         {/* 2D Drawing Display */}
         <div className="w-full min-w-0">
@@ -2125,9 +2109,8 @@ export default function QualityInspectionPage() {
             </CardHeader>
             <CardContent className="p-0 overflow-hidden">
               {inspectionLoading || bomItemsLoading ? (
-                <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-border rounded-lg">
-                  <div className="animate-spin h-8 w-8 mb-3 text-muted-foreground">⟳</div>
-                  <p className="text-sm text-muted-foreground">Loading BOM items...</p>
+                <div className="p-8 border-2 border-dashed border-border rounded-lg">
+                  <ListSkeleton rows={3} label="Loading BOM items..." />
                 </div>
               ) : bomItemsError ? (
                 <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-border rounded-lg">
@@ -2573,8 +2556,8 @@ export default function QualityInspectionPage() {
 
                                 const isInTolerance = sampleValue >= limits.lower && sampleValue <= limits.upper;
                                 const colorClass = isInTolerance
-                                  ? 'text-green-600 font-semibold'
-                                  : 'text-red-600 font-semibold';
+                                  ? 'text-success font-semibold'
+                                  : 'text-destructive font-semibold';
 
                                 return <span className={colorClass}>{sample}</span>;
                               })() : (
@@ -2598,8 +2581,8 @@ export default function QualityInspectionPage() {
                             });
 
                             const result = allSamplesValid ? 'OK' : 'NG';
-                            const colorClass = result === 'OK' ? 'text-green-600 font-semibold' :
-                              result === 'NG' ? 'text-red-600 font-semibold' : '';
+                            const colorClass = result === 'OK' ? 'text-success font-semibold' :
+                              result === 'NG' ? 'text-destructive font-semibold' : '';
 
                             return <span className={colorClass}>{result}</span>;
                           })()}
@@ -2697,15 +2680,15 @@ export default function QualityInspectionPage() {
             </div>
             <div className="flex flex-wrap gap-2 justify-center sm:justify-end">
               {/* Status Indicator */}
-              <div className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-2 rounded-md border text-xs sm:text-sm ${status === 'draft' ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
+              <div className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-2 rounded-md border text-xs sm:text-sm ${status === 'draft' ? 'bg-warning/10 border-warning/40 text-warning' :
                 status === 'release' ? 'bg-primary/10 border-primary/20 text-primary' :
-                  status === 'rejected' ? 'bg-red-50 border-red-200 text-red-800' :
-                    'bg-gray-50 border-gray-200 text-gray-600'
+                  status === 'rejected' ? 'bg-destructive/10 border-destructive/40 text-destructive' :
+                    'bg-muted border-border text-muted-foreground'
                 }`}>
-                <div className={`${status === 'draft' ? 'text-yellow-600' :
+                <div className={`${status === 'draft' ? 'text-warning' :
                   status === 'release' ? 'text-primary' :
-                    status === 'rejected' ? 'text-red-600' :
-                      'text-gray-400'
+                    status === 'rejected' ? 'text-destructive' :
+                      'text-muted-foreground'
                   }`}>
                   {status === 'draft' ? <Clock className="h-3 w-3 sm:h-4 sm:w-4" /> :
                     status === 'release' ? <CheckCircle className="h-3 w-3 sm:h-4 sm:w-4" /> :

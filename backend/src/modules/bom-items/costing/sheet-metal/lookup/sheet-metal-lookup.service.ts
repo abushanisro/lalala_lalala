@@ -15,6 +15,25 @@ import type { TurretPunchMachineParams } from '../../shared/core/manufacturing-p
 // to the table" — never a guess dressed up as a lookup result.
 
 // ── Normalise material names to match the seeded sm_lookup_laser_cut values ───
+/** A cast iron's grade, by its name or its designation (EN-GJL/GJS/GJM, DIN GG/GGG, ASTM A48/A536, IS FG/SG). */
+const CAST_IRON = /CAST\s*IRON|GR[AE]Y\s*IRON|DUCTILE|NODULAR|MALLEABLE|EN-?GJ[LSM]|\bGJ[LSM]\b|\bGGG?\s?-?\d|ASTM\s*A\s?(48|536)\b|\bFG\s?\d{3}|\bSG\s?IRON/;
+
+/**
+ * The material a grade is cut as in the thermal cutting data (the plasma and oxyfuel rows of sm_reference_data name Steel, Stainless Steel
+ * and Cast Iron): a cast iron its own rows, a stainless steel its own, an aluminium or a copper alloy none (the data holds no rows of a
+ * non-ferrous metal, and its plasma cut is not a steel's), any other grade the steel rows, as before.
+ */
+export function thermalCutMaterial(grade: string | null | undefined): 'Steel' | 'Stainless Steel' | 'Cast Iron' | null {
+  if (CAST_IRON.test((grade ?? '').toUpperCase())) return 'Cast Iron';
+  const family = classifyLaserMaterial(grade ?? null);
+  if (family === 'SS') return 'Stainless Steel';
+  if (family === 'AL' || family === 'CU') return null;
+  return 'Steel';
+}
+
+/** The machining workbook's plasma curve (tblThermalCutFeed, migration 1137): its feed and kerf by plate thickness, the same for every material. */
+export const WORKBOOK_PLASMA = { table: 'tblThermalCutFeed', machine: 'Plasma Cutting Machine', sourceVersion: '2026-03' } as const;
+
 export function normaliseLaserMaterial(grade: string | null | undefined): string {
   const g = (grade ?? '').toUpperCase();
   // classifyLaserMaterial is the capability gate's classifier and reads bare
@@ -93,11 +112,16 @@ export function roundUpToStandardTonnageClass(requiredTonnage: number): number {
 
 // ── Public interfaces ──────────────────────────────────────────────────────────
 
+/** The sm_lookup_* row a value was read from, by the columns that identify it (the calculator dialog outlines this row). */
+export type LookupRowKeys = Record<string, string | number>;
+
 export interface LaserCutParams {
   cuttingSpeedMPerMin: number;
   pierceTimeMin: number;
   kerfMm: number;
   dataFound: boolean;
+  /** sm_lookup_laser_cut row the values were read from; absent when none was found. */
+  row?: LookupRowKeys;
 }
 
 interface WaterjetCutParams {
@@ -105,6 +129,8 @@ interface WaterjetCutParams {
   pierceTimeMin: number;
   kerfMm: number;
   dataFound: boolean;
+  /** sm_lookup_waterjet_cut row the values were read from; absent when none was found. */
+  row?: LookupRowKeys;
 }
 
 interface RouterCutParams {
@@ -129,12 +155,16 @@ export interface PlasmaCutParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 export interface PlasmaPunchParams {
   feedRateLargeFeaturesMmPerMin: number;
   pierceTimeSec: number;
   dataFound: boolean;
+  /** Where the feed came from, when not the plasma cut data (a material the data holds no rows of): said on the line's warnings. */
+  source?: string;
 }
 
 interface RollBendingMachineParams {
@@ -153,6 +183,14 @@ interface RollBendingMachineParams {
 @Injectable()
 export class SheetMetalLookupService {
   constructor(private readonly database: DatabaseService) {}
+
+  /**
+   * The client the lookup tables are read with. They are global reference data shared by every organisation, with no tenant rows, so they
+   * are read past row-level security. New readers take the client from here, so the privileged-read budget does not grow with them.
+   */
+  private referenceClient() {
+    return this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
+  }
 
   // sm_reference_data machine rows whose raw name equals `machineName`
   // (case-insensitive), filtered in the database. The per-machine lookups
@@ -236,8 +274,7 @@ export class SheetMetalLookupService {
     const key = `${technology}|${material}`;
     const cached = this.laserPowerRowsCache.get(key);
     if (cached) return cached;
-    const { data, error } = await this.database
-      .getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared')
+    const { data, error } = await this.referenceClient()
       .from('sm_lookup_laser_cut')
       .select('thickness_mm, laser_power_w')
       .eq('material', material)
@@ -277,6 +314,74 @@ export class SheetMetalLookupService {
     const tableThicknessMm = Math.min(...thicker);
     const requiredW = Math.min(...rows.filter((r) => r.t === tableThicknessMm).map((r) => r.w));
     return { material, tableThicknessMm, requiredW };
+  }
+
+  /**
+   * What a cutting process's feed table holds for a material: the table's own name for the material and the thicknesses it lists it at.
+   * `material` is null when the table has no rows for the material (plasma and oxyfuel list steels only, the CO2 laser no aluminium).
+   *
+   * The feed getters of this service read the row NEAREST a thickness, whatever the distance, and price every grade that is not
+   * stainless at the steel rows: right for sheet, whose thicknesses the tables cover. A caller pricing a cut the tables may not reach (a
+   * machined part's plate, far thicker than sheet, of any material) asks this first, and does not price what the table does not hold.
+   * The material is named as getMinLaserPowerRequirement names it: only the families a table carries, never a default.
+   */
+  async getCutFeedCoverage(
+    machineClass: 'fiber_laser' | 'co2_laser' | 'waterjet' | 'plasma_cut' | 'oxyfuel_cut',
+    grade: string | null | undefined,
+  ): Promise<{ table: string; material: string | null; minThicknessMm: number | null; maxThicknessMm: number | null }> {
+    const family = classifyLaserMaterial(grade ?? null);
+    const named =
+      CAST_IRON.test((grade ?? '').toUpperCase()) ? 'Cast Iron'
+      : family === 'MS' ? 'Carbon Steel'
+      : family === 'SS' ? 'Stainless Steel'
+      : family === 'AL' ? 'Aluminium'
+      : family === 'CU' && normaliseLaserMaterial(grade) === 'Brass' ? 'Brass'
+      : null;
+    const db = this.referenceClient();
+    const cut = machineClass === 'plasma_cut' ? 'PlasmaCut' : 'OxyFuelCut';
+    const table = machineClass === 'fiber_laser' ? 'sm_lookup_laser_cut (fiber)' : machineClass === 'co2_laser' ? 'sm_lookup_laser_cut (co2)'
+      : machineClass === 'waterjet' ? 'sm_lookup_waterjet_cut' : `sm_reference_data nestingCutRate ${cut}`;
+    const none = { table, material: null, minThicknessMm: null, maxThicknessMm: null };
+    if (!named) return none;
+    let material = named;
+    let thicknesses: number[];
+    if (machineClass === 'fiber_laser' || machineClass === 'co2_laser') {
+      thicknesses = ((await this.laserPowerRows(named, machineClass === 'fiber_laser' ? 'fiber' : 'co2')) ?? []).map((r) => r.t);
+    } else if (machineClass === 'waterjet') {
+      const { data } = await db.from('sm_lookup_waterjet_cut').select('thickness_mm').eq('material', named).not('cutting_speed_mm_per_min', 'is', null);
+      thicknesses = (data ?? []).map((r: { thickness_mm: unknown }) => Number(r.thickness_mm));
+    } else {
+      // The plasma and oxyfuel rows name their materials Steel, Cast Iron and Stainless Steel (thermalCutMaterial). A non-ferrous plate
+      // has no rows: plasma cuts it at the machining workbook's curve, the same for every material; oxyfuel does not cut it.
+      const thermal = thermalCutMaterial(grade);
+      if (thermal == null) {
+        if (machineClass !== 'plasma_cut') return none;
+        const curve = await this.workbookPlasmaRows();
+        if (!curve.length) return none;
+        return {
+          table: `${WORKBOOK_PLASMA.table} (machining workbook plasma curve)`, material: named,
+          minThicknessMm: Math.min(...curve.map((r) => r.thicknessMm)), maxThicknessMm: Math.max(...curve.map((r) => r.thicknessMm)),
+        };
+      }
+      material = thermal;
+      const { data } = await db.from('sm_reference_data').select('raw').eq('category', 'lookup_table').like('key', `nestingCutRate:%:${cut}:%`);
+      thicknesses = (data ?? []).filter((r: any) => r.raw?.materialTypeName === material).map((r: any) => Number(r.raw?.thicknessMm));
+      // Plasma cuts plate thinner than the data's thinnest row at the machining workbook's curve (getPlasmaCutRateParams): it holds
+      // those thicknesses too.
+      if (machineClass === 'plasma_cut' && thicknesses.length > 0) {
+        const curve = await this.workbookPlasmaRows();
+        const below = curve.map((r) => r.thicknessMm).filter((t) => t < Math.min(...thicknesses));
+        if (below.length > 0) {
+          const listed = thicknesses.filter((t) => Number.isFinite(t) && t > 0);
+          return {
+            table: `${table} and ${WORKBOOK_PLASMA.table} (machining workbook plasma curve) below it`, material,
+            minThicknessMm: Math.min(...below), maxThicknessMm: Math.max(...listed),
+          };
+        }
+      }
+    }
+    const listed = thicknesses.filter((t) => Number.isFinite(t) && t > 0);
+    return listed.length ? { table, material, minThicknessMm: Math.min(...listed), maxThicknessMm: Math.max(...listed) } : none;
   }
 
   // ── Table 5: Laser cutting params ─────────────────────────────────────────
@@ -348,6 +453,7 @@ export class SheetMetalLookupService {
       pierceTimeMin,
       kerfMm,
       dataFound: true,
+      row: { material, laser_technology: technology, thickness_mm: Number(row.thickness_mm), laser_power_w: Number(row.laser_power_w) },
     };
   }
 
@@ -385,6 +491,7 @@ export class SheetMetalLookupService {
       pierceTimeMin: Number(row.pierce_time_sec) / 60,
       kerfMm: Number(row.kerf_mm),
       dataFound: true,
+      row: { material, thickness_mm: Number(row.thickness_mm) },
     };
   }
 
@@ -411,7 +518,9 @@ export class SheetMetalLookupService {
     // carbon steel 'Carbon Steel' not 'Steel'). Remapped here rather than
     // widening normaliseLaserMaterial itself, which every laser/waterjet
     // caller also depends on staying exactly as-is.
-    const oxyfuelMaterial = material === 'Stainless Steel' ? 'Stainless Steel' : 'Steel';
+    // A cast iron its own rows (thermalCutMaterial); a non-ferrous grade keeps the steel rows it was read at before (oxyfuel does not
+    // cut it: the route is the caller's to refuse, getCutFeedCoverage).
+    const oxyfuelMaterial = thermalCutMaterial(grade) ?? 'Steel';
 
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data, error } = await db
@@ -497,7 +606,7 @@ export class SheetMetalLookupService {
   // reached in production, by machine tonnage and part complexity. The row nearest to
   // the machine tonnage is used (the table steps 10, 20, 30, 50 t ...).
   @ReferenceMemo()
-  async getStrokeRateFactor(tonnageT: number, complexity: 'simple' | 'inter' | 'complex'): Promise<number | null> {
+  async getStrokeRateFactor(tonnageT: number, complexity: 'simple' | 'inter' | 'complex'): Promise<{ factor: number; tonnageT: number; column: 'simple' | 'intermediate' | 'complex' } | null> {
     if (!(tonnageT > 0)) return null;
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data, error } = await db
@@ -507,15 +616,15 @@ export class SheetMetalLookupService {
       .like('key', 'strokeRateFactor:%');
     if (error || !data?.length) return null;
     const column = complexity === 'inter' ? 'intermediate' : complexity;
-    let best: { distance: number; factor: number } | null = null;
+    let best: { distance: number; factor: number; tonnageT: number } | null = null;
     for (const row of data as Array<{ raw: Record<string, unknown> | null }>) {
       const rowTonnage = row.raw?.tonnage_t;
       const factor = row.raw?.[column];
       if (typeof rowTonnage !== 'number' || typeof factor !== 'number' || factor <= 0) continue;
       const distance = Math.abs(rowTonnage - tonnageT);
-      if (!best || distance < best.distance) best = { distance, factor };
+      if (!best || distance < best.distance) best = { distance, factor, tonnageT: rowTonnage };
     }
-    return best?.factor ?? null;
+    return best ? { factor: best.factor, tonnageT: best.tonnageT, column } : null;
   }
 
   @ReferenceMemo()
@@ -525,7 +634,7 @@ export class SheetMetalLookupService {
   ): Promise<TurretPunchMachineParams> {
     const noData: TurretPunchMachineParams = {
       nibbleMmPerMin: 0, toolChangeSec: 0, dataFound: false,
-      punchRateCyclesPerMin: 0, strokeRateFactor: null, machineTonnageT: null,
+      punchRateCyclesPerMin: 0, strokeRateFactor: null, machineTonnageT: null, strokeRateFactorRow: null,
     };
     if (!machineName) return noData;
 
@@ -549,6 +658,7 @@ export class SheetMetalLookupService {
       ? raw.punch_rate_cycles_min : 0;
     let machineTonnageT: number | null = null;
     let strokeRateFactor: number | null = null;
+    let strokeRateFactorRow: TurretPunchMachineParams['strokeRateFactorRow'] = null;
     if (punchRate > 0) {
       const { data: lib } = await db
         .from('sm_reference_data')
@@ -556,7 +666,11 @@ export class SheetMetalLookupService {
         .eq('category', 'machine')
         .eq('key', `Turret Press (Punch Press):${machineName}`);
       machineTonnageT = pressForceTonnes(pressForceKnOf(lib ?? []));
-      if (machineTonnageT != null) strokeRateFactor = await this.getStrokeRateFactor(machineTonnageT, complexity);
+      const factor = machineTonnageT != null ? await this.getStrokeRateFactor(machineTonnageT, complexity) : null;
+      if (factor) {
+        strokeRateFactor = factor.factor;
+        strokeRateFactorRow = { tonnageT: factor.tonnageT, column: factor.column };
+      }
     }
 
     return {
@@ -566,6 +680,7 @@ export class SheetMetalLookupService {
       punchRateCyclesPerMin: punchRate,
       strokeRateFactor,
       machineTonnageT,
+      strokeRateFactorRow,
     };
   }
 
@@ -600,10 +715,22 @@ export class SheetMetalLookupService {
     powerWatts: number,
     grade: string | null | undefined,
     thicknessMm: number,
-  ): Promise<{ feedRateLargeFeaturesMmPerMin: number; pierceTimeSec: number; dataFound: boolean }> {
+  ): Promise<{ feedRateLargeFeaturesMmPerMin: number; pierceTimeSec: number; dataFound: boolean; source?: string }> {
     const noData = { feedRateLargeFeaturesMmPerMin: 0, pierceTimeSec: 0, dataFound: false };
-    const material = normaliseLaserMaterial(grade);
-    const plasmaMaterial = material === 'Stainless Steel' ? 'Stainless Steel' : 'Steel';
+    const plasmaMaterial = thermalCutMaterial(grade);
+    // A non-ferrous plate (aluminium, a copper alloy): the plasma data holds no rows of it, and it was fed at a steel's rate. The machining
+    // workbook's plasma curve states one feed for every material, by thickness: the first of its thicknesses that holds the plate.
+    if (plasmaMaterial == null) {
+      const curve = await this.workbookPlasmaRows();
+      const row = curve.find((r) => r.thicknessMm >= thicknessMm);
+      if (!row) return noData;
+      return {
+        feedRateLargeFeaturesMmPerMin: row.feedMmPerMin, pierceTimeSec: 0, dataFound: true,
+        source: `${machineTypeKeyFragment === 'PlasmaCut' ? 'Plasma Cut' : 'Plasma Punch'}: the plasma cut data holds no rows of ${normaliseLaserMaterial(grade)}; `
+          + `fed at the machining workbook's plasma curve (${WORKBOOK_PLASMA.table}, the same for every material): ${row.feedMmPerMin} mm/min at its `
+          + `${row.thicknessMm} mm row for ${thicknessMm} mm plate, with no pierce time (the workbook times plasma by its feed alone)`,
+      };
+    }
 
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data, error } = await db
@@ -622,6 +749,34 @@ export class SheetMetalLookupService {
     if (!rowsAtPower.length) return noData;
 
     const thicknesses = [...new Set(rowsAtPower.map((r: any) => Number(r.raw?.thicknessMm)))].sort((a, b) => a - b);
+    // Plate thinner than the data's thinnest row (6.4 mm): fed at the machining workbook's plasma curve, which covers 3 to 6.35 mm (user
+    // decision 2026-11-25; the thinnest row's speed priced 5 mm steel 1.4 to 2.3 x slower than the workbook). Its pierce time is the
+    // thinnest row's: the workbook times plasma by its feed alone and states none.
+    const thinnest = thicknesses[0];
+    if (thinnest !== undefined && thicknessMm < thinnest - 1e-9) {
+      const curve = await this.workbookPlasmaRows();
+      const fed = curve.find((r) => r.thicknessMm >= thicknessMm);
+      const thinRow = rowsAtPower.find((r: any) => Number(r.raw?.thicknessMm) === thinnest)?.raw;
+      const pierce = thinRow?.pierceTimeS;
+      const thinFeed = Number(thinRow?.feedRateLargeFeaturesMmPerMin);
+      if (fed && typeof pierce === 'number' && Number.isFinite(thinFeed) && thinFeed > 0) {
+        // Thinner plate never cuts slower on one machine than thicker plate: a heavy machine whose data starts thicker and faster than the
+        // workbook's thin-plate feed (a 1000 A table's 12.7 mm row, 3,068 mm/min) keeps that row's feed.
+        const atCurve = fed.feedMmPerMin >= thinFeed;
+        const feed = atCurve ? fed.feedMmPerMin : thinFeed;
+        const name = machineTypeKeyFragment === 'PlasmaCut' ? 'Plasma Cut' : 'Plasma Punch';
+        return {
+          feedRateLargeFeaturesMmPerMin: feed, pierceTimeSec: pierce, dataFound: true,
+          source: atCurve
+            ? `${name}: the plasma cut data's thinnest ${plasmaMaterial} row is ${thinnest} mm (${thinFeed} mm/min); ${thicknessMm} mm plate is fed at the `
+              + `machining workbook's plasma curve (${WORKBOOK_PLASMA.table}): ${fed.feedMmPerMin} mm/min at its ${fed.thicknessMm} mm row, with the `
+              + `${thinnest} mm row's pierce time ${pierce} s`
+            : `${name}: the plasma cut data's thinnest ${plasmaMaterial} row is ${thinnest} mm; ${thicknessMm} mm plate is fed at that row's `
+              + `${thinFeed} mm/min, faster than the machining workbook's plasma curve (${fed.feedMmPerMin} mm/min at its ${fed.thicknessMm} mm row): `
+              + `thinner plate does not cut slower on one machine`,
+        };
+      }
+    }
     const nearestThick = nearestKey(thicknessMm, thicknesses);
     const row = rowsAtPower.find((r: any) => Number(r.raw?.thicknessMm) === nearestThick);
     const feedRate = row?.raw?.feedRateLargeFeaturesMmPerMin;
@@ -630,6 +785,20 @@ export class SheetMetalLookupService {
       return noData;
     }
     return { feedRateLargeFeaturesMmPerMin: feedRate, pierceTimeSec: pierceTimeS, dataFound: true };
+  }
+
+  /** The machining workbook's plasma curve (tblThermalCutFeed), ascending by thickness; empty when it is not staged. */
+  @ReferenceMemo()
+  async workbookPlasmaRows(): Promise<Array<{ thicknessMm: number; feedMmPerMin: number; kerfMm: number }>> {
+    const { data, error } = await this.referenceClient()
+      .from('machining_reference_data').select('raw')
+      .eq('category', 'lookup_table').eq('source_version', WORKBOOK_PLASMA.sourceVersion).eq('key', WORKBOOK_PLASMA.table).maybeSingle();
+    if (error || !Array.isArray(data?.raw)) return [];
+    return (data!.raw as Array<Record<string, unknown>>)
+      .filter((r) => r.Machine === WORKBOOK_PLASMA.machine)
+      .map((r) => ({ thicknessMm: Number(r.ThicknessMm), feedMmPerMin: Number(r.FeedMmPerMin), kerfMm: Number(r.KerfMm) }))
+      .filter((r) => r.thicknessMm > 0 && r.feedMmPerMin > 0)
+      .sort((a, b) => a.thicknessMm - b.thicknessMm);
   }
 
   async getPlasmaCutParams(
@@ -1006,7 +1175,7 @@ export class SheetMetalLookupService {
 
   // ── Table 2: Handling time (min) for given weight kg ───────────────────────
   @ReferenceMemo()
-  async getHandlingTime(weightKg: number): Promise<{ minutes: number; dataFound: boolean }> {
+  async getHandlingTime(weightKg: number): Promise<{ minutes: number; dataFound: boolean; row?: LookupRowKeys }> {
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data } = await db
       .from('sm_lookup_handling_time')
@@ -1020,20 +1189,20 @@ export class SheetMetalLookupService {
       // data extrapolated at the boundary, not a fallback.
       const { data: last } = await db
         .from('sm_lookup_handling_time')
-        .select('handling_min')
+        .select('weight_max_kg, handling_min')
         .order('weight_max_kg', { ascending: false })
         .limit(1);
       return last?.[0]
-        ? { minutes: Number(last[0].handling_min), dataFound: true }
+        ? { minutes: Number(last[0].handling_min), dataFound: true, row: { weight_max_kg: Number(last[0].weight_max_kg) } }
         : { minutes: 0, dataFound: false };
     }
-    return { minutes: Number(data[0].handling_min), dataFound: true };
+    return { minutes: Number(data[0].handling_min), dataFound: true, row: { weight_max_kg: Number(data[0].weight_max_kg) } };
   }
 
   // ── Table 3A/B: Tool setup time (min) ─────────────────────────────────────
   // type='press' → keyValue = tonnage; type='brake' → keyValue = tool length mm
   @ReferenceMemo()
-  async getToolSetupTime(type: 'press' | 'brake', keyValue: number): Promise<{ minutes: number; dataFound: boolean }> {
+  async getToolSetupTime(type: 'press' | 'brake', keyValue: number): Promise<{ minutes: number; dataFound: boolean; row?: LookupRowKeys }> {
     const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
     const { data } = await db
       .from('sm_lookup_tool_setup')
@@ -1050,7 +1219,7 @@ export class SheetMetalLookupService {
       (b, r) => Math.abs(r.kv - keyValue) < Math.abs(b.kv - keyValue) ? r : b,
       rows[0],
     );
-    return { minutes: best.t, dataFound: true };
+    return { minutes: best.t, dataFound: true, row: { setup_type: type, key_value: best.kv } };
   }
 
   // ── Table 4: Manual stroke time (sec) ─────────────────────────────────────
@@ -1642,24 +1811,28 @@ export class SheetMetalLookupService {
   }
 
   // ── Waterjet nozzle-wear cost per hour ─────────────────────────────────────
-  // See migration 531 (closeout Plan Phase 2b). Defaults to the 'Mid-Life
-  // Composite Carbide' grade — the middle of the 3 real seeded options —
-  // until a per-shop nozzle-grade setting exists; disclosed via dataFound,
-  // never silently substituted for a genuinely missing table.
+  // tblWaterjetAbrasiveNozzle: what a nozzle costs (USD) and how long it lasts (hours), per grade.
+  // It is staged two ways from the same reference file, as tblPartSpacing is: one row per grade
+  // (migration 514, key 'tblWaterjetAbrasiveNozzle:...') and one row for the whole table
+  // (migration 830, raw.rows). A database may carry either, so both are read. The table migration
+  // 531 promoted these rows into is in no database built from the baseline: reading it priced no
+  // nozzle wear anywhere.
+  // Defaults to the 'Mid-Life Composite Carbide' grade, the middle of the three, until a per-shop
+  // nozzle grade setting exists. The rate is in USD an hour: the caller converts it to the quote's
+  // currency. A grade that is not on file is reported (dataFound), never substituted.
   @ReferenceMemo()
   async getWaterjetNozzleCostPerHr(nozzleGrade = 'Mid-Life Composite Carbide'): Promise<{ costPerHr: number; dataFound: boolean }> {
-    const db = this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared');
-    const { data } = await db
-      .from('sm_waterjet_nozzle_rates')
-      .select('cost_usd, life_hours')
-      .eq('nozzle_grade', nozzleGrade)
-      .limit(1)
-      .maybeSingle();
-
-    if (!data || data.life_hours == null || Number(data.life_hours) <= 0) {
-      return { costPerHr: 0, dataFound: false };
-    }
-    return { costPerHr: Number(data.cost_usd) / Number(data.life_hours), dataFound: true };
+    const { data } = await this.database.getPrivilegedClient('reference-data: sheet-metal lookup tables, global shared')
+      .from('sm_reference_data')
+      .select('raw')
+      .eq('category', 'lookup_table')
+      .or('key.like.tblWaterjetAbrasiveNozzle:%,key.eq.lookup_tables_combined__tblWaterjetAbrasiveNozzle');
+    const entries = (data ?? []).flatMap((r: any) => (Array.isArray(r.raw?.rows) ? r.raw.rows : [r.raw]));
+    const nozzle = entries.find((r: any) => r?.['Nozzle Type'] === nozzleGrade);
+    const costUsd = Number(nozzle?.['Nozzle Cost (USD)']);
+    const lifeHours = Number(nozzle?.['Nozzle Life (hr)']);
+    if (!(costUsd > 0) || !(lifeHours > 0)) return { costPerHr: 0, dataFound: false };
+    return { costPerHr: costUsd / lifeHours, dataFound: true };
   }
 
   // ── Manual deburring cycle-time rate ──────────────────────────────────────

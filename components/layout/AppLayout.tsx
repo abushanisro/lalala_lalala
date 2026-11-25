@@ -1,17 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useAuth } from '@/lib/providers/auth';
-import { SidebarProvider, SidebarTrigger, SidebarInset } from '@/components/ui/sidebar';
-import { AppSidebar } from './AppSidebar';
-import { Loader2, Menu, Bell, Search, Settings, Building2, LogOut } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { MithranAICreditsBar } from './MithranAICreditsBar';
-import { useProfile } from '@/lib/api/hooks/useProfile';
+import { useEffect, useState } from 'react';
+
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,9 +13,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Loader2, Menu, Bell, Settings, Building2, LogOut } from '@/components/ui/icons';
+import { Separator } from '@/components/ui/separator';
+import { SidebarProvider, SidebarTrigger, SidebarInset } from '@/components/ui/sidebar';
+import { useProfile } from '@/lib/api/hooks/useProfile';
+import { useAuth } from '@/lib/providers/auth';
 
+import { AppBreadcrumb } from './AppBreadcrumb';
+import { AppSidebar } from './AppSidebar';
+import { CommandSearch } from './CommandSearch';
+import { MithranAICreditsBar } from './MithranAICreditsBar';
 import { SessionCountdown } from './SessionCountdown';
 import { SessionIdleProvider } from './SessionIdleProvider';
+
+import type { ReactNode } from 'react';
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -125,22 +129,17 @@ export function AppLayout({ children }: AppLayoutProps) {
           <SidebarInset className="flex-1 flex flex-col">
             {isFullscreen ? children : (
               <>
-                <header className="h-14 border-b border-border bg-card/50 backdrop-blur-xs flex items-center justify-between px-4 sticky top-0 z-10">
-                  <div className="flex items-center gap-4">
-                    <SidebarTrigger className="text-muted-foreground hover:text-foreground transition-colors">
+                <header className="h-14 border-b border-border bg-card flex items-center gap-2 px-4 sticky top-0 z-10">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <SidebarTrigger className="-ml-1 text-muted-foreground hover:text-foreground transition-colors">
                       <Menu className="h-5 w-5" />
                     </SidebarTrigger>
-
-                    <div className="hidden md:flex items-center gap-2 bg-secondary/50 rounded-lg px-3 py-1.5 w-64">
-                      <Search className="h-4 w-4 text-muted-foreground" />
-                      <Input
-                        placeholder="Search projects, vendors..."
-                        className="border-0 bg-transparent h-7 p-0 focus-visible:ring-0 text-sm placeholder:text-muted-foreground/60"
-                      />
-                    </div>
+                    <Separator orientation="vertical" className="mr-1 h-4" />
+                    <AppBreadcrumb />
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    <CommandSearch />
                     <SessionCountdown />
                     <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground relative">
                       <Bell className="h-5 w-5" />
@@ -201,7 +200,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   </div>
                 </header>
                 <MithranAICreditsBar />
-                <main className="flex-1 min-w-0 p-4 sm:p-6 overflow-auto overflow-x-hidden">
+                <main className="flex-1 min-w-0 p-4 sm:p-8 overflow-auto overflow-x-hidden">
                   {children}
                 </main>
               </>

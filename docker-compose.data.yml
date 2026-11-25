@@ -29,6 +29,10 @@ x-data-hardened: &data-hardened
 services:
   postgres:
     <<: *data-hardened
+    # Postgres stays on major version 17. A new major version cannot open a data directory an older one wrote: it needs pg_upgrade, and
+    # from 18 the image also expects the volume at /var/lib/postgresql, not .../data, and refuses to start otherwise. So a major upgrade
+    # is a planned data migration, never an image bump (.github/dependabot.yml ignores it). The procedure, rehearsed and tested, is
+    # docs/runbooks/postgres-major-upgrade.md.
     image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     # The image's postgres user (uid 70) owns the data volume, so the entrypoint needs no root, no chown and no capabilities.
     user: "70:70"
@@ -54,7 +58,7 @@ services:
 
   storage:
     <<: *data-hardened
-    image: chrislusf/seaweedfs@sha256:c2658820e763294a9e9de7b36c81e59b879e3459148351aee4e31a126ca64860
+    image: chrislusf/seaweedfs@sha256:4b42c212543a0acd4c0e675215ecdcaf62a186ef98def76c7e12701871222d15
     # The image's seaweed user (uid 1000) owns the data volume; started as it, the entrypoint needs no root and no capabilities.
     user: "1000:1000"
     command: ["server", "-s3", "-dir=/data", "-ip.bind=0.0.0.0"]

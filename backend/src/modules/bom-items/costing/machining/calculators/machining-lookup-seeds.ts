@@ -1,14 +1,18 @@
-import type { MaterialClass } from '../process/cost-machining-engine';
-import { resolveDrillingParams, type DrillingTable } from '../lookup/drilling-table';
+import type { MachiningWorkbookInput, MaterialClass } from '../process/cost-machining-engine';
 import { resolvePartoffParams } from '../lookup/partoff-table';
+import { resolveGroovingParams } from '../lookup/grooving-table';
+import { rowInBand, WORKBOOK_TABLES } from '../lookup/workbook-cutting-data';
 import {
-  MACHINING_MATERIAL_HARDNESS_HB,
-  nearestByDiameterKey,
+  MACHINING_MATERIAL,
+  nearestDiameterEntry,
   nearestByDiameterThenHardness,
   nearestByHardness,
 } from '../lookup/machining-material-hardness';
 import type { MachiningCapabilityRules } from '../capability-rules';
 import type { CalcSeed } from './machining-calculator';
+import type { SpecField } from './machining-calculator-spec';
+import { ETCH_MATERIAL_TYPE } from '../../chemical-milling/chemical-milling-engine';
+import { calculationRef, lookupSeed, MACHINING_REFERENCE_DOMAIN, resultStep, rowKeys, seedStep, variableSeed } from './machining-source-refs';
 
 /**
  * The lookup-table inputs of every machining calculator, resolved from the
@@ -22,21 +26,16 @@ import type { CalcSeed } from './machining-calculator';
  */
 export interface MachiningLookupContext {
   matClass: MaterialClass;
-  drillingTable?: DrillingTable | null;
-  reamTable?: any[] | null;
-  /** tblTapping rows (migration 809). */
-  tappingTable?: any[] | null;
+  /** The machining workbook's cutting data (migration 1137): what Drilling, Reaming and Tapping read. */
+  workbook?: MachiningWorkbookInput | null;
   /** tblBoringV2 "Finish Boring" rows. */
   finishBoringTable?: any[] | null;
   gunDrillTable?: any[] | null;
   deepBoreMaterials?: any[] | null;
   partoffTable?: any[] | null;
+  /** tblGrooving rows (migration 746): the grooving inserts Plunging reads. */
+  groovingTable?: any[] | null;
   workholderTable?: any[] | null;
-  turningParams?: {
-    roughCutDepthMm: number; roughCuttingSpeedMPerMin: number; roughFeedMmPerRev: number;
-    finishCutDepthMm: number; finishCuttingSpeedMPerMin: number; finishFeedMmPerRev: number;
-    dataFound: boolean; materialCutCode?: string;
-  } | null;
   grindingParams?: {
     workSpeedMMin: number; roughInfeedMm: number; finishInfeedMm: number;
     roughAxialFeedRevMm: number; finishAxialFeedRevMm: number; dataFound: boolean; materialCutCode?: string;
@@ -57,7 +56,7 @@ export interface MachiningLookupContext {
   wireEdmParams?: {
     roughFeedRateMmPerMin: number; finishFeedRateMmPerMin: number; dataFound: boolean; materialCutCode?: string;
   } | null;
-  deburrParams?: { linearSpeedMmPerSec: number; dataFound: boolean; materialCutCode?: string } | null;
+  deburrParams?: { linearSpeedMmPerSec: number; dataFound: boolean; materialCutCode?: string; match?: { table: string; row: Record<string, string | number> } } | null;
   /** Finishing-process thresholds and pass counts (capability-rules.ts). */
   capabilityRules?: MachiningCapabilityRules | null;
 }
@@ -70,14 +69,13 @@ export interface LookupSeeds {
 
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
 
-/** Cutting speed / feed of one real per-diameter row, as the calculator's two lookup inputs. */
+/** Cutting speed / feed of one real per-diameter row (and the columns they are in), as the calculator's two lookup inputs. */
 function speedFeed(
-  speed: unknown, feed: unknown, source: string, match: CalcSeed['match'] | undefined,
+  speed: unknown, feed: unknown, source: string, match: NonNullable<CalcSeed['match']>, columns: { speed: string; feed: string },
 ): Record<string, CalcSeed> {
   const seeds: Record<string, CalcSeed> = {};
-  const m = match ? { match } : {};
-  if (positive(speed)) seeds['Cutting Speed'] = { value: speed, source, lookup: true, ...m };
-  if (positive(feed)) seeds['Feed'] = { value: feed, source, lookup: true, ...m };
+  if (positive(speed)) seeds['Cutting Speed'] = lookupSeed(speed, source, match, columns.speed);
+  if (positive(feed)) seeds['Feed'] = lookupSeed(feed, source, match, columns.feed);
   return seeds;
 }
 
@@ -88,85 +86,19 @@ function holeDiameterKey(keys: Record<string, number>, operation: string, out: L
   return null;
 }
 
-export function drillingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const d = holeDiameterKey(keys, 'Drilling', out);
-  if (d == null) return out;
-  const real = resolveDrillingParams(ctx.drillingTable, d, ctx.matClass);
-  if (!real) {
-    out.missing.push(ctx.drillingTable ? `tblDrilling row for ${ctx.matClass} at Ø${d} mm` : 'tblDrilling (machining_reference_data) could not be read');
-    return out;
-  }
-  const match = { table: 'tblDrilling', row: { material_cut_code: real.materialCutCode, construction: real.construction } };
-  out.seeds['Cutting Speed'] = {
-    value: real.cuttingSpeedMPerMin, lookup: true, match,
-    source: `tblDrilling: material code ${real.materialCutCode} (${real.hardnessHb} HB, nearest to ${ctx.matClass}), ${real.construction} drill`,
-  };
-  out.seeds['Feed'] = { value: real.feedMmPerRev, source: `tblDrilling: ${real.feedDerivation}`, lookup: true, match };
-  return out;
-}
-
-export function reamingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const d = holeDiameterKey(keys, 'Reaming', out);
-  if (d == null) return out;
-  const row = ctx.reamTable?.length ? nearestByDiameterThenHardness(ctx.reamTable, d, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]) : null;
-  if (!row) { out.missing.push(`tblReaming row for ${ctx.matClass} at Ø${d} mm`); return out; }
-  out.seeds = speedFeed(row.CuttingSpeedMPerMin, row.FeedMm, `tblReaming: Ø${row.DiameterMm} mm, ${row.Hardness} HB`,
-    { table: 'tblReaming', row: { DiameterMm: row.DiameterMm, Hardness: row.Hardness, MaterialCutCodeName: row.MaterialCutCodeName } });
-  return out;
-}
-
-/**
- * Tapping cutting speed from tblTapping: the material code nearest this
- * material class's hardness, then that code's row at the tabulated pitch
- * nearest the thread's (the table gives a fine 0.5 / 1.0 mm and a coarse
- * 3.0 / 6.35 mm pitch band per code; a tie goes to the smaller pitch, as in
- * every nearest-row matcher here). Both are kept inside the table's own
- * range; outside it the speed is missing, never extrapolated.
- */
-export function resolveTappingRow(rows: any[] | null | undefined, pitchMm: number, matClass: MaterialClass): any | null {
-  if (!rows?.length) return null;
-  const pitches = [...new Set(rows.map((r) => r.MetricPitchMm).filter(positive))].sort((a, b) => a - b);
-  if (pitches.length === 0 || pitchMm < pitches[0]! || pitchMm > pitches[pitches.length - 1]!) return null;
-  const material = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[matClass]);
-  if (!material) return null;
-  const atCode = rows.filter((r) => r.MaterialCutCodeName === material.MaterialCutCodeName && positive(r.MetricPitchMm) && positive(r.CuttingSpeedMPerMin));
-  if (atCode.length === 0) return null;
-  return atCode.reduce((best, r) => (Math.abs(r.MetricPitchMm - pitchMm) < Math.abs(best.MetricPitchMm - pitchMm) ? r : best), atCode[0]);
-}
-
-export function tappingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
-  const out: LookupSeeds = { seeds: {}, missing: [] };
-  const pitch = keys['Thread Pitch'];
-  if (!positive(pitch)) { out.missing.push('Tapping: Thread Pitch (the table row is chosen by it)'); return out; }
-  const row = resolveTappingRow(ctx.tappingTable, pitch, ctx.matClass);
-  if (!row) {
-    out.missing.push(ctx.tappingTable?.length
-      ? `tblTapping row for ${ctx.matClass} at pitch ${pitch} mm (outside the table's material / pitch range)`
-      : 'tblTapping (machining_reference_data) could not be read');
-    return out;
-  }
-  out.seeds['Cutting Speed'] = {
-    value: row.CuttingSpeedMPerMin, lookup: true,
-    source: `tblTapping: material code ${row.MaterialCutCodeName} (${row.Hardness} HB, nearest to ${ctx.matClass}), pitch ${row.MetricPitchMm} mm`,
-    match: { table: 'tblTapping', row: { MaterialCutCodeName: row.MaterialCutCodeName, MetricPitchMm: row.MetricPitchMm } },
-  };
-  return out;
-}
-
 export function jigBoringLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
   const out: LookupSeeds = { seeds: {}, missing: [] };
   if (ctx.capabilityRules) {
-    out.seeds['Repetitions'] = { value: ctx.capabilityRules.jigBoringRepetitions, source: 'tblGtolProcessCapabilities: Jig Boring positionTolerance Num Repetitions', lookup: true,
-      match: { table: 'tblGtolProcessCapabilities', row: { Process: 'Jig Boring', GtolCategory: 'positionTolerance' } } };
+    out.seeds['Repetitions'] = lookupSeed(ctx.capabilityRules.jigBoringRepetitions, 'tblGtolProcessCapabilities: Jig Boring positionTolerance Num Repetitions',
+      { table: 'tblGtolProcessCapabilities', row: { Process: 'Jig Boring', GtolCategory: 'positionTolerance' } }, 'Num Repetitions');
   } else out.missing.push('tblGtolProcessCapabilities Jig Boring Num Repetitions');
   const d = holeDiameterKey(keys, 'Jig Boring', out);
   if (d == null) return out;
-  const row = ctx.finishBoringTable?.length ? nearestByDiameterThenHardness(ctx.finishBoringTable, d, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]) : null;
+  const row = ctx.finishBoringTable?.length ? nearestByDiameterThenHardness(ctx.finishBoringTable, d, MACHINING_MATERIAL[ctx.matClass]) : null;
   if (!row) { out.missing.push(`tblBoringV2 Finish Boring row for ${ctx.matClass} at Ø${d} mm`); return out; }
   Object.assign(out.seeds, speedFeed(row.cutting_speed_m_min, row.feed_mm_rev, `tblBoringV2 Finish Boring: Ø${row.diameter_mm} mm, ${row.hardness} HB`,
-    { table: 'tblBoringV2', row: { cut_type: 'Finish Boring', diameter_mm: row.diameter_mm, hardness: row.hardness } }));
+    { table: 'tblBoringV2', row: rowKeys(row, ['cut_type', 'diameter_mm', 'material_cut_code_name', 'hardness']) },
+    { speed: 'cutting_speed_m_min', feed: 'feed_mm_rev' }));
   return out;
 }
 
@@ -174,12 +106,13 @@ export function gunDrillingLookupSeeds(ctx: MachiningLookupContext, keys: Record
   const out: LookupSeeds = { seeds: {}, missing: [] };
   const d = holeDiameterKey(keys, 'Gun Drilling', out);
   if (d == null) return out;
-  const row = ctx.gunDrillTable?.length ? nearestByDiameterThenHardness(ctx.gunDrillTable, d, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]) : null;
+  const row = ctx.gunDrillTable?.length ? nearestByDiameterThenHardness(ctx.gunDrillTable, d, MACHINING_MATERIAL[ctx.matClass]) : null;
   const speed = row?.['Cutting Speed (m / min)'];
   const feed = row?.['Feed (mm / rev)'];
   if (!positive(speed) || !positive(feed)) { out.missing.push(`tblGunDrilling row for ${ctx.matClass} at Ø${d} mm`); return out; }
   out.seeds = speedFeed(speed, feed, `tblGunDrilling: Ø${row['Diameter (mm)']} mm, ${row.Hardness} HB`,
-    { table: 'tblGunDrilling', row: { 'Diameter (mm)': row['Diameter (mm)'], Hardness: row.Hardness } });
+    { table: 'tblGunDrilling', row: rowKeys(row, ['Diameter (mm)', 'Material Cut Code Name', 'Hardness']) },
+    { speed: 'Cutting Speed (m / min)', feed: 'Feed (mm / rev)' });
   return out;
 }
 
@@ -187,12 +120,13 @@ export function deepBoreLookupSeeds(ctx: MachiningLookupContext, keys: Record<st
   const out: LookupSeeds = { seeds: {}, missing: [] };
   const d = holeDiameterKey(keys, 'Deep Bore Machine', out);
   if (d == null) return out;
-  const row = ctx.deepBoreMaterials?.length ? nearestByHardness(ctx.deepBoreMaterials, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]) : null;
+  const row = ctx.deepBoreMaterials?.length ? nearestByHardness(ctx.deepBoreMaterials, MACHINING_MATERIAL[ctx.matClass]) : null;
   const speed = row?.cutting_speed_m_min;
-  const feed = nearestByDiameterKey(row?.feed_mm_rev_by_diameter, d);
+  const feed = nearestDiameterEntry(row?.feed_mm_rev_by_diameter, d);
   if (!positive(speed) || feed == null) { out.missing.push(`deep_bore_drill_lookup row for ${ctx.matClass} at Ø${d} mm`); return out; }
-  out.seeds = speedFeed(speed, feed, `deep_bore_drill_lookup: material code ${row.material_cut_code} (${row.hardness} HB), nearest diameter breakpoint`,
-    { table: 'deep_bore_drill_lookup', row: { material_cut_code: row.material_cut_code } });
+  out.seeds = speedFeed(speed, feed.value, `deep_bore_drill_lookup: material code ${row.material_cut_code} (${row.hardness} HB), nearest diameter breakpoint`,
+    { table: 'deep_bore_drill_lookup', row: { material_cut_code: row.material_cut_code, diameter_mm: feed.diameterMm } },
+    { speed: 'cutting_speed_m_min', feed: 'feed_mm_rev' });
   return out;
 }
 
@@ -211,43 +145,59 @@ export function partingLookupSeeds(ctx: MachiningLookupContext, keys: Record<str
   const match = { table: 'tblVirtualPartoffInsertCutData', row: { MaterialCutCodeName: p.materialCutCode, LengthMm: p.insertWidthMm } };
   const src = `tblVirtualPartoffInsertCutData: material code ${p.materialCutCode} (${p.hardnessHb} HB), ${p.insertWidthMm} mm insert (reaches ${p.depthMaxMm} mm)`;
   out.seeds = {
-    'Cutting Speed': { value: p.cuttingSpeedMPerMin, source: src, lookup: true, match },
-    'Feed': { value: p.feedMmPerRev, source: src, lookup: true, match },
+    'Cutting Speed': lookupSeed(p.cuttingSpeedMPerMin, src, match, 'CuttingSpeedMPerMin'),
+    'Feed': lookupSeed(p.feedMmPerRev, src, match, 'FeedMm'),
   };
   return out;
 }
 
-function turningRows(ctx: MachiningLookupContext) {
-  const tp = ctx.turningParams?.dataFound ? ctx.turningParams : null;
-  const row = (operation: string) => ({ table: 'tblGeneralTurning', row: { material_cut_code: tp?.materialCutCode ?? '', operation } });
-  return { tp, src: `tblGeneralTurning: ${ctx.matClass}`, rough: row('medium_rough_turning'), finish: row('finish_turning') };
+/**
+ * Plunging a turned groove (tblGrooving, grooving-table.ts): the insert is as wide as the groove (at most the table's widest), its speed
+ * and feed the material's rows, the feed read between the two insert widths the table gives. Chosen by the groove's width and depth.
+ */
+export function groovingLookupSeeds(ctx: MachiningLookupContext, keys: Record<string, number>): LookupSeeds {
+  const out: LookupSeeds = { seeds: {}, missing: [] };
+  const width = keys['Groove Width'];
+  const depth = keys['Groove Depth'];
+  if (!positive(width) || !positive(depth)) {
+    out.missing.push('Plunging: Groove Width and Groove Depth (the grooving insert is chosen by them)');
+    return out;
+  }
+  const p = resolveGroovingParams(ctx.groovingTable, width, depth, ctx.matClass);
+  if (!p) {
+    out.missing.push(ctx.groovingTable
+      ? `tblGrooving insert for ${ctx.matClass} reaching ${Math.round(depth * 1000) / 1000} mm deep`
+      : 'tblGrooving (machining_reference_data) could not be read');
+    return out;
+  }
+  const match = { table: 'tblGrooving', row: { 'Material Cut Code Name': p.materialCutCode, 'Length (mm)': p.rowWidthsMm[0]! } };
+  const src = `tblGrooving: material code ${p.materialCutCode} (${p.hardnessHb} HB)`;
+  out.seeds = {
+    'Insert Width': {
+      value: p.insertWidthMm,
+      source: p.insertWidthMm < width
+        ? `tblGrooving: the widest insert, ${p.insertWidthMm} mm (the groove is ${width} mm wide: it takes several plunges)`
+        : `CAD: the groove's width, ${width} mm: an insert as wide as the groove`,
+    },
+    'Cutting Speed': lookupSeed(p.cuttingSpeedMPerMin, src, match, 'Cutting Speed (m / min)'),
+    'Feed': lookupSeed(p.feedMmPerRev, `${src}, ${p.feedBasis}`, match, 'Feed (mm / rev)'),
+  };
+  return out;
 }
 
-export function roughTurningLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
-  const { tp, src, rough, finish } = turningRows(ctx);
-  if (!tp) return { seeds: {}, missing: [`tblGeneralTurning cutting data for ${ctx.matClass}`] };
-  return {
-    missing: [],
-    seeds: {
-      'Finish Depth of Cut': { value: tp.finishCutDepthMm, source: `${src} finish_turning`, lookup: true, match: finish },
-      'Rough Depth of Cut': { value: tp.roughCutDepthMm, source: `${src} medium_rough_turning`, lookup: true, match: rough },
-      'Rough Cutting Speed': { value: tp.roughCuttingSpeedMPerMin, source: `${src} medium_rough_turning`, lookup: true, match: rough },
-      'Rough Feed': { value: tp.roughFeedMmPerRev, source: `${src} medium_rough_turning`, lookup: true, match: rough },
-    },
-  };
-}
-
-export function finishTurningLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
-  const { tp, src, finish } = turningRows(ctx);
-  if (!tp) return { seeds: {}, missing: [`tblGeneralTurning cutting data for ${ctx.matClass}`] };
-  return {
-    missing: [],
-    seeds: {
-      'Finish Cutting Speed': { value: tp.finishCuttingSpeedMPerMin, source: `${src} finish_turning`, lookup: true, match: finish },
-      'Finish Feed': { value: tp.finishFeedMmPerRev, source: `${src} finish_turning`, lookup: true, match: finish },
-    },
-  };
-}
+/** The columns of the two grinding tables each grinding input is in (their staged spellings differ). */
+const GRINDING_VALUE_COLUMNS: Record<'tblCylindricalGrinding' | 'tblInternalGrinding', {
+  workSpeed: string; roughInfeed: string; finishInfeed: string; roughAxialFeed: string; finishAxialFeed: string;
+}> = {
+  tblCylindricalGrinding: {
+    workSpeed: 'work_speed_m_min', roughInfeed: 'rough_infeed_mm', finishInfeed: 'finish_infeed_mm',
+    roughAxialFeed: 'rough_axial_feed_rev_1', finishAxialFeed: 'finish_axial_feed_rev_1',
+  },
+  tblInternalGrinding: {
+    workSpeed: 'Work Speed (m / min)', roughInfeed: 'Rough Infeed (mm)', finishInfeed: 'Finish Infeed (mm)',
+    roughAxialFeed: 'Rough Axial Feed (rev^-1)', finishAxialFeed: 'Finish Axial Feed (rev^-1)',
+  },
+};
 
 /**
  * Cylindrical / Internal Grinding (and Jig Grind, plus its repetitions).
@@ -262,25 +212,29 @@ export function grindingLookupSeeds(
   const out: LookupSeeds = { missing: [], seeds: {} };
   const rules = ctx.capabilityRules;
   if (rules) {
-    out.seeds['Grinding Allowance'] = { value: rules.finishGrindingDepthMm, source: 'variables: finishGrindingDepth', lookup: true, match: { table: 'variables', row: { key: 'finishGrindingDepth' } } };
+    out.seeds['Grinding Allowance'] = variableSeed(rules.finishGrindingDepthMm, 'finishGrindingDepth');
   } else out.missing.push('variables: finishGrindingDepth');
   if (repetitions === 'jig_grind') {
     if (rules) {
-      out.seeds['Repetitions'] = { value: rules.jigGrindRepetitions, source: 'tblGtolProcessCapabilities: Jig Grind positionTolerance Num Repetitions', lookup: true,
-        match: { table: 'tblGtolProcessCapabilities', row: { Process: 'Jig Grind', GtolCategory: 'positionTolerance' } } };
+      out.seeds['Repetitions'] = lookupSeed(rules.jigGrindRepetitions, 'tblGtolProcessCapabilities: Jig Grind positionTolerance Num Repetitions',
+        { table: 'tblGtolProcessCapabilities', row: { Process: 'Jig Grind', GtolCategory: 'positionTolerance' } }, 'Num Repetitions');
     } else out.missing.push('tblGtolProcessCapabilities Jig Grind Num Repetitions');
   }
   const params = table === 'tblInternalGrinding' ? ctx.internalGrindingParams : ctx.grindingParams;
   const p = params?.dataFound ? params : null;
   if (!p) { out.missing.push(`${table} data for ${ctx.matClass}`); return out; }
   const src = `${table}: ${ctx.matClass}`;
-  const m = p.match ? { match: p.match } : {};
+  const columns = GRINDING_VALUE_COLUMNS[table];
+  // The row the values came from; a caller that did not say names no row, and the dialog outlines the one row holding the value.
+  const seed = (value: number, column: string): CalcSeed => (p.match
+    ? lookupSeed(value, src, p.match, column)
+    : { value, source: src, lookup: true, ref: { kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table, column, row: null } });
   Object.assign(out.seeds, {
-    'Work Speed': { value: p.workSpeedMMin, source: src, lookup: true, ...m },
-    'Rough Infeed': { value: p.roughInfeedMm, source: src, lookup: true, ...m },
-    'Finish Infeed': { value: p.finishInfeedMm, source: src, lookup: true, ...m },
-    'Rough Axial Feed': { value: p.roughAxialFeedRevMm, source: src, lookup: true, ...m },
-    'Finish Axial Feed': { value: p.finishAxialFeedRevMm, source: src, lookup: true, ...m },
+    'Work Speed': seed(p.workSpeedMMin, columns.workSpeed),
+    'Rough Infeed': seed(p.roughInfeedMm, columns.roughInfeed),
+    'Finish Infeed': seed(p.finishInfeedMm, columns.finishInfeed),
+    'Rough Axial Feed': seed(p.roughAxialFeedRevMm, columns.roughAxialFeed),
+    'Finish Axial Feed': seed(p.finishAxialFeedRevMm, columns.finishAxialFeed),
   });
   return out;
 }
@@ -308,18 +262,18 @@ export function shavingLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
   const ref = ctx.shaving;
   if (!ref?.rows.length) { out.missing.push('tblShaving (machining_reference_data) could not be read'); return out; }
   const rows = ref.rows.filter((r) => String(r['Hardness System'] ?? '').toLowerCase() === 'brinell');
-  const row = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]);
+  const row = nearestByHardness(rows, MACHINING_MATERIAL[ctx.matClass]);
   if (!row || !positive(row['Strokes']) || !positive(row['Cutting Speed (m / min)']) || !positive(row['Feed Per Rev (mm / rev)'])) {
     out.missing.push(`tblShaving row for ${ctx.matClass}`);
     return out;
   }
   const src = `tblShaving: material code ${row['Material Cut Code Name']} (${row['Hardness']} HB, nearest to ${ctx.matClass})`;
   const match = { table: 'tblShaving', row: { 'Material Cut Code Name': row['Material Cut Code Name'] } };
-  out.seeds['Strokes'] = { value: row['Strokes'], source: src, lookup: true, match };
-  out.seeds['Cutting Speed'] = { value: row['Cutting Speed (m / min)'], source: src, lookup: true, match };
-  out.seeds['Feed'] = { value: row['Feed Per Rev (mm / rev)'], source: src, lookup: true, match };
+  out.seeds['Strokes'] = lookupSeed(row['Strokes'], src, match, 'Strokes');
+  out.seeds['Cutting Speed'] = lookupSeed(row['Cutting Speed (m / min)'], src, match, 'Cutting Speed (m / min)');
+  out.seeds['Feed'] = lookupSeed(row['Feed Per Rev (mm / rev)'], src, match, 'Feed Per Rev (mm / rev)');
   if (ref.maxWorkpieceRpm == null) out.missing.push('variables: maxShavingWorkpieceSpeed');
-  else out.seeds['Max Workpiece Speed'] = { value: ref.maxWorkpieceRpm, source: 'variables: maxShavingWorkpieceSpeed', lookup: true, match: { table: 'variables', row: { key: 'maxShavingWorkpieceSpeed' } } };
+  else out.seeds['Max Workpiece Speed'] = variableSeed(ref.maxWorkpieceRpm, 'maxShavingWorkpieceSpeed');
   return out;
 }
 
@@ -349,7 +303,7 @@ export function rotaryBroachingLookupSeeds(ctx: MachiningLookupContext, keys: Re
   const ref = ctx.rotaryBroach;
   if (!ref?.rows.length) { out.missing.push('tblRotaryBroaching (machining_reference_data) could not be read'); return out; }
   const rows = ref.rows.filter((r) => String(r.HardnessSystem ?? '').toLowerCase() === 'brinell');
-  const material = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]);
+  const material = nearestByHardness(rows, MACHINING_MATERIAL[ctx.matClass]);
   if (!material) { out.missing.push(`tblRotaryBroaching row for ${ctx.matClass}`); return out; }
   const atCode = rows.filter((r) => r.MaterialCutCodeName === material.MaterialCutCodeName)
     .sort((a, b) => Number(a.WidthAcrossFlatsMm) - Number(b.WidthAcrossFlatsMm));
@@ -372,10 +326,10 @@ export function rotaryBroachingLookupSeeds(ctx: MachiningLookupContext, keys: Re
   }
   const src = `tblRotaryBroaching: material code ${lo.MaterialCutCodeName} (${lo.Hardness} HB, nearest to ${ctx.matClass}); max depth ${maxDepth.toFixed(2)} mm at ${af} mm across flats`;
   const match = { table: 'tblRotaryBroaching', row: { MaterialCutCodeName: lo.MaterialCutCodeName, WidthAcrossFlatsMm: lo.WidthAcrossFlatsMm } };
-  out.seeds['RPM'] = { value: Number(lo.RPM), source: src, lookup: true, match };
-  out.seeds['Feed'] = { value: Number(lo.FeedMmPerRev), source: src, lookup: true, match };
+  out.seeds['RPM'] = lookupSeed(Number(lo.RPM), src, match, 'RPM');
+  out.seeds['Feed'] = lookupSeed(Number(lo.FeedMmPerRev), src, match, 'FeedMmPerRev');
   if (ref.feedAdjustment == null) out.missing.push('variables: rotaryBroachFeedAdjustment');
-  else out.seeds['Feed Adjustment'] = { value: ref.feedAdjustment, source: 'variables: rotaryBroachFeedAdjustment', lookup: true, match: { table: 'variables', row: { key: 'rotaryBroachFeedAdjustment' } } };
+  else out.seeds['Feed Adjustment'] = variableSeed(ref.feedAdjustment, 'rotaryBroachFeedAdjustment');
   return out;
 }
 
@@ -412,13 +366,13 @@ export function hobbingLookupSeeds(ctx: MachiningLookupContext, keys: Record<str
   } else {
     const hob = ansi.reduce((best, r) => (Math.abs(r.module_mm - module) < Math.abs(best.module_mm - module) ? r : best), ansi[0]);
     const match = { table: 'tblAnsiHobbing', row: { module_mm: hob.module_mm, num_starts: hob.num_starts } };
-    out.seeds['Hob Diameter'] = { value: hob.hob_diameter_mm, lookup: true, match, source: `tblAnsiHobbing: module ${hob.module_mm} mm, ${starts} start(s)` };
-    out.seeds['Starts'] = { value: starts, lookup: true, match: { table: 'variables', row: { key: 'defaultNumStarts' } }, source: 'variables: defaultNumStarts' };
+    out.seeds['Hob Diameter'] = lookupSeed(hob.hob_diameter_mm, `tblAnsiHobbing: module ${hob.module_mm} mm, ${starts} start(s)`, match, 'hob_diameter_mm');
+    out.seeds['Starts'] = variableSeed(starts, 'defaultNumStarts');
   }
   const dp = 25.4 / module;
   const rows = ref.hobRows.filter((r) => String(r['Hardness System'] ?? '').toLowerCase() === 'brinell');
   const pitches = [...new Set(rows.map((r) => r['Diametral Pitch']).filter(positive))].sort((a, b) => a - b);
-  const material = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[ctx.matClass]);
+  const material = nearestByHardness(rows, MACHINING_MATERIAL[ctx.matClass]);
   if (!material || pitches.length === 0 || dp < pitches[0]! || dp > pitches[pitches.length - 1]!) {
     out.missing.push(`tblHobbing row for ${ctx.matClass} at diametral pitch ${dp.toFixed(2)} (module ${module.toFixed(3)} mm)`);
     return out;
@@ -428,8 +382,8 @@ export function hobbingLookupSeeds(ctx: MachiningLookupContext, keys: Record<str
   const row = atCode.reduce((best, r) => (Math.abs(r['Diametral Pitch'] - dp) < Math.abs(best['Diametral Pitch'] - dp) ? r : best), atCode[0]);
   const src = `tblHobbing: material code ${row['Material Cut Code Name']} (${row['Hardness']} HB, nearest to ${ctx.matClass}), diametral pitch ${row['Diametral Pitch']}`;
   const match = { table: 'tblHobbing', row: { 'Material Cut Code Name': row['Material Cut Code Name'], 'Diametral Pitch': row['Diametral Pitch'] } };
-  out.seeds['Cutting Speed'] = { value: row['Cutting Speed (m / min)'], source: src, lookup: true, match };
-  out.seeds['Axial Feed'] = { value: row['Feed (mm / rev)'], source: src, lookup: true, match };
+  out.seeds['Cutting Speed'] = lookupSeed(row['Cutting Speed (m / min)'], src, match, 'Cutting Speed (m / min)');
+  out.seeds['Axial Feed'] = lookupSeed(row['Feed (mm / rev)'], src, match, 'Feed (mm / rev)');
   return out;
 }
 
@@ -467,7 +421,7 @@ export function resolveKeywayBroach(ref: KeywayBroachReference | null | undefine
   if (!ref) return null;
   const pick = (all: any[]) => {
     const rows = brinellRows(all).filter((r) => positive(r['Keyway Width (mm)']));
-    const material = nearestByHardness(rows, MACHINING_MATERIAL_HARDNESS_HB[matClass]);
+    const material = nearestByHardness(rows, MACHINING_MATERIAL[matClass]);
     if (!material) return null;
     const atCode = rows.filter((r) => r['Material Cut Code Name'] === material['Material Cut Code Name']);
     const widths = [...new Set(atCode.map((r) => r['Keyway Width (mm)'] as number))].sort((a, b) => a - b);
@@ -499,25 +453,33 @@ export function surfaceGrindingLookupSeeds(ctx: MachiningLookupContext): LookupS
   const out: LookupSeeds = { missing: [], seeds: {} };
   const rules = ctx.capabilityRules;
   if (rules) {
-    out.seeds['Grinding Allowance'] = { value: rules.finishGrindingDepthMm, source: 'variables: finishGrindingDepth', lookup: true, match: { table: 'variables', row: { key: 'finishGrindingDepth' } } };
+    out.seeds['Grinding Allowance'] = variableSeed(rules.finishGrindingDepthMm, 'finishGrindingDepth');
   } else out.missing.push('variables: finishGrindingDepth');
   const p = ctx.surfaceGrindingParams;
   if (!p) { out.missing.push(`tblReciprocatingSurfaceGrinding data for ${ctx.matClass}`); return out; }
   const src = `tblReciprocatingSurfaceGrinding: material code ${p.materialCutCode} (${ctx.matClass})`;
-  const match = { match: { table: 'tblReciprocatingSurfaceGrinding', row: { MaterialCutCodeName: p.materialCutCode } } };
+  const match = { table: 'tblReciprocatingSurfaceGrinding', row: { MaterialCutCodeName: p.materialCutCode } };
   Object.assign(out.seeds, {
-    'Table Speed': { value: p.tableSpeedMPerMin, source: src, lookup: true, ...match },
-    'Rough Downfeed': { value: p.roughDownfeedMm, source: src, lookup: true, ...match },
-    'Finish Downfeed': { value: p.finishDownfeedMm, source: src, lookup: true, ...match },
+    'Table Speed': lookupSeed(p.tableSpeedMPerMin, src, match, 'TableSpeedMPerMin'),
+    'Rough Downfeed': lookupSeed(p.roughDownfeedMm, src, match, 'RoughDownfeedMm'),
+    'Finish Downfeed': lookupSeed(p.finishDownfeedMm, src, match, 'FinishDownfeedMm'),
   });
   if (p.wheelWidthMm == null) {
     out.missing.push(`the ${p.toolSeries} wheel width (tblGrinding), needed to cap the crossfeed`);
   } else {
     const capped = p.maxFractionalCrossfeed * p.wheelWidthMm;
     const crossfeed = Math.min(p.absoluteCrossfeedMm, capped);
+    // Computed from three table values (the wheel width is the one width tblGrinding gives every row of the wheel's tool series).
+    const steps = [
+      seedStep('Absolute Crossfeed', 'mm', lookupSeed(p.absoluteCrossfeedMm, src, match, 'AbsoluteCrossfeedMm')),
+      seedStep('Max Fractional Crossfeed', null, lookupSeed(p.maxFractionalCrossfeed, src, match, 'MaxFractionalCrossfeed')),
+      seedStep('Wheel Width', 'mm', lookupSeed(p.wheelWidthMm, `tblGrinding: ${p.toolSeries}`, { table: 'tblGrinding', row: { tool_series: p.toolSeries } }, 'wheel_width_mm')),
+      resultStep('Crossfeed', 'mm', crossfeed, 'min({Absolute Crossfeed}, {Max Fractional Crossfeed} * {Wheel Width})'),
+    ];
     out.seeds['Crossfeed'] = {
-      value: crossfeed, lookup: true, ...match,
+      value: crossfeed, lookup: true, match,
       source: `${src}: min(AbsoluteCrossfeedMm ${p.absoluteCrossfeedMm}, MaxFractionalCrossfeed ${p.maxFractionalCrossfeed} x ${p.wheelWidthMm} mm wheel (tblGrinding))`,
+      ref: calculationRef('Surface grinding crossfeed', steps),
     };
   }
   return out;
@@ -543,12 +505,22 @@ export function keywayBroachingLookupSeeds(ctx: MachiningLookupContext, keys: Re
     ? `${src} — Passes`
     : `${src} — ${choice.passes - 1} shim${choice.passes === 2 ? '' : 's'} + the first pass`;
   const positioningVar = choice.kind === 'pull' ? 'singlePassKeywayBroachingPositioningTime' : 'multipassKeywayBroachingPositioningTime';
+  // A pull broach's passes are its Passes column; a shim broach makes one pass per shim plus the first, computed from its Shims column.
+  const passes: CalcSeed = choice.kind === 'pull'
+    ? lookupSeed(choice.passes, passesSource, match, 'Passes')
+    : {
+      value: choice.passes, source: passesSource, lookup: true, match,
+      ref: calculationRef('Shim keyway broach passes', [
+        seedStep('Shims', null, lookupSeed(choice.passes - 1, src, match, 'Shims')),
+        resultStep('Passes', null, choice.passes, '{Shims} + 1'),
+      ]),
+    };
   out.seeds = {
-    'Broach Teeth': { value: r['Teeth'], source: src, lookup: true, match },
-    'Broach Pitch': { value: r['Pitch (mm)'], source: src, lookup: true, match },
-    'Cutting Speed': { value: r['Cutting Speed (m / min)'], source: src, lookup: true, match },
-    'Passes': { value: choice.passes, source: passesSource, lookup: true, match },
-    'Positioning Time': { value: choice.positioningS, source: `variables: ${positioningVar}`, lookup: true, match: { table: 'variables', row: { key: positioningVar } } },
+    'Broach Teeth': lookupSeed(r['Teeth'], src, match, 'Teeth'),
+    'Broach Pitch': lookupSeed(r['Pitch (mm)'], src, match, 'Pitch (mm)'),
+    'Cutting Speed': lookupSeed(r['Cutting Speed (m / min)'], src, match, 'Cutting Speed (m / min)'),
+    'Passes': passes,
+    'Positioning Time': variableSeed(choice.positioningS, positioningVar),
   };
   return out;
 }
@@ -560,8 +532,8 @@ export function wireEdmLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
   return {
     missing: [],
     seeds: {
-      'Rough Feed Rate': { value: p.roughFeedRateMmPerMin, source: 'tblWireEDMing: Roughing', lookup: true, match: row('Roughing') },
-      'Finish Feed Rate': { value: p.finishFeedRateMmPerMin, source: 'tblWireEDMing: Finishing', lookup: true, match: row('Finishing') },
+      'Rough Feed Rate': lookupSeed(p.roughFeedRateMmPerMin, 'tblWireEDMing: Roughing', row('Roughing'), 'FeedRateMmPerMin'),
+      'Finish Feed Rate': lookupSeed(p.finishFeedRateMmPerMin, 'tblWireEDMing: Finishing', row('Finishing'), 'FeedRateMmPerMin'),
     },
   };
 }
@@ -572,10 +544,13 @@ export function deburringLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
   return {
     missing: [],
     seeds: {
-      'Edge Speed': {
-        value: p.linearSpeedMmPerSec, source: `tblDeburring: ${ctx.matClass}`, lookup: true,
-        ...(p.materialCutCode ? { match: { table: 'tblDeburring', row: { material_cut_code_name: p.materialCutCode } } } : {}),
-      },
+      // The row the speed came from (code, deburr type, tool series); a caller that did not say names no row.
+      'Edge Speed': p.match
+        ? lookupSeed(p.linearSpeedMmPerSec, `tblDeburring: ${ctx.matClass}`, p.match, 'linear_speed_mm_s')
+        : {
+          value: p.linearSpeedMmPerSec, source: `tblDeburring: ${ctx.matClass}`, lookup: true,
+          ref: { kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table: 'tblDeburring', column: 'linear_speed_mm_s', row: null },
+        },
     },
   };
 }
@@ -587,11 +562,9 @@ export function rechuckLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
   return {
     missing: [],
     seeds: {
-      'Workholder Install and Remove Time': {
-        value: min, lookup: true,
-        source: 'Assumption: part re-held in a standard 3-jaw chuck — tblInstallingTurningWorkholders "3 Jaw Chuck" row',
-        match: { table: 'tblInstallingTurningWorkholders', row: { Name: '3 Jaw Chuck' } },
-      },
+      'Workholder Install and Remove Time': lookupSeed(min,
+        'Assumption: part re-held in a standard 3-jaw chuck — tblInstallingTurningWorkholders "3 Jaw Chuck" row',
+        { table: 'tblInstallingTurningWorkholders', row: { Name: '3 Jaw Chuck' } }, 'Install And Remove Time (min)'),
     },
   };
 }
@@ -602,21 +575,139 @@ export function rechuckLookupSeeds(ctx: MachiningLookupContext): LookupSeeds {
  * lookup-table inputs (Index Transfer reads the machine record, Inspection
  * the drawing and sampling policy).
  */
+/** What a spec-defined lookup needs: the staged tables and variables its fields name, and the material. */
+export interface SpecLookupData {
+  matClass: MaterialClass;
+  tables: Record<string, any[] | null | undefined>;
+  variables: Record<string, number | null | undefined>;
+  /** The material's cut code, for a table that has no hardness column to match the material by. */
+  cutCode: number | null;
+}
+
+const cutCodeOf = (row: any): number => Number(row.MaterialCutCodeName ?? row['Material Cut Code Name'] ?? row.material_cut_code ?? row.material_cut_code_name);
+
+/**
+ * The lookup inputs of a calculator whose spec fields say where each value is (machining-calculators.json:
+ * table + column, a variables key, an optional `where` and `nearest`). One resolver for every such calculator,
+ * so a new operation needs a spec entry and no resolver of its own. A value that cannot be read is named.
+ */
+const WORKBOOK_TABLE_SET: ReadonlySet<string> = new Set(WORKBOOK_TABLES);
+
+/** An input read from one of the machining workbook's tables (migration 1137): by the material's group, a band, or `where` alone. */
+export function isWorkbookField(f: SpecField): boolean {
+  return f.source === 'lookup' && (!!f.group || !!f.range || WORKBOOK_TABLE_SET.has(f.table ?? ''));
+}
+
+/**
+ * One input from a machining workbook table (migration 1137): the rows of the material's workbook group (its name in
+ * tblCuttingMaterialGroup), then the row whose band holds the input. A material the workbook has no row for, or a size outside its
+ * bands, is a named gap (a string), never a neighbouring row.
+ */
+function workbookSeed(f: SpecField, rows: any[], data: SpecLookupData, keys: Record<string, number>): CalcSeed | string {
+  const key: Record<string, string | number> = { ...(f.where ?? {}) };
+  let own = rows;
+  let how = '';
+  if (f.group) {
+    const map = (data.tables.tblCuttingMaterialGroup ?? []).find((r) => r.MaterialClass === data.matClass);
+    const name = map?.[f.group.map];
+    if (typeof name !== 'string' || name === '') return `${f.name}: the machining workbook's ${f.table} has no row for ${data.matClass}`;
+    own = own.filter((r) => r[f.group!.column] === name);
+    key[f.group.column] = name;
+    how = name;
+  }
+  if (f.range) {
+    const size = keys[f.range.input];
+    if (!Number.isFinite(size)) return `${f.name}: ${f.range.input} (the ${f.table} row is chosen by it)`;
+    const row = rowInBand(own, f.range.min, f.range.max, size);
+    if (!row) return `${f.name}: ${f.table}${how ? ` ${how}` : ''} has no ${f.range.min}-${f.range.max} band for ${f.range.input} ${size}`;
+    own = [row];
+    key[f.range.min] = row[f.range.min];
+    const max = row[f.range.max];
+    how = `${how}${how ? ', ' : ''}${f.range.input} ${size} in ${row[f.range.min]}${max == null ? ' and over' : `-${max}`}`;
+  }
+  const value = Number(own[0]?.[f.column!]);
+  if (own.length === 0 || !Number.isFinite(value)) return `${f.name}: ${f.table} has no row for ${how || data.matClass}`;
+  const where = Object.entries(f.where ?? {}).map(([c, v]) => `, ${c} ${v}`).join('');
+  // With the table row it came from as its reference (machiningLookupRef): the steps view opens that row of the workbook's table.
+  return lookupSeed(value, `${f.table}: ${how}${where}`, { table: f.table!, row: key }, f.column!);
+}
+
+export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupData, keys: Record<string, number>): LookupSeeds {
+  const out: LookupSeeds = { seeds: {}, missing: [] };
+  for (const f of fields) {
+    if (f.source !== 'lookup' || !f.table || !f.column) continue;
+    if (f.table === 'variables') {
+      const v = data.variables[f.column];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        out.seeds[f.name] = { value: v, source: `variables: ${f.column}`, lookup: true, match: { table: 'variables', row: { key: f.column } } };
+      } else out.missing.push(`${f.name}: variables ${f.column} is not staged`);
+      continue;
+    }
+    const all = data.tables[f.table];
+    if (!all?.length) { out.missing.push(`${f.name}: ${f.table} (machining_reference_data) could not be read`); continue; }
+    const rows = all.filter((r) => Object.entries(f.where ?? {}).every(([col, v]) => String(r[col]) === String(v)));
+    // The machining workbook's tables: the rows of the material's workbook group, then the one whose band holds the input.
+    if (isWorkbookField(f)) {
+      const seed = workbookSeed(f, rows, data, keys);
+      if (typeof seed === 'string') out.missing.push(seed);
+      else out.seeds[f.name] = seed;
+      continue;
+    }
+    // Tables keyed by something other than the material cut code: the material's type name, or a size band.
+    if (f.materialType || f.band) {
+      let row: any;
+      let how: string;
+      if (f.materialType) {
+        const type = ETCH_MATERIAL_TYPE[data.matClass];
+        row = type ? rows.find((r) => r[f.materialType!] === type) : undefined;
+        how = `${f.materialType} ${type ?? data.matClass}`;
+      } else {
+        const size = keys[f.band!.input];
+        if (!Number.isFinite(size)) { out.missing.push(`${f.name}: ${f.band!.input} (the ${f.table} row is chosen by it)`); continue; }
+        row = [...rows].sort((a, b) => Number(a[f.band!.column]) - Number(b[f.band!.column])).find((r) => Number(r[f.band!.column]) >= size!);
+        how = row ? `${f.band!.column} up to ${row[f.band!.column]}` : `${f.band!.column} for ${size}`;
+      }
+      const v = Number(row?.[f.column]);
+      if (!Number.isFinite(v)) { out.missing.push(`${f.name}: ${f.table} has no row for ${how}`); continue; }
+      const keyCol = f.materialType ?? f.band!.column;
+      out.seeds[f.name] = { value: v, lookup: true, source: `${f.table}: ${how}`, match: { table: f.table, row: { [keyCol]: row[keyCol] } } };
+      continue;
+    }
+    // The material's rows: by hardness inside its cut-code family, or by its cut code when the table has no hardness.
+    const byHardness = nearestByHardness(rows, MACHINING_MATERIAL[data.matClass]);
+    const code = byHardness ? cutCodeOf(byHardness) : data.cutCode;
+    let candidates = code == null ? [] : rows.filter((r) => cutCodeOf(r) === code);
+    const key: Record<string, string | number> = { ...(f.where ?? {}) };
+    if (f.nearest && candidates.length > 0) {
+      const target = f.nearest.product.reduce((p, name) => p * (keys[name] ?? Number.NaN), 1);
+      if (!Number.isFinite(target)) { out.missing.push(`${f.name}: ${f.nearest.product.join(' and ')} (the ${f.table} row is chosen by them)`); continue; }
+      const col = f.nearest.column;
+      const best = candidates.reduce((a, r) => (Math.abs(Number(r[col]) - target) < Math.abs(Number(a[col]) - target) ? r : a));
+      candidates = [best];
+      key[col] = best[col];
+    }
+    const value = Number(candidates[0]?.[f.column]);
+    if (!Number.isFinite(value)) { out.missing.push(`${f.name}: ${f.table} has no row for ${data.matClass}`); continue; }
+    out.seeds[f.name] = {
+      value, lookup: true,
+      source: `${f.table}: material code ${code}${Object.entries(key).map(([c, v]) => `, ${c} ${v}`).join('')}`,
+      match: { table: f.table, row: { MaterialCutCodeName: code as number, ...key } },
+    };
+  }
+  return out;
+}
+
 export function machiningLookupSeeds(
   operation: string,
   ctx: MachiningLookupContext,
   keys: Record<string, number>,
 ): LookupSeeds | null {
   switch (operation) {
-    case 'Drilling': return drillingLookupSeeds(ctx, keys);
-    case 'Reaming': return reamingLookupSeeds(ctx, keys);
-    case 'Tapping': return tappingLookupSeeds(ctx, keys);
     case 'Jig Boring': return jigBoringLookupSeeds(ctx, keys);
     case 'Gun Drilling': return gunDrillingLookupSeeds(ctx, keys);
     case 'Deep Bore Machine': return deepBoreLookupSeeds(ctx, keys);
     case 'Parting': return partingLookupSeeds(ctx, keys);
-    case 'Rough Turning': return roughTurningLookupSeeds(ctx);
-    case 'Finish Turning': return finishTurningLookupSeeds(ctx);
+    case 'Plunging': return groovingLookupSeeds(ctx, keys);
     case 'Cylindrical Grinding': return grindingLookupSeeds(ctx);
     case 'Internal Grinding': return grindingLookupSeeds(ctx, undefined, 'tblInternalGrinding');
     case 'Jig Grind': return grindingLookupSeeds(ctx, 'jig_grind', 'tblInternalGrinding');
@@ -626,7 +717,7 @@ export function machiningLookupSeeds(
     case 'Rotary Broaching': return rotaryBroachingLookupSeeds(ctx, keys);
     case 'Keyway Broaching': return keywayBroachingLookupSeeds(ctx, keys);
     case 'Wire EDM': return wireEdmLookupSeeds(ctx);
-    case 'Deburring': return deburringLookupSeeds(ctx);
+    case 'Deburring': case 'Automated Deburring': return deburringLookupSeeds(ctx);
     case 'Secondary Setup (Rechuck)': return rechuckLookupSeeds(ctx);
     default: return null;
   }

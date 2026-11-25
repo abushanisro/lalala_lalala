@@ -2,6 +2,8 @@
 
 // Updated: Removed all icons, compact design - Version 2.0
 import { useMemo } from 'react';
+
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -10,7 +12,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Badge } from '@/components/ui/badge';
 
 interface BOMItem {
   id: string;
@@ -76,9 +77,9 @@ export function BOMSelectionCard({
   return (
     <div className="card border rounded-lg overflow-hidden bg-card">
       {/* Compact Header */}
-      <div className="bg-primary py-2 px-3">
+      <div className="border-b bg-muted/40 py-2 px-3">
         <div className="flex items-center justify-between">
-          <h6 className="m-0 font-semibold text-primary-foreground text-sm">BOM & Part Selection</h6>
+          <h6 className="m-0 text-sm font-semibold text-foreground">BOM & Part Selection</h6>
           {selectedBomId && (
             <Badge variant="secondary" className="text-xs">
               {filteredItems.length}/{totalItems} parts
@@ -112,13 +113,13 @@ export function BOMSelectionCard({
           {/* Quick Stats - Only show when BOM selected */}
           {selectedBomId && (
             <>
-              <div className="bg-blue-50 dark:bg-blue-950/50 rounded-lg p-2 border border-blue-200 dark:border-blue-800">
-                <p className="text-[10px] font-medium text-blue-700 dark:text-blue-300">Total Items</p>
-                <p className="text-sm font-bold text-blue-900 dark:text-blue-100">{totalItems}</p>
+              <div className="bg-primary/10 dark:bg-primary/50 rounded-lg p-2 border border-primary/40 dark:border-primary/40">
+                <p className="text-[10px] font-medium text-primary dark:text-primary">Total Items</p>
+                <p className="text-sm font-bold text-primary dark:text-primary">{totalItems}</p>
               </div>
-              <div className="bg-green-50 dark:bg-green-950/50 rounded-lg p-2 border border-green-200 dark:border-green-800">
-                <p className="text-[10px] font-medium text-green-700 dark:text-green-300">Completed</p>
-                <p className="text-sm font-bold text-green-900 dark:text-green-100">{completedItems}</p>
+              <div className="bg-success/10 rounded-lg p-2 border border-success/30">
+                <p className="text-[10px] font-medium text-success">Completed</p>
+                <p className="text-sm font-bold text-success">{completedItems}</p>
               </div>
             </>
           )}

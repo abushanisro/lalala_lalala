@@ -20,19 +20,27 @@ export interface SandMachine {
   preferred: boolean;
   powerKw: number | null;
   specs: Readonly<Record<string, unknown>>;
+  /** The HR Rates location the record is priced for (the dialog shows the class's machines there); null when the row has none. */
+  location: string | null;
 }
 
 const num = (v: unknown): number | null => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
-/** The mhr_records columns a sand machine is read from (the whole row goes to the engine for a machine with no stored rate). */
+/**
+ * The mhr_records columns a sand machine is read from (the whole row goes to the engine for a machine with no stored rate). `typedColumns`:
+ * numeric columns of the row the caller reads as specs (machineValue), such as a multi-spindle's number_spindles; each replaces a spec of
+ * its name, since the column is where the data is kept.
+ */
 export function sandMachineFromRow(
   row: Record<string, any>,
   engineRate: (row: Record<string, any>) => { ratePerHr: number; assumedDefaults: string[] } | null,
+  typedColumns: readonly string[] = [],
 ): SandMachine {
   const stored = num(row.mhr_usd_per_hour);
   const engine = stored != null && stored > 0 ? null : engineRate(row);
   const derived = engine?.ratePerHr ?? null;
-  const specs = (row.specs ?? {}) as Record<string, unknown>;
+  const typed = Object.fromEntries(typedColumns.flatMap((c) => (num(row[c]) == null ? [] : [[c, num(row[c])]])));
+  const specs = { ...((row.specs ?? {}) as Record<string, unknown>), ...typed };
   return {
     id: String(row.id),
     name: String(row.machine_name),
@@ -46,6 +54,7 @@ export function sandMachineFromRow(
     preferred: specs['is_preferred'] === true || String(specs['is_preferred']).toLowerCase() === 'true',
     powerKw: num(row.machine_power_kw),
     specs,
+    location: row.location == null ? null : String(row.location),
   };
 }
 

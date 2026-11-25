@@ -1,6 +1,6 @@
 # CAD Engine — Architecture
 
-Current state first (updated 2026-10-29); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
+Current state first (updated 2026-11-23); the domain-boundary refactor log of 2026-09-01 follows it (its layout block is corrected; the narrative is historical).
 
 ## How a request flows
 
@@ -42,11 +42,46 @@ cad-engine/
   sheet_metal/
     feature_extractor.py         — SheetMetalFeatureExtractor (+ _annotate_tap_candidates)
     bend_relationships.py        — bend-to-bend/flange relationship extraction
+    features/drawn_shell.py      — the one pass over a sheet part's faces (types, areas, offset twins, adjacency) and the drawn
+                                   shell (deep draw / fluid cell): depth, opening width, developed and form areas; a drawn
+                                   part's flat pattern is its developed sheet
+    features/hydroform.py        — what every sheet part is measured for hydroforming ("hydroform", hf_v1): press axis, forming
+                                   depth, plan, projected and developed area, main surface, the drawn form, the blank (unfolded,
+                                   drawn equal-area or flat), straight and curved flanges, holes (pierced in the flat or not,
+                                   edge distance to the main surface)
+    features/roll_form.py        — what every single-body sheet part is measured for roll forming ("roll_form", rf_v3): the long
+                                   axis (the cross-section bends' common direction, or the axis a curved profile is swept round)
+                                   and length, whether it is one section along it (stock_fraction >= 0.8), the section, the strip
+                                   width (section area / t, checked against flats + bend arcs), the cross-section bends in order
+                                   across the strip (angle, inner radius, the flat before each, fold direction, level counted out from
+                                   the web, the middle of an open strip;
+                                   a sharp corner of a profile modelled without bend radii is a bend of radius 0, "sharp"), the
+                                   tube (a closed section; a round tube is two half turns meeting at the seam, its wall read from
+                                   its skins), the curve, the punched features (holes, cut-outs, lances, forms) at their stations,
+                                   the end cuts; null when the part is not a profile (decided from the face records in milliseconds).
+                                   Reads drawn_shell.analyse_sheet_faces, not the drawn-shell verdict: a curved profile's twinned
+                                   tori read as a drawn shell there and it is still measured here
     nesting.py                   — real-polygon 2D nesting (Nest View)
   injection_molding/
     feature_extractor.py         — InjectionMoldedFeatureExtractor
   die_casting/
     feature_extractor.py         — die-casting extractor (reached through family_hint="die_cast")
+  forging/
+    feature_extractor.py         — closed-die forging measurements (reached through family_hint="forged")
+  additive/
+    feature_extractor.py         — additive build measurements: build direction of least support, height, footprint, overhang, support volume, plate contact, holes (RingedHole: a grooved bore) (family_hint="additive"; Additive Manufacturing and Rapid Prototyping)
+    voids.py                     — the voids cleaning clears, on a voxel grid: pockets, ring pockets, enclosed cavities, non-round holes, each with its volume and depth
+  roto_blow/
+    feature_extractor.py         — a blow molded or rotomolded shell: wall, the inside (additive/voids.py), spout, parting line, perimeter, envelope, holes and voids (family_hint="roto_blow")
+  pcb/
+    service.py, parsers/, extraction/, contract/
+                                 — a printed circuit board's board files (Gerber, Excellon, drill report, Pick Place): the board feature graph and its preview (/extract/board, /render/board)
+    feature_extractor.py         — a board given as a 3D model: the board found among the model's bodies, its thickness, outline, holes, cutouts and the bodies on each side (family_hint="pcb")
+  bar_tube/
+    feature_extractor.py         — bar and tube measurements: section swept along a centreline (stock form, bends, developed length, holes, ends, end forms) or cut plate (family_hint="bar_tube")
+    centreline.py, section.py    — the centreline (bends joined by straights, section frame) and the cross-section classifier
+  composites/
+    feature_extractor.py         — laid-up composite laminate measurements: skins, thickness levels, outline, curvature (family_hint="composite")
   contract/
     assembly.schema.json         — /analyze/assembly result contract
   machining/
@@ -57,12 +92,30 @@ cad-engine/
                                        not CNC" architecture mandate)
     feature_models.py            — MachiningFeatureType/MachiningFeature/MachiningFeatureTree
                                     data shapes (own module since the same rename)
+    stock_envelope.py            — what every machined part is measured for its raw stock ("stock" in machining_features, stk_v1): the
+                                   axis the stock runs along (the turning axis when round bar about it is the smallest stock, else the
+                                   longest side of the part's tightest box), the length, the round, rectangle and hexagon around the
+                                   part seen along it, a through bore on its centre line (round tube), the end faces the saw cuts leave
+                                   and the faces already lying on each stock's surface; null when it could not be measured. With it,
+                                   the part as a piece cut out of plate ("plate", plt_v1): the direction it is thinnest in, its
+                                   thickness, and its silhouette seen along it (the union of the mesh's triangles: the outer boundary's
+                                   length, the area inside it, the smallest rectangle round it, the openings through it); null when
+                                   that alone could not be measured
   shared/                        — cross-domain, not owned by one manufacturing family
     machining_geometry.py        — hole/cone/counterbore classification + cylinder
                                     collection primitives, extracted out of Machining
                                     (2026-09-19) since Sheet Metal genuinely depends
-                                    on them directly — see below
+                                    on them directly — see below; the turning axis (the
+                                    direction a part's outer cylinders cover the most area
+                                    along, on the line those the part is centred in lie
+                                    about: never the centre of its bounding box) and
+                                    whether the part lies within its largest turned
+                                    diameter, which the family classifier reads
+    planar_outline.py            — closed 2D outlines: area, hull, smallest rectangle and circle,
+                                    simplification, the regular-hexagon test (bar and tube sections,
+                                    roll-formed profiles, the machining stock envelope)
     component_feature_analyzer.py — ComponentFeatureAnalyzer + detect_part_family()
+    solid_measures.py            — volume, surface area, bounding box; the principal axes of inertia
     assembly.py / assembly_report.py — STEP assembly structure + the /analyze/assembly result
     part_analysis.py             — analyze_part() (the body of /analyze/geometry) + ComponentFeatureCache
     analysis_gate.py             — concurrency gate + hung-request watchdog
@@ -142,6 +195,23 @@ Only extract a symbol into `shared/` when it's genuinely cross-domain-owned —
 do not move `MachiningFeatureRecognizer` (or the rest of
 `machining_feature_recognizer.py`) into `shared/` merely because Sheet Metal
 happens to consume part of it today.
+
+## Sheet Metal -> Bar & Tube (2026-11-22)
+
+`sheet_metal/features/roll_form.py` measures a roll-formed profile as a section swept along a line or an arc, which is what
+`bar_tube/` already does for stock: it imports `bar_tube.centreline` (the centreline, `locate` / `to_section` for stations and the
+section frame) and `bar_tube.section` (`classify_section`, `min_area_rect`) at module level, and `bar_tube.feature_extractor`'s
+`cut_section`, `surface_samples`, `surface_info`, `_arc_from_group`, `_end_kind` and `STOCK_FRACTION` inside its functions (that
+module pulls in the forging and injection-molding recognition modules, so a sheet part that is not a profile never imports it).
+These are geometry primitives, not bar-and-tube costing; if a third domain needs them they belong in `shared/`.
+
+**2026-11-22, a third domain:** the machining stock envelope (`machining/stock_envelope.py`) measures the round, rectangle and hexagon
+around a part seen along its axis, the same outline geometry a bar's section is classified with. The pure 2D helpers it shares (`hull`,
+`min_area_rect`, `enclosing_circle_diameter`, `simplify`, the regular-hexagon test, with `area`, `perimeter` and `centroid`) moved to
+`shared/planar_outline.py`, and the principal axes of inertia to `shared/solid_measures.py`; `bar_tube/section.py` and
+`bar_tube/feature_extractor.py` import them from there under the names they had, so bar and tube and roll forming read them unchanged.
+Machining does not import `bar_tube`. The 3D primitives roll forming takes from `bar_tube` (`centreline`, `cut_section`, `surface_info`)
+are still used by those two domains only, and stay.
 
 ## Verification performed (no OCC available in the refactor environment)
 

@@ -181,6 +181,11 @@ describe('the writer sends the costed-operation provenance', () => {
     expect(code).not.toMatch(/line_labour_rate:\s*lhr\.lhr/);
   });
 
+  it('stores the crew the engine costed the cycle with, never a literal operator (an unattended printer has none)', () => {
+    expect(code).toMatch(/heads:\s*line\.operators \?\? 1/);
+    expect(code).not.toMatch(/heads:\s*1,/);
+  });
+
   it('stamps the contract version so a reader can tell who wrote the row', () => {
     expect(code).toMatch(/engine_version:\s*COST_ENGINE_CONTRACT_VERSION/);
   });
@@ -304,14 +309,14 @@ describe('an applied line reports the rate the engine costed it at', () => {
   });
 });
 
-// Migration 1005: what a line charges beyond machine and crew time (energy, a consumable) is stored with it, USD like total_cost_per_part, so the
-// Cost tab can add it back when it recomputes the row from its rates.
+// Migration 1005: what a line charges beyond machine and crew time (energy, a consumable) is stored with it, in the row's currency like
+// total_cost_per_part, so the Cost tab can add it back when it recomputes the row from its rates.
 describe('the line\'s other cost is persisted', () => {
   const code = executable(readFileSync(CONTROLLER, 'utf8'));
   const sql = readFileSync(join(__dirname, '..', '..', '..', '..', 'migrations', '1005_process_cost_other_cost.sql'), 'utf8');
 
-  it('the writer passes the engine\'s USD figure through, NULL when the line charges nothing beyond time', () => {
-    expect(code).toMatch(/other_cost_per_part:\s*line\.otherCostPerPartUsd \?\? null/);
+  it('the writer stores the line\'s own-currency figure (a USD line\'s USD one), NULL when the line charges nothing beyond time or states only USD in another currency', () => {
+    expect(code).toMatch(/other_cost_per_part:\s*line\.otherCostPerPart \?\? \(currencyContext\.lineCurrency === 'USD' \? line\.otherCostPerPartUsd \?\? null : null\)/);
   });
 
   it('the replace function declares and inserts it, keeping the 972 columns', () => {
@@ -331,8 +336,8 @@ describe('the line\'s cycle phases are persisted', () => {
   const code = executable(readFileSync(CONTROLLER, 'utf8'));
   const sql = readFileSync(join(__dirname, '..', '..', '..', '..', 'migrations', '1009_process_cost_cycle_phases.sql'), 'utf8');
 
-  it('the writer stores the phases of the line\'s own calculation trace, NULL when it has no calculator cycle', () => {
-    expect(code).toMatch(/cycle_phases:\s*cyclePhasesOf\(line\.calculationTrace\)/);
+  it('the writer stores the phases of the line\'s own calculation trace (calculatorRunColumns, NULL when it has no calculator cycle)', () => {
+    expect(code).toMatch(/\.\.\.calculatorRunColumns\(line\)/);
   });
 
   it('the replace function declares and inserts it, keeping the 1005 and 972 columns', () => {
@@ -343,5 +348,28 @@ describe('the line\'s cycle phases are persisted', () => {
       expect(insert).toContain(col);
     }
     expect(sql).toContain('pg_advisory_xact_lock');
+  });
+});
+
+// Migration 1097: the calculation behind a line's cycle (the stored calculator, its version and its run) is stored with it, so the saved line
+// reopens its own calculator with the inputs it was costed from (costing/shared/calculator-run.ts).
+describe('the line\'s calculator and run are persisted', () => {
+  const code = executable(readFileSync(CONTROLLER, 'utf8'));
+  const sql = readFileSync(join(__dirname, '..', '..', '..', '..', 'migrations', '1097_process_cost_calculator_run.sql'), 'utf8');
+
+  it('the writer stores the engine line\'s calculation, and a No Cost Feature none', () => {
+    expect(code).toMatch(/\.\.\.calculatorRunColumns\(line\)/);
+    expect(code).toMatch(/other_cost_per_part: null, \.\.\.NO_CALCULATION/);
+  });
+
+  it('the replace function declares and inserts calculator_id, calculator_version and calculator_run, keeping every 1009 column', () => {
+    const recordset = sql.slice(sql.indexOf('jsonb_to_recordset'));
+    const insert = sql.slice(sql.indexOf('INSERT INTO process_cost_records'), sql.indexOf('FROM jsonb_to_recordset'));
+    for (const col of ['calculator_id', 'calculator_version', 'calculator_run', 'cycle_phases', 'other_cost_per_part', 'calculation_breakdown', 'machine_cost_per_part', ...COST_COLS]) {
+      expect(recordset).toContain(col);
+      expect(insert).toContain(col);
+    }
+    expect(sql).toContain('pg_advisory_xact_lock');
+    expect(sql).toMatch(/calculator_run jsonb CHECK/);
   });
 });

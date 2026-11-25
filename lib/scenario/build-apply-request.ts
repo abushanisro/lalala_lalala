@@ -1,4 +1,5 @@
 import type { ApplyCustomRouteStep } from '@/lib/api/hooks/useBOMItems';
+import type { RoutePickKey, RoutePicks } from '@/lib/routing/route-pick';
 
 /**
  * What the Cost Guide has staged, turned into the one Apply Scenario request (POST /bom-items/:id/scenario-applications). Pure: the page's state
@@ -12,7 +13,8 @@ export interface StagedManualRoute {
   dynamicSteps?: { process: string; machineClass: string; isReal: boolean; processGroup?: string; processRoute?: string }[];
   /** A route applied as it is. */
   directApplyRouteId?: string;
-  dieCastingProcess?: string;
+  /** The route choice the route commits (route-pick.ts routePicksOf): its family's key with the route's key, or a die casting process. */
+  routePicks?: RoutePicks;
   machineOverrides?: { processKey: string; mhrRecordId: string }[];
 }
 
@@ -30,7 +32,8 @@ export interface StagedScenario {
   materialGrade: string;
   processRouting: 'auto' | 'manual';
   manualRoute: StagedManualRoute | null;
-  isDieCast: boolean;
+  /** The key this part's route choice is stored under (route-pick.ts routePickKeyOf); null when its routes carry none. */
+  routePickKey: RoutePickKey | null;
   /** Currency and ask price, already resolved by the form. */
   scenarioPatch?: Record<string, unknown>;
   /** The revision of the applied scenario the page read: another apply since then is refused, not overwritten. */
@@ -92,8 +95,9 @@ export function buildApplyScenarioRequest(s: StagedScenario): BuiltRequest {
       ...(s.materialGrade.trim() ? { materialGrade: s.materialGrade.trim() } : {}),
       scenarioPatch: {
         processRouting: s.processRouting,
-        // Die casting: Manual is the process picked in the Workflow Builder; Auto clears it, so the cheapest feasible process is quoted.
-        ...(s.isDieCast ? { dieCastingProcess: manual?.dieCastingProcess ?? null } : {}),
+        // The part's route choice: Manual commits the route picked in the Workflow Builder (a forging route, a weldment's robotic welding, a
+        // die casting process, ...); Auto clears it, so the cheapest complete one is quoted. Only the part's own key is written.
+        ...(s.routePickKey ? { [s.routePickKey]: manual?.routePicks?.[s.routePickKey] ?? null } : {}),
         ...(s.scenarioPatch ?? {}),
       },
       route,

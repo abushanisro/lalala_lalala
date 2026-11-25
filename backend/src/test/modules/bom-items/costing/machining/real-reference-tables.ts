@@ -1,6 +1,5 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import type { DrillingTable } from '../../../../../modules/bom-items/costing/machining/lookup/drilling-table';
 import { resolveMachiningCapabilityRules, type MachiningCapabilityRules } from '../../../../../modules/bom-items/costing/machining/capability-rules';
 
 // The real machining reference tables, read from the same source files
@@ -37,28 +36,12 @@ function parseCsv(text: string): Array<Record<string, string>> {
 const read = (file: string) => parseCsv(readFileSync(join(LOOKUP_DIR, file), 'utf-8'));
 const num = (v: string | undefined) => (v === undefined || v === '' ? undefined : Number(v));
 
-/** tblDrilling, reshaped exactly like its machining_reference_data raw object. */
-export function realDrillingTable(): DrillingTable {
-  const rows = read('tblDrilling__materials.csv');
-  const first = rows[0]!;
-  const byDiameter = (prefix: string) =>
-    Object.fromEntries(Object.keys(first).filter((k) => k.startsWith(prefix)).map((k) => [k.slice(prefix.length), first[k]!]));
-  return {
-    tool_series: first['tool_series'],
-    construction_by_diameter: byDiameter('construction_by_diameter.'),
-    depth_max_mm_by_diameter: Object.fromEntries(
-      Object.entries(byDiameter('depth_max_mm_by_diameter.')).map(([k, v]) => [k, Number(v)]),
-    ),
-    materials: rows.map((r) => ({
-      material_cut_code: r['material_cut_code'],
-      hardness: num(r['hardness']),
-      cutting_speed_m_min: { solid: num(r['cutting_speed_m_min.solid']), insert_based: num(r['cutting_speed_m_min.insert_based']) },
-      feed_mm_rev_by_diameter: Object.fromEntries(
-        Object.keys(r).filter((k) => k.startsWith('feed_mm_rev_by_diameter.') && r[k] !== '')
-          .map((k) => [k.slice('feed_mm_rev_by_diameter.'.length), Number(r[k])]),
-      ),
-    })),
-  };
+/** tblGrooving rows (tblGrooving.csv, staged by migration 746 with its own column names and numbers). */
+export function realGroovingTable(): any[] {
+  return read('tblGrooving.csv').map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
+    const n = num(v);
+    return [k, n !== undefined && Number.isFinite(n) ? n : v];
+  })));
 }
 
 /** tblVirtualPartoffInsertCutData rows (tblParting.csv — the part-off insert cut data). */
@@ -107,21 +90,6 @@ export function realGrindingParams(table: 'tblCylindricalGrinding' | 'tblInterna
     materialCutCode,
     match: { table, row: { [code]: internal ? Number(r[code]) : r[code]! } },
   };
-}
-
-/** tblTapping rows, typed as migration 809 staged them (numeric cells are numbers). */
-export function realTappingTable(): any[] {
-  return read('tblTapping.csv').map((r) => ({
-    ToolType: r['ToolType'],
-    ToolSeries: r['ToolSeries'],
-    MaterialCutCodeName: num(r['MaterialCutCodeName']),
-    Hardness: num(r['Hardness']),
-    HardnessSystem: r['HardnessSystem'],
-    CuttingSpeedMPerMin: num(r['CuttingSpeedMPerMin']),
-    MetricPitchMm: num(r['MetricPitchMm']),
-    ToolLifeMin: num(r['ToolLifeMin']),
-    ToolLifeCostUSD: num(r['ToolLifeCostUSD']),
-  }));
 }
 
 /** The keyway broach reference (tblPullTypeKeywayBroach / tblShimTypeKeywayBroach,

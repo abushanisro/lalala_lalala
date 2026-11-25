@@ -1,6 +1,6 @@
 # Monitoring: Prometheus + Grafana
 
-KPI and health monitoring for the backend, `cad-engine`, `ecad-engine`, the CAD upload pipeline, costing and the database.
+KPI and health monitoring for the backend, `cad-engine`, the CAD upload pipeline, costing and the database.
 Builds on the OpenTelemetry layer in [observability.md](observability.md): **the applications still speak OTLP only**; Prometheus
 is the metrics backend (it ingests OTLP natively), OpenObserve stays for traces. No `prom-client`, no second instrumentation, no
 `/metrics` endpoint on any application.
@@ -9,7 +9,7 @@ is the metrics backend (it ingests OTLP natively), OpenObserve stays for traces.
 
 ```
 backend (NestJS) ──OTLP push──▶ ┐
-cad-engine, ecad-engine ─push─▶ ├─▶ Prometheus ◀── scrapes ── blackbox (probes) ── backend /api/health/*, engines /ready
+cad-engine ─────────────push─▶ ├─▶ Prometheus ◀── scrapes ── blackbox (probes) ── backend /api/health/*, engines /ready
                                 │        │                └── node-exporter (host, opt-in)
                                 │        └── rules/alerts.yml (14 alerts)
                                 ▼
@@ -68,7 +68,7 @@ All are in the monitoring block of `env/*.env.example`. Required (no default): `
 
 | Variable | Meaning |
 |---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` / `OTEL_TRACES_SAMPLER_ARG` | App side. Empty endpoint = telemetry off. The metrics endpoint is a full URL and overrides `<endpoint>/v1/metrics` (backend, cad-engine, ecad-engine). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` / `OTEL_TRACES_SAMPLER_ARG` | App side. Empty endpoint = telemetry off. The metrics endpoint is a full URL and overrides `<endpoint>/v1/metrics` (backend, cad-engine). |
 | `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, `GRAFANA_SECRET_KEY` | Grafana admin and the key that encrypts secrets Grafana stores. Generate; never commit. **Keep `GRAFANA_SECRET_KEY` stable once set**: changing it makes secrets already stored in the Grafana volume (for example a datasource or contact point added in the UI) unreadable. |
 | `GRAFANA_ROOT_URL`, `GRAFANA_COOKIE_SECURE`, `GRAFANA_PORT` | Public URL, secure cookie, loopback port. |
 | `GRAFANA_PG_HOST` (`host:port`), `_DATABASE`, `_USER`, `_PASSWORD`, `_SSLMODE` | The business-KPI datasource. Empty host = business panels show no data. |
@@ -92,8 +92,8 @@ Names are the OpenTelemetry names with dots as underscores and the unit as suffi
 | `emithran_privileged_client_calls_total` | counter | `emithran_privileged_site` (the reason's category before `:`, e.g. `reference-data`, `audit`) | `DatabaseService.getPrivilegedClient`, one per privileged (RLS-bypassing) client handed out; other code can count through `recordPrivilegedClientCall` in `telemetry/metrics.ts` |
 | `emithran_costing_duration_seconds` | histogram | `emithran_operation` (cost_summary, route_comparison), `emithran_outcome` (ok, error) | `@Traced` on `getCostSummary` / `getRouteComparison`; the `_count` is the run count |
 | `emithran_cad_upload_duration_seconds` | histogram | `emithran_outcome` (ok, error, retry) | CAD upload runner, one point per processing attempt (new) |
-| `emithran_job_queue_depth` | gauge | `emithran_queue` (`cad_upload`, electronics queues) | read when metrics are exported; 2 s bound per queue (CAD upload reader new) |
-| `emithran_engine_stage_duration_seconds` | histogram | `emithran_stage`, `emithran_outcome` | cad-engine / ecad-engine stages that exist (step_load, geometry_analysis, component_features, assembly_analysis, extract_board, render_board) |
+| `emithran_job_queue_depth` | gauge | `emithran_queue` (`cad_upload`) | read when metrics are exported; 2 s bound per queue (CAD upload reader new) |
+| `emithran_engine_stage_duration_seconds` | histogram | `emithran_stage`, `emithran_outcome` | cad-engine stages that exist (step_load, geometry_analysis, component_features, assembly_analysis, extract_board, render_board) |
 | `http_client_request_duration_seconds` | histogram | `server_address`, status, method | outbound calls (database API, engines, FX) |
 | `probe_success`, `probe_duration_seconds` | gauge | `job` (probe-live, probe-ready, probe-database, probe-engines), `engine` | blackbox |
 | `node_*` | | | node-exporter |
@@ -143,7 +143,7 @@ Thresholds are literals in the file (Prometheus rules take no variables): edit, 
 |---|---|---|---|---|
 | AppDown | `/api/health/live` probe fails | 3 m | critical | Backend container/process or network; liveness depends on nothing external. |
 | DatabaseUnavailable | database entry of `/ready` fails while live is up | 3 m | critical | Database provider status; Supabase free projects pause after a week idle. |
-| EngineUnavailable | cad/ecad `/ready` fails | 5 m | warning | Engine container, memory limit (about 16 MB per MB of STEP). |
+| EngineUnavailable | cad-engine `/ready` fails | 5 m | warning | Engine container, memory limit (about 16 MB per MB of STEP). |
 | BackendTelemetryMissing | backend live but no `target_info` for 10 m | 5 m | warning | `OTEL_*` on the backend; Prometheus receiver flag. Other alerts are blind without it. |
 | HighServerErrorRate | 5xx > 5% of requests, and > 0.05 req/s | 10 m | critical | Application Performance dashboard; DB and engine alerts first. |
 | HighApiLatencyP95 | p95 > 5 s on ordinary routes (long-running routes excluded), traffic > 0.05 req/s | 15 m | warning | Slowest endpoints panel; outbound latency. |
@@ -172,8 +172,8 @@ Thresholds are literals in the file (Prometheus rules take no variables): edit, 
 |---|---|
 | Panels empty | Prometheus `/api/v1/label/__name__/values` has `emithran_*`? If not: `OTEL_*` set on the service, `BackendTelemetryMissing`, `--web.enable-otlp-receiver`, network attachment (`docker network inspect`). `increase()`/`rate()` need two exported samples (metrics export every 30 s). |
 | Business panels empty | `GRAFANA_PG_HOST` set; migration 933 applied; `grafana_reader` has a login; datasource Test in Grafana; for pooler, user is `grafana_reader.<ref>`. |
-| `AppDown` firing but the app works | Blackbox target names (`backend:4000`, `cad-engine:5055`, `ecad-engine:5100`) differ from your compose service names; edit `prometheus.yml`. |
-| Engine panels empty | The engine has `OTEL_*` set; cad-engine and ecad-engine need a rebuild to include the metrics-endpoint override. |
+| `AppDown` firing but the app works | Blackbox target names (`backend:4000`, `cad-engine:5055`) differ from your compose service names; edit `prometheus.yml`. |
+| Engine panels empty | The engine has `OTEL_*` set; cad-engine needs a rebuild to include the metrics-endpoint override. |
 | Node panels empty | Start with `--profile host-metrics` on a Linux host (Docker Desktop reports its VM; `rslave` on `/` is not supported there). |
 | Restart Prometheus to apply rules | `docker compose ... restart prometheus` (rules are read at start), or `kill -HUP` via `docker kill -s HUP`. |
 

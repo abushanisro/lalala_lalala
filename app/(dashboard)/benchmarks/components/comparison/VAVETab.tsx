@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { toast } from "sonner";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2 } from '@/components/ui/icons';
 import { vaveApi } from "@/lib/api/vave";
-import type { BOMMetricEntry } from "../../types";
+
 import { itemCost, formatPrice } from "../../utils";
+
+import type { BOMMetricEntry } from "../../types";
 
 interface Props {
   bomMetrics: BOMMetricEntry[];
@@ -254,10 +257,10 @@ export function VAVETab({ bomMetrics }: Props) {
           <p className="text-2xl font-bold text-success">{formatPrice(totalPotential)}</p>
           <p className="text-xs text-success/70">Estimated potential</p>
         </Card>
-        <Card className="p-4 bg-card/50 border-brand-500/20 hover:border-brand-500/40 transition-all">
+        <Card className="p-4 bg-card/50 border-primary/20 hover:border-primary/40 transition-all">
           <h4 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wider">AI Insights Savings</h4>
-          <p className="text-2xl font-bold text-brand-400">{formatPrice(aiTotalSavings)}</p>
-          <p className="text-xs text-brand-400/70">
+          <p className="text-2xl font-bold text-primary">{formatPrice(aiTotalSavings)}</p>
+          <p className="text-xs text-primary/70">
             {aiInsights.size > 0 ? `From ${aiInsights.size} BOM(s)` : "Generate AI insights"}
           </p>
         </Card>
@@ -371,8 +374,8 @@ export function VAVETab({ bomMetrics }: Props) {
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       {v.costSavings.map((s, i) => (
                         <div key={i} className="flex justify-between">
-                          <span className="text-emerald-700">{s.type}:</span>
-                          <span className="font-medium text-emerald-800">
+                          <span className="text-success">{s.type}:</span>
+                          <span className="font-medium text-success">
                             {formatPrice(s.savings)}
                           </span>
                         </div>
@@ -401,7 +404,7 @@ export function VAVETab({ bomMetrics }: Props) {
                             opp.priority === "Critical"
                               ? "from-destructive/20 to-destructive/10 border-destructive/40 shadow-[0_0_15px_-3px_rgba(239,68,68,0.3)]"
                               : opp.priority === "High"
-                              ? "from-orange-500/20 to-orange-500/10 border-orange-500/40"
+                              ? "from-orange-500/20 to-orange-500/10 border-warning/40"
                               : opp.priority === "Medium"
                               ? "from-primary/20 to-primary/10 border-primary/40 shadow-glow"
                               : "from-muted/20 to-muted/10 border-border"
@@ -462,8 +465,8 @@ export function VAVETab({ bomMetrics }: Props) {
                       {/* Design Optimization */}
                       {(v.aiInsights.designOptimization.partConsolidation.length > 0 || 
                         v.aiInsights.designOptimization.toleranceOptimization.length > 0) && (
-                        <div className="p-4 bg-brand-500/5 rounded-lg border border-brand-500/20 hover:border-brand-500/40 transition-all">
-                          <h6 className="text-xs font-bold mb-3 text-brand-400 uppercase tracking-widest">Design Optimization</h6>
+                        <div className="p-4 bg-primary/5 rounded-lg border border-primary/20 hover:border-primary/40 transition-all">
+                          <h6 className="text-xs font-bold mb-3 text-primary uppercase tracking-widest">Design Optimization</h6>
                           {v.aiInsights.designOptimization.partConsolidation.map((con, i) => (
                             <div key={i} className="text-xs mb-3 p-2 bg-background/40 rounded border border-border/50">
                               <div className="flex justify-between items-center mb-1">
@@ -488,8 +491,8 @@ export function VAVETab({ bomMetrics }: Props) {
                       {/* Supplier Optimization */}
                       {(v.aiInsights.supplierOptimization.makeVsBuyRecommendations.length > 0 || 
                         v.aiInsights.supplierOptimization.supplierConsolidation.length > 0) && (
-                        <div className="p-4 bg-emerald-500/5 rounded-lg border border-emerald-500/20 hover:border-emerald-500/40 transition-all">
-                          <h6 className="text-xs font-bold mb-3 text-emerald-400 uppercase tracking-widest">Supplier Optimization</h6>
+                        <div className="p-4 bg-success/5 rounded-lg border border-success/20 hover:border-success/40 transition-all">
+                          <h6 className="text-xs font-bold mb-3 text-success uppercase tracking-widest">Supplier Optimization</h6>
                           {v.aiInsights.supplierOptimization.makeVsBuyRecommendations.map((rec, i) => (
                             <div key={i} className="text-xs mb-3 p-2 bg-background/40 rounded border border-border/50">
                               <div className="flex justify-between items-center mb-1">

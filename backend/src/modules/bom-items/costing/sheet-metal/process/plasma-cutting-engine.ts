@@ -47,7 +47,7 @@ interface PlasmaCutResult {
   // Always 0 — plasma cutting's real consumable is the nozzle/electrode
   // (nozzle_cost_usd/nozzle_life_cycles exist per-machine in
   // machine_library.json), not an abrasive like waterjet's garnet. No
-  // sm_waterjet_nozzle_rates-equivalent table exists for plasma yet — a
+  // nozzle-wear rate like the waterjet's is on file for plasma yet — a
   // disclosed scoping gap, not modeled here, kept only so this result shape
   // satisfies the shared CuttingProcessResult contract.
   abrasiveCost: number;
@@ -127,7 +127,7 @@ export class PlasmaCuttingEngine extends BaseCuttingEngine {
   readonly processLabel = 'Plasma Cut';
 
   computeCost(context: CuttingProcessContext): CuttingProcessResult {
-    return computePlasmaCutCost({
+    const result = computePlasmaCutCost({
       sheetThicknessMm: context.sheetThicknessMm,
       cutLengthMm: context.cutLengthMm,
       pierceCount: context.pierceCount,
@@ -148,5 +148,8 @@ export class PlasmaCuttingEngine extends BaseCuttingEngine {
         pierceTimeSec: context.plasmaCutParams.pierceTimeSec,
       } : {}),
     });
+    // A feed read elsewhere than the plasma cut data (the machining workbook's curve for a non-ferrous plate) is said on the line.
+    const source = context.plasmaCutParams?.dataFound ? context.plasmaCutParams.source : undefined;
+    return source ? { ...result, warnings: [...result.warnings, source] } : result;
   }
 }

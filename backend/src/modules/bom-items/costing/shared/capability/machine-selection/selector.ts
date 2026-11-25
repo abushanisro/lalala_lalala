@@ -59,15 +59,19 @@ const CAPABILITY_COLUMNS =
   'max_thickness_ms_mm, max_thickness_ss_mm, max_thickness_al_mm, max_thickness_cu_mm, ' +
   'cuttable_materials, availability_status, next_available_at, scheduled_load_pct, ' +
   'maintenance_window_start, maintenance_window_end, ' +
-  'tie_bar_x_mm, tie_bar_y_mm, shot_capacity_grams, min_mold_height_mm, max_mold_height_mm';
+  'tie_bar_x_mm, tie_bar_y_mm, shot_capacity_grams, min_mold_height_mm, max_mold_height_mm, live_tooling_power_kw';
 
 const BASE_COLUMNS =
   'id, machine_name, commodity_code, process_group, machine_class, ' +
   'total_machine_hour_rate, manual_mhr_value, fully_burdened_local_per_hr, ' +
   'capacity_utilization_rate, operators, usd_lhr_total, ' +
-  'press_cycle_time_s, handling_time_const_s, handling_time_mass_coeff_s_per_kg, setup_time_hr, ' +
+  'press_cycle_time_s, handling_time_const_s, handling_time_mass_coeff_s_per_kg, setup_time_hr, machine_power_kw, ' +
   'cut_to_length_cycle_const_s, cut_to_length_cycle_mass_coeff_s_per_kg, cut_to_length_cut_speed_s, ' +
   'number_spindles, drum_index_time_s, transfer_time_s, stock_feed_time_s, speed_synchronization_time_s, ' +
+  // The spindle limits and the rapid traverse rate are specs keys (migrations 1093, 1136, 1141): only those keys are read, not the whole
+  // specs object.
+  'spindle_speed_rpm:specs->spindle_speed_rpm, live_tooling_speed_rpm:specs->live_tooling_speed_rpm, ' +
+  'rapid_traverse_mm_per_min:specs->rapid_traverse_mm_per_min, ' +
   // The two components the canonical MHR is DEFINED as (migration 581:
   // MHR = Direct Overhead + Indirect Overhead). Carried so the benchmark
   // override guard can tell a real, self-consistent machine rate apart from
@@ -128,7 +132,11 @@ interface RawMachineRow {
   transfer_time_s?: number | string | null;
   stock_feed_time_s?: number | string | null;
   speed_synchronization_time_s?: number | string | null;
+  spindle_speed_rpm?: number | string | null;
+  live_tooling_speed_rpm?: number | string | null;
+  rapid_traverse_mm_per_min?: number | string | null;
   setup_time_hr?: number | string | null;
+  machine_power_kw?: number | string | null;
   direct_overhead_rate?: number | string | null;
   indirect_overhead_rate?: number | string | null;
   // Capability columns — absent until migration 324 runs
@@ -158,6 +166,7 @@ interface RawMachineRow {
   shot_capacity_grams?: number | string | null;
   min_mold_height_mm?: number | string | null;
   max_mold_height_mm?: number | string | null;
+  live_tooling_power_kw?: number | string | null;
 }
 
 function num(v: number | string | null | undefined): number | null {
@@ -285,10 +294,20 @@ export function classifyMachineRecord(row: RawMachineRow): MachineClass | null {
 // ── Capability hydration: DB → seed registry → class defaults ─────────────────
 
 const MOLDING_PRESS_CLASSES: ReadonlySet<string> = new Set([
-  'injection_molding', 'structural_foam_molding', 'reaction_injection_molding', 'compression_molding',
+  'injection_molding', 'structural_foam_molding', 'reaction_injection_molding', 'compression_molding', 'assembly_molding_insert_injection_molding',
 ]);
 
 function hydrateCapability(row: RawMachineRow, cls: MachineClass): {
+  capability: MachineCapability;
+  source: 'imported' | 'seed' | 'default_class';
+} {
+  // The machine's own live-tool spindle (migration 1043) goes with whichever limits it ends up with: it is a fact of the machine, not one of
+  // the envelope limits below, so it neither makes a record "staged" nor is replaced by a seed or a class default.
+  const limits = hydrateCapabilityLimits(row, cls);
+  return { ...limits, capability: { ...limits.capability, liveToolingPowerKw: num(row.live_tooling_power_kw) } };
+}
+
+function hydrateCapabilityLimits(row: RawMachineRow, cls: MachineClass): {
   capability: MachineCapability;
   source: 'imported' | 'seed' | 'default_class';
 } {
@@ -312,6 +331,7 @@ function hydrateCapability(row: RawMachineRow, cls: MachineClass): {
     shotCapacityGrams: num(row.shot_capacity_grams),
     minMoldHeightMm: num(row.min_mold_height_mm),
     maxMoldHeightMm: num(row.max_mold_height_mm),
+    liveToolingPowerKw: null,
   };
 
   const hasDbCapability = Object.entries(db).some(([k, v]) => k !== 'cuttableMaterials' && v != null);
@@ -445,7 +465,11 @@ export async function fetchMachinePool(
       transferTimeS: num(raw.transfer_time_s),
       stockFeedTimeS: num(raw.stock_feed_time_s),
       speedSynchronizationTimeS: num(raw.speed_synchronization_time_s),
+      maxSpindleRpm: num(raw.spindle_speed_rpm),
+      liveToolingMaxRpm: num(raw.live_tooling_speed_rpm),
+      rapidTraverseMmPerMin: num(raw.rapid_traverse_mm_per_min),
       setupTimeHr: num(raw.setup_time_hr),
+      machinePowerKw: num(raw.machine_power_kw),
       directOverheadRate: num(raw.direct_overhead_rate),
       indirectOverheadRate: num(raw.indirect_overhead_rate),
     });
@@ -1109,7 +1133,11 @@ function makeNoMachineCandidate(cls: MachineClass): MachineCandidate {
     transferTimeS: null,
     stockFeedTimeS: null,
     speedSynchronizationTimeS: null,
+    maxSpindleRpm: null,
+    liveToolingMaxRpm: null,
+    rapidTraverseMmPerMin: null,
     setupTimeHr: null,
+    machinePowerKw: null,
     directOverheadRate: null,
     indirectOverheadRate: null,
   };

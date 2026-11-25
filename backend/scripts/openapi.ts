@@ -4,7 +4,6 @@
 // No database, no credentials: the app is built, never started, and nothing is connected to. The configuration is fixed
 // below (placeholders), so the environment of the machine cannot change the output.
 process.env.ALLOW_DEV_AUTH_BYPASS = 'false';
-process.env.ELECTRONICS_QUEUE_DRIVER = 'memory';
 // The app refuses to build without its configuration (config/env.validation.ts). Placeholders satisfy that; none is ever
 // contacted or used to sign anything, and they are set unconditionally so neither CI secrets nor a developer's .env matter.
 Object.assign(process.env, {

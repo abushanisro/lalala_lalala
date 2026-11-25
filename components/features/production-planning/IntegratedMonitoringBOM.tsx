@@ -1,28 +1,19 @@
 'use client';
 
-import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { RemarksApi } from '@/lib/api/remarks';
-import { RemarkStatus } from '@/types/remarks';
-import { productionPlanningApi } from '@/lib/api/production-planning';
-import { apiClient } from '@/lib/api/client';
-import {
-  useIntegratedDashboard,
-  useProductionMonitoring,
-  useLotMaterials,
-  useProductionAlerts,
-  useUpdateMaterialStatus,
-  useResolveAlert,
-  useRefreshDashboard,
-  useInitializeLotMaterials,
-} from '@/lib/api/hooks/useIntegratedProduction';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
+import React, { useState } from 'react';
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   AlertTriangle,
   CheckCircle,
@@ -39,7 +30,11 @@ import {
   AlertCircle,
   ChevronRight,
   ChevronDown
-} from 'lucide-react';
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { PageSkeleton } from '@/components/ui/loading-skeleton';
+import { Progress } from '@/components/ui/progress';
 import {
   Select,
   SelectContent,
@@ -47,18 +42,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { apiClient } from '@/lib/api/client';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
-
-
+  useIntegratedDashboard,
+  useProductionMonitoring,
+  useLotMaterials,
+  useProductionAlerts,
+  useUpdateMaterialStatus,
+  useResolveAlert,
+  useRefreshDashboard,
+  useInitializeLotMaterials,
+} from '@/lib/api/hooks/useIntegratedProduction';
+import { productionPlanningApi } from '@/lib/api/production-planning';
+import { RemarksApi } from '@/lib/api/remarks';
+import { RemarkStatus } from '@/types/remarks';
 interface BOMItem {
   id: string;
   partNumber: string;
@@ -440,20 +439,20 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
 
   const getStatusColor = (status: string) => {
     const colors = {
-      PLANNED: 'bg-blue-100 text-blue-600',
+      PLANNED: 'bg-primary/10 text-primary',
       IN_PROGRESS: 'bg-yellow-100 text-yellow-600',
       COMPLETED: 'bg-green-100 text-green-600',
       BLOCKED: 'bg-red-100 text-red-600',
-      PLANNING: 'bg-gray-100 text-gray-600',
-      ORDERED: 'bg-blue-100 text-blue-600',
-      SHIPPED: 'bg-brand-100 text-brand-600',
+      PLANNING: 'bg-muted text-muted-foreground',
+      ORDERED: 'bg-primary/10 text-primary',
+      SHIPPED: 'bg-primary/10 text-primary',
       RECEIVED: 'bg-yellow-100 text-yellow-600',
       INSPECTED: 'bg-orange-100 text-orange-600',
       APPROVED: 'bg-green-100 text-green-600',
       IN_USE: 'bg-emerald-100 text-emerald-600',
       DEPLETED: 'bg-red-100 text-red-600'
     };
-    return colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-600';
+    return colors[status as keyof typeof colors] || 'bg-muted text-muted-foreground';
   };
 
   const getSeverityColor = (severity: string) => {
@@ -463,7 +462,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
       HIGH: 'bg-orange-100 text-orange-600',
       CRITICAL: 'bg-red-100 text-red-600'
     };
-    return colors[severity as keyof typeof colors] || 'bg-gray-100 text-gray-600';
+    return colors[severity as keyof typeof colors] || 'bg-muted text-muted-foreground';
   };
 
   const getAlertTypeIcon = (type: string) => {
@@ -522,9 +521,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary"></div>
-      </div>
+      <PageSkeleton label="Loading…" />
     );
   }
 
@@ -798,7 +795,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                               </div>
                               <div className="flex justify-between">
                                 <span>Used:</span>
-                                <span className="font-semibold text-blue-600">{item.consumed_quantity || 0}</span>
+                                <span className="font-semibold text-primary">{item.consumed_quantity || 0}</span>
                               </div>
                             </div>
                           </TableCell>
@@ -816,7 +813,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                                     <Badge
                                       key={`${item.id || item.partNumber}-${processName}-${index}`}
                                       variant="outline"
-                                      className={`text-xs ${process ? getStatusColor(process.status) : 'bg-blue-100 text-blue-600'}`}
+                                      className={`text-xs ${process ? getStatusColor(process.status) : 'bg-primary/10 text-primary'}`}
                                       title={processName}
                                     >
                                       {processName.length > 20 ? `${processName.substring(0, 20)}...` : processName}
@@ -824,7 +821,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                                   );
                                 })
                               ) : item.isSubtaskBom ? (
-                                <Badge variant="outline" className="text-xs bg-blue-100 text-blue-600">
+                                <Badge variant="outline" className="text-xs bg-primary/10 text-primary">
                                   Subtask Requirement
                                 </Badge>
                               ) : (
@@ -899,7 +896,7 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                                     <h4 className="font-medium mb-2">Active Alerts</h4>
                                     <div className="space-y-2">
                                       {(item.alerts || []).filter((a: any) => !a.resolved).map((alert: any) => (
-                                        <div key={alert.id} className="flex items-start gap-3 text-sm p-3 bg-white border rounded">
+                                        <div key={alert.id} className="flex items-start gap-3 text-sm p-3 bg-card border rounded">
                                           <AlertCircle className="h-4 w-4 text-orange-600 shrink-0 mt-0.5" />
                                           <div className="flex-1">
                                             <div className="font-semibold">{alert.type}</div>
@@ -1003,9 +1000,9 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                       <div>
                         <span className="font-medium">Impact:</span> {alert.impact}
                       </div>
-                      <div className="bg-blue-50 border border-blue-200 rounded p-2">
-                        <span className="font-medium text-blue-800">Suggested Action:</span>
-                        <span className="text-blue-700"> {alert.suggestedAction}</span>
+                      <div className="bg-primary/10 border border-primary/40 rounded p-2">
+                        <span className="font-medium text-primary">Suggested Action:</span>
+                        <span className="text-primary"> {alert.suggestedAction}</span>
                       </div>
                     </div>
 
@@ -1066,8 +1063,8 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-4 gap-4">
-                <div className="text-center p-3 bg-blue-50 rounded-lg">
-                  <div className="text-2xl font-bold text-blue-600">{selectedMaterial.totalQuantity}</div>
+                <div className="text-center p-3 bg-primary/10 rounded-lg">
+                  <div className="text-2xl font-bold text-primary">{selectedMaterial.totalQuantity}</div>
                   <div className="text-sm text-muted-foreground">Required</div>
                 </div>
                 <div className="text-center p-3 bg-green-50 rounded-lg">
@@ -1078,8 +1075,8 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
                   <div className="text-2xl font-bold text-orange-600">{selectedMaterial.consumedQuantity}</div>
                   <div className="text-sm text-muted-foreground">Consumed</div>
                 </div>
-                <div className="text-center p-3 bg-brand-50 rounded-lg">
-                  <div className="text-2xl font-bold text-brand-600">
+                <div className="text-center p-3 bg-primary/10 rounded-lg">
+                  <div className="text-2xl font-bold text-primary">
                     {selectedMaterial.totalQuantity - selectedMaterial.consumedQuantity}
                   </div>
                   <div className="text-sm text-muted-foreground">Remaining</div>
@@ -1131,12 +1128,12 @@ export const IntegratedMonitoringBOM = ({ lotId }: IntegratedMonitoringBOMProps)
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="p-4 bg-blue-50 rounded-lg border">
+            <div className="p-4 bg-primary/10 rounded-lg border">
               <div className="flex items-center gap-2 mb-2">
-                <Package className="h-4 w-4 text-blue-600" />
-                <span className="text-sm font-medium text-blue-900">What this will do:</span>
+                <Package className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium text-primary">What this will do:</span>
               </div>
-              <ul className="text-sm text-blue-800 space-y-1">
+              <ul className="text-sm text-primary space-y-1">
                 <li>• Load only the selected BOM items for this production lot</li>
                 <li>• Calculate required quantities based on production quantity</li>
                 <li>• Set up material tracking for selected items only</li>

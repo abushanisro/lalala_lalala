@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +13,10 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { Loader2, Calculator as CalculatorIcon, Play, Eye } from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { LocationMark } from '@/components/ui/location-mark';
 import {
   Select,
   SelectContent,
@@ -18,17 +24,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useRawMaterials, useRawMaterialFilterOptions, useMaterialAliases, type RawMaterial } from '@/lib/api/hooks/useRawMaterials';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Mark } from '@/components/ui/status-mark';
+
 import { useCostSummary, type CalculationTraceStep, type ConfidenceLevel } from '@/lib/api/hooks/useBOMItems';
-import { CalculationTracePanel } from './CalculationTracePanel';
-import { isStockDrivenBlank } from '@/lib/costing/material-usage';
-import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useCalculators, useCalculator, useExecuteCalculator } from '@/lib/api/hooks/useCalculators';
 import { useExchangeRates } from '@/lib/api/hooks/useExchangeRates';
-import { Loader2, Calculator as CalculatorIcon, Play, Eye } from 'lucide-react';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useMaterialUsage, type MaterialUsageExplanation } from '@/lib/api/hooks/useMaterialUsage';
+import { useRawMaterials, useRawMaterialFilterOptions, useMaterialAliases, type RawMaterial } from '@/lib/api/hooks/useRawMaterials';
+import { isStockDrivenBlank } from '@/lib/costing/material-usage';
+
+import { CalculationTracePanel } from './CalculationTracePanel';
+import { MaterialUsageJustification } from './MaterialUsageJustification';
+import { ReferenceTable } from './ReferenceTable';
+import { UsageCalculatorForm } from './UsageCalculatorForm';
+
 
 // Static lookup — defined outside component so it is never recreated on re-render
 const CALCULATOR_PROPERTY_MAPPINGS: Record<string, string> = {
@@ -211,6 +221,9 @@ export function RawMaterialDialog({
   const nestingItemId = open ? (bomItemData?.id as string | undefined) : undefined;
   const { data: nestingCostSummary } = useCostSummary(nestingItemId, costBatchSize, location);
   const nestingBlankSpec = nestingCostSummary?.blankSpec;
+  // What the cost engine calculates as this part's usage, with the working behind each figure (every process family). Fetched while the dialog is open.
+  const { data: materialUsage, isLoading: materialUsageLoading } = useMaterialUsage(nestingItemId, costBatchSize, location);
+  const usageIsCalculated = !!materialUsage && materialUsage.source !== 'none';
   const hasRealNesting = nestingBlankSpec?.form === 'sheet' && typeof nestingBlankSpec.partsPerSheet === 'number';
   // "Nesting ran" is not the same as "nesting is trustworthy": when the true
   // unfolded flat-pattern rectangle couldn't be resolved, the engine falls
@@ -288,6 +301,39 @@ export function RawMaterialDialog({
   const [grossUsageEditOpen, setGrossUsageEditOpen] = useState(false);
   const [grossUsageEditDraft, setGrossUsageEditDraft] = useState('');
   const [grossUsageEditReasonDraft, setGrossUsageEditReasonDraft] = useState('');
+
+  // Net Usage, Gross Usage and Scrap % from the engine's calculation: what the calculator buttons and "Use calculated values" do. A manual gross
+  // override is dropped, since the point of the action is to return to the calculated figures.
+  const applyCalculatedUsage = (usage: MaterialUsageExplanation) => {
+    // Four decimals of a kg: what the record stores, and what this dialog's own gross field is kept to.
+    const kg = (v: number) => parseFloat(v.toFixed(4));
+    setNetUsage(kg(usage.netUsage));
+    setScrap(usage.scrapPct);
+    setGrossUsage(kg(usage.grossUsage));
+    setCadFilled(false);
+    setGrossUsageOverridden(false);
+    setGrossUsageOverrideReason('');
+  };
+  // The calculator buttons beside Net and Gross Usage, for a part whose usage the cost engine calculates (every family but sheet metal, which has
+  // its own reference calculators here): the calculator panel opens on the engine's own working of that figure, with a button that puts the
+  // calculated figures in the fields.
+  const showUsageCalculation = (target: 'netUsage' | 'grossUsage') => {
+    setCalculatorTarget(target);
+    setCalculatorResults(null);
+    setCalculatorWarnings([]);
+    setCalculatorOpen(true);
+  };
+  const calculatorShowsEngineUsage = !isSheetMetalItem && usageIsCalculated;
+  // A new record starts from the calculated usage once a material is chosen, instead of from empty fields. Once per open: it never overwrites typing.
+  const usageAutoFilledRef = useRef(false);
+  useEffect(() => { if (!open) usageAutoFilledRef.current = false; }, [open]);
+  useEffect(() => {
+    if (!open || editData || usageAutoFilledRef.current || !selectedMaterialId || !materialUsage || materialUsage.source === 'none') return;
+    if (netUsage !== '' && netUsage !== 0) return;
+    usageAutoFilledRef.current = true;
+    applyCalculatedUsage(materialUsage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editData, selectedMaterialId, materialUsage]);
 
   // Lookup table state
   const [selectedLookupField, setSelectedLookupField] = useState<any>(null);
@@ -640,7 +686,10 @@ export function RawMaterialDialog({
   }, [calculatorOpen]);
 
   // Fetch raw materials from API
-  const { data: rawMaterialsData, isLoading } = useRawMaterials();
+  // The selected group's whole list. The endpoint pages at 100 rows by default and the library holds far more, so an unscoped read left most materials
+  // out: a saved record's own material was then missing from the picker ("Select material", "Material has no cost data"). Before a group is known
+  // (a record saved without one) the first page is still read, as before, to find the record's material by name.
+  const { data: rawMaterialsData, isLoading } = useRawMaterials(materialGroup ? { materialGroup, limit: 1000 } : undefined);
   const { data: filterOptions, isLoading: isLoadingOptions } = useRawMaterialFilterOptions();
   // Regional/shorthand designations (e.g. "AL6101" for "Generic Aluminum, ANSI
   // 6101") that don't appear in a material's own name -- without these, typing
@@ -738,11 +787,12 @@ export function RawMaterialDialog({
   // materialName = "IS2062 E250 CRCA" but DB has material.material = "CRCA Steel").
   const findMaterialByEditData = (pool: RawMaterial[] | null | undefined, ed: any) => {
     if (!pool || !ed) return undefined;
-    const direct = pool.find(m =>
+    // The record's own row first: several groups carry a material of the same name (an alloy listed under Sand Casting, Die Casting, ...), and a name
+    // match alone could pick another group's row, with another price.
+    const direct = pool.find(m => m.id === ed.materialId) ?? pool.find(m =>
       m.material === ed.materialName ||
       (m as any).materialName === ed.materialName ||
-      m.materialGrade === ed.materialName ||
-      m.id === ed.materialId,
+      m.materialGrade === ed.materialName,
     );
     if (direct) return direct;
     // Alias fallback: a saved line's materialName can be a shorthand/regional
@@ -1167,17 +1217,17 @@ export function RawMaterialDialog({
               <>
                 {/* Info Banner - Show when no data available */}
                 {materialGroups.length === 0 && (
-                  <Card className="border-blue-200 bg-blue-50 dark:bg-blue-950 dark:border-blue-800">
+                  <Card className="border-primary/40 bg-primary/10 dark:bg-primary/15 dark:border-primary/40">
                     <CardContent className="pt-4 pb-4">
                       <div className="flex gap-3">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-primary dark:text-primary shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
                           <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                         </svg>
                         <div className="flex-1">
-                          <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
+                          <h4 className="text-sm font-semibold text-primary dark:text-primary mb-1">
                             No Raw Materials Available
                           </h4>
-                          <p className="text-xs text-blue-700 dark:text-blue-300">
+                          <p className="text-xs text-primary dark:text-primary">
                             There are no raw materials in your database yet. Please add raw materials by uploading an Excel file or creating them manually in the Raw Materials management page.
                           </p>
                         </div>
@@ -1284,14 +1334,14 @@ export function RawMaterialDialog({
 
               // ── Price matrix ───────────────────────────────────────────────────
               const locationPrices: Array<{ flag: string; label: string; cost: number | undefined; currency: string; symbol: string }> = [
-                { flag: '🇮🇳', label: 'India',     cost: selectedMaterial.costIndia,   currency: 'INR', symbol: '₹'   },
-                { flag: '🇺🇸', label: 'USA',       cost: selectedMaterial.costUsa,     currency: 'USD', symbol: '$'   },
-                { flag: '🇨🇳', label: 'China',     cost: selectedMaterial.costChina,   currency: 'CNY', symbol: '¥'   },
-                { flag: '🇩🇪', label: 'Germany',   cost: selectedMaterial.costGermany, currency: 'EUR', symbol: '€'   },
-                { flag: '🇫🇷', label: 'France',    cost: selectedMaterial.costFrance,  currency: 'EUR', symbol: '€'   },
-                { flag: '🇪🇺', label: 'W. Europe', cost: selectedMaterial.costWEurope, currency: 'EUR', symbol: '€'   },
-                { flag: '🇪🇺', label: 'E. Europe', cost: selectedMaterial.costEEurope, currency: 'EUR', symbol: '€'   },
-                { flag: '🇲🇽', label: 'Mexico',    cost: selectedMaterial.costMexico,  currency: 'MXN', symbol: 'MX$' },
+                { flag: 'IN', label: 'India',     cost: selectedMaterial.costIndia,   currency: 'INR', symbol: '₹'   },
+                { flag: 'US', label: 'USA',       cost: selectedMaterial.costUsa,     currency: 'USD', symbol: '$'   },
+                { flag: 'CN', label: 'China',     cost: selectedMaterial.costChina,   currency: 'CNY', symbol: '¥'   },
+                { flag: 'DE', label: 'Germany',   cost: selectedMaterial.costGermany, currency: 'EUR', symbol: '€'   },
+                { flag: 'FR', label: 'France',    cost: selectedMaterial.costFrance,  currency: 'EUR', symbol: '€'   },
+                { flag: 'EU', label: 'W. Europe', cost: selectedMaterial.costWEurope, currency: 'EUR', symbol: '€'   },
+                { flag: 'EU', label: 'E. Europe', cost: selectedMaterial.costEEurope, currency: 'EUR', symbol: '€'   },
+                { flag: 'MX', label: 'Mexico',    cost: selectedMaterial.costMexico,  currency: 'MXN', symbol: 'MX$' },
               ].filter(p => p.cost && p.cost > 0);
 
               const toUsdPrice = (lc: number, curr: string) =>
@@ -1351,7 +1401,7 @@ export function RawMaterialDialog({
                                     : 'bg-background hover:bg-primary/10 border border-border'
                                 }`}
                               >
-                                <span>{p.flag} {p.label}</span>
+                                <span><LocationMark location={p.label} />{p.label}</span>
                                 <div className="text-right ml-2">
                                   <div className="font-mono tabular-nums">
                                     {locDisplay != null ? `${displaySymbol}${locDisplay.toFixed(2)}` : '—'}
@@ -1393,7 +1443,7 @@ export function RawMaterialDialog({
                         </div>
                       )}
                       {country && !hasRegionalCost && (
-                        <div className="text-xs text-amber-600 border-t border-primary/10 pt-1">
+                        <div className="text-xs text-warning border-t border-primary/10 pt-1">
                           No {country}-specific price in database — showing base rate
                         </div>
                       )}
@@ -1407,10 +1457,10 @@ export function RawMaterialDialog({
             {(selectedMaterialId || editData) && (!selectedMaterial ||
               (!selectedMaterial.unitCost && !selectedMaterial.cost)) && (
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-orange-600">
+                <label className="text-sm font-semibold text-warning">
                   Manual Unit Cost <span className="text-xs text-muted-foreground">(Material has no cost data)</span>
                 </label>
-                <div className="p-4 border-2 border-orange-200 bg-orange-50 dark:bg-orange-950/20 rounded-lg">
+                <div className="p-4 border-2 border-warning/40 bg-warning/10 rounded-lg">
                   <div className="flex items-center gap-3">
                     <span className="text-sm">{hasDisplayCurrency ? displaySymbol : '…'}</span>
                     <Input
@@ -1434,7 +1484,7 @@ export function RawMaterialDialog({
                     />
                     <span className="text-xs text-muted-foreground">per unit</span>
                   </div>
-                  <div className="text-xs text-orange-600 mt-2">
+                  <div className="text-xs text-warning mt-2">
                     This cost will be used for calculations since the selected material has no cost data.
                   </div>
                 </div>
@@ -1443,9 +1493,9 @@ export function RawMaterialDialog({
 
             {/* ── CAD Geometry Banner ────────────────────────────────────────── */}
             {cadVolumeMm3 != null && cadVolumeMm3 > 0 && (
-              <div className="rounded-lg border border-cyan-200 bg-cyan-50 dark:border-cyan-800 dark:bg-cyan-950/30 px-3 py-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-cyan-700 dark:text-cyan-400 font-semibold mb-1.5">From CAD Analysis</p>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-cyan-800 dark:text-cyan-300">
+              <div className="rounded-lg border border-primary/40 bg-primary/10 dark:border-primary/40 dark:bg-primary/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-wider text-primary dark:text-primary font-semibold mb-1.5">From CAD Analysis</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary dark:text-primary">
                   <span>Volume: <strong>{cadVolumeMm3.toLocaleString(undefined, { maximumFractionDigits: 2 })} mm³</strong></span>
                   {bomItemData?.weight && <span>Weight: <strong>{Number(bomItemData.weight).toFixed(4)} kg</strong></span>}
                   {bomItemData?.materialGrade && <span>Grade: <strong>{bomItemData.materialGrade}</strong></span>}
@@ -1453,7 +1503,7 @@ export function RawMaterialDialog({
                 </div>
                 {smartFillAvailable && (
                   <Button type="button" size="sm" variant="outline"
-                    className="mt-2 h-7 text-xs border-cyan-400 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900"
+                    className="mt-2 h-7 text-xs border-primary/40 text-primary dark:text-primary hover:bg-primary/10 dark:hover:bg-primary/15"
                     onClick={handleSmartFill}>
                     Smart Fill — net usage from geometry
                   </Button>
@@ -1463,7 +1513,7 @@ export function RawMaterialDialog({
 
             {/* Usage and Cost Fields */}
             {!selectedMaterialId && !editData && (
-              <div className="bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-lg p-3 text-xs text-blue-700 dark:text-blue-300">
+              <div className="bg-primary/10 dark:bg-primary/50 border border-primary/40 dark:border-primary/40 rounded-lg p-3 text-xs text-primary dark:text-primary">
                 Select a material above to enable usage and cost fields
               </div>
             )}
@@ -1475,7 +1525,7 @@ export function RawMaterialDialog({
                   Net Usage
                   <span className="text-muted-foreground text-xs font-normal">(kg · finished part)</span>
                   {cadFilled && (
-                    <span className="text-[10px] bg-cyan-100 dark:bg-cyan-900 text-cyan-700 dark:text-cyan-300 px-1.5 py-0.5 rounded font-semibold">CAD</span>
+                    <span className="text-[10px] bg-primary/10 dark:bg-primary/15 text-primary dark:text-primary px-1.5 py-0.5 rounded font-semibold">CAD</span>
                   )}
                 </label>
                 <div className="flex gap-2">
@@ -1496,6 +1546,8 @@ export function RawMaterialDialog({
                     type="button" variant="outline" size="icon"
                     onClick={(e) => {
                       e.preventDefault(); e.stopPropagation(); e.nativeEvent?.stopImmediatePropagation?.();
+                      // Every family but sheet metal (which has its own reference calculators here): the button fills the fields from the engine's calculation.
+                      if (calculatorShowsEngineUsage) { showUsageCalculation('netUsage'); return; }
                       setCalculatorTarget('netUsage');
                       setCalculatorResults(null);
                       setCalculatorWarnings([]);
@@ -1508,14 +1560,14 @@ export function RawMaterialDialog({
                     }}
                     onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); e.nativeEvent?.stopImmediatePropagation?.(); }}
                     onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    title="Use DB Calculator"
+                    title={!isSheetMetalItem && usageIsCalculated ? 'Open the calculation of this usage' : 'Use DB Calculator'}
                     disabled={!selectedMaterialId && !editData}
                   >
                     <CalculatorIcon className="h-4 w-4" />
                   </Button>
                 </div>
                 {cadFilled && cadVolumeMm3 && matDensityKgM3 ? (
-                  <p className="text-[11px] text-cyan-600 dark:text-cyan-400 font-mono">
+                  <p className="text-[11px] text-primary dark:text-primary font-mono">
                     {cadVolumeMm3.toLocaleString(undefined, { maximumFractionDigits: 2 })} mm³ × {matDensityKgM3.toLocaleString()} kg/m³ ÷ 1,000,000,000
                   </p>
                 ) : (
@@ -1560,6 +1612,7 @@ export function RawMaterialDialog({
                     type="button" variant="outline" size="icon"
                     onClick={(e) => {
                       e.preventDefault(); e.stopPropagation(); e.nativeEvent?.stopImmediatePropagation?.();
+                      if (calculatorShowsEngineUsage) { showUsageCalculation('grossUsage'); return; }
                       setCalculatorTarget('grossUsage');
                       setCalculatorResults(null);
                       setCalculatorWarnings([]);
@@ -1572,7 +1625,7 @@ export function RawMaterialDialog({
                     }}
                     onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); e.nativeEvent?.stopImmediatePropagation?.(); }}
                     onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    title={isSheetMetalItem && grossUsageCalculator ? 'View calculation & override' : 'Use DB Calculator'}
+                    title={isSheetMetalItem && grossUsageCalculator ? 'View calculation & override' : usageIsCalculated ? 'Open the calculation of this usage' : 'Use DB Calculator'}
                     disabled={!selectedMaterialId && !editData}
                   >
                     <CalculatorIcon className="h-4 w-4" />
@@ -1582,7 +1635,7 @@ export function RawMaterialDialog({
                   <div className="space-y-0.5">
                     {nestingIsTrustworthy && (
                       <>
-                        <p className="text-[11px] text-cyan-600 dark:text-cyan-400 font-mono">
+                        <p className="text-[11px] text-primary dark:text-primary font-mono">
                           {nestingBlankSpec.sheetWidthMm}×{nestingBlankSpec.sheetLengthMm}mm sheet · {nestingBlankSpec.partsPerSheet} parts/sheet · {nestingBlankSpec.utilizationPct}% util · verified CAD flat pattern
                         </p>
                         {typeof nestingBlankSpec.sheetsRequired === 'number' && (
@@ -1594,7 +1647,7 @@ export function RawMaterialDialog({
                     )}
                     {stockDriven && nestingBlankSpec && (
                       <>
-                        <p className="text-[11px] text-cyan-600 dark:text-cyan-400 font-mono">
+                        <p className="text-[11px] text-primary dark:text-primary font-mono">
                           {nestingBlankSpec.sizeLabel} ({nestingBlankSpec.form.replace(/_/g, ' ')})
                           {typeof nestingBlankSpec.stockVolumeMm3 === 'number' && typeof nestingBlankSpec.densityKgM3 === 'number'
                             ? ` · ${nestingBlankSpec.stockVolumeMm3.toLocaleString()} mm³ × ${nestingBlankSpec.densityKgM3.toLocaleString()} kg/m³`
@@ -1606,9 +1659,9 @@ export function RawMaterialDialog({
                       </>
                     )}
                     {grossUsageOverridden ? (
-                      <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-2 space-y-0.5">
-                        <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-                          ⚠ Manual Override — {typeof grossUsage === 'number' ? grossUsage.toFixed(4) : '—'} kg/part
+                      <div className="rounded border border-warning/40 bg-warning/10 p-2 space-y-0.5">
+                        <p className="text-[11px] font-semibold text-warning">
+                          <Mark kind="warn" /> Manual Override — {typeof grossUsage === 'number' ? grossUsage.toFixed(4) : '—'} kg/part
                         </p>
                         <p className="text-[11px] text-muted-foreground">
                           Calculated value: {(derivedGrossKg ?? 0).toFixed(4)} kg/part
@@ -1624,7 +1677,7 @@ export function RawMaterialDialog({
                         <button
                           type="button"
                           onClick={() => { setGrossUsageOverridden(false); setGrossUsageOverrideReason(''); }}
-                          className="text-[11px] text-amber-700 dark:text-amber-400 hover:underline"
+                          className="text-[11px] text-warning hover:underline"
                         >
                           Clear override — use calculated value
                         </button>
@@ -1688,11 +1741,14 @@ export function RawMaterialDialog({
                   // pattern unresolved) — disclosed honestly, but NOT trusted to
                   // auto-fill anything: for a bent part that box overcounts
                   // capacity (see nestingIsTrustworthy's doc comment).
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  <p className="text-[11px] text-warning">
                     Nesting ran on an unverified fallback ({nestingBlankSpec.sheetWidthMm}×{nestingBlankSpec.sheetLengthMm}mm sheet, {nestingBlankSpec.partsPerSheet} parts/sheet — folded 3D bounding box, not the true flat pattern) — this typically overcounts capacity for a bent part. Not used to fill Gross Usage; enter the real value manually.
                   </p>
                 ) : isSheetMetalItem ? (
                   <p className="text-[11px] text-muted-foreground">Flat-pattern geometry unavailable — nesting could not run for this part. Enter Gross Usage manually.</p>
+                ) : usageIsCalculated && materialUsage.source !== 'scrap_allowance_fallback' ? (
+                  // The engine has a real figure for this part (a casting's charge, a molding shot): the working is in the panel below, not this generic formula.
+                  <p className="text-[11px] text-muted-foreground">{materialUsage.gross.title}: see the calculation below</p>
                 ) : typeof netUsage === 'number' && netUsage > 0 ? (
                   <p className="text-[11px] text-muted-foreground font-mono">
                     {netUsage} ÷ (1 − {typeof scrap === 'number' ? scrap : 0}% / 100)
@@ -1701,12 +1757,19 @@ export function RawMaterialDialog({
                   <p className="text-[11px] text-muted-foreground">net ÷ (1 − scrap%) — includes material lost in process</p>
                 )}
                 {!grossIsDerived && !isSheetMetalItem && nestingBlankSpec?.stockFormOverrideNote && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  <p className="text-[11px] text-warning">
                     Selected stock weight unavailable — using the scrap-allowance estimate above. {nestingBlankSpec.stockFormOverrideNote}
                   </p>
                 )}
               </div>
             </div>
+
+            <MaterialUsageJustification
+              usage={materialUsage}
+              loading={materialUsageLoading}
+              fields={{ net: netUsage, gross: grossUsage }}
+              onUse={applyCalculatedUsage}
+            />
 
             {/* Scrap, Reclaim Rate, Overhead */}
             <div className="grid grid-cols-3 gap-4">
@@ -1804,7 +1867,7 @@ export function RawMaterialDialog({
                     </div>
 
                     {/* Reclaim value */}
-                    <div className={`flex items-baseline justify-between gap-4 ${b && (b.reclaimValue ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : dim}`}>
+                    <div className={`flex items-baseline justify-between gap-4 ${b && (b.reclaimValue ?? 0) > 0 ? 'text-success' : dim}`}>
                       <span className="shrink-0">− Reclaim value</span>
                       <span className="font-mono text-[11px] flex-1 text-right truncate">
                         {scrapKg} × {reclaimRateDisplay}
@@ -1846,7 +1909,7 @@ export function RawMaterialDialog({
                     <div className={`flex gap-6 pt-0.5 text-[11px] ${b ? 'text-muted-foreground' : dim}`}>
                       <span>
                         Utilization:{' '}
-                        <strong className={!b ? '' : (b.utilRate ?? 0) < 50 ? 'text-destructive' : (b.utilRate ?? 0) < 75 ? 'text-amber-500' : 'text-emerald-500'}>
+                        <strong className={!b ? '' : (b.utilRate ?? 0) < 50 ? 'text-destructive' : (b.utilRate ?? 0) < 75 ? 'text-warning' : 'text-success'}>
                           {b ? `${(b.utilRate ?? 0).toFixed(1)}%` : '—'}
                         </strong>
                       </span>
@@ -1890,13 +1953,9 @@ export function RawMaterialDialog({
       {/* Calculator Side Panel */}
       <Sheet open={calculatorOpen} onOpenChange={(open) => {
         
-        // Prevent calculator from closing if lookup table is open
-        if (!open && showLookupTable) {
-          return;
-        }
-        
         if (!open) {
-          // When closing calculator, also close lookup table
+          // Its X always closes it, and its reference table with it: a guard that ignored the X while the table was open made it look
+          // dead, and the next click fell through this non-modal panel onto the dialog under it.
           setShowLookupTable(false);
           setSelectedLookupField(null);
           setLookupTableData(null);
@@ -1911,6 +1970,10 @@ export function RawMaterialDialog({
             </SheetTitle>
           </SheetHeader>
 
+          {calculatorShowsEngineUsage && materialUsage ? (
+            // The usage of this part is calculated by the cost engine: the calculator behind the figure as a form, filled with the engine's values.
+            <UsageCalculatorForm usage={materialUsage} target={calculatorTarget === 'netUsage' ? 'netUsage' : 'grossUsage'} onUse={(u) => { applyCalculatedUsage(u); setCalculatorOpen(false); }} />
+          ) : (
           <div className="mt-6 space-y-6">
             {/* Calculator Selector */}
             <div className="space-y-2">
@@ -1976,11 +2039,11 @@ export function RawMaterialDialog({
                           </Label>
                           <p className="text-xs">
                             {hasRealNesting ? (
-                              <span className="text-emerald-600 dark:text-emerald-400">
+                              <span className="text-success">
                                 Verified CAD flat-pattern outline resolved
                               </span>
                             ) : (
-                              <span className="text-amber-600 dark:text-amber-400">
+                              <span className="text-warning">
                                 Unavailable — no verified flat-pattern outline for this part yet
                               </span>
                             )}
@@ -2080,7 +2143,7 @@ export function RawMaterialDialog({
                                     const displayName = propertyDisplayNames[sourceProperty] || sourceProperty;
                                     
                                     return sourceProperty ? (
-                                      <span className="text-[10px] text-muted-foreground bg-gray-50 px-1.5 py-0.5 rounded border">
+                                      <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded border">
                                         {displayName}
                                       </span>
                                     ) : null;
@@ -2171,10 +2234,10 @@ export function RawMaterialDialog({
 
                 {/* Calculator Results */}
                 {calculatorWarnings.length > 0 && (
-                  <Card className="border-amber-400">
+                  <Card className="border-warning/40">
                     <CardContent className="p-3 space-y-1">
                       {calculatorWarnings.map((w, i) => (
-                        <p key={i} className="text-xs text-amber-700 dark:text-amber-400">{w}</p>
+                        <p key={i} className="text-xs text-warning">{w}</p>
                       ))}
                       {calculatorTarget === 'grossUsage' && !nestingIsTrustworthy && (
                         <p className="text-xs text-muted-foreground">
@@ -2266,6 +2329,7 @@ export function RawMaterialDialog({
               </>
             )}
           </div>
+          )}
         </SheetContent>
       </Sheet>
 
@@ -2311,7 +2375,7 @@ export function RawMaterialDialog({
                     setSelectedLookupField(null);
                     setLookupTableData(null);
                   }}
-                  className="h-6 w-6 p-0"
+                  className="h-8 w-8 p-0"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 6 6 18"></path>
@@ -2320,124 +2384,27 @@ export function RawMaterialDialog({
                 </Button>
               </div>
 
-              {/* Hint */}
-              <div className="px-3 py-1.5 bg-primary/5 border-b border-border text-xs text-muted-foreground flex items-center gap-1.5">
-                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M12 16v-4" />
-                  <path d="M12 8h.01" />
-                </svg>
-                Click any row to use that value for <strong className="text-foreground mx-0.5">{lookupTableData.fieldLabel}</strong>. Highlighted column = selected value.
-              </div>
-
-              <div
-                className="flex-1 p-3 relative overflow-auto"
-                style={{
-                  height: 'calc(100vh - 120px)',
-                  pointerEvents: 'auto',
-                  zIndex: 61
+              <ReferenceTable
+                columns={lookupTableData.column_definitions}
+                rows={lookupTableData.rows}
+                fieldLabel={lookupTableData.fieldLabel}
+                note={selectedMaterial ? <span>The material selected in this dialog is marked ★.</span> : undefined}
+                // The row of the material selected in this dialog: where the auto-filled value came from.
+                isCurrent={(row) => !!selectedMaterial && (
+                  (!!row.materialGrade && row.materialGrade === selectedMaterial.materialGrade) ||
+                  (!!row.materialName && row.materialName === selectedMaterial.material)
+                )}
+                currentTitle="The material selected in this dialog"
+                onPick={(value) => {
+                  if (selectedLookupField) setCalculatorInputs((prev: Record<string, any>) => ({ ...prev, [selectedLookupField.fieldName]: value }));
+                  // Close only the reference table, after the input update has been queued.
+                  setTimeout(() => {
+                    setShowLookupTable(false);
+                    setSelectedLookupField(null);
+                    setLookupTableData(null);
+                  }, 0);
                 }}
-                onClick={(e) => e.stopPropagation()}
-                onScroll={(e) => e.stopPropagation()}
-              >
-                <div className="w-full">
-                  <table className="w-full border-collapse text-sm bg-background">
-                    <thead>
-                      <tr className="bg-muted/60">
-                        <th className="border border-border text-center text-xs font-medium py-1 px-1 text-muted-foreground w-6">
-                          #
-                        </th>
-                        {lookupTableData.column_definitions.map((col: any, colIdx: number) => {
-                          const isOutputCol = colIdx === lookupTableData.column_definitions.length - 1;
-                          return (
-                            <th
-                              key={col.name}
-                              className={`border border-border text-left text-xs font-semibold py-1 px-2 ${isOutputCol ? 'text-primary bg-primary/10' : 'text-foreground'}`}
-                            >
-                              {col.label}
-                              {isOutputCol && <span className="ml-1 text-primary/60">(↵ select)</span>}
-                              {col.unit && (
-                                <span className="text-primary/70 ml-1">({col.unit})</span>
-                              )}
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lookupTableData.rows.map((row: any, rowIndex: number) => {
-                        const outputCol = lookupTableData.column_definitions[lookupTableData.column_definitions.length - 1];
-                        const getVal = (col: any) => {
-                          const camel = col.name.replace(/_([a-z])/g, (_: string, l: string) => l.toUpperCase());
-                          return row[col.name] !== undefined ? row[col.name] : row[camel];
-                        };
-                        const outputValue = outputCol ? getVal(outputCol) : undefined;
-                        // Highlight the row matching the material actually selected in
-                        // this dialog, so a user opening the lookup table can see exactly
-                        // which real raw_materials row the auto-filled value came from.
-                        const isSelectedMaterialRow = !!selectedMaterial && (
-                          (row.materialGrade && row.materialGrade === selectedMaterial.materialGrade) ||
-                          (row.materialName && row.materialName === selectedMaterial.material)
-                        );
-                        return (
-                          <tr
-                            key={rowIndex}
-                            className={`hover:bg-primary/10 cursor-pointer transition-colors ${isSelectedMaterialRow ? 'bg-emerald-100 dark:bg-emerald-950/50 font-semibold' : ''}`}
-                            onMouseDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              e.nativeEvent?.stopImmediatePropagation?.();
-                              
-                              if (selectedLookupField && outputValue !== undefined) {
-                                setCalculatorInputs((prev: Record<string, any>) => ({
-                                  ...prev,
-                                  [selectedLookupField.fieldName]: typeof outputValue === "number"
-                                    ? outputValue
-                                    : parseFloat(outputValue) || outputValue,
-                                }));
-                              }
-                              
-                              // Use setTimeout to ensure state updates don't conflict
-                              setTimeout(() => {
-                                // Close ONLY lookup table after selection
-                                setShowLookupTable(false);
-                                setSelectedLookupField(null);
-                                setLookupTableData(null);
-                              }, 0);
-                              
-                              return false;
-                            }}
-                            title={
-                              (isSelectedMaterialRow ? 'This is the currently selected material. ' : '') +
-                              (outputCol ? `Click to use: ${outputCol.label} = ${outputValue}` : `Click to select`)
-                            }
-                          >
-                            <td className="border border-border text-center text-xs py-1 px-1 text-muted-foreground font-mono bg-muted/20">
-                              {rowIndex + 1}
-                            </td>
-                            {lookupTableData.column_definitions.map((col: any) => {
-                              const value = getVal(col);
-                              const isOutput = col.name === outputCol?.name;
-                              return (
-                                <td
-                                  key={col.name}
-                                  className={`border border-border py-1 px-2 text-xs${isOutput ? ' font-semibold text-primary bg-primary/5' : ''}`}
-                                >
-                                  {value !== undefined && value !== null ? String(value) : '—'}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              />
             </div>
           </>
         );

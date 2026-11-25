@@ -1,23 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { toast } from 'sonner';
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Users,
-  CheckCircle,
-  Search,
-  Plus,
-  Edit,
-  Trash2,
-  Calendar,
-  DollarSign,
-  Package
-} from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -28,17 +16,30 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  Users,
+  CheckCircle,
+  Search,
+  Plus,
+  Edit,
+  Trash2,
+  Calendar,
+  DollarSign,
+  Package
+} from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { toast } from 'sonner';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { apiClient } from '@/lib/api/client';
-import { useAuth, useAuthReady } from '@/lib/providers/auth';
-import { getApprovedVendorsByBomPart, type ApprovedVendor } from '@/lib/api/supplier-nominations';
 import { useVendors } from '@/lib/api/hooks/useVendors';
+import { getApprovedVendorsByBomPart, type ApprovedVendor } from '@/lib/api/supplier-nominations';
+import { useAuth, useAuthReady } from '@/lib/providers/auth';
 
 interface LotBOMItem {
   id: string;
@@ -458,10 +459,10 @@ await apiClient.post(`/production-lots/${lotId}/vendor-assignments`, assignmentD
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Available Vendors</CardTitle>
-            <Users className="h-4 w-4 text-blue-500" />
+            <Users className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-600">
+            <div className="text-2xl font-bold text-primary">
               {availableVendors.length}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -572,7 +573,7 @@ await apiClient.post(`/production-lots/${lotId}/vendor-assignments`, assignmentD
                                   {isApprovedGenerally ? (
                                     <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
                                   ) : (
-                                    <Users className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+                                    <Users className="h-3.5 w-3.5 text-primary shrink-0" />
                                   )}
                                   <span className="truncate text-sm font-medium" title={displayName}>
                                     {displayName}

@@ -5,14 +5,13 @@ import { describe, expect, it } from "vitest";
 
 // One place starts the part's analysis: the Refresh analysis button in the top bar (POST /bom-items/:id/analysis-runs through useAnalysisRun). Apply
 // Scenario and Apply Route never start one: on a part that is not analysed they point at that button (the backend refuses them too, 409
-// analysis_not_ready). This keeps a second, hidden way of starting an analysis from coming back. The electronics module (an ECAD design) has its
-// own workflow and is not covered.
+// analysis_not_ready). This keeps a second, hidden way of starting an analysis from coming back.
 const ROOT = join(__dirname, "..", "..");
 
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
-    if (statSync(path).isDirectory()) return name === "node_modules" || name === ".next" || name === "electronics" ? [] : sources(path);
+    if (statSync(path).isDirectory()) return name === "node_modules" || name === ".next" ? [] : sources(path);
     return /\.(ts|tsx)$/.test(name) ? [path] : [];
   });
 }

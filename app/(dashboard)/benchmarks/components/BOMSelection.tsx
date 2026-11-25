@@ -1,11 +1,16 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+
 import { PageHeader } from "@/components/layout/PageHeader";
-import { ArrowLeft, ArrowRight, Package } from "lucide-react";
-import type { SelectedBOM, SelectedProject } from "../types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ArrowLeft, ArrowRight, Package } from '@/components/ui/icons';
+import { Mark } from '@/components/ui/status-mark';
+
+
 import { formatDate } from "../utils";
+
+import type { SelectedBOM, SelectedProject } from "../types";
 
 interface MultiProjectBOM {
   projectId: string;
@@ -64,8 +69,8 @@ export function BOMSelection({
       <div className="w-full max-w-4xl mx-auto">
         {/* Hero */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-blue-100 mb-4">
-            <Package className="h-6 w-6 text-blue-600" />
+          <div className="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-primary/10 mb-4">
+            <Package className="h-6 w-6 text-primary" />
           </div>
           <h2 className="text-xl font-bold mb-2">Select BOMs to Compare</h2>
           <p className="text-muted-foreground text-sm">
@@ -102,7 +107,7 @@ export function BOMSelection({
                   <p className="text-xs text-muted-foreground mt-1">
                     {bom.status}
                   </p>
-                  <p className="text-xs text-green-600 mt-1">
+                  <p className="text-xs text-success mt-1">
                     Parts: {bomItemCounts[idx] ?? 0}
                   </p>
                 </div>
@@ -149,7 +154,7 @@ export function BOMSelection({
                             </div>
                             {isSelected && (
                               <Badge variant="default" className="text-xs">
-                                ✓
+                                <Mark kind="ok" />
                               </Badge>
                             )}
                           </div>

@@ -14,7 +14,7 @@ import type { CycleTimeInput, CycleTimeResult } from '../process/cycle-time';
 import { loadPlasticMoldingCalculatorSpec } from './plastic-molding-calculator-spec';
 import { REGISTRY_FORMULA_OF_FIELD } from './plastic-calculator-formulas';
 import { cadEvidenceKey } from '../../shared/cad-evidence';
-import { deflashingSeeds, injectionCalculatorName, injectionCycleTimeSeeds, pressCycleTimeSeeds, rimCycleTimeSeeds, slideMovementSeeds, visualInspectionSeeds, weightCheckSeeds, materialDryingSeeds, MATERIAL_DRYING_CALCULATOR, type MaterialDryingInput, COMPRESSION_CALCULATOR, DEFLASH_CALCULATOR, RIM_CALCULATOR, SLIDE_MOVEMENT_CALCULATOR, VISUAL_INSPECTION_CALCULATOR, WEIGHT_CHECK_CALCULATOR } from './plastic-cycle-time-seeds';
+import { deflashingSeeds, gateTrimmingSeeds, GATE_TRIM_CALCULATOR, insertPullTestSeeds, INSERT_PULL_TEST_CALCULATOR, type InsertPullTestInput, injectionCalculatorName, injectionCycleTimeSeeds, pressCycleTimeSeeds, rimCycleTimeSeeds, slideMovementSeeds, visualInspectionSeeds, weightCheckSeeds, materialDryingSeeds, MATERIAL_DRYING_CALCULATOR, type MaterialDryingInput, COMPRESSION_CALCULATOR, DEFLASH_CALCULATOR, RIM_CALCULATOR, SLIDE_MOVEMENT_CALCULATOR, VISUAL_INSPECTION_CALCULATOR, WEIGHT_CHECK_CALCULATOR } from './plastic-cycle-time-seeds';
 import type { WeightCheckReference } from '../reference/im-reference';
 
 /** A fingerprint of a calculator's formulas and what feeds it: its calculated fields' formulas and its input fields' names and units, in order. */
@@ -106,7 +106,7 @@ function runPress(name: string, seeded: ReturnType<typeof pressCycleTimeSeeds>, 
 }
 
 /** The cycle of a compression press (press open/close time plus cure time), by the stored calculator. */
-export function runCompressionCycleTime(input: { pressCycleTimeS: number | null; cureTimeMin: number | null }, calculators: ReferenceCalculators | null | undefined): PressCycle {
+export function runCompressionCycleTime(input: Parameters<typeof pressCycleTimeSeeds>[0], calculators: ReferenceCalculators | null | undefined): PressCycle {
   return runPress(COMPRESSION_CALCULATOR, pressCycleTimeSeeds(input), calculators);
 }
 
@@ -115,8 +115,28 @@ export function runDeflashingTime(input: { partingLineLengthMm: number | null; r
   return runPress(DEFLASH_CALCULATOR, deflashingSeeds(input), calculators);
 }
 
+/** The gate trimming time per part (F-38), by the stored gate trimming calculator, or what is missing. */
+export function runGateTrimmingTime(input: Parameters<typeof gateTrimmingSeeds>[0], calculators: ReferenceCalculators | null | undefined): PressCycle {
+  return runPress(GATE_TRIM_CALCULATOR, gateTrimmingSeeds(input), calculators);
+}
+
+/**
+ * The insert pull test (F-40): its time per part spread over the batch, the tester rate and the scrapped samples per part, by the stored calculator,
+ * or what is missing.
+ */
+export function runInsertPullTest(input: InsertPullTestInput, calculators: ReferenceCalculators | null | undefined): PressCycle & { testerRateUsdPerHr?: number; scrapUsdPerPart?: number } {
+  const run = runPress(INSERT_PULL_TEST_CALCULATOR, insertPullTestSeeds(input), calculators);
+  if (!run.derivable) return run;
+  const out = (name: string) => run.trace.find((t) => t.fieldName === name)?.value;
+  const rate = out('Tester Rate');
+  const scrap = out('Scrap Cost Per Part');
+  return typeof rate === 'number' && typeof scrap === 'number'
+    ? { ...run, testerRateUsdPerHr: rate, scrapUsdPerPart: scrap }
+    : { derivable: false, missing: ['the tester rate or the scrap cost (Tester Rate, Scrap Cost Per Part)'] };
+}
+
 /** The time the hydraulic slides add to each part (F-32), by the stored slide movement calculator, or what is missing. */
-export function runSlideMovementTime(input: { slideStrokeMm: number | null; rateMmPerS: number | null; cavities: number }, calculators: ReferenceCalculators | null | undefined): PressCycle {
+export function runSlideMovementTime(input: { slideStrokeMm: number | null; slideStrokeBundleId?: string | null; rateMmPerS: number | null; cavities: number }, calculators: ReferenceCalculators | null | undefined): PressCycle {
   return runPress(SLIDE_MOVEMENT_CALCULATOR, slideMovementSeeds(input), calculators);
 }
 
@@ -143,7 +163,7 @@ export function runWeightCheck(ref: WeightCheckReference, calculators: Reference
 
 /** The cycle of a reaction injection molding (dry cycle + fill + cure time), by the stored calculator. */
 export function runRimCycleTime(
-  input: { machineCycleTimeS: number | null; partVolumeMm3: number | null; injectionRateMm3PerS: number | null; cureTimeMin: number | null },
+  input: Parameters<typeof rimCycleTimeSeeds>[0],
   calculators: ReferenceCalculators | null | undefined,
 ): PressCycle {
   return runPress(RIM_CALCULATOR, rimCycleTimeSeeds(input), calculators);

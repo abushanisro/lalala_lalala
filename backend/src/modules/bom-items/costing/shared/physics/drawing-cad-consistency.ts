@@ -53,12 +53,11 @@ function buildNumeric(args: {
   drawing: number | null; cad: number | null;
   compare: (drawing: number, cad: number) => boolean;
   unit: string; v2FeatureIds?: string[];
-}): FactMismatch {
+}): FactMismatch | null {
   const { fact, label, severity, drawing, cad, compare, unit, v2FeatureIds } = args;
   const fmt = (v: number) => `${v} ${unit}`;
-  if (drawing == null && cad == null) {
-    return { fact, label, drawingValue: '—', cadValue: '—', status: 'match', severity: 'info', message: `${label}: not present in either source.` };
-  }
+  // A fact neither source carries (bends on a machined part) is not an agreement: there is nothing to compare, so no row.
+  if (drawing == null && cad == null) return null;
   if (drawing == null) {
     return { fact, label, drawingValue: '—', cadValue: fmt(cad!), status: 'cad_only', severity: 'info', message: `${label}: only the 3D model has this (${fmt(cad!)}) — the drawing carries no value.` };
   }
@@ -75,6 +74,31 @@ function buildNumeric(args: {
       : `${label}: drawing says ${fmt(drawing)}, the 3D model measures ${fmt(cad)} — these should be the same part.`,
     ...(v2FeatureIds ? { v2FeatureIds } : {}),
   };
+}
+
+/**
+ * The bend count a drawing states: a positive count, else null (not stated). The drawing analyser writes bend_count 0 when it finds no
+ * "N BENDS" note, as it writes 0 for a dimension or a thickness it did not find, and a part with no drawing has no count at all; neither is
+ * a drawing that says the part has no bends, so neither is compared with the 3D model's bends.
+ */
+export function drawingStatedBendCount(drawingIntelligence: Record<string, unknown> | null | undefined): number | null {
+  const n = Math.round(Number(drawingIntelligence?.bend_count));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * The number of threads a drawing states, or null when it states none. A drawing states a count only where every callout carries one
+ * ("4 × M3"); a callout that names the size alone ("M3" beside one hole of a pattern) says nothing of how many there are. The drawing
+ * analyser reads such a callout with a count of 1 and marks it countStated: false; compared with the 3D model's tapped holes, that 1 read as
+ * "drawing says 1, the model measures 12" on every such part. A record analysed before the analyser marked it holds no countStated: there a
+ * count of 1 from the drawing's text is the analyser's default, while a count above 1, or one another reading (an AI's) gave, was stated.
+ */
+export function drawingStatedThreadCount(threads: readonly unknown[] | null | undefined): number | null {
+  const list = (threads ?? []) as ReadonlyArray<{ count?: unknown; countStated?: unknown; extractionSource?: unknown }>;
+  if (list.length === 0) return null;
+  const stated = list.every((t) =>
+    t.countStated === true || (t.countStated == null && (t.extractionSource !== 'drawing_text' || Number(t.count) > 1)));
+  return stated ? list.reduce((s, t) => s + (Number(t.count) || 1), 0) : null;
 }
 
 export interface DrawingFacts {
@@ -95,7 +119,7 @@ export interface CadFacts {
 }
 
 export function detectDrawingCadMismatches(drawing: DrawingFacts, cad: CadFacts): FactMismatch[] {
-  const results: FactMismatch[] = [];
+  const results: (FactMismatch | null)[] = [];
 
   results.push(buildNumeric({
     fact: 'bendCount', label: 'Bend count', severity: 'critical',
@@ -128,7 +152,7 @@ export function detectDrawingCadMismatches(drawing: DrawingFacts, cad: CadFacts)
   // axis labeling, not a real difference in the part.
   const dLabel = 'Overall dimensions';
   if (drawing.dimensionsMm == null && cad.dimensionsMm == null) {
-    results.push({ fact: 'dimensionsMm', label: dLabel, drawingValue: '—', cadValue: '—', status: 'match', severity: 'info', message: `${dLabel}: not present in either source.` });
+    // Nothing to compare: no row.
   } else if (drawing.dimensionsMm == null) {
     const c = [...cad.dimensionsMm!].sort((a, b) => a - b);
     results.push({ fact: 'dimensionsMm', label: dLabel, drawingValue: '—', cadValue: c.join(' × '), status: 'cad_only', severity: 'info', message: `${dLabel}: only the 3D model has this (${c.join(' × ')} mm).` });
@@ -150,5 +174,5 @@ export function detectDrawingCadMismatches(drawing: DrawingFacts, cad: CadFacts)
     });
   }
 
-  return results;
+  return results.filter((r): r is FactMismatch => r !== null);
 }

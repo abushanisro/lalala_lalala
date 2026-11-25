@@ -1,21 +1,22 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
+
+import { MachineCapabilityCard } from '@/components/features/mhr/MachineCapabilityCard';
+import { MHRFormDialog } from '@/components/features/mhr/MHRFormDialog';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, FileDown, FileText, Printer, Edit2, Save, X, AlertTriangle } from 'lucide-react';
-
+import { EditableValue } from '@/components/ui/editable-value';
+import { ArrowLeft, FileDown, FileText, Printer, Edit2, Save, X, AlertTriangle } from '@/components/ui/icons';
+import { PageSkeleton } from '@/components/ui/loading-skeleton';
 import { useMHRRecord, useUpdateMHR } from '@/lib/api/hooks';
 import { useFxRatesForCurrencies } from '@/lib/api/hooks/useFx';
 import { formatNumber } from '@/lib/utils';
 import { getCurrencyForLocation } from '@/lib/utils/currency-locale';
 import { exportSingleMHRToPDF } from '@/lib/utils/exportMHRToPDF';
-import { MHRFormDialog } from '@/components/features/mhr/MHRFormDialog';
-import { MachineCapabilityCard } from '@/components/features/mhr/MachineCapabilityCard';
-import { EditableValue } from '@/components/ui/editable-value';
 import { calculateMHR } from '@/lib/utils/mhrCalculations';
 import type { MHRInputs, MHRCalculations } from '@/lib/utils/mhrCalculations';
 
@@ -178,7 +179,7 @@ export default function MHRDetailPage() {
   };
 
   if (isLoading) {
-    return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></div>;
+    return <PageSkeleton label="Loading record…" />;
   }
 
   if (isError || !record) {
@@ -286,7 +287,7 @@ export default function MHRDetailPage() {
             <div className="flex flex-wrap gap-1 pt-1">
               {record.processGroup && <Badge variant="secondary">{record.processGroup}</Badge>}
               {record.machineClass && <Badge variant="outline">{record.machineClass}</Badge>}
-              {record.automationLevel && <Badge variant="outline" className="text-brand-700 border-brand-300">{record.automationLevel}</Badge>}
+              {record.automationLevel && <Badge variant="outline" className="text-primary border-primary/40">{record.automationLevel}</Badge>}
             </div>
             <div className="text-sm pt-1 space-y-0.5">
               {record.manufacturer && <div><span className="text-muted-foreground">Manufacturer: </span><span className="font-medium">{record.manufacturer}{record.manufacturerCountry ? ` (${record.manufacturerCountry})` : ''}</span></div>}
@@ -336,12 +337,12 @@ export default function MHRDetailPage() {
         </Card>
 
         {/* LHR */}
-        <Card className="border-2 border-blue-400 bg-linear-to-br from-blue-50/50 to-blue-100/30 dark:from-blue-950/30 dark:to-blue-900/20">
+        <Card className="border-2 border-primary/40 bg-linear-to-br from-brand-50/50 to-brand-100/30 dark:from-brand-950/30 dark:to-brand-900/20">
           <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-blue-600 uppercase tracking-wide">LHR (Labour)</CardTitle>
+            <CardTitle className="text-xs font-semibold text-primary uppercase tracking-wide">LHR (Labour)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-black text-blue-700 dark:text-blue-400">
+            <div className="text-3xl font-black text-primary dark:text-primary">
               {record.lhrInrPerHr ? fmtLocal(record.lhrInrPerHr) : '—'}
             </div>
             <div className="text-xs text-muted-foreground mt-1">{currSym} per hour ({record.location})</div>
@@ -359,7 +360,7 @@ export default function MHRDetailPage() {
                   <span className="text-muted-foreground">Burden @38%</span>
                   <EditableValue value={editableLhrUsd.usdLhrBurden} onChange={v => setEditableLhrUsd(p => ({ ...p!, usdLhrBurden: v }))} isEditable={isEditMode} formatDisplay={(v: number) => `$${v.toFixed(2)}`} className="font-medium" min={0} step={0.01} />
                 </div>
-                <div className="flex justify-between items-center font-semibold text-blue-700 dark:text-blue-400">
+                <div className="flex justify-between items-center font-semibold text-primary dark:text-primary">
                   <span>Total USD</span>
                   <EditableValue value={editableLhrUsd.usdLhrTotal} onChange={v => setEditableLhrUsd(p => ({ ...p!, usdLhrTotal: v }))} isEditable={isEditMode} formatDisplay={(v: number) => `$${v.toFixed(2)}`} className="font-semibold" min={0} step={0.01} />
                 </div>
@@ -404,7 +405,7 @@ export default function MHRDetailPage() {
 
       {/* Pre-calc edit banner */}
       {isEditMode && isPreCalc && (
-        <div className="px-4 py-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700 print:hidden">
+        <div className="px-4 py-2 bg-primary/10 border border-primary/40 rounded text-xs text-primary print:hidden">
           Pre-calculated import — MHR and Fully Burdened rates are sourced from the Excel file.
           The input parameters below are stored for reference only and do not affect the MHR.
         </div>
@@ -496,18 +497,18 @@ export default function MHRDetailPage() {
             <CardHeader className="pb-2"><CardTitle className="text-base font-bold">Operating Hours</CardTitle></CardHeader>
             <CardContent className="space-y-1 text-sm">
               <div className="grid grid-cols-2 gap-2 mb-2">
-                <div className="bg-slate-50 dark:bg-slate-900 px-2 py-1.5 rounded text-center">
+                <div className="bg-muted px-2 py-1.5 rounded text-center">
                   <div className="text-xs text-muted-foreground">Shifts/Day</div>
                   <div className="font-bold">{formatNumber(inputs.shiftsPerDay)}</div>
                 </div>
-                <div className="bg-slate-50 dark:bg-slate-900 px-2 py-1.5 rounded text-center">
+                <div className="bg-muted px-2 py-1.5 rounded text-center">
                   <div className="text-xs text-muted-foreground">Hours/Shift</div>
                   <div className="font-bold">{formatNumber(inputs.hoursPerShift)}</div>
                 </div>
               </div>
               {[
                 ['Working Days/Year', formatNumber(inputs.workingDaysPerYear), ''],
-                ['Working Hours', formatNumber(calc.workingHoursPerYear) + ' hrs', 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300'],
+                ['Working Hours', formatNumber(calc.workingHoursPerYear) + ' hrs', 'bg-primary/10 dark:bg-primary/15 text-primary dark:text-primary'],
                 ['Maintenance', `-${formatNumber(inputs.plannedMaintenanceHoursPerYear)} hrs`, 'text-orange-600'],
                 ['Available Hours', formatNumber(calc.availableHoursPerYear) + ' hrs', 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300'],
                 ['Utilization', formatNumber(inputs.capacityUtilizationRate) + '%', ''],
@@ -524,7 +525,7 @@ export default function MHRDetailPage() {
           </Card>
 
           {!isPreCalc && (
-          <Card className="border-l-4 border-l-brand-500">
+          <Card className="border-l-4 border-l-primary/40">
             <CardHeader className="pb-2"><CardTitle className="text-base font-bold">Capital Investment</CardTitle></CardHeader>
             <CardContent className="space-y-1 text-sm">
               <div className="flex justify-between"><span>Landed Machine Cost</span><span className="font-bold">{fmtLocal(inputs.landedMachineCost)}</span></div>
@@ -536,7 +537,7 @@ export default function MHRDetailPage() {
               </div>
               <div className="border-t pt-2 space-y-0.5">
                 <div className="flex justify-between"><span>Payback Period</span><span className="font-bold">{formatNumber(inputs.paybackPeriodYears)} yrs</span></div>
-                <div className="flex justify-between bg-slate-100 dark:bg-slate-800 px-2 py-1.5 rounded">
+                <div className="flex justify-between bg-muted px-2 py-1.5 rounded">
                   <span className="font-semibold">Annual Depreciation</span>
                   <span className="font-black">{fmtLocal(calc.depreciationPerAnnum)}</span>
                 </div>
@@ -568,7 +569,7 @@ export default function MHRDetailPage() {
                   <span className="font-semibold">{fmtLocal(calc.totalFixedCostPerHour)}</span>
                 </div>
               )}
-              <div className="flex justify-between bg-blue-50 dark:bg-blue-950 px-2 py-1.5 rounded font-bold text-blue-700 dark:text-blue-300">
+              <div className="flex justify-between bg-primary/10 dark:bg-primary/15 px-2 py-1.5 rounded font-bold text-primary dark:text-primary">
                 <span>Total Fixed</span><span>{fmtLocal(calc.totalFixedCostPerHour)}</span>
               </div>
               <div className="border-t pt-1">
@@ -592,15 +593,15 @@ export default function MHRDetailPage() {
             <CardHeader className="pb-2 bg-primary/10"><CardTitle className="text-base font-bold">Final MHR Calculation</CardTitle></CardHeader>
             <CardContent className="space-y-1 text-sm">
               <div className="flex justify-between"><span>Machine Operating Cost</span><span className="font-semibold">{fmtLocal(calc.totalOperatingCostPerHour)}</span></div>
-              <div className="flex justify-between"><span>Admin Overhead ({formatNumber(inputs.adminOverheadPercentage)}%)</span><span className="font-semibold text-brand-600">+{fmtLocal(calc.adminOverheadPerHour)}</span></div>
-              <div className="flex justify-between bg-slate-100 dark:bg-slate-800 px-2 py-1.5 rounded font-bold">
+              <div className="flex justify-between"><span>Admin Overhead ({formatNumber(inputs.adminOverheadPercentage)}%)</span><span className="font-semibold text-primary">+{fmtLocal(calc.adminOverheadPerHour)}</span></div>
+              <div className="flex justify-between bg-muted px-2 py-1.5 rounded font-bold">
                 <span>Subtotal</span><span>{fmtLocal(calc.totalOperatingCostPerHour + calc.adminOverheadPerHour)}</span>
               </div>
               <div className="flex justify-between"><span>Profit Margin ({formatNumber(inputs.profitMarginPercentage)}%)</span><span className="font-semibold text-emerald-600">+{fmtLocal(calc.profitMarginPerHour)}</span></div>
               {lhrComponent != null && (
                 <div className="flex justify-between border-t pt-1">
-                  <span className="text-blue-700 dark:text-blue-400">Labour (LHR)</span>
-                  <span className="font-semibold text-blue-700 dark:text-blue-400">+{fmtLocal(lhrComponent)}</span>
+                  <span className="text-primary dark:text-primary">Labour (LHR)</span>
+                  <span className="font-semibold text-primary dark:text-primary">+{fmtLocal(lhrComponent)}</span>
                 </div>
               )}
               <div className="flex justify-between items-center bg-primary px-4 py-3 rounded-lg border-2 border-primary/50 mt-1">
@@ -637,7 +638,7 @@ export default function MHRDetailPage() {
                   <span className="font-semibold">{fmtLocal(calc.totalFixedCostPerHour * calc.effectiveHoursPerYear)}</span>
                 </div>
               )}
-              <div className="flex justify-between bg-blue-50 dark:bg-blue-950 px-2 py-1.5 rounded font-bold text-blue-700 dark:text-blue-300">
+              <div className="flex justify-between bg-primary/10 dark:bg-primary/15 px-2 py-1.5 rounded font-bold text-primary dark:text-primary">
                 <span>Total Fixed</span>
                 <span>{fmtLocal(hasAnnualBreakdown ? calc.totalFixedCostPerAnnum : calc.totalFixedCostPerHour * calc.effectiveHoursPerYear)}</span>
               </div>

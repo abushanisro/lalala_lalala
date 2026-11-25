@@ -17,6 +17,10 @@ from shared.part_family import MILLED, MILL_TURN, PLASTIC_MOLDED, SHEET_METAL, T
 
 logger = logging.getLogger(__name__)
 
+# A part filling less of its bounding box than this is hollow enough to be formed from sheet (a box, a rolled or drawn shell); one filling
+# more is not. The milled -> sheet-metal cross-check (memory_optimizer.smf_override_verdict) and the round-bar evidence below share it.
+SHEET_SHELL_MAX_FILL = 0.15
+
 
 def detect_part_family(
     bbox_dims: List[float],
@@ -31,6 +35,8 @@ def detect_part_family(
     thin_wall_ratio: float = 0.0,
     draft_face_ratio: float = 0.0,
     volume_mm3: float = 0.0,
+    turned_od_count: Optional[int] = None,
+    within_turned_od: Optional[bool] = None,
 ) -> Tuple[str, float, List[str]]:
     """
     Heuristic family classification from bounding-box geometry + cylindrical face signals.
@@ -80,6 +86,17 @@ def detect_part_family(
       walls — all thin, none identical). High thin_wall_ratio with no single dominant bin is
       evidence for plastic_molded, not sheet_metal.
 
+    turned_od_count: the part's turned outer diameters (shared.machining_geometry.turned_diameter_count): convex cylindrical faces on
+      its dominant axis. A part a lathe turns has at least one. 0 rules out turned and mill_turn: the rotational signals below
+      (circularity is the bounding box's mid/max ratio, alignment and face ratio count hole walls too) also fire on a block whose holes
+      share one axis, the R_M-0230-032 lead nut housing. None = not measured: the rotational gates apply as before.
+
+    within_turned_od: the part lies wholly within its largest turned outer diameter (shared.machining_geometry.turned_envelope). Unless
+      it is hollow enough to be a sheet shell (it fills less than SHEET_SHELL_MAX_FILL of its box; volume_mm3 unknown counts as that), it
+      was cut from round bar of that diameter and turned: turned (mill_turn with secondary features) whatever the box's proportions. A
+      shaft two diameters long is neither a disc nor a rod to the bounding-box gates (Lead Screw side shaft, Ø14 x 32, was milled), and
+      a bar as thick as it is wide is not flat, however long. False or None = no such evidence: the other gates decide as before.
+
     draft_face_ratio: fraction of "vertical" walls (relative to the shortest bbox axis, the
       likely mold pull direction) sitting at a small non-zero angle (roughly 0.3°–5°) off
       that axis, rather than exactly parallel/perpendicular to it (0–1). Sheet metal and
@@ -117,11 +134,19 @@ def detect_part_family(
 
     hole_density = hole_count / max(total_face_count, 1)
 
+    # A round bar part: it lies wholly within its largest turned outer diameter and is not hollow enough to be a rolled or drawn sheet
+    # shell. It was cut from round bar and turned (the gate after the rod gate below).
+    round_bar = bool(within_turned_od) and volume_mm3 > 0 and volume_mm3 / (dims[0] * dims[1] * dims[2]) >= SHEET_SHELL_MAX_FILL
+    # One at least as long as its diameter has a box D x D x L: its min/max is the slenderness of a bar, not the flatness of a sheet (every
+    # shaft over 1.7 diameters long is "flat-ish" by it, and its diameters count as holes in hole_density). The sheet-metal gates that read
+    # flatness do not apply to it.
+    bar_not_sheet = round_bar and dims[0] / dims[1] >= dims[1] / dims[2]
+
     # Gate 0 — very flat cross-section is strong sheet-metal evidence on its
     # own, but no longer an immediate return: a part this flat that ALSO
     # carries strong injection-molded evidence (below) must be allowed to
     # win on the stronger real signal instead of being pre-empted here.
-    if flatness < 0.15:
+    if flatness < 0.15 and not bar_not_sheet:
         confidence = min(0.95, 0.60 + (0.15 - flatness) * 2.0)
         candidates.append((SHEET_METAL, round(confidence, 3), [
             f"Very flat cross-section (flatness={flatness:.2f} < 0.15)",
@@ -138,7 +163,8 @@ def detect_part_family(
     if (hole_density > 0.40
             and flatness < 0.65
             and cyl_axis_alignment < 0.50
-            and large_cyl_count == 0):
+            and large_cyl_count == 0
+            and not bar_not_sheet):
         confidence = min(0.88, 0.72 + min(hole_density, 0.80) * 0.18)
         candidates.append((SHEET_METAL, round(confidence, 3), [
             f"Cylindrical-face-dominated topology ({hole_density:.0%} of faces) "
@@ -206,6 +232,7 @@ def detect_part_family(
         (large_cyl_count > 3 and hole_density < 0.20)
         or (large_cyl_count > 3 and large_cyl_fraction_of_holes >= 0.50)
         or pockets_dominate
+        or bar_not_sheet
     )
 
     # Gate 1b-abs — absolute hole count + moderately flat bbox.
@@ -269,9 +296,12 @@ def detect_part_family(
     # Disc / flange / ring (lens holders, pulleys, bearing races):
     # rotational_face_ratio > 0.30 guards against round milled housings / pipe manifolds
     # where a few through-holes make cyl_axis_alignment look high.
+    # A lathe turns a part about an outer diameter: none measured, none of the rotational gates below applies (turned_od_count).
+    no_turned_od = turned_od_count == 0
     if (circularity > 0.80
             and cyl_axis_alignment > 0.60
-            and rotational_face_ratio > 0.30):
+            and rotational_face_ratio > 0.30
+            and not no_turned_od):
         reasons = [
             f"Circular cross-section (circularity={circularity:.2f} > 0.80)",
             f"Most cylindrical faces share a common axis (alignment={cyl_axis_alignment:.2f} > 0.60)",
@@ -285,11 +315,25 @@ def detect_part_family(
         else:
             candidates.append((TURNED, 0.80, reasons))
 
-    if elongation > 2.5 and flatness > 0.20:
+    if elongation > 2.5 and flatness > 0.20 and not no_turned_od:
         reasons = [
             f"Elongated geometry (elongation={elongation:.2f} > 2.5)",
             f"Not flat (flatness={flatness:.2f} > 0.20)",
         ]
+        if secondary_features_count > 0:
+            reasons.append(
+                f"Secondary machining features detected (count={secondary_features_count})"
+            )
+            candidates.append((MILL_TURN, 0.72, reasons))
+        else:
+            candidates.append((TURNED, 0.75, reasons))
+
+    # A round bar part (above) was cut from round bar and turned. This is measured from the surface itself, so it holds for the proportions
+    # the two bounding-box gates above leave out: a shaft between 1.25 and 2.5 diameters long is neither a disc (mid/max > 0.80) nor a rod
+    # (max/mid > 2.5), and one over 5 long fails the rod gate's flatness > 0.20. Scored as the rod gate and listed after it, so a part
+    # either gate already classed keeps its result and its reasons.
+    if round_bar:
+        reasons = ["The part lies within its largest turned outer diameter: cut from round bar and turned"]
         if secondary_features_count > 0:
             reasons.append(
                 f"Secondary machining features detected (count={secondary_features_count})"
@@ -346,13 +390,16 @@ def detect_part_family(
             reasons.append(f"Elevated pocket count ({pocket_count}) consistent with ribs/bosses")
         candidates.append((PLASTIC_MOLDED, round(confidence, 3), reasons))
 
-    candidates.append((MILLED, 0.65, [
+    milled_reasons = [
         f"No strong rotational or sheet-metal signal "
         f"(flatness={flatness:.2f}, elongation={elongation:.2f}, "
         f"circularity={circularity:.2f}, "
         f"cyl_alignment={cyl_axis_alignment:.2f}, "
         f"rot_ratio={rotational_face_ratio:.2f})",
-    ]))
+    ]
+    if no_turned_od:
+        milled_reasons.append("no turned outer diameter: no convex cylindrical face on the part's axis, so a lathe has nothing to turn")
+    candidates.append((MILLED, 0.65, milled_reasons))
 
     # ── Highest-scoring family wins ─────────────────────────────────────────
     # milled's catch-all above always contributes a candidate, so this

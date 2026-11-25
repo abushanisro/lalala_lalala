@@ -91,6 +91,7 @@ export interface RouteResultDto {
   autoRoutable: boolean;
   processLines: ProcessLineCost[];
   materialCost: number;
+  /** A waterjet route's garnet. It is one of processLines ("Waterjet Abrasive") and so already in totalProcessCost: stated here for display only. */
   abrasiveCost: number;
   totalProcessCost: number;
   totalCost: number | null;  // null when isFeasible === false — prevents sort/ML pollution
@@ -183,7 +184,7 @@ export interface RouteComparisonDto {
   routes: RouteResultDto[];
   comparisonWarnings: string[];
   /** Molding only: why the material itself cannot be injection molded or lacks the reference data the engine reads; null when it is fine. Said once here, not per press. */
-  materialNote?: { kind: 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data'; reason: string; missing: string[] } | null;
+  materialNote?: { kind: 'metal' | 'additive_feedstock' | 'not_molding_feedstock' | 'no_injection_data'; reason: string; missing: string[] } | null;
   // Does the 2D drawing describe the same part as the 3D CAD model? Part-level,
   // same as CostSummaryDto's own field — see drawing-cad-consistency.ts.
   drawingCadConsistency?: FactMismatch[];

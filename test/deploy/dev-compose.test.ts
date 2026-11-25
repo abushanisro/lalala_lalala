@@ -19,12 +19,10 @@ describe('docker-compose.yml (local development)', () => {
     }
   });
 
-  it('keeps the engines on an internal network: no route in from the host, none out to the internet', () => {
+  it('keeps the CAD engine on an internal network: no route in from the host, none out to the internet', () => {
     expect(compose.networks['backend-network']?.internal).toBe(true);
-    for (const name of ['cad-engine', 'ecad-engine']) {
-      expect(compose.services[name]?.networks).toEqual(['backend-network']);
-      expect(compose.services[name]?.ports).toBeUndefined();
-    }
+    expect(compose.services['cad-engine']?.networks).toEqual(['backend-network']);
+    expect(compose.services['cad-engine']?.ports).toBeUndefined();
   });
 
   it('does not present itself as a production stack', () => {

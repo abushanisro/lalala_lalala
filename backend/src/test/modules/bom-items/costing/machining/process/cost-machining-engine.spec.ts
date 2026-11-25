@@ -1,10 +1,15 @@
+import type { CalculationTraceStep } from '../../../../../../modules/bom-items/dto/cost-breakdown.dto';
+import type { OperationLine } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
+import { calculatorInputSteps } from '../../../../../../modules/bom-items/costing/machining/process/machining-trace';
 import {
+  detectMaterialClass,
   computeMillingCostSummary,
   computeTurningCostSummary,
   computeSurfaceTreatmentLine,
   meetsRequiredMilledClass,
-  pickRecommendedRoute,
   checkMachiningCapability,
+  NO_STOCK_WARNING,
+  largestDrillMm,
   type MachiningCostInput,
   type MachineClassId,
 } from '../../../../../../modules/bom-items/costing/machining/process/cost-machining-engine';
@@ -12,6 +17,9 @@ import { matchSurfaceTreatmentCallout } from '../../../../../../modules/bom-item
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 
 const CALCS = specAsCalculators();
+const REMOVAL_RATE: Record<string, number> = {
+  aluminum: 60000, mild_steel: 12000, stainless: 5000, titanium: 3000, copper_alloy: 40000, tool_steel: 3000, plastic: 150000,
+};
 
 // A line whose real inputs are missing stays visible with a gap — never
 // omitted, never estimated.
@@ -22,9 +30,12 @@ function expectGapLine(result: { processLines: any[]; warnings: string[] }, proc
   expect(line.physicsGap?.gapType).toBe('unsupported_operation');
   expect(result.warnings.some((w) => w.includes(process) && w.includes('not priced'))).toBe(true);
 }
-import { realCapabilityRules, realDrillingTable, realGrindingParams, realKeywayBroachReference, realSurfaceGrindingParams, realTappingTable } from '../real-reference-tables';
+import { realCapabilityRules, realGrindingParams, realGroovingTable, realKeywayBroachReference, realPartoffTable, realSurfaceGrindingParams } from '../real-reference-tables';
+import type { TurnedGroove } from '../../../../../../modules/bom-items/costing/machining/operation/turned-grooves';
+import { TEST_INR_PER_USD, workbookFixture } from '../workbook-fixture';
+import { timeOperations } from '../../../../../../modules/bom-items/costing/machining/operation/time-operations';
 
-const TAPPING = realTappingTable();
+const TAPPING = workbookFixture();
 // Finishing-process rules from the real staged files (capability-rules.ts).
 const RULES = realCapabilityRules();
 
@@ -37,20 +48,15 @@ import { EMPTY_CAPABILITY } from '../../../../../../modules/bom-items/costing/sh
 import type { MachineCapability } from '../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
 import { buildOperationSequence } from '../../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
 import type { MHRRateInput } from '../../../../../../modules/bom-items/costing/shared/core/cost-engine';
+import { findRouteDataGaps } from '../../../../../../modules/bom-items/costing/shared/core/engine-kernel';
 import {
   shapeRankForFamily,
   isDiscouragedShapeForFamily,
 } from '../../../../../../modules/raw-materials/constants/material-shape-ranking';
-import { resolveStockAllowanceRule, stockAllowancePerSideMm } from '../../../../../../modules/bom-items/costing/machining/stock-allowance';
 
-// The reference stock-allowance rule, built from the real memory/Stock Maching
-// variables.csv values (percentStockAllowance 5, minStockAllowance 0.79375,
-// maxStockAllowance 3.175) through the same resolver production uses.
-const STOCK_RULE = resolveStockAllowanceRule([
-  { key: 'percentStockAllowance', value: '5' },
-  { key: 'minStockAllowance', value: '0.79375' },
-  { key: 'maxStockAllowance', value: '3.175' },
-]).rule!;
+// The stock a fixture part is cut from, unless the test states one: a billet of the part's own box. The engine sizes no stock itself (the
+// stock model chooses it, costing/stock), so every test that prices a part gives it one.
+const boxBillet = (l: number, w: number, h: number) => ({ form: 'billet', sizeLabel: `${l}×${w}×${h} billet`, billetVolMm3: l * w * h, utilizationPct: null });
 
 function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInput {
   return {
@@ -59,13 +65,16 @@ function rate(value: number, overrides: Partial<MHRRateInput> = {}): MHRRateInpu
     machineClass: '3_axis_mill',
     machineName: 'Test VMC',
     commodityCode: 'CNC-VMC-3AX',
+    // The test machine's own spindle limit and rapid traverse rate (mhr_records.specs, migrations 1136 and 1141).
+    maxSpindleRpm: 8000,
+    rapidTraverseMmPerMin: 30000,
     ...overrides,
   };
 }
 
 // RMP-00028-A boom clamp analog: 83×62×32 mm aluminium, 107 holes, M4 taps
 function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput {
-  return {
+  const input: MachiningCostInput = {
     volume: 100_000,
     surfaceArea: 40_000,
     maxLength: 83,
@@ -80,13 +89,7 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
     materialSource: 'db',
     threads: [{ size: 'M4', count: 12 }],
     tightestToleranceMm: 0.05,
-    // Two real callouts, each timed by an inspection_rules row (3 min). The
-    // count always equals the callouts it came from (resolveGdtCallouts).
     gdtFeatureCount: 2,
-    gdtFeatures: [
-      { symbol: 'position', tolerance: 0.05, timeMin: 3 },
-      { symbol: 'flatness', tolerance: 0.4, timeMin: 3 },
-    ],
     batchSize: 60,
     family: 'milled',
     finishedWeightKg: 0.27,
@@ -102,15 +105,22 @@ function milledInput(overrides: Partial<MachiningCostInput> = {}): MachiningCost
     location: 'India',
     ...overrides,
   };
+  if (!('blankResult' in overrides)) input.blankResult = boxBillet(input.maxLength, input.maxWidth, input.maxHeight);
+  // The removal rate of the part's material class, as tblMillingRemovalRate stages it (migration 1036), unless the test sets one.
+  if (!('millingRemovalRateMm3PerMin' in overrides)) input.millingRemovalRateMm3PerMin = REMOVAL_RATE[detectMaterialClass(input.materialGrade)];
+  // The machining variables' rapidTransferDistanceFactor (migration 639), unless the test sets one.
+  if (!('rapidTransferDistanceFactor' in overrides)) input.rapidTransferDistanceFactor = 0.5;
+  return input;
 }
 
+// The mill line's moves between its operations (migration 1142): a 5 s tool change for each cutter, and a rapid move to each feature of
+// 0.5 x the part's 83 mm box length at the test mill's 30 000 mm/min (0.083 s each).
+const moves = (tools: number, visits: number, boxMm = 83) => tools * 5 + visits * ((0.5 * boxMm) / 30000) * 60;
+
 describe('computeMillingCostSummary — billet and chip loss', () => {
-  it('adds the reference stock allowance per side to the billet', () => {
-    const perSide = stockAllowancePerSideMm(STOCK_RULE, { length: 83, width: 62, height: 32 }); // 5% of 62 = 3.1
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: perSide }), mc('3_axis_mill'));
-    const allow = 2 * perSide;
-    const expectedVol = (83 + allow) * (62 + allow) * (32 + allow);
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo((expectedVol / 1e9) * 2700, 3);
+  it('the billet is the stock chosen for the part', () => {
+    const result = computeMillingCostSummary(milledInput(), mc('3_axis_mill'));
+    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(((83 * 62 * 32) / 1e9) * 2700, 3);
   });
 
   it('clamps utilization at 100% and warns when CAD volume exceeds the billet', () => {
@@ -207,110 +217,165 @@ describe('computeMillingCostSummary — billet and chip loss', () => {
   });
 });
 
-describe('inspection line — batch sampling + CMM amortized rate', () => {
-  // milledInput per-piece inspection minutes:
-  // base 5 + holeSample min(ceil(107/5),15)×0.5 = 7.5 + threads min(12,6)×0.4 = 2.4
-  // + tolAdder 8 (0.05mm) + GD&T 2 callouts × 3 min (inspection_rules) = 6 → 28.9 min
-  const PER_PIECE_MIN = 28.9;
+describe('a milled part with no feature data: faced, bulk milled, drilled and bored, each by its calculator, its steps on the line', () => {
+  // The fixture's 83 x 62 x 32 part (100 000 mm^3) from a 90 x 70 x 40 billet (252 000 mm^3), 4 mm faced off its top and bottom.
+  const facing = { faces: 2, lengthMm: 90, widthMm: 70, depthMm: 4, volumeMm3: 90 * 70 * 8, basis: 'the test billet\'s top and bottom' };
+  const blank = { ...boxBillet(90, 70, 40), facing };
+  const linesOf = (over: Partial<MachiningCostInput>) => computeMillingCostSummary(milledInput({ workbook: workbookFixture(), blankResult: blank, ...over }), mc('3_axis_mill'))
+    .processLines;
+  const millOf = (over: Partial<MachiningCostInput>) => linesOf(over).find((l) => l.process === '3 Axis Mill')!;
+  // The holes are drilled on the mill's Drilling line, a line of its own (as with feature data).
+  const drillOf = (over: Partial<MachiningCostInput>) => linesOf(over).find((l) => l.process === 'Drilling')!;
+  const step = (line: ReturnType<typeof millOf>, name: string) => line.calculationTrace!.find((st) => st.fieldName === name);
 
-  // Per-piece minutes as the Inspection calculator itself computed them
-  // ("Inspection per Piece" in the line's calculation trace).
-  const perPiece = (r: ReturnType<typeof computeMillingCostSummary>) =>
-    r.processLines.find((l) => l.process === 'Inspection')!.calculationTrace!.find((s) => s.fieldName === 'Inspection per Piece')!.value;
-  const noFeatures = { holeCount: 0, holeGroups: [], threads: [], tightestToleranceMm: null, gdtFeatureCount: 0, gdtFeatures: [] };
-
-  it('computes per-piece inspection minutes from holes/threads/tolerance/GD&T', () => {
-    expect(perPiece(computeMillingCostSummary(milledInput(), mc('3_axis_mill')))).toBeCloseTo(PER_PIECE_MIN, 5);
+  it('faces the billet\'s faces and bulk mills only the rest: 252 000 - 100 000 - 50 400 faced = 101 600 mm^3', () => {
+    const line = millOf({});
+    expect(step(line, 'Facing · Faces')!.value).toBe(2);
+    expect(step(line, 'Facing · Stock Depth')!.source).toBe("Stock: the test billet's top and bottom");
+    expect(step(line, 'Bulk Milling · Removed Volume')!.value).toBe(101600);
+    expect(step(line, 'Drilling · Hole Diameter')).toBeUndefined();
+    // The line's time is the sum of its operations' (no flat allowance).
+    const total = step(line, '3 Axis Mill cycle time')!.value as number;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(total, 1);
+    expect(line.physicsGap).toBeUndefined();
+    // The drilling: its own line on the mill, timed by the Drilling calculator, its time out of the milling line.
+    const drilling = drillOf({});
+    expect(step(drilling, 'Drilling · Hole Diameter')).toBeDefined();
+    expect(drilling.cycleTimeMin * 60).toBeCloseTo(step(drilling, 'Drilling cycle time')!.value as number, 1);
+    expect(drilling).toMatchObject({ machineClass: '3_axis_mill', hostMachineClass: '3_axis_mill', setupCost: 0 });
+    expect(drilling.physicsGap).toBeUndefined();
   });
 
-  it('uses per-callout GD&T time from the severity rules when callouts are provided', () => {
-    // position 0.05 → CMM 8 min; flatness 0.4 → height gauge 4 min (vs flat 3+3)
-    const withCallouts = computeMillingCostSummary(milledInput({
-      ...noFeatures, gdtFeatureCount: 2,
-      gdtFeatures: [{ symbol: 'position', tolerance: 0.05 }, { symbol: 'flatness', tolerance: 0.4 }],
-    } as any), mc('3_axis_mill'));
-    expect(perPiece(withCallouts)).toBe(5 + 8 + 4);
+  it('with no facing on the stock, the whole stock-to-part volume is bulk milled, as before', () => {
+    const line = millOf({ blankResult: boxBillet(90, 70, 40) });
+    expect(step(line, 'Facing · Faces')).toBeUndefined();
+    expect(step(line, 'Bulk Milling · Removed Volume')!.value).toBe(152000);
   });
 
-  it('batch 1 = FAI full measurement + one final check', () => {
-    const result = computeMillingCostSummary(milledInput({ batchSize: 1 }), mc('3_axis_mill'));
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
-    // The default inspectionRate carries no real setup_time_hr: CMM setup not costed.
-    expect(insp.setupCost).toBe(0);
-    // FAI (28.9 min) + final visual check (2 min)
-    expect(insp.runCost).toBeCloseTo(((PER_PIECE_MIN + 2) / 60) * 450, 2);
+  it('a hole the drills do not reach is drilled at the largest drill and bored to size, with the tools\' wear on the line', () => {
+    const largest = largestDrillMm(workbookFixture(), 'aluminum')!;
+    const over = { holeCount: 1, holeGroups: [{ diameter_mm: largest + 20, count: 1, depth_mm: 20 }] };
+    const line = millOf(over);
+    const drilling = drillOf(over);
+    expect(step(line, 'Boring · Initial Diameter')!.value).toBe(largest);
+    expect(step(line, 'Boring · Final Diameter')!.value).toBe(largest + 20);
+    expect(step(drilling, 'Drilling · Hole Diameter')!.value).toBe(largest);
+    // The boring bar's price over its life on the milling line, the drill's on the Drilling line.
+    expect(line.otherCostPerPart).toBeGreaterThan(0);
+    expect(drilling.otherCostPerPart).toBeGreaterThan(0);
+    expect(line.physicsGap).toBeUndefined();
+    expect(drilling.physicsGap).toBeUndefined();
+  });
+});
+
+describe('RM Composition Analysis: the raw material lot\'s composition checked on the XRF work centre (the workbook\'s sheet)', () => {
+  const XRF = rate(15.2794, { machineClass: 'xrf_analyzer' as any, machineName: 'Handheld XRF Alloy Analyzer' });
+  const xrfOf = (r: ReturnType<typeof computeMillingCostSummary>) => r.processLines.find((l) => l.process === 'RM Composition Analysis');
+
+  it('is 60 s a lot shared over the batch, on the XRF analyzer\'s rate, with no setup', () => {
+    // 60 s over the batch of 60 = 1 s a part; at 15.2794 an hour, 0.004244.
+    const line = xrfOf(computeMillingCostSummary(milledInput({ xrfRate: XRF }), mc('3_axis_mill')))!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(1, 4); // a line keeps its cycle to the stored four decimals of a second
+    expect(line.runCost).toBeCloseTo(15.2794 / 3600, 6);
+    expect(line).toMatchObject({ setupCost: 0, machineClass: 'xrf_analyzer', machineName: 'Handheld XRF Alloy Analyzer' });
+    expect(line.calculationTrace!.find((s) => s.fieldName === 'Time per Lot')!.value).toBe(60);
+  });
+
+  it('a large batch keeps its sub-second share: 60 s over 25 000 parts is 0.0024 s a part, costed and saved, never "no cycle time"', () => {
+    // FusionComponent (batch 25 000): four decimals of a minute (0.006 s) rounded 0.0024 s to 0, and Apply saved a not-costed line.
+    const r = computeMillingCostSummary(milledInput({ xrfRate: XRF, batchSize: 25000 }), mc('3_axis_mill'));
+    const line = xrfOf(r)!;
+    expect(line.cycleTimeMin * 60).toBeCloseTo(0.0024, 9);
+    expect(line.runCost).toBeCloseTo((0.0024 / 3600) * 15.2794, 9);
+    expect(line.totalCost).toBeGreaterThan(0);
+    expect(findRouteDataGaps([line])).toEqual([]);
+  });
+
+  it('a share below the stored precision (0.00005 s) is still too small to save, and says so', () => {
+    const r = computeMillingCostSummary(milledInput({ xrfRate: XRF, batchSize: 2_000_000 }), mc('3_axis_mill'));
+    // 60 / 2 000 000 = 0.00003 s rounds to 0.0000 s at the column's scale.
+    expect(findRouteDataGaps([xrfOf(r)!]).map((g) => g.reason)).toEqual(['no cycle time was resolved for this operation, so it cannot be costed or persisted']);
+  });
+
+  it('a quote given no XRF work centre (a sheet metal part\'s) has no such line', () => {
+    expect(xrfOf(computeMillingCostSummary(milledInput(), mc('3_axis_mill')))).toBeUndefined();
+  });
+});
+
+describe('inspection line — the machining workbook\'s Inspection sheet (60 s a batch for 5 of every 50 parts)', () => {
+  const inspOf = (r: ReturnType<typeof computeMillingCostSummary>) => r.processLines.find((l) => l.process === 'Inspection')!;
+  const step = (r: ReturnType<typeof computeMillingCostSummary>, field: string) => inspOf(r).calculationTrace!.find((s) => s.fieldName === field)!;
+  const atBatch = (batchSize: number) => computeMillingCostSummary(milledInput({ batchSize, workbook: workbookFixture() }), mc('3_axis_mill'));
+  // The calculator's own cycle (the line keeps its minutes to 4 decimals).
+  const secPerPart = (batchSize: number) => Number(step(atBatch(batchSize), 'Cycle Time').value);
+
+  it('reproduces the sheet: a 50-part batch samples 5 parts at 12 s each, 60 s shared over 50 parts = 1.2 s a part, and the gauge\'s wear', () => {
+    const r = atBatch(50);
+    expect(step(r, 'Sampled Parts').value).toBe(5);
+    expect(step(r, 'Time per Sampled Part').value).toBe(12);
+    expect(secPerPart(50)).toBeCloseTo(1.2, 6);
+    // The workbook's inspection gauge, Rs 3500 over 10 000 parts = Rs 0.35 a part, at the test's Rs 84 to the dollar.
+    const insp = inspOf(r);
+    expect(insp.otherCostPerPart).toBeCloseTo(0.35 / TEST_INR_PER_USD, 9);
+    expect(insp.runCost).toBeCloseTo((1.2 / 3600) * 450 + 0.35 / TEST_INR_PER_USD, 6);
+    expect([step(r, 'Tool Price').value, step(r, 'Tool Life').value]).toEqual([3500, 10000]);
     expect(insp.hourlyRate).toBe(450);
-    expect(insp.machineClass).toBe('cmm');
   });
 
-  it('amortizes three-stage sampling over the batch (FAI + in-process 1/10 + final 1/25)', () => {
-    // batch 60 → FAI 1 + in-process floor(59/10)=5 full measurements + final ceil(60/25)=3 × 2min
-    const measuredMin = PER_PIECE_MIN * 6 + 2 * 3;
-    const result = computeMillingCostSummary(milledInput({ batchSize: 60 }), mc('3_axis_mill'));
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
-    expect(insp.runCost).toBeCloseTo(((measuredMin / 60) * 450) / 60, 2);
-    expect(insp.setupCost).toBe(0); // no real CMM setup_time_hr on the default inspectionRate
-    expect(insp.cycleTimeMin).toBeCloseTo(measuredMin / 60, 2);
+  it('a batch smaller than the sample is inspected whole: 3 parts, each 12 s', () => {
+    expect(step(atBatch(3), 'Sampled Parts').value).toBe(3);
+    expect(secPerPart(3)).toBeCloseTo(12, 6);
   });
 
-  it('honors a per-item samplingPerN override (1 = full measurement on every part)', () => {
-    const result = computeMillingCostSummary(
-      milledInput({ batchSize: 60, samplingPerN: 1 }),
-      mc('3_axis_mill'),
-    );
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
-    // FAI 1 + in-process 59 = every part fully measured, + 3 final checks
-    const measuredMin = PER_PIECE_MIN * 60 + 2 * 3;
-    expect(insp.runCost).toBeCloseTo(((measuredMin / 60) * 450) / 60, 2);
+  it('a batch of exactly the sample quantity: 5 parts, each inspected, 12 s a part', () => {
+    expect(step(atBatch(5), 'Sampled Parts').value).toBe(5);
+    expect(secPerPart(5)).toBeCloseTo(12, 6);
+  });
+
+  it('a batch above the sample: 5 of every 50 started, the time shared over the batch', () => {
+    // 60 parts start two lots of 50: 10 sampled x 12 s / 60 = 2 s; 120 parts: 15 x 12 / 120 = 1.5 s; 1,000 parts: 100 x 12 / 1,000 = 1.2 s.
+    expect(step(atBatch(60), 'Sampled Parts').value).toBe(10);
+    expect(secPerPart(60)).toBeCloseTo(2, 6);
+    expect(secPerPart(120)).toBeCloseTo(1.5, 6);
+    expect(secPerPart(1000)).toBeCloseTo(1.2, 6);
+  });
+
+  it('every input opens where it was read: the workbook\'s Inspection sheet and the BOM batch', () => {
+    const r = atBatch(50);
+    expect(step(r, 'Batch Inspection Time')).toMatchObject({ value: 60 });
+    expect(step(r, 'Sample Quantity')).toMatchObject({ value: 5 });
+    expect(step(r, 'Sample Lot Size')).toMatchObject({ value: 50 });
+    expect(String(step(r, 'Batch Size').source)).toMatch(/^BOM: the batch size/);
+    // The memory/Machining reference model is gone from the line.
+    for (const field of ['Time Per Analysis', 'Inspection Sample Ratio', 'Final Inspection Time']) expect(step(r, field)).toBeUndefined();
+  });
+
+  it('without the workbook the gauge\'s price is not read: the line is a named gap, never priced without it', () => {
+    const r = computeMillingCostSummary(milledInput({ workbook: workbookFixture({ tables: {} }) }), mc('3_axis_mill'));
+    expect(inspOf(r).cycleTimeMin).toBe(0);
+  });
+
+  it('does not grow with the hole count: the batch\'s sample inspection covers the holes (they are only listed)', () => {
+    const few = inspOf(computeMillingCostSummary(milledInput({ holeCount: 2, holeGroups: [{ diameter_mm: 4, count: 2 }] }), mc('3_axis_mill')));
+    const many = inspOf(computeMillingCostSummary(milledInput(), mc('3_axis_mill')));
+    expect(few.cycleTimeMin).toBe(many.cycleTimeMin);
+  });
+
+  it('lists the inspected holes on the line, so the Process tree shows and lights them', () => {
+    const inspected = [{ featureId: 'hole_d4', occurrenceIndex: 0 }, { featureId: 'hole_d4', occurrenceIndex: 1 }, { featureId: 'step_1', occurrenceIndex: 0 }];
+    const insp = inspOf(computeMillingCostSummary(milledInput({ inspectedFeatures: inspected }), mc('3_axis_mill')));
+    expect(insp.featureBreakdown).toEqual([expect.objectContaining({
+      name: 'Feature Inspection ×3', count: 3, featureIds: ['hole_d4', 'step_1'], occurrenceRefs: inspected,
+    })]);
   });
 
   it('emits the inspection line on turned parts too', () => {
-    const result = computeTurningCostSummary(
-      milledInput({ family: 'turned' }),
-      mc('2_axis_lathe'),
-    );
+    const result = computeTurningCostSummary(milledInput({ family: 'turned' }), mc('2_axis_lathe'));
     expect(result.processLines.some((l) => l.process === 'Inspection')).toBe(true);
   });
 
-  it('applies a named quality plan (full_cmm: every part measured)', () => {
-    const result = computeMillingCostSummary(
-      milledInput({
-        batchSize: 60,
-        samplingPolicy: { fai: true, inProcessPerN: 1, finalPerN: 1, finalCheckMin: 2 },
-      }),
-      mc('3_axis_mill'),
-    );
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
-    // FAI 1 + in-process 59 = 60 full measurements + 60 final checks
-    const measuredMin = PER_PIECE_MIN * 60 + 2 * 60;
-    expect(insp.runCost).toBeCloseTo(((measuredMin / 60) * 450) / 60, 2);
-  });
-
-  it('applies an AS9100-style plan (5% in-process sampling) more cheaply than general', () => {
-    const general = computeMillingCostSummary(milledInput({ batchSize: 100 }), mc('3_axis_mill'));
-    const as9100 = computeMillingCostSummary(
-      milledInput({
-        batchSize: 100,
-        samplingPolicy: { fai: true, inProcessPerN: 20, finalPerN: 25, finalCheckMin: 3 },
-      }),
-      mc('3_axis_mill'),
-    );
-    const inspOf = (r: typeof general) => r.processLines.find((l) => l.process === 'Inspection')!;
-    expect(inspOf(as9100).runCost).toBeLessThan(inspOf(general).runCost);
-  });
-
-  it('uses DB-resolved per-callout time (timeMin) over the code matrix', () => {
-    // Rules say this callout takes 20 min (org-tuned CMM routine), matrix says 8
-    const withDbTime = computeMillingCostSummary(milledInput({
-      ...noFeatures, gdtFeatureCount: 1,
-      gdtFeatures: [{ symbol: 'position', tolerance: 0.05, timeMin: 20 }],
-    } as any), mc('3_axis_mill'));
-    expect(perPiece(withDbTime)).toBe(5 + 20);
-  });
-
   // Root-caused live (2026-09-18): a CMM class constant was used unconditionally,
-  // ignoring a real per-CMM mhr_records.setup_time_hr even when present —
-  // same fix pattern applied to the main Setup line below.
+  // ignoring a real per-CMM mhr_records.setup_time_hr even when present.
   it('uses a real per-CMM setup_time_hr when one is on file', () => {
     const result = computeMillingCostSummary(
       milledInput({
@@ -319,7 +384,7 @@ describe('inspection line — batch sampling + CMM amortized rate', () => {
       }),
       mc('3_axis_mill'),
     );
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
+    const insp = inspOf(result);
     expect(insp.setupTimeMin).toBe(24);
     expect(insp.setupTimeSource).toBe('machine');
     expect(insp.setupCost).toBeCloseTo((24 / 60) * 450 / 48, 5);
@@ -327,11 +392,86 @@ describe('inspection line — batch sampling + CMM amortized rate', () => {
 
   it('does not cost CMM setup, and says so, when no real setup_time_hr exists', () => {
     const result = computeMillingCostSummary(milledInput({ batchSize: 48 }), mc('3_axis_mill'));
-    const insp = result.processLines.find((l) => l.process === 'Inspection')!;
+    const insp = inspOf(result);
     expect(insp.setupTimeMin).toBe(0);
     expect(insp.setupTimeSource).toBe('none');
     expect(insp.setupCost).toBe(0);
     expect(result.warnings.some((w) => w.includes('setup not costed') && w.includes('setup_time_hr'))).toBe(true);
+  });
+
+  it('a station whose reference record states a zero setup is priced at zero, from the machine, with no warning', () => {
+    // memory/Machining inspection_usa.csv: Default, time.setup_time_hr 0.0. A recorded zero is not a missing setup.
+    const result = computeMillingCostSummary(
+      milledInput({ batchSize: 48, inspectionRate: rate(14.2, { machineClass: 'machining_inspection', machineName: 'Default', referenceSetupTimeHr: 0 }) }),
+      mc('3_axis_mill'),
+    );
+    const insp = inspOf(result);
+    expect(insp.setupTimeSource).toBe('machine');
+    expect(insp.setupCost).toBe(0);
+    expect(result.warnings.some((w) => w.includes('Inspection') && w.includes('setup not costed'))).toBe(false);
+  });
+
+  it('every line states its cycle as machine cost and no labour: the cost table reads the split, it does not guess it', () => {
+    const result = computeMillingCostSummary(milledInput({ batchSize: 48 }), mc('3_axis_mill'));
+    expect(result.processLines.length).toBeGreaterThan(1);
+    for (const line of result.processLines) {
+      expect(line.machineCostPerPart).toBe(line.runCost);
+      expect(line.laborCostPerPart).toBe(0);
+    }
+  });
+});
+
+describe('machining inputs light exactly the features they counted', () => {
+  const holes = [{ featureId: 'SimpleHole-blind_d4.0_c4', occurrenceIndex: 0 }, { featureId: 'SimpleHole-blind_d4.0_c4', occurrenceIndex: 1 }];
+  const step = (trace: CalculationTraceStep[] | undefined, field: string) => trace?.find((s) => s.kind === 'input' && s.fieldName === field);
+
+  it('a drilled-hole group\'s diameter, depth and count open those holes', () => {
+    const r = computeTurningCostSummary(milledInput({
+      family: 'turned', holeGroups: [{ diameter_mm: 4, count: 2, depth_mm: 10, occurrences: holes }], holeCount: 2, workbook: workbookFixture(),
+    }), mc('2_axis_lathe'));
+    const drill = r.processLines.find((l) => (l.calculationTrace ?? []).some((s) => s.fieldName === 'Holes'))!;
+    for (const f of ['Holes', 'Hole Diameter', 'Hole Depth']) {
+      expect(step(drill.calculationTrace, f)!.ref).toEqual({ kind: 'features', label: 'Ø4 holes', features: holes });
+    }
+  });
+
+  it('CAD threads open their tapped holes, and the Tapping line lists them for the Process tree', () => {
+    const tapped = [{ featureId: 'SimpleHole-threaded_d1.6_c4', occurrenceIndex: 2 }];
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 1, depthMm: 8, occurrences: tapped }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const tap = r.processLines.find((l) => l.process === 'Tapping')!;
+    expect(step(tap.calculationTrace, 'Threads')!.ref).toEqual({ kind: 'features', label: 'M4 tapped holes', features: tapped });
+    expect(tap.featureBreakdown).toEqual([expect.objectContaining({ name: 'M4 tapped ×1', occurrenceRefs: tapped })]);
+  });
+
+  it('drawing threads name no holes: no ref, no rows', () => {
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 3, depthMm: 8 }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const tap = r.processLines.find((l) => l.process === 'Tapping')!;
+    expect(step(tap.calculationTrace, 'Threads')!.ref).toBeUndefined();
+    expect(tap.featureBreakdown).toBeUndefined();
+  });
+
+  it('the sharp-edge length opens the faces meeting at those edges, and the Deburring line lists them', () => {
+    const r = computeMillingCostSummary(milledInput({ sharpEdgeLengthMm: 1442.7, sharpEdgeFaceIds: [3, 5, 8], deburrLinearSpeedMmPerSec: 20 }), mc('3_axis_mill'));
+    const deburr = r.processLines.find((l) => l.process === 'Deburring')!;
+    expect(step(deburr.calculationTrace, 'Sharp Edge Length')!.ref).toEqual({ kind: 'faces', label: 'sharp edges', faceIds: [3, 5, 8] });
+    expect(deburr.featureBreakdown).toEqual([expect.objectContaining({ name: 'Sharp edges (1443 mm)', faceIds: [3, 5, 8] })]);
+  });
+
+  it('an analysis without the sharp-edge faces still lists the Deburring row (no highlight until Refresh analysis)', () => {
+    const r = computeMillingCostSummary(milledInput({ sharpEdgeLengthMm: 1442.7, deburrLinearSpeedMmPerSec: 20 }), mc('3_axis_mill'));
+    const deburr = r.processLines.find((l) => l.process === 'Deburring')!;
+    expect(deburr.featureBreakdown).toEqual([expect.objectContaining({ name: 'Sharp edges (1443 mm)' })]);
+    expect(deburr.featureBreakdown![0]!.faceIds).toBeUndefined();
+  });
+
+  it('a line run once per thread size fills its calculator from the first size, under the calculator\'s own field names', () => {
+    const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M2', count: 4, depthMm: 5 }, { size: 'M3', count: 4, depthMm: 6 }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
+    const steps = calculatorInputSteps(r.processLines.find((l) => l.process === 'Tapping')!.calculationTrace!);
+    const byName = Object.fromEntries(steps.map((s) => [s.fieldName, s]));
+    expect(byName['Thread Diameter']!.value).toBe(2);
+    expect(byName['Thread Depth']!.value).toBe(5);
+    expect(byName['Thread Diameter']!.source).toMatch(/M2, the first of 2 groups \(M2, M3\)/);
+    expect(steps.some((s) => s.fieldName.startsWith('M3'))).toBe(false);
   });
 });
 
@@ -441,6 +581,75 @@ describe('surface treatment line — reference process from the drawing callout'
   });
 });
 
+describe('a turned part\'s Drilling line lists the holes it drills', () => {
+  // FusionComponent's holes as the costing service gives them (holeGroupsOfFeatures): its M2 bolt circle Ø1.6 x 2 and its Ø6 bore, each group
+  // with the feature_graph_v2 occurrences it is. The line's rows name each hole size and light exactly those holes (the process tree had
+  // "No feature data" under Drilling, and a hole's card listed no drilling).
+  it('one row per hole size, naming the holes, with the occurrences it drills', () => {
+    const result = computeTurningCostSummary(turnedInput({
+      workbook: workbookFixture(), holeCount: 3,
+      holeGroups: [
+        { diameter_mm: 1.6, count: 2, depth_mm: 5, occurrences: [{ featureId: 'SimpleHole-pcd_pattern_d1.6_c1', occurrenceIndex: 0 }] },
+        { diameter_mm: 6, count: 1, depth_mm: 25, occurrences: [{ featureId: 'SimpleHole-through_d6.0_c1', occurrenceIndex: 0 }] },
+      ],
+    } as any), mc('2_axis_lathe'));
+    const drilling = result.processLines.find((l) => l.process === 'Drilling')!;
+    expect(drilling.featureBreakdown?.map((b) => b.name)).toEqual(['Drilling // Hole Ø1.6 mm ×2', 'Drilling // Hole Ø6 mm ×1']);
+    expect(drilling.featureBreakdown?.[0]).toMatchObject({
+      featureType: 'drill', count: 2,
+      featureIds: ['SimpleHole-pcd_pattern_d1.6_c1'], occurrenceRefs: [{ featureId: 'SimpleHole-pcd_pattern_d1.6_c1', occurrenceIndex: 0 }],
+    });
+    // The rows' time is the line's.
+    expect(drilling.featureBreakdown!.reduce((t, b) => t + b.timeSec, 0)).toBeCloseTo(drilling.cycleTimeMin * 60, 0);
+  });
+});
+
+describe('a turned groove is plunged on the lathe (Plunging, tblGrooving)', () => {
+  // A Ø30 R2 half-round groove (geo_v89: depth 2, chord width 4) in mild steel: tblGrooving code 1.0 (125 HB), 250.4 m/min, a 4 mm insert
+  // fed at 0.06 + (4 - 1.75) / (8 - 1.75) x (0.27 - 0.06) = 0.1356 mm/rev; n = 250 400 / (pi x 30) = 2656.8 rpm (under the lathe's 4000);
+  // (2 + 10) / (0.1356 x 2656.8) = 0.033309 min = 1.9985 s -> 2 s a groove.
+  const groove = (over: Partial<TurnedGroove> = {}): TurnedGroove => ({
+    diameterMm: 30, depthMm: 2, widthMm: 4, grooves: 2, faceIds: [11, 12], featureIds: ['Ring-groove_d30.0_c2'], lacks: [], ...over,
+  });
+  const run = (grooves: TurnedGroove[], over: Partial<MachiningCostInput> = {}) => computeTurningCostSummary(turnedInput({
+    materialGrade: 'MS', workbook: workbookFixture(), turnedGrooves: grooves, groovingTable: realGroovingTable(), ...over,
+  } as any), mc('2_axis_lathe'));
+
+  it('one Plunging line after Finish Turning, 2 s a groove, its grooves as rows, the insert holder\'s wear charged', () => {
+    const result = run([groove()]);
+    const names = result.processLines.map((l) => l.process);
+    const line = result.processLines.find((l) => l.process === 'Plunging')!;
+    expect(line).toBeDefined();
+    expect(line.cycleTimeMin * 60).toBe(4);
+    expect(line.calculatorId).toBe('Machining - Plunging');
+    const step = (name: string) => line.calculationTrace!.find((t) => t.fieldName === name)!;
+    expect(step('Feed').value).toBe(0.1356);
+    expect(step('Cutting Speed').value).toBe(250.4);
+    expect(step('Insert Width').value).toBe(4);
+    expect(step('Spindle Speed').value).toBeCloseTo(2656.83, 1);
+    expect(step('Time per Groove').value).toBe(2);
+    expect(line.featureBreakdown).toEqual([expect.objectContaining({
+      name: 'Plunging // Ø30 groove 4 x 2 mm', timeSec: 4, featureType: 'Ring', count: 2, featureIds: ['Ring-groove_d30.0_c2'], faceIds: [11, 12],
+    })]);
+    expect(line.otherCostDetail).toMatch(/tool wear/);
+    if (names.includes('Finish Turning')) expect(names.indexOf('Plunging')).toBeGreaterThan(names.indexOf('Finish Turning'));
+    expect(result.warnings.some((w) => w.includes('Plunging not priced'))).toBe(false);
+  });
+
+  it('a groove analysed before geo_v89 (no depth or width) and a material with no grooving row are named gaps, never estimated', () => {
+    const legacy = run([groove({ depthMm: null, widthMm: null, lacks: ['depth', 'width'] })]).processLines.find((l) => l.process === 'Plunging')!;
+    expect(legacy.cycleTimeMin).toBe(0);
+    expect(legacy.physicsGap).toBeDefined();
+    const titanium = run([groove()], { materialGrade: 'Ti-6Al-4V' });
+    expect(titanium.processLines.find((l) => l.process === 'Plunging')!.cycleTimeMin).toBe(0);
+    expect(titanium.warnings.some((w) => w.includes('Plunging not priced') && w.includes('tblGrooving insert for titanium'))).toBe(true);
+  });
+
+  it('no grooves, no Plunging line', () => {
+    expect(run([]).processLines.some((l) => l.process === 'Plunging')).toBe(false);
+  });
+});
+
 describe('computeTurningCostSummary — data sanity', () => {
   it('still flags sheet/plate material grades on turned parts', () => {
     const result = computeTurningCostSummary(
@@ -451,73 +660,45 @@ describe('computeTurningCostSummary — data sanity', () => {
   });
 });
 
-// Real tblGeneralTurning material_cut_code_name '1.0' row (hardness 125):
-// medium_rough_turning cut_depth_mm=1.3/cutting_speed_m_min=250.4/
-// feed_rate_mm_rev=0.3625; finish_turning cut_depth_mm=0.8/
-// cutting_speed_m_min=333.1/feed_rate_mm_rev=0.29 (verified directly against
-// the source data 2026-09-18). Root-caused: OD Turning previously used a
-// flat, uncited TURNING_MRR table (mm3/min) + a fixed x1.2 fudge factor with
-// no real pass-count model at all — replaced with real per-pass depth-of-cut
-// physics (computeTurningCycleSec), same "L/F x N" shape the reference
-// methodology for this domain describes.
-const REAL_TURNING_PARAMS = {
-  roughCutDepthMm: 1.3, roughCuttingSpeedMPerMin: 250.4, roughFeedMmPerRev: 0.3625,
-  finishCutDepthMm: 0.8, finishCuttingSpeedMPerMin: 333.1, finishFeedMmPerRev: 0.29,
-  dataFound: true,
-};
-
-describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)', () => {
-  it('computes exact real rough-pass-count + finish-pass cycle time, split into the real distinct Rough Turning / Finish Turning operations', () => {
+// Turning, as the Machining calculator workbook's Turning sheet times a cut (calculators of migration 1138): the speed and feed of
+// the workbook's Turning cutting conditions for the material on carbide, at the middle of each range (AL6061-T6: rough, 2 mm deep,
+// 270 m/min and 0.25 mm/rev; finish, 0.5 mm deep, 375 m/min and 0.125 mm/rev); whole passes; the spindle capped at the machine's limit;
+// whole seconds per cut. Ø20 from a Ø30 bar, 100 mm long:
+//   rough  finish start 20 + 2 x 0.5 = 21; ceil((30 - 21) / 4) = 3 passes from the bar at 270 * 1000 / (pi * 30) = 2864.79 rpm;
+//          (100 + 10) / (0.25 x 2864.79) x 3 = 0.4608 min = 27.65 s -> 28 s
+//   finish min(4000, 375 * 1000 / (pi * 21)) = 4000 rpm; (100 + 10) / (0.125 x 4000) = 13.2 s -> 14 s
+const ROUGH_SEC = 28;
+const FINISH_SEC = 14;
+describe('OD Turning — the workbook\'s Turning sheet, whole passes and seconds', () => {
+  it('computes the rough passes and the finish pass, split into the distinct Rough Turning / Finish Turning operations', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20,
         blankResult: {
           form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30,
           billetVolMm3: Math.PI * 15 ** 2 * 100, // real equivalent 30mm-diameter round bar, 100mm long
-          utilizationPct: 50,
+          utilizationPct: 50, endAllowanceMm: 0.5,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
       } as any),
       mc('2_axis_lathe'),
     );
-    // "OD Turning" is no longer emitted when real per-pass data resolves —
-    // replaced by the real distinct catalog operations.
     expect(result.processLines.some((l) => l.process === 'OD Turning')).toBe(false);
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
     const finishLine = result.processLines.find((l) => l.process === 'Finish Turning')!;
-    expect(roughLine).toBeDefined();
-    expect(finishLine).toBeDefined();
-    // partDiameterMm = max(20,20) = 20; barDiameterMm = 30 (by construction);
-    // radialStockMm = (30-20)/2 = 5mm. finishStockMm = min(0.8,5) = 0.8;
-    // roughStockMm = 5-0.8 = 4.2; numRoughPasses = round(4.2/1.3) = 3.
-    const diameterMm = 20;
-    const passTimeSec = (speedMPerMin: number, feedMmPerRev: number) => {
-      const rpm = (speedMPerMin * 1000) / (Math.PI * diameterMm);
-      const feedMmPerMin = rpm * feedMmPerRev;
-      return (100 / feedMmPerMin) * 60;
-    };
-    const expectedRoughSec = 3 * passTimeSec(250.4, 0.3625);
-    const expectedFinishSec = passTimeSec(333.1, 0.29);
-    expect(roughLine.cycleTimeMin).toBeCloseTo(expectedRoughSec / 60, 2);
-    expect(finishLine.cycleTimeMin).toBeCloseTo(expectedFinishSec / 60, 2);
-    // Setup folds into Rough Turning only, not Finish Turning. This fixture's
-    // rate has no real setup_time_hr, so the folded setup is disclosed as not
-    // costed ('none') rather than charged.
-    expect(roughLine.setupTimeMin).toBe(0);
-    expect(roughLine.setupTimeSource).toBe('none');
-    expect(finishLine.setupTimeMin).toBeUndefined();
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(ROUGH_SEC, 1);
+    expect(finishLine.cycleTimeMin * 60).toBeCloseTo(FINISH_SEC, 1);
+    // The lathe's setup goes with its first cut, the facing. This fixture's rate has no setup_time_hr, so it is disclosed as not
+    // costed ('none'); the turning lines state a zero setup of their own, not an unresolved one.
+    for (const l of [roughLine, finishLine]) expect(l).toMatchObject({ setupTimeMin: 0, setupTimeSource: 'none' });
   });
 
-  it('reports a gap instead of estimating when real tblGeneralTurning data is not resolved', () => {
+  it('reports a gap instead of estimating when the workbook\'s turning data is not read', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000,
-        blankResult: {
-          form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30,
-          billetVolMm3: Math.PI * 15 ** 2 * 100,
-          utilizationPct: 50,
-        },
-        turningParams: { roughCutDepthMm: 0, roughCuttingSpeedMPerMin: 0, roughFeedMmPerRev: 0, finishCutDepthMm: 0, finishCuttingSpeedMPerMin: 0, finishFeedMmPerRev: 0, dataFound: false },
+        blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: Math.PI * 15 ** 2 * 100, utilizationPct: 50 },
+        workbook: workbookFixture({ tables: {} }),
       } as any),
       mc('2_axis_lathe'),
     );
@@ -526,10 +707,10 @@ describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)'
     expect(line.cycleTimeMin).toBe(0);
     expect(line.physicsGap?.gapType).toBe('unsupported_operation');
     expect(line.confidence).toBe('unsupported');
-    expect(result.warnings.some((w) => w.includes('Turning not priced') && w.includes('tblGeneralTurning'))).toBe(true);
+    expect(result.warnings.some((w) => w.includes('Turning not priced') && w.includes('tblTurningConditions'))).toBe(true);
   });
 
-  it('does not fall back with a warning when there is genuinely no material to remove (radial stock is zero)', () => {
+  it('nothing to remove (the bar is the part\'s diameter) is no turning gap', () => {
     const result = computeTurningCostSummary(
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000,
@@ -538,11 +719,12 @@ describe('OD Turning — real per-pass depth-of-cut physics (tblGeneralTurning)'
           billetVolMm3: Math.PI * 10 ** 2 * 100, // same diameter as the part -- no stock to remove
           utilizationPct: 100,
         },
-        turningParams: { roughCutDepthMm: 0, roughCuttingSpeedMPerMin: 0, roughFeedMmPerRev: 0, finishCutDepthMm: 0, finishCuttingSpeedMPerMin: 0, finishFeedMmPerRev: 0, dataFound: false },
+        workbook: workbookFixture({ tables: {} }),
       } as any),
       mc('2_axis_lathe'),
     );
-    expect(result.warnings.some((w) => w.includes('OD Turning') && w.includes('falling back'))).toBe(false);
+    expect(result.processLines.some((l) => l.process === 'Rough Turning' || l.process === 'Finish Turning')).toBe(false);
+    expect(result.warnings.some((w) => w.includes('Turning not priced'))).toBe(false);
   });
 });
 
@@ -565,20 +747,17 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
     return turnedInput({
       maxLength: 100, maxWidth: 20, maxHeight: 20, volume,
       blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: barVolMm3, utilizationPct: 50 },
-      turningParams: REAL_TURNING_PARAMS,
+      workbook: workbookFixture(),
       mhrRate: rate(1000, {
         machineClass: 'simultaneous_turning', machineName: 'Index MS32-6',
         numberSpindles: 6, drumIndexTimeS: 0.7, transferTimeS: 1.0, stockFeedTimeS: 2.5, speedSynchronizationTimeS: 1.5,
+        maxSpindleRpm: 8000, // the Index MS32-6's own spindle (migration 1093)
       }),
       ...overrides,
     } as any);
   }
-  const baselineRoughSec = (() => {
-    const diameterMm = 20;
-    const rpm = (250.4 * 1000) / (Math.PI * diameterMm);
-    const feedMmPerMin = rpm * 0.3625;
-    return 3 * ((100 / feedMmPerMin) * 60); // 3 real rough passes, same math as the OD Turning suite
-  })();
+  // The OD Turning suite's rough cut: 3 passes from the Ø30 bar at 2864.79 rpm (under the 8000 rpm spindle), 28 s.
+  const baselineRoughSec = ROUGH_SEC;
 
   it('splits Rough Turning across the real number of stations when the real removal ratio crosses the real threshold', () => {
     // volume=20000 -> materialRemovalMm3 = 70685.83-20000 = 50685.83 -> ratio ≈ 0.717, well over the real 0.22 threshold.
@@ -587,7 +766,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    expect(roughLine.cycleTimeMin).toBeCloseTo((baselineRoughSec / 2) / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec / 2, 1);
     expect(result.warnings.some((w) => w.includes('split across 2 stations'))).toBe(true);
   });
 
@@ -598,14 +777,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    const expectedUnsplitSec = (() => {
-      const diameterMm = 20;
-      const rpm = (250.4 * 1000) / (Math.PI * diameterMm);
-      const feedMmPerMin = rpm * 0.3625;
-      const numRoughPasses = Math.round((5 - 0.8) / 1.3); // radialStock=(30-20)/2=5; same real pass-count formula
-      return numRoughPasses * ((100 / feedMmPerMin) * 60);
-    })();
-    expect(roughLine.cycleTimeMin).toBeCloseTo(expectedUnsplitSec / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec, 1);
     expect(result.warnings.some((w) => w.includes('split across'))).toBe(false);
   });
 
@@ -615,7 +787,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       mc('simultaneous_turning'),
     );
     const roughLine = result.processLines.find((l) => l.process === 'Rough Turning')!;
-    expect(roughLine.cycleTimeMin).toBeCloseTo(baselineRoughSec / 60, 2);
+    expect(roughLine.cycleTimeMin * 60).toBeCloseTo(baselineRoughSec, 1);
     expect(result.warnings.some((w) => w.includes('split across'))).toBe(false);
   });
 
@@ -632,7 +804,7 @@ describe('Simultaneous Turning — real multi-station op-splitting + index-cycle
       turnedInput({
         maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 20000,
         blankResult: { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: barVolMm3, utilizationPct: 50 },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
       } as any),
       mc('2_axis_lathe'),
     );
@@ -668,7 +840,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         // Includes every real operation this default fixture's holes/
         // threads also trigger (Drilling, Tapping) so the "no warning"
         // assertion below is genuinely testing a full real match, not
@@ -693,7 +865,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         // Real data exists for this class, but "Rough Turning" isn't in it
         // -- e.g. migration 754 partially applied, or a genuinely
         // uncatalogued operation for this specific class.
@@ -717,7 +889,7 @@ describe('resolveOperationName — every operation name confirmed against the li
           billetVolMm3: Math.PI * 15 ** 2 * 100,
           utilizationPct: 50,
         },
-        turningParams: REAL_TURNING_PARAMS,
+        workbook: workbookFixture(),
         realOperationCategories: null,
       } as any),
       mc('2_axis_lathe'),
@@ -788,41 +960,6 @@ describe('meetsRequiredMilledClass', () => {
   });
 });
 
-describe('pickRecommendedRoute', () => {
-  it('picks the lowest-cost capable route — Cost Summary must equal the Route Comparison badge', () => {
-    const picked = pickRecommendedRoute([
-      { id: '3ax', totalCost: 766, capable: true, setupCount: 3 },
-      { id: '4ax', totalCost: 990, capable: true, setupCount: 2 },
-      { id: '5ax', totalCost: 1239, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('3ax');
-  });
-
-  it('never recommends an incapable route while a capable one exists', () => {
-    const picked = pickRecommendedRoute([
-      { id: '3ax', totalCost: 766, capable: false, setupCount: 3 },
-      { id: '5ax', totalCost: 1239, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('5ax');
-  });
-
-  it('breaks cost ties toward fewer setups', () => {
-    const picked = pickRecommendedRoute([
-      { id: 'a', totalCost: 100, capable: true, setupCount: 3 },
-      { id: 'b', totalCost: 100, capable: true, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('b');
-  });
-
-  it('falls back to cheapest overall when nothing is capable', () => {
-    const picked = pickRecommendedRoute([
-      { id: 'a', totalCost: 200, capable: false, setupCount: 1 },
-      { id: 'b', totalCost: 100, capable: false, setupCount: 1 },
-    ]);
-    expect(picked.id).toBe('b');
-  });
-});
-
 describe('material shape ranking (costing lookup)', () => {
   it('prefers plate/block/bar stock for machined parts over sheet rows', () => {
     expect(shapeRankForFamily('plates', 'milled')).toBeLessThan(
@@ -867,8 +1004,8 @@ describe('Fix 1 — holeCount: feature-ops path uses correct count, not raw cyli
   });
 });
 
-describe('Fix 2 — blank optimizer: blankResult overrides bbox billet volume', () => {
-  it('uses blankResult billetVolMm3 when provided instead of computing from bbox', () => {
+describe('the stock the mill starts from is the stock chosen for the part (blankResult)', () => {
+  it('prices the material and the chip loss on its volume', () => {
     // The round bar (Ø30) gives a tighter blank than the full bbox billet
     const roundBarVol = Math.PI * 15 ** 2 * (83 + 5); // Ø30 × (L+5mm facing)
     const result = computeMillingCostSummary(
@@ -887,18 +1024,26 @@ describe('Fix 2 — blank optimizer: blankResult overrides bbox billet volume', 
     expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(expectedBilletKg, 3);
   });
 
-  it('falls back to bbox billet when blankResult is absent', () => {
-    const perSide = stockAllowancePerSideMm(STOCK_RULE, { length: 83, width: 62, height: 32 });
-    const allow = 2 * perSide;
-    const bboxVol = (83 + allow) * (62 + allow) * (32 + allow);
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: perSide }), mc('3_axis_mill'));
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo((bboxVol / 1e9) * 2700, 3);
+  it('with no stock chosen nothing is estimated from the bounding box: no material is costed, and the quote says so', () => {
+    const result = computeMillingCostSummary(milledInput({ blankResult: undefined }), mc('3_axis_mill'));
+    expect(result.materialCost).toBe(0);
+    expect(result.grossWeightKg).toBe(0);
+    expect(result.materialRemoval!.billetWeightKg).toBe(0);
+    expect(result.warnings).toContain(NO_STOCK_WARNING);
+    // A part with no feature graph is roughed as one Bulk Milling of the stock less the part: with no stock that is not priced, and named.
+    expect(result.warnings).toContain('Bulk Milling not priced — missing real input: the stock the part is cut from.');
+    // A part with its features recognised is still timed from them: the quote is short of its stock only.
+    const featured = computeMillingCostSummary(milledInput({ blankResult: undefined, featureOps: [{ name: 'Rough Mill', timeSec: 600, source: 'fixed' }] }), mc('3_axis_mill'));
+    expect(featured.materialCost).toBe(0);
+    expect(featured.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin).toBeGreaterThan(0);
   });
 
-  it('adds no allowance, and warns, when the reference rule is not staged', () => {
-    const result = computeMillingCostSummary(milledInput({ stockAllowancePerSideMm: null }), mc('3_axis_mill'));
-    expect(result.materialRemoval!.billetWeightKg).toBeCloseTo(((83 * 62 * 32) / 1e9) * 2700, 3);
-    expect(result.warnings.some((w) => w.startsWith('Stock allowance not applied'))).toBe(true);
+  it('a lathe with no stock chosen has no bar: no material, and turning and parting name the gap', () => {
+    const result = computeTurningCostSummary(turnedInput({ blankResult: undefined, workbook: workbookFixture(), partoffTable: realPartoffTable() }), mc('2_axis_lathe'));
+    expect(result.materialCost).toBe(0);
+    expect(result.warnings).toContain(NO_STOCK_WARNING);
+    const gaps = findRouteDataGaps(result.processLines).filter((g) => g.reason.includes('no stock is chosen'));
+    expect(gaps.map((g) => g.process)).toEqual(['Rough Turning', 'Parting']);
   });
 });
 
@@ -921,15 +1066,20 @@ describe('Fix 4 — machinabilityRating: scales MRR in both engines', () => {
     expect(steelMilling / alMilling).toBeCloseTo(10, 0);
   });
 
-  it('featureOps path: total time with Al machinability < same ops with mild steel', () => {
+  it('featureOps path: a pocket roughs faster in aluminium than in mild steel, by the workbook\'s milling conditions for each', () => {
+    // A 50 x 25 x 12 pocket roughed with the material's 10 mm end mill on a 10 000 rpm mill: aluminium 450 m/min (held to 10 000 rpm),
+    // 0.15 mm/tooth, 3 teeth; mild steel 90 m/min (2864.79 rpm), 0.115 mm/tooth, 4 teeth.
     const fgv2 = [
       { feature_type: 'PocketV2', variant: 'default', diameter_mm: 0,
-        occurrences: [{ depth_mm: 12, material_removed_mm3: 15_000 }] },
+        occurrences: [{ depth_mm: 12, extents_mm: [50, 25, 0], material_removed_mm3: 15_000 }] },
     ];
-    const alOps = buildOperationSequence(fgv2, 'aluminum', 2.0);
-    const steelOps = buildOperationSequence(fgv2, 'mild_steel', 1.0);
+    const endMill = (teeth: number) => ({ toolDiameterMm: 10, teeth, cuttingSpeedMPerMin: 100, feedPerToothPerDiameter: 0.008 });
+    const mill = { 'Max Spindle Speed': { value: 10000, source: 'Machine: test mill' } };
+    const alOps = timeOperations(buildOperationSequence(fgv2, { matClass: 'aluminum', machinabilityFactor: 2.0, calculators: CALCS, workbook: workbookFixture(), finishing: endMill(3) }), CALCS, mill);
+    const steelOps = timeOperations(buildOperationSequence(fgv2, { matClass: 'mild_steel', machinabilityFactor: 1.0, calculators: CALCS, workbook: workbookFixture(), finishing: endMill(4) }), CALCS, mill);
     const alTime = alOps.find((o) => o.name === 'Rough Milling')!.timeSec;
     const steelTime = steelOps.find((o) => o.name === 'Rough Milling')!.timeSec;
+    expect(alTime).toBeGreaterThan(0);
     expect(alTime).toBeLessThan(steelTime);
   });
 });
@@ -945,13 +1095,18 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
     // Total = 385s (Face Mill + Pocket Rough + Drill) -- Deburr is excluded:
     // it has its own real, dedicated "Deburring" line elsewhere in this
     // function (tblDeburring-based) and must not also be folded in here.
-    // With 15% overhead -> 385 * 1.15 / 60 ≈ 7.38 min.
+    // With the moves of its 3 cutters and 3 features -> (385 + 15.249) / 60 ≈ 6.671 min.
     const result = computeMillingCostSummary(
       milledInput({ featureOps: knownOps }),
       mc('3_axis_mill'),
     );
-    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    expect(millingMin).toBeCloseTo((385 * 1.15) / 60, 1);
+    // The drilling is a line of its own on the mill (MILLING_DRILLING_OPERATIONS): Facing + Rough Milling on the milling line with the moves of
+    // their 2 cutters and 2 features, Drilling on the Drilling line with its 1; together the one line they were, (385 + moves(3, 3)) / 60.
+    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill' && !l.hostMachineClass)!.cycleTimeMin;
+    const drillingMin = result.processLines.find((l) => l.process === 'Drilling')!.cycleTimeMin;
+    expect(millingMin).toBeCloseTo((345 + moves(2, 2)) / 60, 4);
+    expect(drillingMin).toBeCloseTo((40 + moves(1, 1)) / 60, 4);
+    expect(millingMin + drillingMin).toBeCloseTo((385 + moves(3, 3)) / 60, 4);
   });
 
   // Root-caused live (2026-09-18): "CNC Milling" summed the sequencer's
@@ -972,9 +1127,12 @@ describe('Fix 3 — featureOps path: total time drives CNC Milling line', () => 
       milledInput({ featureOps: knownOps }),
       mc('3_axis_mill'),
     );
-    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill')!.cycleTimeMin;
-    // Only Face Mill (45s) + Drill (40s) = 85s, * 1.15 / 60
-    expect(millingMin).toBeCloseTo((85 * 1.15) / 60, 2);
+    const millingMin = result.processLines.find((l) => l.machineClass === '3_axis_mill' && !l.hostMachineClass)!.cycleTimeMin;
+    const drillingMin = result.processLines.find((l) => l.process === 'Drilling')!.cycleTimeMin;
+    // Only Face Mill (45s) + Drill (40s), each on its line with the moves of its cutter and feature: Facing on the milling line, Drilling on
+    // the mill's Drilling line.
+    expect(millingMin).toBeCloseTo((45 + moves(1, 1)) / 60, 4);
+    expect(drillingMin).toBeCloseTo((40 + moves(1, 1)) / 60, 4);
     // The real, separately-billed Tapping/Deburring lines still exist and
     // are unaffected -- this fix removes a DUPLICATE, not the real charge.
     expect(result.processLines.some((l) => l.process === 'Tapping')).toBe(true);
@@ -1014,48 +1172,64 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
     expect(ssMilling).toBeGreaterThan(aluMilling);
   });
 
-  it('prices tapping from tblTapping: M8 x 10 mm in mild steel at code 1.0, pitch 1.25 on the 1.0 mm row (22.6 m/min)', () => {
+  it('prices tapping as the workbook\'s Tapping sheet times it, corrected: M8 x 10 mm in mild steel, the HSS tapping speed, feed = pitch, in and out', () => {
     const r = computeMillingCostSummary(
-      milledInput({ materialGrade: 'AISI 1018', tappingTable: TAPPING, threads: [{ size: 'M8', count: 3, depthMm: 10 }] }),
+      milledInput({ materialGrade: 'AISI 1018', workbook: workbookFixture(), threads: [{ size: 'M8', count: 3, depthMm: 10 }] }),
       mc('3_axis_mill'),
     );
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
-    const rpm = (22.6 * 1000) / (Math.PI * 8);
-    const perThreadSec = (2 * 10) / (rpm * 1.25) * 60; // in and reversed out, one pitch per revolution
-    expect(tap.cycleTimeMin).toBeCloseTo((perThreadSec * 3) / 60, 3);
-    const speed = tap.calculationTrace!.find((st) => st.fieldName === 'Cutting Speed')!;
-    expect(speed.source).toContain('tblTapping: material code 1');
+    // "Mild steels" HSS tapping 11-12 m/min -> 11.5; n = 11 500 / (pi x 8) = 457.57 rpm; one pitch (1.25) a turn, in and back out over
+    // the depth + 4 mm: 2 x 14 / (1.25 x 457.57) = 0.04896 min = 2.94 s -> 3 s a thread; 3 threads = 9 s.
+    expect(tap.cycleTimeMin * 60).toBeCloseTo(9, 1);
+    const speed = tap.calculationTrace!.find((st) => st.fieldName === 'Speed Min')!;
+    expect(speed.source).toContain('tblHssHoleSpeeds: Mild steels');
     expect(tap.calculationTrace!.find((st) => st.fieldName === 'Thread Pitch')!.source).toBe('ISO 261 coarse pitch of M8');
   });
 
   it('tapping a stainless part takes longer than the identical mild-steel part (tblTapping speeds)', () => {
     const tapMin = (grade: string) => computeMillingCostSummary(
-      milledInput({ materialGrade: grade, tappingTable: TAPPING, threads: [{ size: 'M6', count: 4, depthMm: 12 }] }),
+      milledInput({ materialGrade: grade, workbook: workbookFixture(), threads: [{ size: 'M6', count: 4, depthMm: 12 }] }),
       mc('3_axis_mill'),
     ).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin;
     expect(tapMin('SS304')).toBeGreaterThan(tapMin('AISI 1018'));
   });
 
-  it('leaves aluminium tapping unpriced and named: tblTapping covers 125-400 HB only', () => {
+  it('prices aluminium tapping from its own workbook row (Aluminium alloys, 14-18 m/min)', () => {
     const r = computeMillingCostSummary(
-      milledInput({ materialGrade: 'AL6061-T6', tappingTable: TAPPING, threads: [{ size: 'M6', count: 4, depthMm: 12 }] }),
+      milledInput({ materialGrade: 'AL6061-T6', workbook: workbookFixture(), threads: [{ size: 'M3×0.5', count: 4, depthMm: 5 }] }),
       mc('3_axis_mill'),
     );
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
-    expect(tap.cycleTimeMin).toBe(0);
-    expect(r.warnings.join(' ')).toContain('tblTapping row for aluminum');
+    expect(tap.cycleTimeMin).toBeGreaterThan(0);
+    expect(JSON.stringify(tap.calculationTrace)).toContain('tblHssHoleSpeeds: Aluminium alloys');
+    expect(r.warnings.join(' ')).not.toContain('Tapping not priced');
   });
 
-  it('uses the real thread depth and never an assumed one', () => {
+  it('a pitch finer than the table (M2 x 0.4) takes the fine-band speed', () => {
+    const r = computeMillingCostSummary(
+      milledInput({ materialGrade: 'AL6061-T6', workbook: workbookFixture(), threads: [{ size: 'M2', count: 4, depthMm: 5 }] }),
+      mc('3_axis_mill'),
+    );
+    expect(r.processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin).toBeGreaterThan(0);
+    expect(r.warnings.join(' ')).not.toContain('Tapping not priced');
+  });
+
+  it('uses the real thread depth; a thread with none is tapped to its material\'s engagement (1 x D in steel), never left unpriced', () => {
     const tapMin = (depthMm?: number) => computeMillingCostSummary(
-      milledInput({ materialGrade: 'AISI 1018', tappingTable: TAPPING, threads: [{ size: 'M6', count: 4, depthMm }] }),
+      milledInput({ materialGrade: 'AISI 1018', workbook: workbookFixture(), threads: [{ size: 'M6', count: 4, depthMm }] }),
       mc('3_axis_mill'),
     );
     expect(tapMin(30).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin)
       .toBeGreaterThan(tapMin(5).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin);
     const noDepth = tapMin(undefined);
-    expect(noDepth.processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin).toBe(0);
-    expect(noDepth.warnings.join(' ')).toContain('Thread Depth');
+    const tap = noDepth.processLines.find((l) => l.process === 'Tapping')!;
+    // An M6 in steel: 1 x 6 mm, the same time as a 6 mm deep thread on file.
+    expect(tap.cycleTimeMin).toBe(tapMin(6).processLines.find((l) => l.process === 'Tapping')!.cycleTimeMin);
+    expect(tap.physicsGap).toBeUndefined();
+    const depth = tap.calculationTrace!.find((s) => s.fieldName === 'Thread Depth')!;
+    expect(depth.value).toBe(6);
+    expect(depth.source).toContain('Thread engagement rule: 1 x the 6 mm nominal diameter in mild steel');
+    expect(noDepth.warnings.join(' ')).not.toContain('Thread Depth');
   });
 
   it('turned parts: boring/drilling is also material-aware now', () => {
@@ -1071,7 +1245,7 @@ describe('Fix — drilling/tapping now use real material-aware physics (no more 
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      drillingTable: realDrillingTable(),
+      workbook: workbookFixture(),
       ...overrides,
     });
     const alu = computeTurningCostSummary(turnedInput({ materialGrade: 'AL6061-T6' }), mc('2_axis_lathe'));
@@ -1089,21 +1263,24 @@ describe('Fix — operation-sequencer.ts shares one MRR/drill/tap source of trut
       diameter_mm: dia,
       occurrences: [{ depth_mm: 10 }],
     }];
-    const aluOps = buildOperationSequence(throughHole(6), 'aluminum', 1.0, 'AL6061-T6', null, null, null, realDrillingTable(), CALCS);
-    const ssOps = buildOperationSequence(throughHole(6), 'stainless', 1.0, 'SS304', null, null, null, realDrillingTable(), CALCS);
+    // Planned before the machine is chosen, timed on one (an 8000 rpm spindle), as a route times them.
+    const onMill = (ops: OperationLine[]) => timeOperations(ops, CALCS, { 'Max Spindle Speed': { value: 8000, source: 'test' } });
+    const aluOps = onMill(buildOperationSequence(throughHole(6), { matClass: 'aluminum', machinabilityFactor: 1.0, materialGrade: 'AL6061-T6', workbook: workbookFixture(), calculators: CALCS }));
+    const ssOps = onMill(buildOperationSequence(throughHole(6), { matClass: 'stainless', machinabilityFactor: 1.0, materialGrade: 'SS304', workbook: workbookFixture(), calculators: CALCS }));
     const aluDrill = aluOps.find((o) => o.name === 'Drilling')!.timeSec;
     const ssDrill = ssOps.find((o) => o.name === 'Drilling')!.timeSec;
     expect(ssDrill).toBeGreaterThan(aluDrill);
   });
 
-  it('feature-driven tapping reads the same tblTapping calculator (stainless slower than mild steel)', () => {
+  it('feature-driven tapping reads the same workbook tapping speeds (stainless slower than mild steel)', () => {
     const tappedHole = [{
       feature_type: 'SimpleHole', variant: 'threaded',
       diameter_mm: 6,
       occurrences: [{ depth_mm: 12, spec: 'M6' }],
     }];
     const tapSec = (cls: 'mild_steel' | 'stainless', grade: string) =>
-      buildOperationSequence(tappedHole, cls, 1.0, grade, null, null, null, null, CALCS, TAPPING).find((o) => o.name === 'Tapping')!.timeSec;
+      timeOperations(buildOperationSequence(tappedHole, { matClass: cls, machinabilityFactor: 1.0, materialGrade: grade, workbook: workbookFixture(), calculators: CALCS }), CALCS,
+        { 'Max Spindle Speed': { value: 8000, source: 'test' } }).find((o) => o.name === 'Tapping')!.timeSec;
     expect(tapSec('stainless', 'SS304')).toBeGreaterThan(tapSec('mild_steel', 'AISI 1018'));
   });
 
@@ -1175,49 +1352,36 @@ describe('checkMachiningCapability — real per-machine envelope (migration 755)
   });
 });
 
-// Root-caused 2026-09-16: Reaming had ZERO implementation before (no case
-// in operation-sequencer.ts's switch, no line in either cost function) —
-// a real, sourced tblReaming table (316 rows) existed and was completely
-// unused. Deburring used an uncited flat "surfaceArea/10000*0.5" constant
-// with no material sensitivity and no dedicated line on turned parts at
-// all (a pre-existing mislabel: cycleTimes.deburrMin reported boringMin).
-const REAM_TABLE = [
-  { ToolType: 'Ream', MaterialCutCodeName: '1.0', Hardness: 125, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 22.6, FeedMm: 0.15 },
-  { ToolType: 'Ream', MaterialCutCodeName: '15.0', Hardness: 275, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 8.0, FeedMm: 0.10 },
-  // Real row copied verbatim from memory/Machining/lookup (tblReaming.csv): the aluminum-range
-  // entry, so an aluminum part is inside the table's own hardness range.
-  { ToolType: 'Ream', MaterialCutCodeName: '30.11', Hardness: 60, HardnessSystem: 'Brinell', DiameterMm: 3, CuttingSpeedMPerMin: 27.2, FeedMm: 0.3 },
-];
-
+// Reaming is timed by the workbook's Reaming sheet (migration 1139): speed and feed from tblDrillReamData.
 // Every fixture below uses 0.04mm, not the tighter values a real Reaming
 // scenario might use in the field — 0.04 sits strictly between the real
 // RULES.jigBorePositionToleranceMm (variables jigBoreMaxPosTol 0.0254)
 // and TIGHT_TOLERANCE_REAM_THRESHOLD_MM (0.05), so these tests exercise
 // Reaming specifically without also entering Jig Boring's tier.
 
-describe('Reaming — new operation, tolerance-triggered, real tblReaming physics', () => {
-  it('adds no Reaming line when tolerance is not tight, even with real reamTable data', () => {
+describe('Reaming — tolerance-triggered, the workbook\'s Reaming sheet', () => {
+  it('adds no Reaming line when tolerance is not tight, even with the workbook\'s reaming data', () => {
     const result = computeMillingCostSummary(
-      milledInput({ tightestToleranceMm: 0.2, reamTable: REAM_TABLE } as any),
+      milledInput({ tightestToleranceMm: 0.2, workbook: workbookFixture() } as any),
       mc('3_axis_mill'),
     );
     expect(result.processLines.some((l) => l.process === 'Reaming')).toBe(false);
   });
 
-  it('shows the Reaming gap when tolerance is tight but no real reamTable was resolved (not fabricated)', () => {
+  it('shows the Reaming gap when tolerance is tight but the workbook\'s tables were not read (not fabricated)', () => {
     const result = computeMillingCostSummary(
-      milledInput({ tightestToleranceMm: 0.04, reamTable: null } as any),
+      milledInput({ tightestToleranceMm: 0.04, workbook: workbookFixture({ tables: {} }) } as any),
       mc('3_axis_mill'),
     );
     expectGapLine(result, 'Reaming');
   });
 
-  it('adds a real Reaming line when tolerance is tight AND real reamTable data is available', () => {
+  it('adds a real Reaming line when tolerance is tight AND the workbook\'s reaming data is available', () => {
     const result = computeMillingCostSummary(
       milledInput({
         tightestToleranceMm: 0.04,
         holeGroups: [{ diameter_mm: 3, count: 4, depth_mm: 7.5 }],
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -1231,15 +1395,11 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
       milledInput({
         tightestToleranceMm: 0.04,
         holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }, { diameter_mm: 20, count: 1, depth_mm: 50 }],
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
-    // REAM_TABLE only has real rows at diameter 3mm -- if the smallest (3mm)
-    // hole were NOT the one chosen, the nearest-diameter match would still
-    // resolve (real data exists at 3mm either way), so instead prove the
-    // stainless-vs-aluminum material sensitivity carries through the reamed
-    // diameter selection by checking a real, distinct cycle time exists.
+    // The 3 mm group and the 20 mm group both have a workbook reaming band; the line is the smallest group's.
     const reamLine = withSmall.processLines.find((l) => l.process === 'Reaming');
     expect(reamLine).toBeDefined();
   });
@@ -1248,14 +1408,14 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
     const alu = computeMillingCostSummary(
       milledInput({
         materialGrade: 'AL6061-T6', tightestToleranceMm: 0.04,
-        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], reamTable: REAM_TABLE,
+        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
     const stainless = computeMillingCostSummary(
       milledInput({
         materialGrade: 'SS304', tightestToleranceMm: 0.04,
-        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], reamTable: REAM_TABLE,
+        holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }], workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -1277,7 +1437,7 @@ describe('Reaming — new operation, tolerance-triggered, real tblReaming physic
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      reamTable: REAM_TABLE,
+      workbook: workbookFixture(),
       ...overrides,
     });
     const result = computeTurningCostSummary(turnedInput(), mc('2_axis_lathe'));
@@ -1344,7 +1504,7 @@ describe('Deburring — real hardness-matched tblDeburring speed, fixed a pre-ex
       inspectionRate: rate(450, { machineClass: 'cmm' }),
       surfaceTreatment: null,
       machiningCalculators: CALCS,
-      drillingTable: realDrillingTable(),
+      workbook: workbookFixture(),
       sharpEdgeLengthMm: 400,
       deburrLinearSpeedMmPerSec: 18.8,
       ...overrides,
@@ -1489,7 +1649,7 @@ describe('Gun Drilling / Deep Bore Machine — new operations, real L/D-triggere
     const millingLine = result.processLines.find((l) => l.machineClass === '3_axis_mill')!;
     // Only Face Mill (45s) drives CNC Milling -- the gun-drilled holes are
     // billed exclusively on the separate "Gun Drilling" line.
-    expect(millingLine.cycleTimeMin).toBeCloseTo((45 * 1.15) / 60, 2);
+    expect(millingLine.cycleTimeMin).toBeCloseTo((45 + moves(1, 1)) / 60, 4);
     expect(result.processLines.some((l) => l.process === 'Gun Drilling')).toBe(true);
   });
 });
@@ -1502,7 +1662,8 @@ const INTERNAL_GRINDING_PARAMS = realGrindingParams('tblInternalGrinding', '1.0'
 function turnedInput(overrides: Partial<MachiningCostInput> = {}): MachiningCostInput {
   return milledInput({
     family: 'turned',
-    mhrRate: rate(900, { machineClass: '2_axis_lathe' }),
+    // A 2 axis lathe's spindle limit (mhr_records.specs spindle_speed_rpm, migration 1136).
+    mhrRate: rate(900, { machineClass: '2_axis_lathe', maxSpindleRpm: 4000 }),
     ...overrides,
   });
 }
@@ -1628,7 +1789,7 @@ describe('Cylindrical Grinding — new operation, real Ra<0.4µm-triggered, turn
 // Cylindrical Grinding's table — no 2-hop bridge needed here).
 const FINISH_BORING_TABLE = [
   { tool_type: 'Finish Bore', cut_type: 'Finish Boring', material_cut_code_name: '1.0', hardness: 125, diameter_mm: 3, cutting_speed_m_min: 30, feed_mm_rev: 0.05 },
-  { tool_type: 'Finish Bore', cut_type: 'Finish Boring', material_cut_code_name: '15.0', hardness: 275, diameter_mm: 3, cutting_speed_m_min: 15, feed_mm_rev: 0.03 },
+  { tool_type: 'Finish Bore', cut_type: 'Finish Boring', material_cut_code_name: '5.0', hardness: 275, diameter_mm: 3, cutting_speed_m_min: 15, feed_mm_rev: 0.03 },
   // Real row copied verbatim from memory/Machining/lookup (tblBoringV2__rows.csv): the aluminum-range
   // entry, so an aluminum part is inside the table's own hardness range.
   { tool_type: 'Finish Bore', cut_type: 'Finish Boring', material_cut_code_name: '30.11', hardness: 60, diameter_mm: 1, cutting_speed_m_min: 317.6, feed_mm_rev: 0.13 },
@@ -1655,7 +1816,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
   it(`adds a real Jig Boring line at the real ${RULES.jigBorePositionToleranceMm}mm threshold (inclusive) and tighter`, () => {
     const result = computeMillingCostSummary(
       milledInput({
-        tightestToleranceMm: RULES.jigBorePositionToleranceMm, holeGroups: [{ diameter_mm: 3, count: 2, depth_mm: 7.5 }],
+        materialGrade: 'AISI 1018', tightestToleranceMm: RULES.jigBorePositionToleranceMm, holeGroups: [{ diameter_mm: 3, count: 2, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE,
         jigBoreRate: rate(2000, { machineClass: 'jig_bore', machineName: 'SIP Hydroptic 6A' }),
       } as any),
@@ -1673,7 +1834,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
       milledInput({
         tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 2, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE, jigBoreRate: rate(2000, { machineClass: 'jig_bore' }),
-        reamTable: REAM_TABLE,
+        workbook: workbookFixture(),
       } as any),
       mc('3_axis_mill'),
     );
@@ -1684,7 +1845,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
   it(`applies the real ${RULES.jigBoringRepetitions}x repeat-pass count on top of the real Finish Boring physics`, () => {
     const result = computeMillingCostSummary(
       milledInput({
-        tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
+        materialGrade: 'AISI 1018', tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE, jigBoreRate: rate(2000, { machineClass: 'jig_bore' }),
       } as any),
       mc('3_axis_mill'),
@@ -1738,7 +1899,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
   it('does not cost setup, and says so, when setup_time_hr is absent', () => {
     const result = computeMillingCostSummary(
       milledInput({
-        tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
+        materialGrade: 'AISI 1018', tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE, jigBoreRate: rate(2000, { machineClass: 'jig_bore' }),
       } as any),
       mc('3_axis_mill'),
@@ -1754,7 +1915,7 @@ describe('Jig Boring — new operation, a real tier tighter than Reaming', () =>
     const result = computeTurningCostSummary(
       milledInput({
         family: 'turned', mhrRate: rate(900, { machineClass: '2_axis_lathe' }),
-        tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
+        materialGrade: 'AISI 1018', tightestToleranceMm: 0.02, holeGroups: [{ diameter_mm: 3, count: 1, depth_mm: 7.5 }],
         jigBoreTable: FINISH_BORING_TABLE, jigBoreRate: rate(2000, { machineClass: 'jig_bore' }),
       } as any),
       mc('2_axis_lathe'),
@@ -2324,5 +2485,288 @@ describe('Internal Grinding covers every bore (a title-block Ra applies to every
     const small = run([{ diameter_mm: 10, count: 1, depth_mm: 25 }]);
     const large = run([{ diameter_mm: 30, count: 1, depth_mm: 40 }]);
     expect(run([{ diameter_mm: 10, count: 1, depth_mm: 25 }, { diameter_mm: 30, count: 1, depth_mm: 40 }])).toBeCloseTo(small + large, 2);
+  });
+});
+
+// The part that showed "Tapping — unresolved" and "Keyway Broaching — unresolved" and so could not be
+// applied: its CAD threads (M2x0.4 and M3x0.5, blind), its holes, and its 0.804 mm groove (milled: no
+// keyway candidate reaches the broach), against the reference tables.
+describe('Cannula Holder bottom (aluminum 6061, milled): every operation is priced', () => {
+  const result = computeMillingCostSummary(
+    milledInput({
+      volume: 11_272, surfaceArea: 8_103, maxLength: 54.33, maxWidth: 45.01, maxHeight: 44.4, finishedWeightKg: 0.03,
+      materialGrade: 'Aluminum, ANSI 6061', batchSize: 2500, tightestToleranceMm: null, gdtFeatureCount: 0, gdtFeatures: [],
+      holeCount: 5, holeGroups: [{ diameter_mm: 4, count: 4, depth_mm: 5.208 }, { diameter_mm: 18.4, count: 1, depth_mm: 21.73 }],
+      threads: [{ size: 'M2', count: 4, pitchMm: 0.4, depthMm: 5.1 }, { size: 'M3', count: 4, pitchMm: 0.5, depthMm: 5.04 }],
+      workbook: workbookFixture(), keywayBroach: realKeywayBroachReference(), keywayCandidates: [],
+      // CAD sharp-edge length; tblDeburring Wire Wheel Brush (the reference default edge tool) speed for cut code 30.11.
+      sharpEdgeLengthMm: 1442.715, deburrLinearSpeedMmPerSec: 27.4, deburrMaterialCutCode: '30.11',
+    } as any),
+    mc('3_axis_mill'),
+  );
+
+  it('prices tapping for both thread sizes from the aluminum row', () => {
+    const tap = result.processLines.find((l) => l.process === 'Tapping')!;
+    expect(tap.cycleTimeMin).toBeGreaterThan(0);
+    expect(tap.physicsGap).toBeUndefined();
+    expect(JSON.stringify(tap.calculationTrace)).toContain('tblHssHoleSpeeds: Aluminium alloys');
+  });
+
+  it('every line states its setup, so the route counts as fully costed (tapping on the mill and deburring were refused as "setup time was not resolved")', () => {
+    expect(result.processLines.filter((l) => l.setupTimeMin == null).map((l) => l.process)).toEqual([]);
+  });
+
+  it('leaves no operation unpriced, so the route can be applied', () => {
+    expect(result.processLines.filter((l) => l.physicsGap).map((l) => l.process)).toEqual([]);
+    expect(result.warnings.filter((w) => w.includes('not priced'))).toEqual([]);
+    expect(result.processLines.map((l) => l.process)).not.toContain('Keyway Broaching');
+  });
+});
+
+describe('the mill line is the Machining - Milling calculator over the part\'s sequenced operations', () => {
+  const featureOps: OperationLine[] = [
+    { name: 'Facing', timeSec: 45, source: 'fixed' }, { name: 'Rough Milling', timeSec: 120, source: 'feature' },
+    { name: 'Fine Finish Milling', timeSec: 300, source: 'feature' }, { name: 'Drilling', timeSec: 20, source: 'feature' },
+    { name: 'Center Drilling', timeSec: 10, source: 'feature' }, { name: 'Filleting', timeSec: 40, source: 'feature' },
+    { name: 'Tapping', timeSec: 99, source: 'feature' }, { name: 'Deburr', timeSec: 90, source: 'fixed' },
+  ];
+  const lines = computeMillingCostSummary(milledInput({ featureOps }), mc('3_axis_mill')).processLines;
+  const line = lines.find((l) => l.process === '3 Axis Mill')!;
+  // The drilling (Center Drilling, Drilling) is timed on the mill's Drilling line by the same calculator, out of the milling line.
+  const drillLine = lines.find((l) => l.process === 'Drilling')!;
+  const step = (name: string) => line.calculationTrace!.find((st) => st.fieldName === name)!.value;
+  const drillStep = (name: string) => drillLine.calculationTrace!.find((st) => st.fieldName === name)!.value;
+
+  it('carries the calculator and each operation group as an input (Tapping and Deburr are their own lines, the drilling its own)', () => {
+    expect(line.calculatorId).toBe('Machining - Milling');
+    expect(step('Rough Milling Time')).toBe(120);
+    expect(step('Hole Making Time')).toBe(0);
+    expect(step('Edge Treatment Time')).toBe(40);
+    expect(step('Cutting Time')).toBe(505);
+    expect(drillLine.calculatorId).toBe('Machining - Milling');
+    expect(drillStep('Hole Making Time')).toBe(30);
+    expect(drillStep('Cutting Time')).toBe(30);
+  });
+
+  it('each operation-group input names the CAD features it was computed on, so the calculator can show them on the model', () => {
+    const withIds = featureOps.map((o) => (o.name === 'Rough Milling' ? { ...o, featureIds: ['PocketV2-default_c16', 'Keyway-default_c1'] } : o));
+    const l = computeMillingCostSummary(milledInput({ featureOps: withIds }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    expect(l.calculationTrace!.find((st) => st.fieldName === 'Rough Milling Time')!.ref).toEqual({
+      kind: 'features', label: 'Rough Milling Time', features: [{ featureId: 'PocketV2-default_c16' }, { featureId: 'Keyway-default_c1' }],
+    });
+    // Facing is not tied to a feature: no reference rather than an empty one.
+    expect(l.calculationTrace!.find((st) => st.fieldName === 'Facing Time')!.ref).toBeUndefined();
+  });
+
+  it('adds a tool change for each cutter and a rapid move to each feature at the mill\'s rapid traverse rate, not a flat 15 %', () => {
+    // 6 cutting operations (Tapping and Deburr are their own lines), one cutter and one feature each: the milling line's 4 (Facing, Rough
+    // and Fine Finish Milling, Filleting) are 4 x 5 s + 4 x 0.083 s; the Drilling line's 2 (Center Drilling, Drilling) 2 x 5 s + 2 x 0.083 s.
+    // Together the one line's 6 x 5 s + 6 x 0.083 s = 30.498 s, on the same 535 s.
+    expect([step('Tools'), step('Feature Visits'), step('Tool Change Time'), step('Part Box Length'), step('Rapid Transfer Distance Factor')]).toEqual([4, 4, 5, 83, 0.5]);
+    expect([drillStep('Tools'), drillStep('Feature Visits')]).toEqual([2, 2]);
+    expect(step('Rapid Traverse Rate')).toBe(30000);
+    expect(line.calculationTrace!.find((st) => st.fieldName === 'Rapid Traverse Rate')!.source).toBe('Machine: Test VMC specs.rapid_traverse_mm_per_min (mhr_records)');
+    expect(step('Tool Change Time Total')).toBe(20);
+    expect(step('Rapid Time')).toBeCloseTo(0.332, 3);
+    expect(line.cycleTimeMin).toBeCloseTo((505 + moves(4, 4)) / 60, 4);
+    expect(drillLine.cycleTimeMin).toBeCloseTo((30 + moves(2, 2)) / 60, 4);
+    // Each line keeps its cycle to four decimals of a minute, so their sum is the one line's to three.
+    expect(line.cycleTimeMin + drillLine.cycleTimeMin).toBeCloseTo((535 + moves(6, 6)) / 60, 3);
+  });
+
+  it('the drilling is a line of its own on the mill, after the milling line: the mill\'s rate, no setup of its own, the drills\' steps', () => {
+    const names = lines.map((l) => l.process);
+    expect(names.indexOf('Drilling')).toBe(names.indexOf('3 Axis Mill') + 1);
+    expect(drillLine).toMatchObject({ machineClass: '3_axis_mill', hostMachineClass: '3_axis_mill', hourlyRate: line.hourlyRate, setupCost: 0 });
+    // It shares the machine's setup, which its first line with a cycle time (the milling line) carries: none of its own, said so.
+    expect(drillLine).toMatchObject({ setupTimeMin: 0, setupTimeSource: 'none' });
+  });
+
+  it('two drills of different sizes are two tool changes; two features of one operation are two rapid moves', () => {
+    const drills: OperationLine[] = [
+      { name: 'Drilling', timeSec: 20, source: 'feature', count: 3, diameterMm: 6 },
+      { name: 'Drilling', timeSec: 30, source: 'feature', count: 2, diameterMm: 8 },
+      { name: 'Drilling', timeSec: 10, source: 'feature', count: 1, diameterMm: 6 },
+    ];
+    // Only drilling: the mill's Drilling line, and no milling line (nothing to mill).
+    const r2 = computeMillingCostSummary(milledInput({ featureOps: drills }), mc('3_axis_mill'));
+    const l = r2.processLines.find((x) => x.process === 'Drilling')!;
+    const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
+    expect([s2('Tools'), s2('Feature Visits')]).toEqual([2, 6]);
+  });
+
+  it('a tool whose calculator states no cutter size is one tool for every feature size: one spot drill centres the Ø6 and the Ø8 holes', () => {
+    const holes = [6, 8].map((d) => ({ feature_type: 'SimpleHole', variant: 'through', diameter_mm: d, occurrences: [{ depth_mm: 10 }, { depth_mm: 10 }] }));
+    const ops = buildOperationSequence(holes, { matClass: 'aluminum', materialGrade: 'AL6061-T6', calculators: CALCS, workbook: workbookFixture() });
+    const l = computeMillingCostSummary(milledInput({ featureOps: ops, workbook: workbookFixture() }), mc('3_axis_mill')).processLines.find((x) => x.process === 'Drilling')!;
+    const s2 = (name: string) => l.calculationTrace!.find((st) => st.fieldName === name)!.value;
+    // On the Drilling line: centre drilling (one spot drill) + a Ø6 and a Ø8 drill; a rapid move to each of the 4 holes for each of the 2 operations.
+    expect([s2('Tools'), s2('Feature Visits')]).toEqual([3, 8]);
+  });
+
+  it('without the machine\'s rapid traverse rate on file the line is a named gap, never a guessed allowance', () => {
+    const r = computeMillingCostSummary(milledInput({ featureOps, mhrRate: rate(900, { rapidTraverseMmPerMin: null }) }), mc('3_axis_mill'));
+    expect((r.processLines.find((l) => l.process === '3 Axis Mill')!.physicsGap as { reason?: string }).reason).toContain('Rapid Traverse Rate');
+  });
+
+  it('an operation the sequencer could not price makes the line a named gap: the route is not fully costed', () => {
+    const ops = featureOps.map((o) => (o.name === 'Rough Milling' ? { ...o, timeSec: 0, missing: 'Rough Milling: Material Removal Rate' } : o));
+    const l = computeMillingCostSummary(milledInput({ featureOps: ops }), mc('3_axis_mill')).processLines.find((x) => x.process === '3 Axis Mill')!;
+    expect((l.physicsGap as { reason?: string } | undefined)?.reason).toContain('Rough Milling: Material Removal Rate');
+  });
+
+  it('is a named gap, not a number, when the station has no calculator', () => {
+    const r = computeMillingCostSummary(milledInput({ featureOps, machiningCalculators: {} }), mc('3_axis_mill'));
+    expect(r.processLines.find((l) => l.process === '3 Axis Mill')!.physicsGap).toBeDefined();
+    expect(r.warnings.join(' ')).toContain('3 Axis Mill not priced');
+  });
+});
+
+// componentLoadTime, the rows for a part handled by hand (memory/Machining/lookup): weight kg, longest side mm, seconds.
+const LOAD_TABLE = [
+  { equipment: 'None', weight_kg: 5, part_max_dimension_mm: 915, load_time_s: 10, unload_time_s: 10, reorientation_time_s: 10 },
+  { equipment: 'None', weight_kg: 20, part_max_dimension_mm: 915, load_time_s: 15, unload_time_s: 15, reorientation_time_s: 15 },
+  { equipment: 'Lifting Aid 1', weight_kg: 25, part_max_dimension_mm: 915, load_time_s: 20, unload_time_s: 20, reorientation_time_s: 20 },
+];
+const partSetup = (setups: number | null, loadTable: any[] | null = LOAD_TABLE) => ({ loadTable, setups, adjustmentFactor: 1, repetitions: 1 });
+
+describe('Part Setup: loading, unloading and reorienting each part is part of the machining time', () => {
+  const line = (over: Partial<MachiningCostInput>) =>
+    computeMillingCostSummary(milledInput(over), mc('3_axis_mill')).processLines.find((l) => l.process === 'Part Setup');
+
+  it('a small part handled by hand: load 10 s + unload 10 s, on the mill at its rate, with no second setup', () => {
+    const l = line({ partSetup: partSetup(null) })!;
+    expect(l.cycleTimeMin).toBeCloseTo(20 / 60, 4);
+    expect(l.setupCost).toBe(0);
+    expect(l.runCost).toBeCloseTo((20 / 3600) * 900, 2);
+    expect(l.calculatorId).toBe('Machining - Part Setup');
+  });
+
+  it('each setup after the first adds a reorientation (three setups: 20 s + 2 x 10 s)', () => {
+    expect(line({ partSetup: partSetup(3) })!.cycleTimeMin).toBeCloseTo(40 / 60, 4);
+  });
+
+  it('with no tool axes the line is costed as one setup and says so', () => {
+    const steps = line({ partSetup: partSetup(null) })!.calculationTrace!;
+    expect(steps.find((st) => st.fieldName === 'Setups')!.source).toContain('one setup');
+  });
+
+  it('a heavier stock takes the row that holds it, lifting aid included', () => {
+    // 300 x 300 x 100 mm of aluminium = 24.3 kg: the first row that holds it is the lifting aid's.
+    const l = line({ maxLength: 300, maxWidth: 300, maxHeight: 100, volume: 5_000_000, finishedWeightKg: 13.5, partSetup: partSetup(null) })!;
+    expect(l.cycleTimeMin).toBeCloseTo(40 / 60, 4);
+    expect(JSON.stringify(l.calculationTrace)).toContain('Lifting Aid 1');
+  });
+
+  it('a part the table has no row for is a named gap, not a time', () => {
+    const l = line({ partSetup: partSetup(null, []) })!;
+    expect(l.cycleTimeMin).toBe(0);
+    expect((l.physicsGap as { reason?: string } | undefined)?.reason).toContain('componentLoadTime row');
+  });
+
+  it('a caller that does not price it gets no line', () => {
+    expect(line({})).toBeUndefined();
+  });
+});
+
+describe('operator labour on machining lines', () => {
+  const base = computeMillingCostSummary(milledInput(), mc('3_axis_mill'));
+  const crewed = (operators: number | null, labourRate: number | null = 48) => {
+    const withCrew = (r: MHRRateInput): MHRRateInput => ({ ...r, operators, labourRate });
+    const input = milledInput();
+    return computeMillingCostSummary({ ...input, mhrRate: withCrew(input.mhrRate), tappingRate: withCrew(input.tappingRate), deburrRate: withCrew(input.deburrRate), inspectionRate: withCrew(input.inspectionRate) }, mc('3_axis_mill'));
+  };
+
+  it('charges the machine\'s labour rate times its operator count for the same minutes, on top of the machine rate', () => {
+    const r = crewed(1);
+    for (const line of r.processLines.filter((l) => l.totalCost > 0)) {
+      const before = base.processLines.find((l) => l.process === line.process)!;
+      const factor = 1 + 48 / line.hourlyRate;
+      expect(line.machineCostPerPart).toBe(before.runCost);
+      expect(line.laborCostPerPart).toBeCloseTo(before.runCost * (48 / line.hourlyRate), 1);
+      expect(line.runCost).toBeCloseTo(before.runCost * factor, 1);
+      expect(line.setupCost).toBeCloseTo(before.setupCost * factor, 1);
+      expect(line.totalCost).toBeCloseTo(line.setupCost + line.runCost, 2);
+      expect(line.cycleTimeMin).toBe(before.cycleTimeMin);
+      expect(line.operators).toBe(1);
+    }
+    expect(r.totalProcessCost).toBeGreaterThan(base.totalProcessCost);
+    expect(r.totalProcessCost).toBeCloseTo(r.processLines.reduce((t, l) => t + l.totalCost, 0), 2);
+    expect(r.warnings.some((w) => /operator labour not costed/.test(w))).toBe(false);
+  });
+
+  it('two operators cost twice the labour of one', () => {
+    const one = crewed(1).processLines.find((l) => l.totalCost > 0)!;
+    const two = crewed(2).processLines.find((l) => l.process === one.process)!;
+    expect(two.laborCostPerPart).toBeCloseTo(one.laborCostPerPart! * 2, 1);
+  });
+
+  it('a machine with no operator count or no labour rate charges no labour and says so; a count is never assumed', () => {
+    for (const r of [crewed(null), crewed(1, null)]) {
+      expect(r.totalProcessCost).toBe(base.totalProcessCost);
+      expect(r.processLines.every((l) => (l.laborCostPerPart ?? 0) === 0)).toBe(true);
+      expect(r.warnings.some((w) => /operator labour not costed on its lines/.test(w))).toBe(true);
+    }
+  });
+});
+
+// A part cut from a whole bar or plate (costing/stock): the machine starts from the piece, the material is the piece's share of the stock
+// bought, and a band saw, not the lathe, may have cut the piece off.
+describe('a blank cut from stock: the piece is machined, the stock bought is the material', () => {
+  // A Ø30 x 100 mm piece of a bar that makes 50 pieces of its 6096 mm: 6096 / 50 = 121.92 mm of bar bought a part.
+  const pieceVol = Math.PI * 15 ** 2 * 100;
+  const boughtVol = Math.PI * 15 ** 2 * 121.92;
+  const bar = { form: 'round_bar', sizeLabel: 'Ø30 round bar', barDiameterMm: 30, billetVolMm3: pieceVol, utilizationPct: 50 };
+  const turned = (overrides: Partial<MachiningCostInput> = {}) => computeTurningCostSummary(
+    turnedInput({ maxLength: 100, maxWidth: 20, maxHeight: 20, volume: 5000, blankResult: bar, workbook: workbookFixture(), ...overrides } as any),
+    mc('2_axis_lathe'),
+  );
+
+  it('prices the material on the stock bought per part when the blank states it; with none the piece is what is bought', () => {
+    const piece = turned();
+    const bought = turned({ blankResult: { ...bar, purchasedVolMm3: boughtVol } });
+    // 70,686 mm³ x 2700 kg/m³ = 0.191 kg; 86,180 mm³ = 0.233 kg; at 350 a kg (not rounded to cents: closeTo for the float product).
+    expect(piece.grossWeightKg).toBe(0.191);
+    expect(piece.materialCost).toBeCloseTo(66.85, 10);
+    expect(bought.grossWeightKg).toBe(0.233);
+    expect(bought.materialCost).toBeCloseTo(81.55, 10);
+    // What is machined away, and every operation's time, are the piece's either way.
+    expect(bought.materialRemoval).toEqual(piece.materialRemoval);
+    expect(bought.processLines.map((l) => [l.process, l.cycleTimeMin])).toEqual(piece.processLines.map((l) => [l.process, l.cycleTimeMin]));
+    expect(bought.totalCost).toBeCloseTo(piece.totalCost + (81.55 - 66.85), 2);
+  });
+
+  it('a milled blank the same: the plate bought per part is the material, the blank is what is milled', () => {
+    const blank = { form: 'plate', sizeLabel: '1-1/4" plate', billetVolMm3: 200_000, utilizationPct: 40 };
+    const piece = computeMillingCostSummary(milledInput({ blankResult: blank }), mc('3_axis_mill'));
+    const bought = computeMillingCostSummary(milledInput({ blankResult: { ...blank, purchasedVolMm3: 250_000 } }), mc('3_axis_mill'));
+    // 200,000 mm³ = 0.54 kg; 250,000 mm³ = 0.675 kg; at 350 a kg (not rounded to cents: closeTo for the float product).
+    expect([piece.grossWeightKg, piece.materialCost]).toEqual([0.54, expect.closeTo(189, 10)]);
+    expect([bought.grossWeightKg, bought.materialCost]).toEqual([0.675, expect.closeTo(236.25, 10)]);
+    expect(bought.materialRemoval!.billetWeightKg).toBe(0.54);
+    expect(bought.totalProcessCost).toBe(piece.totalProcessCost);
+  });
+
+  it('a piece a band saw cut off is not parted: no Parting line; parted off the bar, or with nothing said, the lathe parts it', () => {
+    const lathe = turned();
+    const parted = turned({ stockCutOff: 'parting' });
+    const sawn = turned({ stockCutOff: 'saw' });
+    const parting = lathe.processLines.find((l) => l.process === 'Parting')!;
+    expect(parting).toBeDefined();
+    expect(parted.processLines.map((l) => l.process)).toEqual(lathe.processLines.map((l) => l.process));
+    expect(sawn.processLines.map((l) => l.process)).toEqual(lathe.processLines.map((l) => l.process).filter((p) => p !== 'Parting'));
+    expect(sawn.totalProcessCost).toBeCloseTo(lathe.totalProcessCost - parting.totalCost, 2);
+    expect(sawn.warnings.some((w) => w.includes('Parting'))).toBe(false);
+  });
+
+  it('a calculation that reads the bar names what chose the stock', () => {
+    const named = turned({ blankResult: { ...bar, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
+    const sources = (r: typeof named) => JSON.stringify(r.processLines.find((l) => l.process === 'Rough Turning')!.calculationTrace);
+    expect(sources(named)).toContain('Stock Machining stock (tblPreferredSizes): Ø30 round bar');
+    // A stock that does not say what chose it (a multi-spindle's own bar) is still named as the stock chosen for the part.
+    expect(sources(turned())).toContain('The stock chosen for the part: Ø30 round bar');
+    // A stock a lathe cannot turn from (a plate) is named with why.
+    const plate = turned({ blankResult: { form: 'plate', sizeLabel: '1" plate', billetVolMm3: pieceVol, utilizationPct: 50, sizeSource: 'Stock Machining stock (tblPreferredSizes)' } });
+    expect(plate.warnings.join(' ')).toContain('the stock chosen is 1" plate, which a lathe does not turn from');
   });
 });

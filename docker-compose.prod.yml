@@ -7,7 +7,7 @@
 #
 #   internet -> Cloudflare (WAF, rate limiting, Access on stage) -> cloudflared tunnel -> frontend, backend
 #   the host publishes NO ports: nothing can reach a container except through the tunnel
-#   engines (cad, ecad) live on a private network with no internet access and are reached only by the backend/frontend
+#   the CAD engine lives on a private network with no internet access and is reached only by the backend/frontend
 #
 # Every container is read-only, runs without Linux capabilities, cannot gain privileges, and has memory/CPU/process limits
 # (the process cap lives in deploy.resources.limits.pids, where Compose expects it next to the other limits).
@@ -28,7 +28,7 @@ services:
   # --- Ingress: the only way in. The tunnel is outbound-only; routes are set in the Cloudflare dashboard. ---
   cloudflared:
     <<: *hardened
-    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    image: cloudflare/cloudflared:2026.11.1@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
     command: tunnel --no-autoupdate --metrics 127.0.0.1:2000 run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN (from the Cloudflare tunnel) in the env file}
@@ -113,6 +113,8 @@ services:
       AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:?set AUTH0_AUDIENCE in the env file}
       AUTH0_CLAIM_NAMESPACE: ${AUTH0_CLAIM_NAMESPACE:?set AUTH0_CLAIM_NAMESPACE in the env file}
       AUTH0_TRUSTED_CONNECTIONS: ${AUTH0_TRUSTED_CONNECTIONS:?set AUTH0_TRUSTED_CONNECTIONS in the env file}
+      # The app's client id: the audience of its ID tokens, which prove a new sign-in (POST /auth/sign-ins restarts the idle clock).
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID:?set AUTH0_CLIENT_ID in the env file}
       # The browser's origin; production validation rejects localhost and *.
       CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN (the public frontend URL) in the env file}
       # The only way to reach this container is the Cloudflare tunnel, so for direct /v1/* calls the client address comes from
@@ -134,7 +136,7 @@ services:
       # Requests one organization may make per ORG_THROTTLE_TTL ms, across all its users and routes.
       ORG_THROTTLE_LIMIT: ${ORG_THROTTLE_LIMIT:-3000}
       ORG_THROTTLE_TTL: ${ORG_THROTTLE_TTL:-60000}
-      # Parse limits (backend/src/common/resource-limits.ts): what a CAD or electronics .zip may expand to, and how many workbook/archive
+      # Parse limits (backend/src/common/resource-limits.ts): what a CAD or circuit board .zip may expand to, and how many workbook/archive
       # parses run at once per process and per organization. Raise only together with the memory limit below.
       ARCHIVE_MAX_EXPANDED_MB: ${ARCHIVE_MAX_EXPANDED_MB:-256}
       HEAVY_WORK_MAX_CONCURRENT: ${HEAVY_WORK_MAX_CONCURRENT:-2}
@@ -167,8 +169,6 @@ services:
       CAD_ENGINE_URL: http://cad-engine:5055
       # Shared secret between the backend and the engine; the engine refuses protected routes in production without it.
       CAD_ENGINE_API_KEY: ${CAD_ENGINE_API_KEY:?set CAD_ENGINE_API_KEY in the env file}
-      ECAD_ENGINE_URL: http://ecad-engine:5100
-      ECAD_ENGINE_API_KEY: ${ECAD_ENGINE_API_KEY:?set ECAD_ENGINE_API_KEY in the env file}
       # Telemetry is off while OTEL_EXPORTER_OTLP_ENDPOINT is empty (docs/ops/observability.md, docs/ops/monitoring.md). Metrics go to
       # Prometheus (docker-compose.monitoring.yml), e.g. http://prometheus:9090/api/v1/otlp/v1/metrics; traces to the OTLP backend
       # named by the endpoint. For metrics only, set the endpoint to http://prometheus:9090/api/v1/otlp and OTEL_TRACES_SAMPLER_ARG=0.
@@ -194,8 +194,6 @@ services:
       postgrest:
         condition: service_healthy
       cad-engine:
-        condition: service_healthy
-      ecad-engine:
         condition: service_healthy
     deploy:
       resources:
@@ -380,7 +378,9 @@ services:
   # anon/authenticated/service_role and (migration 951) cad_runner, the runner's role. ---
   postgrest:
     <<: *hardened
-    image: postgrest/postgrest@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc
+    image: postgrest/postgrest@sha256:5ce030c153500fe90ba157da4da8ba99ab51d3bc7b95e071bd0b544b67a632f7
+    # PID 1 ignores the stop signal: without an init process a Docker shutdown left it exited 255 and not restarted (stage, 2026-11-17).
+    init: true
     user: "10004:10004"
     environment:
       PGRST_DB_URI: ${POSTGREST_DB_URI:?set POSTGREST_DB_URI in the env file}
@@ -409,31 +409,6 @@ services:
     deploy:
       resources:
         limits: { cpus: '1', memory: 512M, pids: 128 }
-
-  ecad-engine:
-    <<: *hardened
-    build:
-      context: ./ecad-engine
-      dockerfile: Dockerfile
-    environment:
-      PORT: 5100
-      ECAD_ENGINE_API_KEY: ${ECAD_ENGINE_API_KEY:?set ECAD_ENGINE_API_KEY in the env file}
-      LOG_LEVEL: info
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
-      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
-    tmpfs:
-      - /tmp
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:5100/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    networks: [internal]
-    deploy:
-      resources:
-        limits: { cpus: '1', memory: 1G, pids: 512 }
 
 volumes:
   # The runner's and the worker's only shared object: the worker host's Unix socket.
