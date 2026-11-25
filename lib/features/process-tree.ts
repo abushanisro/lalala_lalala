@@ -3,6 +3,7 @@ import { type SecondaryProcessLine } from '@/lib/api/hooks/useSecondaryProcesses
 import { MATERIAL_STOCK_STEP, allowanceLine, materialStockFeatures, pieceLine, quotedDropoff, yieldLine } from '@/lib/costing/stock-machining-view';
 import { AS_SUPPLIED_STEP, asSuppliedFaceIdsOf, asSuppliedOccurrences } from '@/lib/costing/two-model-view';
 import { fmt, fmtInt, formatEstCycleTime } from '@/lib/features/display-format';
+import { featureOperations, operationsLabel } from '@/lib/features/feature-operations';
 import { gdtCalloutNodes } from '@/lib/features/gdt-callout-nodes';
 import { groupFeaturesByType } from '@/lib/features/machining-feature-tree';
 import {
@@ -250,16 +251,18 @@ export function buildProcessTree(
     // "(default)" only tells variants apart; a type with a single feature has nothing to tell it from.
     const showVariant = !!f.variant && !(alone && f.variant === 'default');
     const variant = showVariant ? ` (${f.variant})` : '';
+    // Its operations in order: a tapped hole is drilled, then tapped (feature-operations.ts).
+    const operations = operationsLabel(featureOperations(f));
     return {
       id: `${idPrefix}_${f.id}`,
       kind: 'feature',
-      label: `${f.canonical_operation ?? String(f.feature_type)}${variant}${dia} ×${occ}`,
+      label: `${operations || String(f.feature_type)}${variant}${dia} ×${occ}`,
       factory, machine,
       v2FeatureIds: [f.id],
       attrs: [
         { name: 'Feature', value: String(f.feature_type) },
         ...(showVariant ? [{ name: 'Variant', value: f.variant as string }] : []),
-        ...(f.canonical_operation ? [{ name: 'Operation', value: f.canonical_operation }] : []),
+        ...(operations ? [{ name: 'Operation', value: operations }] : []),
         { name: 'Occurrences', value: String(occ) },
         ...(f.diameter_mm != null ? [{ name: 'Diameter', value: `${f.diameter_mm.toFixed(1)} mm` }] : []),
       ],

@@ -174,6 +174,7 @@ import { isRollFormingItem } from '@/lib/costing/roll-forming-view';
 import { isStockMachiningItem } from '@/lib/costing/stock-machining-view';
 import { isTwoModelPart } from '@/lib/costing/two-model-view';
 import { hasDfmRiskFactor } from '@/lib/dfm/hasRiskFactor';
+import { featureOperations, operationsLabel } from '@/lib/features/feature-operations';
 import { splitNote } from '@/lib/text/concise-note';
 import type { FeatureGraph, FeatureGraphSummary, CostDriver, DFMWarning, HoleGroup, FeatureNodeV2, DFMScoresResponse } from '@/lib/types/manufacturing';
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -5688,11 +5689,15 @@ function MachiningFeatureTreePanel({
                                     <span className="text-[9px] font-mono text-muted-foreground/80 flex-1 truncate">
                                       #{i + 1}{facts ? ` ${facts}` : ''}
                                     </span>
-                                    {f.canonical_operation && (
-                                      <span className="text-[9px] text-muted-foreground/60 truncate max-w-[45%]" title={f.canonical_operation}>
-                                        {f.canonical_operation}
-                                      </span>
-                                    )}
+                                    {f.canonical_operation && (() => {
+                                      // This occurrence's operations in order: a tapped hole is drilled, then tapped.
+                                      const operations = operationsLabel(featureOperations(f, occ.tapped === true));
+                                      return (
+                                        <span className="text-[9px] text-muted-foreground/60 truncate max-w-[45%]" title={operations}>
+                                          {operations}
+                                        </span>
+                                      );
+                                    })()}
                                   </button>
                                 );
                               }))}
