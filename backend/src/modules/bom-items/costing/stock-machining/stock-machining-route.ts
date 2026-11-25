@@ -16,7 +16,8 @@ import { STOCK_MACHINING_PROCESS_GROUP } from '../shared/core/part-family-proces
 import { sawBundle, sawFit, sawHandlingRow, sawRateRow, type SawBundle, type SawStock } from '../stock/band-saw';
 import { BAND_SAW_CUT_SOURCE } from '../stock/stock-research';
 
-import type { ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, resultStep } from '../machining/calculators/machining-source-refs';
 import type { CostContext } from '../casting/casting-finishing';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { CalcSeed, ReferenceCalcRun, ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
@@ -59,6 +60,9 @@ export interface StockMachiningMaterial {
   /** memory's Scrap Cost Percent of the material (what the chips sell for, of the stock's price); null when it lists none. */
   scrapCostPercent: number | null;
 }
+
+/** The Stock Machining reference data (memory/Stock Maching), as the eye opens its variables and tables. */
+const STOCK_DOMAIN = 'stock_machining';
 
 export interface StockMachiningInput {
   ref: SandReference;
@@ -231,11 +235,43 @@ export function buildStockMachiningQuote(inp: StockMachiningInput): StockMachini
       const unload = sawHandlingRow(ref.table('bandSawHandling'), pieceKg);
       if (!load || !unload) return fail('bandSawHandling has no row for the stock\'s weight');
       plans.set(m.id, { bundle, rate: Number(rate.row['Cutting Rate (mm^2 / min)']), family: rate.family, unloadS: Number(unload['Unload Time (s)']) });
+      // Each input with the calculation behind it (the stock chosen, the Stock Machining variables, the saw's record, the batch).
+      const variable = (name: string): SourceRef => ({ kind: 'variable', domain: STOCK_DOMAIN, name });
+      const sawRef = (column: string): SourceRef => ({ kind: 'machine', machineId: m.id, machineName: m.name, column });
+      const sizeRef: SourceRef | undefined = option.snapped ? { kind: 'lookup', domain: STOCK_DOMAIN, table: 'tblPreferredSizes', column: 'sizeMm', row: { sizeMm: option.aMm } } : undefined;
+      const stockStep = inputStep('Stock', null, option.sizeLabel, option.snapped ? 'The stock chosen for the part: a preferred size (tblPreferredSizes)' : 'The stock chosen for the part', sizeRef);
       return kit.timed('Band Saw', m, {
-        cut_area_mm2: seed(option.saw.cutAreaMm2, isPlate(option) ? "the blank's two cut edges through the plate (mm²)" : `the section of the ${option.sizeLabel} (mm²)`),
-        feed_length_mm: seed(option.blank.lengthMm + option.cutWidthMm, `the ${r2(option.blank.lengthMm)} mm piece and the ${option.cutWidthMm} mm kerf`),
-        bars_per_bundle: seed(bundle.bars, bundle.basis),
-        parts_per_stock: seed(option.stock.partsPerStock, isPlate(option) ? 'the blanks one plate makes' : 'the pieces one bar makes'),
+        cut_area_mm2: {
+          ...seed(option.saw.cutAreaMm2, isPlate(option) ? "the blank's two cut edges through the plate (mm²)" : `the section of the ${option.sizeLabel} (mm²)`),
+          ref: calculationRef('Cut Area', [stockStep, resultStep('Cut Area', 'mm²', option.saw.cutAreaMm2, isPlate(option) ? "The blank's two cut edges x the plate's thickness" : "The stock's cross-section")]),
+        },
+        feed_length_mm: {
+          ...seed(option.blank.lengthMm + option.cutWidthMm, `the ${r2(option.blank.lengthMm)} mm piece and the ${option.cutWidthMm} mm kerf`),
+          ref: calculationRef('Feed Length', [
+            inputStep('Piece length', 'mm', option.blank.lengthMm, "The part's length along the stock plus the stock faced off each end"),
+            inputStep('Kerf', 'mm', option.cutWidthMm, 'Stock Machining variable bandSawKerf', variable('bandSawKerf')),
+            resultStep('Feed Length', 'mm', option.blank.lengthMm + option.cutWidthMm, 'Piece length + Kerf'),
+          ]),
+        },
+        bars_per_bundle: {
+          ...seed(bundle.bars, bundle.basis),
+          ref: calculationRef('Bars per Bundle', [
+            inputStep('Bars the vise holds', null, bundle.fits, `Side by side across the saw's stock width, stacked up to its stock height (${m.name})`, sawRef('max_stock_width_mm')),
+            inputStep('Most bars a bundle', null, stock.maxBundle, 'Stock Machining variable maxPartsPerBundleBandSaw', variable('maxPartsPerBundleBandSaw')),
+            inputStep('Batch size', null, inp.batchSize, "The part's batch", { kind: 'costingInput', field: 'batchSize' }),
+            inputStep('Bars the batch needs', null, bundle.barsForBatch, 'The batch over the pieces one bar makes, rounded up'),
+            resultStep('Bars per Bundle', null, bundle.bars, 'The least of what the vise holds, the most a bundle, and the bars the batch needs'),
+          ]),
+        },
+        parts_per_stock: {
+          ...seed(option.stock.partsPerStock, isPlate(option) ? 'the blanks one plate makes' : 'the pieces one bar makes'),
+          ref: calculationRef('Parts per Stock', [
+            stockStep,
+            inputStep(isPlate(option) ? 'Plate length' : 'Bar length', 'mm', option.stock.lengthMm, isPlate(option) ? 'Stock Machining variable standardPlateLength' : 'Stock Machining variable standardStockLength', variable(isPlate(option) ? 'standardPlateLength' : 'standardStockLength')),
+            inputStep('Piece and kerf', 'mm', option.blank.lengthMm + option.cutWidthMm, 'The piece and the kerf between two pieces'),
+            resultStep('Parts per Stock', null, option.stock.partsPerStock, isPlate(option) ? "The blanks the plate's grid holds" : 'The pieces the bar makes, less its end remnant'),
+          ]),
+        },
       }, {
         'bandSawCutting.Cutting Rate (mm^2 / min)': kit.lookupSeed('bandSawCutting', rate.row, 'Cutting Rate (mm^2 / min)', ['Material Cut Code Family', 'Material Type', 'Material Width (mm)']),
         'bandSawHandling.Load Time (s)': kit.lookupSeed('bandSawHandling', load, 'Load Time (s)', ['Weight (kg)']),

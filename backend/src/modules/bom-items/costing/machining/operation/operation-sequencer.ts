@@ -66,7 +66,9 @@
 
 import { computeBoreCycle, computeDrillCycle, computeTapCycle, DRILL_DEPTH_TO_DIAMETER_RATIO, detectMaterialClass, workbookCycle, largestDrillMm, type MachiningWorkbookInput } from '../process/cost-machining-engine';
 import { runMachiningCalculator, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
-import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
+import { calculationRef, graphFeatureRef, inputStep, MACHINING_REFERENCE_DOMAIN, resultStep, withSourceRef } from '../calculators/machining-source-refs';
+import type { CalculationTraceStep, SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { FeatureOccurrenceRef } from '../feature-occurrences';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { isTurnedDiameter, type StockExcess } from './stock-excess';
 import type { StockFacing } from '../../stock/stock-facing';
@@ -90,8 +92,9 @@ function drillOp(
   materialGrade: string | null | undefined,
   workbook: MachiningWorkbookInput | null,
   calculators: MachiningCalculators | null,
+  occurrences?: readonly FeatureOccurrenceRef[],
 ): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
-  const cycle = computeDrillCycle(diamMm, materialGrade, depthMm > 0 ? depthMm : undefined, workbook, calculators, count);
+  const cycle = computeDrillCycle(diamMm, materialGrade, depthMm > 0 ? depthMm : undefined, workbook, calculators, count, occurrences);
   const plan = cycle.plan ? { plan: [cycle.plan] } : {};
   return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
 }
@@ -106,9 +109,10 @@ function tapOp(
   depthMm: number | undefined,
   workbook: MachiningWorkbookInput | null,
   calculators: MachiningCalculators | null,
+  occurrences?: readonly FeatureOccurrenceRef[],
 ): Pick<OperationLine, 'timeSec' | 'missing' | 'plan'> {
   if (!spec) return { timeSec: 0, missing: 'a thread size' };
-  const cycle = computeTapCycle({ size: spec, count, pitchMm, depthMm: depthMm && depthMm > 0 ? depthMm : undefined }, matClass, workbook, calculators);
+  const cycle = computeTapCycle({ size: spec, count, pitchMm, depthMm: depthMm && depthMm > 0 ? depthMm : undefined, ...(occurrences?.length ? { occurrences } : {}) }, matClass, workbook, calculators);
   const plan = cycle.plan ? { plan: [cycle.plan] } : {};
   return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), ...plan } : { timeSec: cycle.sec, ...plan };
 }
@@ -126,7 +130,7 @@ export interface MillingFinishingRow {
   feedPerToothPerDiameter: number;
 }
 
-interface PocketFinishGroup { toolMm: number; floorMm2: number; wallMm2: number; pockets: number }
+interface PocketFinishGroup { toolMm: number; floorMm2: number; wallMm2: number; pockets: number; occ: number[] }
 
 /**
  * The finishing passes of a group of pockets, one entry per cutter. A pocket's floor is its CAD length x width and its
@@ -137,7 +141,7 @@ interface PocketFinishGroup { toolMm: number; floorMm2: number; wallMm2: number;
  */
 function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketFinishGroup[] | null {
   const groups = new Map<number, PocketFinishGroup>();
-  for (const o of occurrences) {
+  for (const [i, o] of occurrences.entries()) {
     const [lengthMm, widthMm] = (Array.isArray(o.extents_mm) ? o.extents_mm.map(Number) : []).sort((a: number, b: number) => b - a);
     if (!(lengthMm > 0 && widthMm > 0)) return null;
     const confined = o.width_confined !== false;
@@ -145,10 +149,11 @@ function pocketFinishGroups(occurrences: any[], standardToolMm: number): PocketF
     const floorMm2 = lengthMm * widthMm;
     const depthMm = o.depth_mm > 0 ? Number(o.depth_mm) : (o.material_removed_mm3 ?? 0) / floorMm2;
     const walledShare = typeof o.walled_fraction === 'number' ? o.walled_fraction : 1;
-    const g = groups.get(toolMm) ?? { toolMm, floorMm2: 0, wallMm2: 0, pockets: 0 };
+    const g = groups.get(toolMm) ?? { toolMm, floorMm2: 0, wallMm2: 0, pockets: 0, occ: [] };
     g.floorMm2 += floorMm2;
     if (!confined || widthMm > standardToolMm) g.wallMm2 += walledShare * 2 * (lengthMm + widthMm) * depthMm;
     g.pockets += 1;
+    g.occ.push(i);
     groups.set(toolMm, g);
   }
   return [...groups.values()].sort((a, b) => b.toolMm - a.toolMm);
@@ -160,7 +165,7 @@ function cutterFor(widthMm: number, confined: boolean, standardToolMm: number): 
 }
 
 /** Cuts of one size, roughed or slotted alike by one cutter. */
-interface CutGroup { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; toolMm: number; cuts: number }
+interface CutGroup { lengthMm: number; widthMm: number; depthMm: number; depthSource: string; toolMm: number; cuts: number; occ: number[] }
 
 /**
  * A feature's occurrences by size and cutter: those of one length, width, depth and cutter are cut alike (the workbook's End, Slot and
@@ -173,13 +178,14 @@ function cutGroups(
   standardToolMm: number,
 ): CutGroup[] | null {
   const groups = new Map<string, CutGroup>();
-  for (const o of occurrences) {
+  for (const [i, o] of occurrences.entries()) {
     const z = size(o);
     if (!z || !(z.lengthMm > 0 && z.widthMm > 0 && z.depthMm > 0)) return null;
     const toolMm = cutterFor(z.widthMm, z.confined, standardToolMm);
     const key = `${z.lengthMm}|${z.widthMm}|${z.depthMm}|${toolMm}`;
-    const g = groups.get(key) ?? { lengthMm: z.lengthMm, widthMm: z.widthMm, depthMm: z.depthMm, depthSource: z.depthSource, toolMm, cuts: 0 };
+    const g = groups.get(key) ?? { lengthMm: z.lengthMm, widthMm: z.widthMm, depthMm: z.depthMm, depthSource: z.depthSource, toolMm, cuts: 0, occ: [] };
     g.cuts += 1;
+    g.occ.push(i);
     groups.set(key, g);
   }
   return [...groups.values()];
@@ -210,7 +216,20 @@ function flatSize(o: any): { lengthMm: number; widthMm: number; depthMm: number;
 
 /** A value of a material class's tblMillingFinishing row, as a calculator input that names the table, the row and the column. */
 export function finishingTableSeed(matClass: MaterialClass, value: number, column: string, note = ''): CalcSeed {
-  return { value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`, match: { table: 'tblMillingFinishing', row: { MaterialClass: matClass } } };
+  const row = { MaterialClass: matClass };
+  return {
+    value, lookup: true, source: `tblMillingFinishing: ${matClass} ${column}${note}`, match: { table: 'tblMillingFinishing', row },
+    ref: { kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table: 'tblMillingFinishing', column, row },
+  };
+}
+
+/** A value of a material class's tblMillingFinishing row scaled by its machinability: the row's value, the factor, and the product. */
+function machinabilityRef(name: string, base: CalcSeed, factor: number, value: number, unit: string): SourceRef {
+  return calculationRef(name, [
+    inputStep(`${name} (table)`, unit, base.value, base.source, base.ref),
+    inputStep('Machinability factor', null, factor, 'The material\'s machinability rating over the mild-steel baseline of 75 (Raw Materials record)'),
+    resultStep(name, unit, value, `${name} (table) x Machinability factor`),
+  ]);
 }
 
 /**
@@ -221,8 +240,51 @@ export function cutterRunSeeds(finishing: MillingFinishingRow | null, matClass: 
   if (!finishing) return {};
   return {
     'Teeth': finishingTableSeed(matClass, finishing.teeth, 'Teeth'),
-    'Cutting Speed': finishingTableSeed(matClass, finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`),
+    'Cutting Speed': machinabilityFactor === 1
+      ? finishingTableSeed(matClass, finishing.cuttingSpeedMPerMin, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`)
+      : (() => {
+        const seed = finishingTableSeed(matClass, finishing.cuttingSpeedMPerMin * machinabilityFactor, 'CuttingSpeedMPerMin', ` ${finishing.cuttingSpeedMPerMin} m/min x machinability factor ${machinabilityFactor}`);
+        const base = finishingTableSeed(matClass, finishing.cuttingSpeedMPerMin, 'CuttingSpeedMPerMin');
+        return { ...seed, ref: machinabilityRef('Cutting Speed', base, machinabilityFactor, seed.value, 'm/min') };
+      })(),
     'Feed per Tooth per Diameter': finishingTableSeed(matClass, finishing.feedPerToothPerDiameter, 'FeedPerToothPerDiameter'),
+  };
+}
+
+/**
+ * The Facing calculator's inputs for the stock piece's faces, as the stock model states them (stock/stock-facing.ts): each value with the
+ * calculation behind it, the piece faced down to the part.
+ */
+export function stockFacingSeeds(facing: StockFacing): Record<string, CalcSeed> {
+  const from = `Stock: ${facing.basis}`;
+  const faced = (field: string, unit: string | null, value: number): CalcSeed => ({
+    value, source: from,
+    ref: calculationRef(`Facing: ${field}`, [
+      inputStep('The stock piece faced', null, facing.basis, 'The stock chosen for the part (the stock model: its size, and the part inside it)'),
+      resultStep(field, unit, value, `${field} of the piece's faces faced down to the part`),
+    ]),
+  });
+  return {
+    'Face Length': faced('Face Length', 'mm', facing.lengthMm),
+    'Face Width': faced('Face Width', 'mm', facing.widthMm),
+    'Stock Depth': faced('Stock Depth', 'mm', facing.depthMm),
+    'Faces': faced('Faces', null, facing.faces),
+  };
+}
+
+/**
+ * The material's milling removal rate (tblMillingRemovalRate) scaled by its machinability, as a calculator input: the table row, the factor,
+ * and their product, step by step.
+ */
+export function removalRateSeed(matClass: MaterialClass, removalRateMm3PerMin: number, machinabilityFactor: number): CalcSeed {
+  const row = { MaterialClass: matClass };
+  const tableRef: SourceRef = { kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table: 'tblMillingRemovalRate', column: 'RemovalRateMm3PerMin', row };
+  const value = removalRateMm3PerMin * machinabilityFactor;
+  return {
+    value, lookup: true,
+    source: `tblMillingRemovalRate: ${matClass} ${removalRateMm3PerMin} mm^3/min x machinability factor ${machinabilityFactor}`,
+    match: { table: 'tblMillingRemovalRate', row },
+    ref: machinabilityFactor === 1 ? tableRef : machinabilityRef('Material Removal Rate', { value: removalRateMm3PerMin, source: `tblMillingRemovalRate: ${matClass}`, ref: tableRef }, machinabilityFactor, value, 'mm^3/min'),
   };
 }
 
@@ -230,7 +292,7 @@ export function cutterRunSeeds(finishing: MillingFinishingRow | null, matClass: 
 export const KEYWAY_MILLING = 'Obround Slot Milling';
 
 /** The milled keyways of one size, or those that lack the same CAD measurements (`lacks`: they are not timed). */
-interface KeywayGroup { lengthMm: number; widthMm: number; depthMm: number; keyways: number; lacks: string[] }
+interface KeywayGroup { lengthMm: number; widthMm: number; depthMm: number; keyways: number; lacks: string[]; occ: number[] }
 
 /**
  * A Keyway feature's occurrences by size (CAD length_mm x width_mm x depth_mm): keyways of one size are cut alike, by a cutter of their width.
@@ -238,12 +300,13 @@ interface KeywayGroup { lengthMm: number; widthMm: number; depthMm: number; keyw
  */
 function keywayGroups(occurrences: readonly { length_mm?: unknown; width_mm?: unknown; depth_mm?: unknown }[]): KeywayGroup[] {
   const groups = new Map<string, KeywayGroup>();
-  for (const o of occurrences) {
+  for (const [i, o] of occurrences.entries()) {
     const measured = { length: Number(o.length_mm), width: Number(o.width_mm), depth: Number(o.depth_mm) };
     const lacks = Object.entries(measured).filter(([, mm]) => !(mm > 0)).map(([name]) => name);
     const key = lacks.length > 0 ? `lacks ${lacks.join(' ')}` : `${measured.length}|${measured.width}|${measured.depth}`;
-    const g = groups.get(key) ?? { lengthMm: measured.length, widthMm: measured.width, depthMm: measured.depth, keyways: 0, lacks };
+    const g = groups.get(key) ?? { lengthMm: measured.length, widthMm: measured.width, depthMm: measured.depth, keyways: 0, lacks, occ: [] };
     g.keyways += 1;
+    g.occ.push(i);
     groups.set(key, g);
   }
   return [...groups.values()];
@@ -259,7 +322,7 @@ type TimedOp = Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator
 export const CONCAVE_FILLET_MILLING = 'Concave Fillet Milling';
 
 /** The length one edge or one toroid's path is cut along, and where it comes from. */
-interface EdgeLength { lengthMm: number; source: string }
+interface EdgeLength { lengthMm: number; source: string; occ?: number }
 
 const mm3dp = (v: number) => Math.round(v * 1000) / 1000;
 
@@ -302,11 +365,11 @@ function edgeLengths(diameterMm: number, occurrences: readonly any[], n: number,
     ? toroidPath(o, diameterMm, 'round')
     : (diameterMm > 0 ? { lengthMm: mm3dp(Math.PI * diameterMm), source: `CAD: pi x Ø${diameterMm} mm` } : null));
   if (occurrences.length === 0) return Array.from({ length: n }, () => circle({}));
-  return occurrences.map((o) => {
+  return occurrences.map((o, occ) => {
     const round = circle(o);
-    if (round) return round;
+    if (round) return { ...round, occ };
     const longest = Math.max(0, ...(Array.isArray(o?.extents_mm) ? o.extents_mm.map(Number).filter(Number.isFinite) : []));
-    return longest > 0 ? { lengthMm: mm3dp(longest), source: 'CAD: the edge face\'s longest extent' } : null;
+    return longest > 0 ? { lengthMm: mm3dp(longest), source: 'CAD: the edge face\'s longest extent', occ } : null;
   });
 }
 
@@ -487,51 +550,48 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
   // The inputs every volume- or area-based milling calculator shares, and the per-operation calls.
   const mrrSeed: Record<string, CalcSeed> = removalRateMm3PerMin != null && removalRateMm3PerMin > 0 ? {
-    'Material Removal Rate': {
-      value: removalRateMm3PerMin * machinabilityFactor, lookup: true,
-      source: `tblMillingRemovalRate: ${matClass} ${removalRateMm3PerMin} mm^3/min x machinability factor ${machinabilityFactor}`,
-      match: { table: 'tblMillingRemovalRate', row: { MaterialClass: matClass } },
-    },
+    'Material Removal Rate': removalRateSeed(matClass, removalRateMm3PerMin, machinabilityFactor),
   } : {};
-  const volumeOp = (operation: string, removedMm3: number) => calcOp(calculators, operation, {
-    'Removed Volume': { value: removedMm3, source: 'CAD: volume the features remove' }, ...mrrSeed,
+  const volumeOp = (operation: string, removedMm3: number, ref: SourceRef | undefined) => calcOp(calculators, operation, {
+    'Removed Volume': withSourceRef({ value: removedMm3, source: 'CAD: volume the features remove' }, ref), ...mrrSeed,
   });
   // A finishing pass is a tool path at the cutter's feed: the cutter and how it runs in this material, from the table.
   // How an end mill runs in this material, whatever its diameter: every tool-path calculator reads these.
   const cutterRun = (): Record<string, CalcSeed> => cutterRunSeeds(finishing, matClass, machinabilityFactor);
-  const cutterSeeds = (toolMm: number, toolWhy: string): Record<string, CalcSeed> => (finishing ? {
+  const cutterSeeds = (toolMm: number, toolWhy: string, ref?: SourceRef): Record<string, CalcSeed> => (finishing ? {
     'Tool Diameter': toolMm === finishing.toolDiameterMm
       ? finishingTableSeed(matClass, toolMm, 'ToolDiameterMm')
-      : { value: toolMm, source: toolWhy },
+      : withSourceRef({ value: toolMm, source: toolWhy }, ref),
     ...cutterRun(),
   } : {});
   const standardToolMm = finishing?.toolDiameterMm ?? Number.POSITIVE_INFINITY;
-  const contourOp = (operation: string, wallMm2: number, surfaceMm2: number, faces: number) => calcOp(calculators, operation, {
-    'Wall Area': { value: wallMm2, source: 'CAD: area of the walls' },
-    'Surface Area': { value: surfaceMm2, source: 'CAD: area of the free-form surfaces' },
-    'Faces': { value: faces, source: 'CAD: faces to contour' },
+  // A region's walls and surfaces (the feature's faces): the CAD values light them.
+  const contourOp = (operation: string, wallMm2: number, surfaceMm2: number, faces: number, ref: SourceRef | undefined) => calcOp(calculators, operation, {
+    'Wall Area': withSourceRef({ value: wallMm2, source: 'CAD: area of the walls' }, ref),
+    'Surface Area': withSourceRef({ value: surfaceMm2, source: 'CAD: area of the free-form surfaces' }, ref),
+    'Faces': withSourceRef({ value: faces, source: 'CAD: faces to contour' }, ref),
     ...cutterSeeds(standardToolMm, ''),
   });
-  const faceFinishOp = (areaMm2: number, faces: number) => calcOp(calculators, 'Fine Finish Milling', {
-    'Floor Area': { value: areaMm2, source: 'CAD: area of the planar faces' },
-    'Wall Area': { value: 0, source: 'A planar face has no wall' },
-    'Faces': { value: faces, source: 'CAD: planar faces to finish' },
+  const faceFinishOp = (areaMm2: number, faces: number, ref: SourceRef | undefined) => calcOp(calculators, 'Fine Finish Milling', {
+    'Floor Area': withSourceRef({ value: areaMm2, source: 'CAD: area of the planar faces' }, ref),
+    'Wall Area': withSourceRef({ value: 0, source: 'A planar face has no wall' }, ref),
+    'Faces': withSourceRef({ value: faces, source: 'CAD: planar faces to finish' }, ref),
     ...cutterSeeds(standardToolMm, ''),
   });
-  const pocketFinishOp = (g: PocketFinishGroup) => calcOp(calculators, 'Fine Finish Milling', {
-    'Floor Area': { value: g.floorMm2, source: `CAD: floor of ${g.pockets} pocket(s), length x width` },
-    'Wall Area': g.wallMm2 > 0
+  const pocketFinishOp = (g: PocketFinishGroup, ref: SourceRef | undefined) => calcOp(calculators, 'Fine Finish Milling', {
+    'Floor Area': withSourceRef({ value: g.floorMm2, source: `CAD: floor of ${g.pockets} pocket(s), length x width` }, ref),
+    'Wall Area': withSourceRef(g.wallMm2 > 0
       ? { value: g.wallMm2, source: 'CAD: pocket perimeter x depth (removed volume over the floor area)' }
-      : { value: 0, source: 'The cutter is as wide as the pocket: the walls are finished with the floor' },
-    'Faces': { value: g.pockets, source: 'CAD: pockets to finish' },
-    ...cutterSeeds(g.toolMm, `CAD: pocket width ${g.toolMm} mm, narrower than the standard finishing cutter`),
+      : { value: 0, source: 'The cutter is as wide as the pocket: the walls are finished with the floor' }, ref),
+    'Faces': withSourceRef({ value: g.pockets, source: 'CAD: pockets to finish' }, ref),
+    ...cutterSeeds(g.toolMm, `CAD: pocket width ${g.toolMm} mm, narrower than the standard finishing cutter`, ref),
   });
   // A milled keyway is cut by an end mill of its own width, in passes between its two end centres.
-  const keywayOp = (g: KeywayGroup) => calcOp(calculators, KEYWAY_MILLING, {
-    'Keyway Length': { value: g.lengthMm, source: 'CAD: keyway length' },
-    'Keyway Width': { value: g.widthMm, source: 'CAD: keyway width, the diameter of the cutter' },
-    'Keyway Depth': { value: g.depthMm, source: 'CAD: keyway depth' },
-    'Keyways': { value: g.keyways, source: 'CAD: keyways of this size' },
+  const keywayOp = (g: KeywayGroup, ref: SourceRef | undefined) => calcOp(calculators, KEYWAY_MILLING, {
+    'Keyway Length': withSourceRef({ value: g.lengthMm, source: 'CAD: keyway length' }, ref),
+    'Keyway Width': withSourceRef({ value: g.widthMm, source: 'CAD: keyway width, the diameter of the cutter' }, ref),
+    'Keyway Depth': withSourceRef({ value: g.depthMm, source: 'CAD: keyway depth' }, ref),
+    'Keyways': withSourceRef({ value: g.keyways, source: 'CAD: keyways of this size' }, ref),
     ...cutterRun(),
   });
   // A workbook-form milling run (the Face, End, Slot and Plunge Milling sheets): its speeds and feeds from the workbook's milling
@@ -547,33 +607,33 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
   };
   // The end mill a cut is made with, and its teeth: the material's own (tblMillingFinishing), or one as wide as the cut.
   const noEndMill = `the material's end mill (tblMillingFinishing has no row for ${matClass})`;
-  const endMillSeeds = (toolMm: number, narrower: string): Record<string, CalcSeed> | null => finishing ? {
-    'Cutter Diameter': toolMm === finishing.toolDiameterMm ? finishingTableSeed(matClass, toolMm, 'ToolDiameterMm') : { value: toolMm, source: narrower },
+  const endMillSeeds = (toolMm: number, narrower: string, ref?: SourceRef): Record<string, CalcSeed> | null => finishing ? {
+    'Cutter Diameter': toolMm === finishing.toolDiameterMm ? finishingTableSeed(matClass, toolMm, 'ToolDiameterMm') : withSourceRef({ value: toolMm, source: narrower }, ref),
     'Teeth': finishingTableSeed(matClass, finishing.teeth, 'Teeth'),
   } : null;
   // A pocket or a flat roughed with an end mill (the workbook's End Milling sheet), one run per size.
-  const roughOp = (g: CutGroup, what: string): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
-    const cutter = endMillSeeds(g.toolMm, `CAD: ${what} width ${g.toolMm} mm, narrower than the material's end mill`);
+  const roughOp = (g: CutGroup, what: string, ref: SourceRef | undefined): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cutter = endMillSeeds(g.toolMm, `CAD: ${what} width ${g.toolMm} mm, narrower than the material's end mill`, ref);
     if (!cutter) return { timeSec: 0, missing: noEndMill };
     return workbookOp('Rough Milling', {
-      'Cut Length': { value: g.lengthMm, source: `CAD: ${what} length` },
-      'Cut Width': { value: g.widthMm, source: `CAD: ${what} width` },
-      'Cut Depth': { value: g.depthMm, source: g.depthSource },
-      'Cuts': { value: g.cuts, source: `CAD: ${what}s of this size` },
+      'Cut Length': withSourceRef({ value: g.lengthMm, source: `CAD: ${what} length` }, ref),
+      'Cut Width': withSourceRef({ value: g.widthMm, source: `CAD: ${what} width` }, ref),
+      'Cut Depth': withSourceRef({ value: g.depthMm, source: g.depthSource }, ref),
+      'Cuts': withSourceRef({ value: g.cuts, source: `CAD: ${what}s of this size` }, ref),
       ...cutter,
     });
   };
   // A slot (the catalog's Slot Milling) cut by the workbook's Slot Milling sheet or by plunging (its Plunge Milling sheet, corrected),
   // whichever is quicker: plunging wins on a deep slot. Both run the same cutter at the same speed, so a route machine's spindle limit
   // scales them alike and the quicker one stays the quicker on every machine.
-  const slotOp = (g: CutGroup): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
-    const cutter = endMillSeeds(g.toolMm, `CAD: slot width ${g.toolMm} mm, narrower than the material's end mill`);
+  const slotOp = (g: CutGroup, ref: SourceRef | undefined): Pick<OperationLine, 'timeSec' | 'missing' | 'trace' | 'calculator' | 'plan'> => {
+    const cutter = endMillSeeds(g.toolMm, `CAD: slot width ${g.toolMm} mm, narrower than the material's end mill`, ref);
     if (!cutter) return { timeSec: 0, missing: noEndMill };
     const seeds: Record<string, CalcSeed> = {
-      'Slot Length': { value: g.lengthMm, source: 'CAD: slot length' },
-      'Slot Width': { value: g.widthMm, source: 'CAD: slot width' },
-      'Slot Depth': { value: g.depthMm, source: g.depthSource },
-      'Slots': { value: g.cuts, source: 'CAD: slots of this size' },
+      'Slot Length': withSourceRef({ value: g.lengthMm, source: 'CAD: slot length' }, ref),
+      'Slot Width': withSourceRef({ value: g.widthMm, source: 'CAD: slot width' }, ref),
+      'Slot Depth': withSourceRef({ value: g.depthMm, source: g.depthSource }, ref),
+      'Slots': withSourceRef({ value: g.cuts, source: 'CAD: slots of this size' }, ref),
       ...cutter,
     };
     // Compared before any machine is chosen, with no spindle limit: the limit would slow both alike.
@@ -583,12 +643,19 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     return workbookOp(plunged != null && (slotted == null || plunged < slotted) ? 'Plunge Milling' : 'Slot Milling', seeds);
   };
   // A counterbore, drilled with a step drill to its diameter and depth (no CAD depth: the drilling depth rule's, stated).
-  const stepOp = (diamMm: number, depthMm: number, n: number) => {
+  const stepOp = (diamMm: number, depthMm: number, n: number, ref: SourceRef | undefined) => {
     const depth = depthMm > 0
-      ? { value: depthMm, source: 'CAD: counterbore depth' }
-      : { value: diamMm * DRILL_DEPTH_TO_DIAMETER_RATIO, source: `Assumption: no CAD depth, ${DRILL_DEPTH_TO_DIAMETER_RATIO} x the counterbore diameter` };
+      ? withSourceRef({ value: depthMm, source: 'CAD: counterbore depth' }, ref)
+      : {
+        value: diamMm * DRILL_DEPTH_TO_DIAMETER_RATIO, source: `Assumption: no CAD depth, ${DRILL_DEPTH_TO_DIAMETER_RATIO} x the counterbore diameter`,
+        ref: calculationRef('Counterbore depth (no CAD depth)', [
+          inputStep('Counterbore diameter', 'mm', diamMm, 'CAD: counterbore diameter', ref),
+          inputStep('Depth to diameter ratio', null, DRILL_DEPTH_TO_DIAMETER_RATIO, 'The drilling depth rule (DRILL_DEPTH_TO_DIAMETER_RATIO): a hole with no CAD depth is taken 2.5 x its diameter deep'),
+          resultStep('Step Depth', 'mm', diamMm * DRILL_DEPTH_TO_DIAMETER_RATIO, 'Counterbore diameter x Depth to diameter ratio'),
+        ]),
+      };
     const seeds: Record<string, CalcSeed> = {
-      'Step Diameter': { value: diamMm, source: 'CAD: counterbore diameter' }, 'Step Depth': depth, 'Holes': { value: n, source: 'CAD: counterbores' },
+      'Step Diameter': withSourceRef({ value: diamMm, source: 'CAD: counterbore diameter' }, ref), 'Step Depth': depth, 'Holes': withSourceRef({ value: n, source: 'CAD: counterbores' }, ref),
     };
     const cycle = workbookCycle('Step Drilling', workbook, calculators, matClass, seeds, {});
     const plan = cycle.plan ? { plan: [cycle.plan] } : {};
@@ -596,46 +663,54 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
   };
   // A hole larger than the workbook's drills reach: drilled at the largest of them, then bored to its diameter on the mill.
   const largestDrill = largestDrillMm(workbook, matClass);
-  const boreOp = (diamMm: number, depthMm: number, n: number) => {
-    const cycle = computeBoreCycle('Boring', largestDrill!, diamMm, depthMm, n, matClass, workbook, calculators);
+  const boreOp = (diamMm: number, depthMm: number, n: number, occurrences?: readonly FeatureOccurrenceRef[]) => {
+    const cycle = computeBoreCycle('Boring', largestDrill!, diamMm, depthMm, n, matClass, workbook, calculators, occurrences);
     return cycle.sec == null ? { timeSec: 0, missing: cycle.missing.join('; '), plan: cycle.plan ? [cycle.plan] : undefined } : { timeSec: cycle.sec, plan: cycle.plan ? [cycle.plan] : undefined };
   };
   // A hole spotted before it is drilled, or countersunk after (the workbook's Drilling sheet: the spot or countersink's depth plus the
   // approach over the feed, at the drilling speed for the diameter; migration 1152).
-  const spotOp = (diamMm: number, n: number) => workbookOp('Center Drilling', {
-    'Hole Diameter': { value: diamMm, source: 'CAD: hole diameter' }, 'Holes': { value: n, source: 'CAD: holes of this diameter' },
+  const spotOp = (diamMm: number, n: number, ref: SourceRef | undefined) => workbookOp('Center Drilling', {
+    'Hole Diameter': withSourceRef({ value: diamMm, source: 'CAD: hole diameter' }, ref), 'Holes': withSourceRef({ value: n, source: 'CAD: holes of this diameter' }, ref),
   });
-  const countersinkOp = (countersinkMm: number, holeMm: number, holeWhy: string, n: number) => workbookOp('Countersinking', {
-    'Countersink Diameter': { value: countersinkMm, source: 'CAD: countersink diameter' },
-    'Hole Diameter': { value: holeMm, source: holeWhy },
-    'Holes': { value: n, source: 'CAD: countersinks of this size' },
+  const countersinkOp = (countersinkMm: number, holeMm: number, holeWhy: string, n: number, ref: SourceRef | undefined, holeRef: SourceRef | undefined) => workbookOp('Countersinking', {
+    'Countersink Diameter': withSourceRef({ value: countersinkMm, source: 'CAD: countersink diameter' }, ref),
+    'Hole Diameter': withSourceRef({ value: holeMm, source: holeWhy }, holeRef),
+    'Holes': withSourceRef({ value: n, source: 'CAD: countersinks of this size' }, ref),
   });
   // An edge chamfered or rounded in one pass of the material's end mill (the workbook's End Milling sheet; migration 1152): edges of one
   // length are cut alike. Each edge's length is given (edgeLengths); one with none is a named gap.
-  const edgeOp = (operation: string, edges: readonly (EdgeLength | null)[]): TimedOp => {
+  // `refOf` lights the edges of a group (their occurrences of the feature; all of them for edges the feature does not list one by one).
+  const edgeOp = (operation: string, edges: readonly (EdgeLength | null)[], refOf: (label: string, occ?: readonly number[]) => SourceRef | undefined): TimedOp => {
     const cutter = endMillSeeds(standardToolMm, '');
     if (!cutter) return { timeSec: 0, missing: noEndMill };
-    const groups = new Map<string, { lengthMm: number; edges: number; source: string }>();
+    const groups = new Map<string, { lengthMm: number; edges: number; source: string; occ: number[] }>();
     let unmeasured = 0;
     for (const e of edges) {
       if (!e) { unmeasured += 1; continue; }
       const key = `${e.lengthMm}|${e.source}`;
-      const g = groups.get(key) ?? { lengthMm: e.lengthMm, edges: 0, source: e.source };
+      const g = groups.get(key) ?? { lengthMm: e.lengthMm, edges: 0, source: e.source, occ: [] };
       g.edges += 1;
+      if (e.occ != null) g.occ.push(e.occ);
       groups.set(key, g);
     }
-    const runs = [...groups.values()].map((g) => ({ label: `Edge ${g.lengthMm} mm`, run: workbookOp(operation, {
-      'Edge Length': { value: g.lengthMm, source: g.source }, 'Edges': { value: g.edges, source: 'CAD: edges of this length' }, ...cutter,
-    }) }));
+    const runs = [...groups.values()].map((g) => {
+      const ref = refOf(`${g.edges} edge${g.edges === 1 ? '' : 's'} of ${g.lengthMm} mm`, g.occ.length > 0 ? g.occ : undefined);
+      return { label: `Edge ${g.lengthMm} mm`, run: workbookOp(operation, {
+        'Edge Length': withSourceRef({ value: g.lengthMm, source: g.source }, ref), 'Edges': withSourceRef({ value: g.edges, source: 'CAD: edges of this length' }, ref), ...cutter,
+      }) };
+    });
     return combinedRuns(runs, unmeasured > 0 ? [`the CAD length of ${unmeasured} edge${unmeasured === 1 ? '' : 's'}`] : []);
   };
   // A round-bottomed groove or an inside fillet, finished by a ball nose end mill of its own radius in one pass along the path its centre
   // follows (the Groove Milling and Concave Fillet Milling calculators, migration 1155): those of one radius and path are cut alike. The
   // ball's speed, feed and teeth are read from tblBallNoseCutData by the material and the ball's diameter (workbookSeeds). An occurrence with
   // no CAD radius, or with neither its arc nor a major diameter, is a named gap, never priced on the others alone.
-  const ballNoseOp = (operation: 'Groove Milling' | typeof CONCAVE_FILLET_MILLING, what: 'groove' | 'fillet', occs: readonly any[], majorDiameterMm: number): TimedOp => {
+  const ballNoseOp = (
+    operation: 'Groove Milling' | typeof CONCAVE_FILLET_MILLING, what: 'groove' | 'fillet', occs: readonly any[], majorDiameterMm: number,
+    refOf: (label: string, occ: readonly number[]) => SourceRef | undefined,
+  ): TimedOp => {
     const countField = what === 'groove' ? 'Grooves' : 'Fillets';
-    const groups = new Map<string, { cutterMm: number; radiusMm: number; path: EdgeLength; n: number }>();
+    const groups = new Map<string, { cutterMm: number; radiusMm: number; path: EdgeLength; n: number; occ: number[] }>();
     let noRadius = 0;
     let noPath = 0;
     for (const o of occs) {
@@ -645,8 +720,9 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       if (!path) { noPath += 1; continue; }
       const cutterMm = Math.round(2 * radiusMm * 1000) / 1000;
       const key = `${cutterMm}|${path.lengthMm}|${path.source}`;
-      const g = groups.get(key) ?? { cutterMm, radiusMm, path, n: 0 };
+      const g = groups.get(key) ?? { cutterMm, radiusMm, path, n: 0, occ: [] };
       g.n += 1;
+      if (typeof o?.__occ === 'number') g.occ.push(o.__occ);
       groups.set(key, g);
     }
     const plural = (n: number) => `${n} ${what}${n === 1 ? '' : 's'}`;
@@ -654,29 +730,26 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       ...(noRadius > 0 ? [`the CAD radius of ${plural(noRadius)} (the ball nose end mill is chosen by it)`] : []),
       ...(noPath > 0 ? [`the CAD path length of ${plural(noPath)} (no arc and no major diameter)`] : []),
     ];
-    const runs = [...groups.values()].map((g) => ({
-      label: `R${g.radiusMm} ${what}, ${g.path.lengthMm} mm`,
-      run: workbookOp(operation, {
-        'Path Length': { value: g.path.lengthMm, source: g.path.source },
-        [countField]: { value: g.n, source: `CAD: ${what}s of this radius and path` },
-        'Cutter Diameter': { value: g.cutterMm, source: `CAD: 2 x the ${what}'s radius (R${g.radiusMm} mm): a ball nose end mill of the ${what}'s own radius` },
-      }),
-    }));
+    const runs = [...groups.values()].map((g) => {
+      const ref = refOf(`R${g.radiusMm} ${what}${g.n === 1 ? '' : 's'}`, g.occ);
+      return {
+        label: `R${g.radiusMm} ${what}, ${g.path.lengthMm} mm`,
+        run: workbookOp(operation, {
+          'Path Length': withSourceRef({ value: g.path.lengthMm, source: g.path.source }, ref),
+          [countField]: withSourceRef({ value: g.n, source: `CAD: ${what}s of this radius and path` }, ref),
+          'Cutter Diameter': withSourceRef({ value: g.cutterMm, source: `CAD: 2 x the ${what}'s radius (R${g.radiusMm} mm): a ball nose end mill of the ${what}'s own radius` }, ref),
+        }),
+      };
+    });
     return combinedRuns(runs, lacks);
   };
 
   // The piece's faces, faced down to the part before any feature is cut (the workbook's Face Milling sheet). The stock model states the
   // faces and the stock on them; a piece with none (no stock chosen, a lathe's plan) is not faced.
   if (facing) {
-    const from = `Stock: ${facing.basis}`;
     ops.push({
       name: "Facing",
-      ...workbookOp('Facing', {
-        'Face Length': { value: facing.lengthMm, source: from },
-        'Face Width': { value: facing.widthMm, source: from },
-        'Stock Depth': { value: facing.depthMm, source: from },
-        'Faces': { value: facing.faces, source: from },
-      }),
+      ...workbookOp('Facing', stockFacingSeeds(facing)),
       source: "fixed", count: facing.faces,
     });
   }
@@ -690,6 +763,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         'Removed Volume': {
           value: stockAround.excessMm3,
           source: `Stock around the part: the piece ${mm3(stockAround.pieceMm3)} mm^3 less the part ${mm3(stockAround.partMm3)} mm^3 and the ${mm3(stockAround.featureRemovedMm3)} mm^3 its features remove`,
+          ref: calculationRef('Stock around the part', [
+            inputStep('Stock piece volume', 'mm^3', stockAround.pieceMm3, 'The stock chosen for the part (the stock model)'),
+            inputStep('Part volume', 'mm^3', stockAround.partMm3, 'CAD: the part\'s volume'),
+            inputStep('Volume the features remove', 'mm^3', stockAround.featureRemovedMm3, 'CAD: the material_removed_mm3 of every feature the operations cut'),
+            ...(stockAround.facedMm3 ? [inputStep('Volume faced off the piece', 'mm^3', stockAround.facedMm3, 'The Facing of the piece\'s faces (the stock model)')] : []),
+            resultStep('Removed Volume', 'mm^3', stockAround.excessMm3, `Stock piece volume - Part volume - Volume the features remove${stockAround.facedMm3 ? ' - Volume faced off the piece' : ''}`),
+          ]),
         },
         ...mrrSeed,
       }),
@@ -737,6 +817,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
     const threadPitchMm: number | undefined = occurrences[0]?.pitch_mm ?? undefined;
 
     const firstOpOfFeature = ops.length;
+    // The feature's occurrences (all, or those at `occ`) as the ref of the CAD values measured or counted on them.
+    const refOf = (label: string, occ?: readonly number[]) => graphFeatureRef(f, label, occ);
+    const all = refOf(`${ft} ${variant}`.replace(' default', ''));
+    // The same occurrences as the drilling and tapping calculators take them (FeatureOccurrenceRef).
+    const occRefs = (occ?: readonly number[]): FeatureOccurrenceRef[] | undefined => (typeof f.id === 'string' && f.id
+      ? (occ ?? occurrences.map((_: unknown, i: number) => i)).map((occurrenceIndex) => ({ featureId: f.id as string, occurrenceIndex }))
+      : undefined);
     const instanceCount = variant === "pcd_pattern"
       ? occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0)
       : count;
@@ -748,13 +835,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         {
           const rough = cutGroups(occurrences, floorSize, standardToolMm);
           if (!rough) ops.push({ name: "Rough Milling", timeSec: 0, missing: 'the CAD length, width and depth of every pocket', source: "feature", cadFeatureType: ft });
-          for (const g of rough ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'pocket'), source: "feature", cadFeatureType: ft, count: g.cuts });
+          for (const g of rough ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'pocket', refOf(`${g.cuts} pocket${g.cuts === 1 ? '' : 's'}`, g.occ)), source: "feature", cadFeatureType: ft, count: g.cuts });
         }
         {
           // One finishing line per cutter the pockets need; a pocket with no CAD size is a named gap.
           const groups = pocketFinishGroups(occurrences, standardToolMm);
           if (!groups) ops.push({ name: "Fine Finish Milling", timeSec: 0, missing: 'the CAD length and width of every pocket', source: "feature", cadFeatureType: ft });
-          for (const g of groups ?? []) ops.push({ name: "Fine Finish Milling", ...pocketFinishOp(g), source: "feature", cadFeatureType: ft, count: g.pockets });
+          for (const g of groups ?? []) ops.push({ name: "Fine Finish Milling", ...pocketFinishOp(g, refOf(`${g.pockets} pocket${g.pockets === 1 ? '' : 's'}`, g.occ)), source: "feature", cadFeatureType: ft, count: g.pockets });
         }
         break;
 
@@ -764,7 +851,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // its volume. Walls on both sides confine the cutter to the slot's width.
         const slots = cutGroups(occurrences, (o) => { const z = floorSize(o); return z && { ...z, confined: true }; }, standardToolMm);
         if (!slots) ops.push({ name: "Slot Milling", timeSec: 0, missing: 'the CAD length, width and depth of every slot', source: "feature", cadFeatureType: ft });
-        for (const g of slots ?? []) ops.push({ name: "Slot Milling", ...slotOp(g), source: "feature", cadFeatureType: ft, count: g.cuts });
+        for (const g of slots ?? []) ops.push({ name: "Slot Milling", ...slotOp(g, refOf(`${g.cuts} slot${g.cuts === 1 ? '' : 's'}`, g.occ)), source: "feature", cadFeatureType: ft, count: g.cuts });
         break;
       }
 
@@ -775,7 +862,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         for (const g of keywayGroups(occurrences)) {
           const timed = g.lacks.length > 0
             ? { timeSec: 0, missing: `the CAD ${listed(g.lacks)} of ${g.keyways > 1 ? `${g.keyways} keyways` : 'the keyway'}` }
-            : keywayOp(g);
+            : keywayOp(g, refOf(`${g.keyways} keyway${g.keyways === 1 ? '' : 's'}`, g.occ));
           ops.push({ name: KEYWAY_MILLING, ...timed, source: "feature", cadFeatureType: ft, count: g.keyways });
         }
         break;
@@ -789,7 +876,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         if (!flats) {
           ops.push({ name: "Rough Milling", timeSec: 0, missing: `the CAD length, width and depth of ${count > 1 ? `${count} flats` : 'the flat'}`, source: "feature", cadFeatureType: ft });
         }
-        for (const g of flats ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'flat'), source: "feature", cadFeatureType: ft, count: g.cuts });
+        for (const g of flats ?? []) ops.push({ name: "Rough Milling", ...roughOp(g, 'flat', refOf(`${g.cuts} flat${g.cuts === 1 ? '' : 's'}`, g.occ)), source: "feature", cadFeatureType: ft, count: g.cuts });
         break;
       }
 
@@ -797,13 +884,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       case "SimpleHole:blind":
       case "SimpleHole:cross":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           if (largestDrill != null && diamMm > largestDrill) {
             // Larger than the workbook's drills reach: drilled at the largest of them, then bored to size.
-            ops.push({ name: "Drilling", ...drillOp(largestDrill, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-            ops.push({ name: "Boring", ...boreOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+            ops.push({ name: "Drilling", ...drillOp(largestDrill, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+            ops.push({ name: "Boring", ...boreOp(diamMm, depthMm, count, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           } else {
-            ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+            ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
           }
         }
         break;
@@ -813,8 +900,8 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // it stands for (hole_count), so drilling is costed per real hole.
         const holes = occurrences.reduce((s: number, o: any) => s + (o.hole_count ?? 1), 0);
         if (diamMm > 0 && holes > 0) {
-          ops.push({ name: "Center Drilling", ...spotOp(diamMm, holes), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, holes, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Drilling", ...drillOp(diamMm, depthMm, holes, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
       }
@@ -824,26 +911,26 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // spot drill per hole assembly; drill time is the same drillTimeSec
         // physics applied per real step.
         let spots = 0;
-        const spotDiameters = new Map<number, number>();
+        const spotDiameters = new Map<number, number[]>();
         let drillSec = 0;
         const stepMissing: string[] = [];
         const stepPlans: PlannedRun[] = [];
-        for (const occ of occurrences) {
+        for (const [i, occ] of occurrences.entries()) {
           const steps: Array<{ diameter_mm: number; depth_mm: number }> = Array.isArray(occ.steps) ? occ.steps : [];
           if (steps.length === 0) continue;
           spots += 1;
           // The hole is spotted at its entry: its first step's diameter.
           const entry = Number(steps[0]!.diameter_mm);
-          if (entry > 0) spotDiameters.set(entry, (spotDiameters.get(entry) ?? 0) + 1);
+          if (entry > 0) spotDiameters.set(entry, [...(spotDiameters.get(entry) ?? []), i]);
           for (const step of steps) {
-            const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators);
+            const op = drillOp(step.diameter_mm, step.depth_mm, 1, materialGrade, workbook, calculators, occRefs([i]));
             drillSec += op.timeSec;
             if (op.missing) stepMissing.push(op.missing);
             stepPlans.push(...(op.plan ?? []).map((p) => ({ ...p, label: `Step Ø${step.diameter_mm}` })));
           }
         }
         if (spots > 0 || drillSec > 0) {
-          for (const [entryMm, n] of spotDiameters) ops.push({ name: "Center Drilling", ...spotOp(entryMm, n), source: "feature", cadFeatureType: ft, diameterMm: entryMm });
+          for (const [entryMm, occ] of spotDiameters) ops.push({ name: "Center Drilling", ...spotOp(entryMm, occ.length, refOf(`Ø${entryMm} stepped holes`, occ)), source: "feature", cadFeatureType: ft, diameterMm: entryMm });
           ops.push({
             name: "Drilling", timeSec: drillSec, source: "feature", cadFeatureType: ft,
             ...(stepPlans.length ? { plan: stepPlans } : {}), ...(stepMissing.length ? { missing: stepMissing.join('; ') } : {}),
@@ -854,10 +941,10 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
       case "SimpleHole:threaded":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
-          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, [], count, 'chamfer')), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.8, depthMm, count, materialGrade, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // minor diameter
+          ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, [], count, 'chamfer'), (label) => refOf(label)), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Tapping", ...tapOp(threadSpec, count, matClass, threadPitchMm, depthMm, workbook, calculators, occRefs()), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
@@ -865,13 +952,15 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         if (diamMm > 0) {
           // A counterbore over a tapped bore the CAD lists as a threaded hole of its own (bore_spec): that hole is drilled and tapped as
           // itself, so the counterbore adds only its step. One whose bore is part of it is spotted and drilled here, as before.
-          const ownBore = occurrences.length > 0 ? occurrences.filter((o: any) => !o.bore_spec).length : count;
+          const ownBoreOcc = occurrences.flatMap((o: any, i: number) => (o.bore_spec ? [] : [i]));
+          const ownBore = occurrences.length > 0 ? ownBoreOcc.length : count;
           if (ownBore > 0) {
-            ops.push({ name: "Center Drilling", ...spotOp(diamMm, ownBore), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore });
-            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, ownBore, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore }); // through bore
+            const boreOcc = occurrences.length > 0 ? ownBoreOcc : undefined;
+            ops.push({ name: "Center Drilling", ...spotOp(diamMm, ownBore, refOf(`${ownBore} counterbored hole${ownBore === 1 ? '' : 's'}`, boreOcc)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore });
+            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, ownBore, materialGrade, workbook, calculators, occRefs(boreOcc)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore }); // through bore
           }
           // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it.
-          ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count, all), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
 
@@ -880,32 +969,43 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
           // A countersink on a hole the CAD recognised is that hole's mouth: the hole is drilled as its own feature, so only the
           // countersinking is added, over that hole's diameter (countersunk-holes.ts). One with no hole under it is spotted and drilled
           // here at 0.6 x its diameter, and countersunk over that drilled hole.
-          const under = new Map<string, { holeMm: number; why: string; n: number }>();
+          const under = new Map<string, { holeMm: number; why: string; n: number; occ: number[] }>();
           let alone = occurrences.length > 0 ? 0 : count;
-          for (const o of occurrences) {
+          const aloneOcc: number[] = [];
+          for (const [i, o] of occurrences.entries()) {
             const hole = holeUnder(o, holes);
-            if (!hole) { alone += 1; continue; }
+            if (!hole) { alone += 1; aloneOcc.push(i); continue; }
             const holeMm = hole.diameterMm ?? diamMm * 0.6;
             const why = hole.diameterMm !== null
               ? `CAD: the hole the countersink sits on, Ø${holeMm} mm`
               : 'The hole the countersink sits on has no diameter in the CAD: 0.6 x the countersink diameter';
-            const group = under.get(why) ?? { holeMm, why, n: 0 };
+            const group = under.get(why) ?? { holeMm, why, n: 0, occ: [] };
             group.n += 1;
+            group.occ.push(i);
             under.set(why, group);
           }
           if (alone > 0) {
-            ops.push({ name: "Center Drilling", ...spotOp(diamMm, alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
-            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
-            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, diamMm * 0.6, 'The hole drilled under the countersink: 0.6 x its diameter, as the drilling above takes it', alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            const occ = occurrences.length > 0 ? aloneOcc : undefined;
+            const ref = refOf(`${alone} countersink${alone === 1 ? '' : 's'}`, occ);
+            // The hole drilled under it: 0.6 x the countersink's diameter, the calculation shown step by step.
+            const drilledRef = calculationRef('The hole drilled under the countersink', [
+              inputStep('Countersink diameter', 'mm', diamMm, 'CAD: countersink diameter', ref),
+              inputStep('Drilled share of the diameter', null, 0.6, 'The drilling under a countersink with no hole of its own in the CAD: 0.6 x its diameter'),
+              resultStep('Hole Diameter', 'mm', diamMm * 0.6, 'Countersink diameter x Drilled share of the diameter'),
+            ]);
+            ops.push({ name: "Center Drilling", ...spotOp(diamMm, alone, ref), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators, occRefs(occ)), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, diamMm * 0.6, 'The hole drilled under the countersink: 0.6 x its diameter, as the drilling above takes it', alone, ref, drilledRef), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
           }
-          for (const { holeMm, why, n } of under.values()) {
-            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, holeMm, why, n), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n });
+          for (const { holeMm, why, n, occ } of under.values()) {
+            const ref = refOf(`${n} countersink${n === 1 ? '' : 's'}`, occ);
+            ops.push({ name: "Countersinking", ...countersinkOp(diamMm, holeMm, why, n, ref, ref), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: n });
           }
         }
         break;
 
       case "Edge:chamfer":
-        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, occurrences, count, 'chamfer')), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        ops.push({ name: "Chamfering", ...edgeOp('Chamfering', edgeLengths(diamMm, occurrences, count, 'chamfer'), refOf), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "Edge:round": {
@@ -916,15 +1016,18 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // Milling sheet), over its arc when the CAD measured one.
         const inside = occurrences.filter((o) => isConcaveToroidFillet(o, diamMm));
         const edges = occurrences.filter((o) => !inside.includes(o));
+        // The edges' and fillets' own positions among the feature's occurrences, for their refs.
+        const indexOf = (o: any) => occurrences.indexOf(o);
         if (edges.length > 0 || occurrences.length === 0) {
+          const edgeRefOf = (label: string, occ?: readonly number[]) => refOf(label, occ ? occ.map((k) => indexOf(edges[k])) : edges.map(indexOf));
           ops.push({
-            name: "Filleting", ...edgeOp('Filleting', edgeLengths(diamMm, edges, count, 'round')), source: "feature", cadFeatureType: ft,
+            name: "Filleting", ...edgeOp('Filleting', edgeLengths(diamMm, edges, count, 'round'), occurrences.length === 0 ? refOf : edgeRefOf), source: "feature", cadFeatureType: ft,
             diameterMm: diamMm > 0 ? diamMm : undefined, count: edges.length || count,
           });
         }
         if (inside.length > 0) {
           ops.push({
-            name: CONCAVE_FILLET_MILLING, ...ballNoseOp(CONCAVE_FILLET_MILLING, 'fillet', inside, diamMm), source: "feature", cadFeatureType: ft,
+            name: CONCAVE_FILLET_MILLING, ...ballNoseOp(CONCAVE_FILLET_MILLING, 'fillet', inside.map((o) => ({ ...o, __occ: indexOf(o) })), diamMm, refOf), source: "feature", cadFeatureType: ft,
             diameterMm: diamMm > 0 ? diamMm : undefined, count: inside.length,
           });
         }
@@ -936,22 +1039,22 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // A round-bottomed groove ("Groove Milling//Slot" on a mill): a ball nose end mill of its radius along its path (user decision
         // 2026-11-25). A turned groove ("Plunging//Ring") is plunged on a lathe (the turning engine's Plunging line); on a mill, or milled
         // with a live tool, it is milled the same way.
-        ops.push({ name: "Groove Milling", ...ballNoseOp('Groove Milling', 'groove', occurrences, diamMm), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
+        ops.push({ name: "Groove Milling", ...ballNoseOp('Groove Milling', 'groove', occurrences.map((o, i) => ({ ...o, __occ: i })), diamMm, refOf), source: "feature", cadFeatureType: ft, diameterMm: diamMm > 0 ? diamMm : undefined });
         break;
 
       case "PlanarFace:default":
-        ops.push({ name: "Fine Finish Milling", ...faceFinishOp(totalAreaMm2, faceCount), source: "feature", cadFeatureType: ft });
+        ops.push({ name: "Fine Finish Milling", ...faceFinishOp(totalAreaMm2, faceCount, all), source: "feature", cadFeatureType: ft });
         break;
 
       case "CurvedWall:default":
       case "CurvedSurface:default":
         // The real catalog uses the same "Contouring" op for both feature types.
-        ops.push({ name: "Contouring", ...(ft === 'CurvedWall' ? contourOp('Contouring', totalAreaMm2, 0, faceCount) : contourOp('Contouring', 0, totalAreaMm2, faceCount)), source: "feature", cadFeatureType: ft });
+        ops.push({ name: "Contouring", ...(ft === 'CurvedWall' ? contourOp('Contouring', totalAreaMm2, 0, faceCount, all) : contourOp('Contouring', 0, totalAreaMm2, faceCount, all)), source: "feature", cadFeatureType: ft });
         break;
 
       case "Cutout:default":
         // Non-circular through-opening: its wall (totalAreaMm2) followed with the side of the cutter.
-        ops.push({ name: "Perimeter Milling", ...contourOp('Perimeter Milling', totalAreaMm2, 0, faceCount), source: "feature", cadFeatureType: ft });
+        ops.push({ name: "Perimeter Milling", ...contourOp('Perimeter Milling', totalAreaMm2, 0, faceCount, all), source: "feature", cadFeatureType: ft });
         break;
 
       default:
@@ -961,7 +1064,7 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
         // Any other feature with no milling case contributes its removed
         // volume to "Bulk Milling", the real catalog's generic-removal op.
         if (totalRemovedMm3 > 0 && !isTurnedDiameter(f)) {
-          ops.push({ name: "Bulk Milling", ...volumeOp('Bulk Milling', totalRemovedMm3), source: "feature" });
+          ops.push({ name: "Bulk Milling", ...volumeOp('Bulk Milling', totalRemovedMm3, all), source: "feature" });
         }
     }
     for (let i = firstOpOfFeature; i < ops.length; i++) {

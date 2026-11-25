@@ -32,7 +32,8 @@ import { timeOperations } from '../../../../../../modules/bom-items/costing/mach
 
 const CALCS = specAsCalculators();
 const ALUMINIUM: MillingFinishingRow = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
-const ASSUMED = 'Assumption: Machining - Bulk Milling default value (database) — no reference source';
+// The calculator's own value for a field whose source the spec does not state yet: said so (calculatorField's table reads "not yet sourced").
+const ASSUMED = "Machining - Bulk Milling's own value for this field — not yet sourced";
 
 // An aluminium part from an 80 x 50 x 25 mm piece (100 000 mm^3). The part fills a 76 x 46 x 21 box (73 416 mm^3) less its features:
 // two pockets (3000 + 1500 mm^3) and four 6 mm holes 10 mm deep (4 x 282.74 = 1130.96 mm^3), 5630.96 mm^3 in all. Part 67 785.04 mm^3.

@@ -134,7 +134,8 @@ describe('Machining - Obround Slot Milling: the calculator, by hand', () => {
 
   it('its one default is the calculator\'s own, shown as such; the spindle limit is the machine\'s; the depth of a pass has its source in the spec', () => {
     const r = run(9.971, 4, 2.951);
-    const assumed = 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source';
+    // The calculator's own value: its source is the spec's note for the field, and it opens the calculator's table of defaults.
+    const assumed = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Obround Slot Milling')!.fields.find((f) => f.name === 'Slotting Depth Ratio')!.note!;
     expect(r.trace.find((s) => s.fieldName === 'Slotting Depth Ratio')).toMatchObject({ kind: 'input', value: 0.2, source: assumed });
     expect(r.trace.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ kind: 'input', value: 10000, source: 'Machine: test spindle_speed_rpm' });
     const field = loadMachiningCalculatorSpec().calculators.find((c) => c.name === 'Machining - Obround Slot Milling')!.fields.find((f) => f.name === 'Slotting Depth Ratio')!;
@@ -215,7 +216,7 @@ describe('the sequencer mills a keyway as Obround Slot Milling', () => {
       ['Cutting Speed', 183, 'tblMillingFinishing: aluminum CuttingSpeedMPerMin 183 m/min x machinability factor 1'],
       ['Feed per Tooth per Diameter', 0.008, 'tblMillingFinishing: aluminum FeedPerToothPerDiameter'],
       ['Max Spindle Speed', 10000, 'Machine: test spindle_speed_rpm'],
-      ['Slotting Depth Ratio', 0.2, 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source'],
+      ['Slotting Depth Ratio', 0.2, expect.stringMatching(/^The engine's own value: the reference data has none\./)],
     ]);
     const row = { table: 'tblMillingFinishing', row: { MaterialClass: 'aluminum' } };
     expect(op!.calculator!.lookups).toEqual({ 'Teeth': row, 'Cutting Speed': row, 'Feed per Tooth per Diameter': row });

@@ -443,10 +443,12 @@ describe('machining inputs light exactly the features they counted', () => {
     expect(tap.featureBreakdown).toEqual([expect.objectContaining({ name: 'M4 tapped ×1', occurrenceRefs: tapped })]);
   });
 
-  it('drawing threads name no holes: no ref, no rows', () => {
+  it('drawing threads name no holes: their inputs open the drawing\'s callout, and no rows light holes', () => {
     const r = computeMillingCostSummary(milledInput({ threads: [{ size: 'M4', count: 3, depthMm: 8 }], workbook: workbookFixture(), materialGrade: 'AISI 1018' }), mc('3_axis_mill'));
     const tap = r.processLines.find((l) => l.process === 'Tapping')!;
-    expect(step(tap.calculationTrace, 'Threads')!.ref).toBeUndefined();
+    expect(step(tap.calculationTrace, 'Threads')!.ref).toMatchObject({
+      kind: 'calculation', name: 'M4 thread callout', steps: [expect.objectContaining({ fieldName: 'Thread size', value: 'M4' }), expect.objectContaining({ fieldName: 'Threads', value: 3 })],
+    });
     expect(tap.featureBreakdown).toBeUndefined();
   });
 
@@ -2571,8 +2573,10 @@ describe('the mill line is the Machining - Milling calculator over the part\'s s
     expect(l.calculationTrace!.find((st) => st.fieldName === 'Rough Milling Time')!.ref).toEqual({
       kind: 'features', label: 'Rough Milling Time', features: [{ featureId: 'PocketV2-default_c16' }, { featureId: 'Keyway-default_c1' }],
     });
-    // Facing is not tied to a feature: no reference rather than an empty one.
-    expect(l.calculationTrace!.find((st) => st.fieldName === 'Facing Time')!.ref).toBeUndefined();
+    // Facing is not tied to a feature: it opens the operation sequence its time is summed from, not an empty set of features.
+    expect(l.calculationTrace!.find((st) => st.fieldName === 'Facing Time')!.ref).toMatchObject({
+      kind: 'calculation', name: 'Facing Time: the operation sequence', steps: expect.arrayContaining([expect.objectContaining({ fieldName: 'Facing Time', kind: 'calculated', value: 45 })]),
+    });
   });
 
   it('adds a tool change for each cutter and a rapid move to each feature at the mill\'s rapid traverse rate, not a flat 15 %', () => {

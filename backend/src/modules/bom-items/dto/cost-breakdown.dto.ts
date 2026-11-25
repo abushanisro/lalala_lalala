@@ -118,7 +118,26 @@ export type SourceRef =
   /** Computed by another calculator: its steps (each with its own source), and the CAD faces it rests on when there are any. */
   | { kind: 'calculation'; name: string; evidence: CadEvidenceKey | null; steps: CalculationTraceStep[] }
   /** A sheet-metal reference table served by name (SheetMetalSourceTable): the row the value came from, and the column it is in. */
-  | { kind: 'smTable'; table: SheetMetalSourceTable; column: string; row: Record<string, string | number> | null };
+  | { kind: 'smTable'; table: SheetMetalSourceTable; column: string; row: Record<string, string | number> | null }
+  /**
+   * The calculator's own value for the field (calculator_fields.default_value), as no other source gave one: the calculator's table of input
+   * defaults, each with where it comes from (the spec's note: a workbook sheet, a published source), the field's row outlined. A default
+   * whose source is not yet stated has none (the panel says so).
+   */
+  | { kind: 'calculatorField'; calculator: string; field: string; defaults: CalculatorFieldDefault[] }
+  /** One of the part's resolved costing inputs (the batch, the annual volume, the production life, the location): the panel lists them, this one outlined. */
+  | { kind: 'costingInput'; field: CostingInputField };
+
+/** The costing inputs every line of a part is costed at (the cost summary's resolvedInputs). */
+export type CostingInputField = 'batchSize' | 'annualVolume' | 'productionLifeYears' | 'location';
+
+/** One input field of a calculator with a default value, and where that value comes from (null: not yet sourced). */
+export interface CalculatorFieldDefault {
+  field: string;
+  value: number | string | null;
+  unit: string | null;
+  source: string | null;
+}
 
 /**
  * The sheet-metal reference tables a calculator input can be read from, each served whole to the calculator dialog: the sm_lookup_* cost

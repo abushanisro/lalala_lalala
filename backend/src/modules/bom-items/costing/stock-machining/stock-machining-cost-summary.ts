@@ -21,7 +21,7 @@ import { ROUGHING_TECHNIQUE_LABEL } from '../stock/plate-roughing';
 import { asSuppliedFaces } from '../stock/stock-part';
 
 import type { PricedStock, StockMachiningChoice } from './stock-machining-cost.service';
-import type { CostSummaryDto, ProcessLineCost, StockMachiningBreakdown } from '../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CostSummaryDto, ProcessLineCost, SourceRef, StockMachiningBreakdown } from '../../dto/cost-breakdown.dto';
 import type { BlankResult } from '../sheet-metal/machine/blank-stock-candidates';
 import { stockFacing } from '../stock/stock-facing';
 import type { StockOption } from '../stock/stock-selection';
@@ -90,15 +90,55 @@ export function stockBlankResult(choice: StockMachiningChoice, cutOff: StockCutO
   const o = quotedStock(choice, cutOff, priced);
   if (!o) return null;
   const facing = stockFacing(o, choice.part);
+  const refs = stockSizeRefs(o);
   return {
     form: o.form, sizeLabel: o.sizeLabel, billetVolMm3: o.blank.volumeMm3, utilizationPct: o.utilizationPct,
-    ...(o.circumscribedMm != null ? { barDiameterMm: o.circumscribedMm } : {}),
+    ...(o.circumscribedMm != null ? { barDiameterMm: o.circumscribedMm, barDiameterRef: refs.barDiameter } : {}),
+    endAllowanceRef: refs.endAllowance,
     purchasedVolMm3: o.purchasedVolumeMm3, sizeSource: STOCK_SIZE_SOURCE,
     endAllowanceMm: o.endAllowanceMm,
     ...(o.form === 'round_tube' && o.bMm != null ? { tubeIdMm: o.bMm } : {}),
     ...(facing ? { facing } : {}),
     ...(selection.fallback && choice.settings.form ? { requestedFormUnavailable: { requested: choice.settings.form, reason: selection.fallback } } : {}),
   };
+}
+
+/** The Stock Machining reference data (memory/Stock Maching): its preferred sizes and its stock allowance variables. */
+const STOCK_DOMAIN = 'stock_machining';
+const step = (label: string, unit: string | null, value: number | string, source: string, ref?: SourceRef): CalculationTraceStep => ({
+  fieldName: label, displayLabel: unit ? `${label} (${unit})` : label, kind: 'input', value: typeof value === 'number' ? r3(value) : value, unit, source,
+  ...(ref ? { ref } : {}),
+});
+const result = (label: string, unit: string | null, value: number, formula: string): CalculationTraceStep => ({
+  fieldName: label, displayLabel: unit ? `${label} (${unit})` : label, kind: 'calculated', value: r3(value), unit, formula, stepType: 'physics',
+});
+
+/**
+ * How the stock model arrived at a bar's diameter and its end allowance, each as the calculation the eye opens: the section the part needs
+ * (its size plus the stock allowance on each side, percentStockAllowance within min/maxStockAllowance, or the Cost Guide's), the preferred
+ * size it snaps up to (tblPreferredSizes), and, for a bar with corners, the circle round them.
+ */
+export function stockSizeRefs(o: StockOption): { barDiameter: SourceRef; endAllowance: SourceRef } {
+  const allowanceRef: SourceRef = { kind: 'variable', domain: STOCK_DOMAIN, name: 'percentStockAllowance' };
+  const sizeRef: SourceRef | undefined = o.snapped ? { kind: 'lookup', domain: STOCK_DOMAIN, table: 'tblPreferredSizes', column: 'sizeMm', row: { sizeMm: o.aMm } } : undefined;
+  const corners = o.circumscribedMm ?? o.aMm;
+  const barDiameter: SourceRef = {
+    kind: 'calculation', name: 'Bar Diameter: the stock chosen for the part', evidence: null,
+    steps: [
+      step('Stock allowance on each side', 'mm', o.allowancePerSideMm, 'The stock rules: percentStockAllowance of the part\'s section, within minStockAllowance and maxStockAllowance (or the Cost Guide\'s)', allowanceRef),
+      step('Section the part needs', 'mm', o.requiredAMm, 'The part\'s section plus the allowance on each side'),
+      step('Stock size', 'mm', o.aMm, o.snapped ? `tblPreferredSizes: ${o.sizeLabel}, the first preferred size at least the section needed` : 'Snapping to preferred sizes is off: the section needed', sizeRef),
+      result('Bar Diameter', 'mm', corners, corners === o.aMm ? 'Stock size' : 'The circle round the bar\'s corners'),
+    ],
+  };
+  const endAllowance: SourceRef = {
+    kind: 'calculation', name: 'Facing Stock: the end allowance', evidence: null,
+    steps: [
+      step('Stock allowance on each end', 'mm', o.endAllowanceMm, 'The stock rules: percentStockAllowance of the part\'s section, within minStockAllowance and maxStockAllowance (or the Cost Guide\'s)', allowanceRef),
+      result('Facing Stock', 'mm', o.endAllowanceMm, 'The stock left on each end of the piece, faced off'),
+    ],
+  };
+  return { barDiameter, endAllowance };
 }
 
 /**

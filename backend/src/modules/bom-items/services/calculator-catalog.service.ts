@@ -94,7 +94,7 @@ export class CalculatorCatalogService {
         client.from('calculators').select('id, name, version, physics_key').in('id', ids),
         client
           .from('calculator_fields')
-          .select('id, calculator_id, field_name, display_label, field_type, unit, default_value, display_order, data_source, source_table, source_field')
+          .select('id, calculator_id, field_name, display_label, field_type, unit, default_value, display_order, data_source, source_table, source_field, input_config')
           .in('calculator_id', ids)
           .order('display_order'),
       ]);

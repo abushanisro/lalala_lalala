@@ -1,6 +1,6 @@
 import type { CalculationTraceStep, LookupResolution, SheetMetalSourceTable, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MaterialSourceColumns } from '../../../services/material-resolution.service';
-import type { InspectionPlan } from '../../shared/process/inspection-engine';
+import type { InspectionInput, InspectionPlan } from '../../shared/process/inspection-engine';
 import type { TurretPunchMachineParams } from '../../shared/core/manufacturing-process.types';
 
 /**
@@ -94,12 +94,77 @@ const INSPECTION_FEATURE_BY_FIELD = {
   'Dimension Check Time': 'dimension',
 } as const;
 
-/** Inspection: each check time from the inspection_operation_defaults row (feature + method) the plan read it from. */
-export function inspectionSeedRefs(plan: Pick<InspectionPlan, 'sourceRows'>): Record<string, SourceRef> {
-  return defined(Object.fromEntries(Object.entries(INSPECTION_FEATURE_BY_FIELD).map(([field, feature]) => {
+/** The sample counts and checks a time is taken for: a check time with none to take is 0 for that reason, not a table value. */
+const INSPECTION_COUNT_BY_FIELD: Partial<Record<keyof typeof INSPECTION_FEATURE_BY_FIELD, 'holesToInspect' | 'bendsToInspect' | 'threadsToInspect' | 'hasThicknessCheck' | 'hasDimensionCheck'>> = {
+  'Hole Check Time': 'holesToInspect',
+  'Bend Check Time': 'bendsToInspect',
+  'Thread Gauge Time': 'threadsToInspect',
+  'Thickness Check Time': 'hasThicknessCheck',
+  'Dimension Check Time': 'hasDimensionCheck',
+};
+
+const INSPECTION_COUNT_LABEL = {
+  holesToInspect: 'Holes to Inspect', bendsToInspect: 'Bends to Inspect', threadsToInspect: 'Threads to Inspect',
+  hasThicknessCheck: 'Has Thickness Check', hasDimensionCheck: 'Has Dimension Check',
+} as const;
+
+const step = (label: string, unit: string | null, value: number | string, source: string, ref?: SourceRef): CalculationTraceStep => ({
+  fieldName: label, displayLabel: unit ? `${label} (${unit})` : label, kind: 'input', value, unit, source, ...(ref ? { ref } : {}),
+});
+const result = (label: string, unit: string | null, value: number, formula: string): CalculationTraceStep => ({
+  fieldName: label, displayLabel: unit ? `${label} (${unit})` : label, kind: 'calculated', value, unit, formula, stepType: 'physics',
+});
+const calc = (name: string, steps: CalculationTraceStep[]): SourceRef => ({ kind: 'calculation', name, evidence: null, steps });
+
+/**
+ * Inspection: each check time from the inspection_operation_defaults row (feature + method) the plan read it from; a check with nothing to
+ * check (no threads, no sheet thickness) is 0 for that reason, shown as such; one timed by the fallback constant (no row on file) opens the
+ * table with no row outlined. With the plan's input, each sample count is the calculation it is: the features on the part times the
+ * sampling plan's fraction for the batch (sm_lookup_sampling_plan), at least one; each check flag the CAD fact it rests on.
+ */
+export function inspectionSeedRefs(
+  plan: Pick<InspectionPlan, 'sourceRows' | 'method'> & Partial<Pick<InspectionPlan, 'holesToInspect' | 'bendsToInspect' | 'threadsToInspect' | 'hasThicknessCheck' | 'hasDimensionCheck'>>,
+  input?: Pick<InspectionInput, 'holes' | 'bends' | 'threads' | 'samplingRate' | 'batchSize' | 'sheetThicknessMm' | 'hasOverallDimensions' | 'inspectionStrategy'>,
+): Record<string, SourceRef> {
+  const times = Object.fromEntries(Object.entries(INSPECTION_FEATURE_BY_FIELD).map(([field, feature]) => {
     const row = plan.sourceRows[feature];
-    return [field, row ? smTableRef('inspection_operation_defaults', 'cycle_time_sec', { feature: row.feature, method: row.method }) : undefined];
-  })));
+    if (row) return [field, smTableRef('inspection_operation_defaults', 'cycle_time_sec', { feature: row.feature, method: row.method })];
+    const countKey = INSPECTION_COUNT_BY_FIELD[field as keyof typeof INSPECTION_FEATURE_BY_FIELD];
+    const count = countKey ? Number(plan[countKey] ?? 0) : null;
+    if (countKey && count === 0) {
+      return [field, calc(`${field}: nothing to check`, [
+        step(INSPECTION_COUNT_LABEL[countKey], null, 0, 'Nothing of this kind to check on the part'),
+        result(field, 's', 0, 'No check of this kind: 0 s'),
+      ])];
+    }
+    // Timed by the fallback constant: the table, which has no row for this feature and method.
+    return [field, smTableRef('inspection_operation_defaults', 'cycle_time_sec', null)];
+  }));
+  if (!input) return defined(times);
+  const sampling = 'sm_lookup_sampling_plan: the sample quantity for the batch (sample_qty_l2) over the batch';
+  const samplingStep = step('Sampling fraction', null, Math.round(input.samplingRate * 10000) / 10000, sampling, smTableRef('sm_lookup_sampling_plan', 'sample_qty_l2', null));
+  const batchStep = step('Batch size', null, input.batchSize, "The part's batch", { kind: 'costingInput', field: 'batchSize' });
+  const everyOne = input.inspectionStrategy === '100pct' || input.inspectionStrategy === 'first_article';
+  const sampled = (label: string, features: number, featureSource: string, value: number): SourceRef => calc(`${label}: the sampling plan`, [
+    step(`${label.replace(' to Inspect', '')} on the part`, null, features, featureSource),
+    ...(everyOne ? [] : [samplingStep, batchStep]),
+    result(label, null, value, everyOne ? `Every one (${input.inspectionStrategy})` : 'ceil(features x Sampling fraction), at least 1 when there are any'),
+  ]);
+  const threadCount = input.threads.reduce((n, t) => n + t.count, 0);
+  return defined({
+    ...times,
+    'Holes to Inspect': sampled('Holes to Inspect', input.holes.length, 'CAD: the holes the part has (feature recognition)', plan.holesToInspect ?? 0),
+    'Bends to Inspect': sampled('Bends to Inspect', input.bends.length, 'CAD: the bends the part has (feature recognition)', plan.bendsToInspect ?? 0),
+    'Threads to Inspect': sampled('Threads to Inspect', threadCount, 'CAD/drawing: the threads the part has', plan.threadsToInspect ?? 0),
+    'Has Thickness Check': calc('Has Thickness Check', [
+      step('Sheet thickness', 'mm', input.sheetThicknessMm, 'CAD: the sheet thickness'),
+      result('Has Thickness Check', null, plan.hasThicknessCheck ? 1 : 0, '1 when the part has a sheet thickness, else 0'),
+    ]),
+    'Has Dimension Check': calc('Has Dimension Check', [
+      step('Overall dimensions known', null, input.hasOverallDimensions ? 'yes' : 'no', 'CAD: the blank length and width and the part height are all measured'),
+      result('Has Dimension Check', null, plan.hasDimensionCheck ? 1 : 0, '1 when the overall dimensions are known, else 0'),
+    ]),
+  });
 }
 
 /** Turret Punching: the machine's row of the Turret Press machine table, and the Lookup Table 1 row its stroke rate factor came from. */

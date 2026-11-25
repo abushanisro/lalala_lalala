@@ -63,3 +63,28 @@ export function calculationRef(name: string, steps: CalculationTraceStep[]): Sou
 function round(v: number): number {
   return Math.abs(v) >= 100 ? Math.round(v * 100) / 100 : Math.round(v * 10000) / 10000;
 }
+
+/** A seed with where it was read, when that is known (an unknown ref leaves the seed as it is). */
+export function withSourceRef(seed: CalcSeed, ref: SourceRef | undefined): CalcSeed {
+  return ref ? { ...seed, ref } : seed;
+}
+
+/** An input step of a calculation ref: a value and where it came from, with its own ref when it has one. */
+export function inputStep(label: string, unit: string | null, value: number | string, source: string, ref?: SourceRef): CalculationTraceStep {
+  return {
+    fieldName: label, displayLabel: unit ? `${label} (${unit})` : label, kind: 'input', value: typeof value === 'number' ? round(value) : value, unit, source,
+    ...(ref ? { ref } : {}),
+  };
+}
+
+/**
+ * A feature_graph_v2 feature's occurrences as a features ref (the CAD faces the eye lights): those at `occurrences` (indexes into its
+ * occurrence list), else all of them; the feature itself when it lists none. Undefined for a feature with no id (nothing to light).
+ */
+export function graphFeatureRef(feature: { id?: unknown; occurrences?: unknown }, label: string, occurrences?: readonly number[]): SourceRef | undefined {
+  if (typeof feature.id !== 'string' || !feature.id) return undefined;
+  const featureId = feature.id;
+  const all = Array.isArray(feature.occurrences) ? feature.occurrences.map((_: unknown, i: number) => i) : [];
+  const picked = occurrences ?? all;
+  return { kind: 'features', label, features: picked.length > 0 ? picked.map((occurrenceIndex) => ({ featureId, occurrenceIndex })) : [{ featureId }] };
+}
