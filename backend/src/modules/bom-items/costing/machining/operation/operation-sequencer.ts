@@ -70,6 +70,7 @@ import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
 import type { MaterialClass } from '../process/cost-machining-engine';
 import { isTurnedDiameter, type StockExcess } from './stock-excess';
 import type { StockFacing } from '../../stock/stock-facing';
+import { holeAxes, sitsOnHole } from './countersunk-holes';
 
 // drillOp/tapOp below call the same calculators cost-machining-engine.ts uses
 // (computeDrillCycle / computeTapCycle)
@@ -567,6 +568,8 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
   }
   ops.push(...stockOps);
 
+  // The part's hole axes: a countersink on one of them is that hole's mouth, not a hole to drill again.
+  const holes = holeAxes(fgv2Features as any[]);
   for (const f of fgv2Features as any[]) {
     // feature_graph_v2 entries carry a reference catalog feature_type
     // (cad-engine/shared/reference_features.json) plus its geometric variant;
@@ -735,8 +738,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
       case "Edge:countersink":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
+          // A countersink on a hole the CAD recognised is that hole's mouth: the hole is drilled as its own feature, so only the
+          // countersinking is added (countersunk-holes.ts). One with no hole under it is drilled here, as before.
+          const alone = occurrences.length > 0 ? occurrences.filter((o: any) => !sitsOnHole(o, holes)).length : count;
+          if (alone > 0) {
+            ops.push({ name: "Center Drilling", ...countOp('Center Drilling', 'Holes', alone), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, alone, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: alone });
+          }
           ops.push({ name: "Countersinking", ...countOp('Countersinking', 'Holes', count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }
         break;
