@@ -366,6 +366,19 @@ export class SheetMetalLookupService {
       material = thermal;
       const { data } = await db.from('sm_reference_data').select('raw').eq('category', 'lookup_table').like('key', `nestingCutRate:%:${cut}:%`);
       thicknesses = (data ?? []).filter((r: any) => r.raw?.materialTypeName === material).map((r: any) => Number(r.raw?.thicknessMm));
+      // Plasma cuts plate thinner than the data's thinnest row at the machining workbook's curve (getPlasmaCutRateParams): it holds
+      // those thicknesses too.
+      if (machineClass === 'plasma_cut' && thicknesses.length > 0) {
+        const curve = await this.workbookPlasmaRows();
+        const below = curve.map((r) => r.thicknessMm).filter((t) => t < Math.min(...thicknesses));
+        if (below.length > 0) {
+          const listed = thicknesses.filter((t) => Number.isFinite(t) && t > 0);
+          return {
+            table: `${table} and ${WORKBOOK_PLASMA.table} (machining workbook plasma curve) below it`, material,
+            minThicknessMm: Math.min(...below), maxThicknessMm: Math.max(...listed),
+          };
+        }
+      }
     }
     const listed = thicknesses.filter((t) => Number.isFinite(t) && t > 0);
     return listed.length ? { table, material, minThicknessMm: Math.min(...listed), maxThicknessMm: Math.max(...listed) } : none;
@@ -736,6 +749,34 @@ export class SheetMetalLookupService {
     if (!rowsAtPower.length) return noData;
 
     const thicknesses = [...new Set(rowsAtPower.map((r: any) => Number(r.raw?.thicknessMm)))].sort((a, b) => a - b);
+    // Plate thinner than the data's thinnest row (6.4 mm): fed at the machining workbook's plasma curve, which covers 3 to 6.35 mm (user
+    // decision 2026-11-25; the thinnest row's speed priced 5 mm steel 1.4 to 2.3 x slower than the workbook). Its pierce time is the
+    // thinnest row's: the workbook times plasma by its feed alone and states none.
+    const thinnest = thicknesses[0];
+    if (thinnest !== undefined && thicknessMm < thinnest - 1e-9) {
+      const curve = await this.workbookPlasmaRows();
+      const fed = curve.find((r) => r.thicknessMm >= thicknessMm);
+      const thinRow = rowsAtPower.find((r: any) => Number(r.raw?.thicknessMm) === thinnest)?.raw;
+      const pierce = thinRow?.pierceTimeS;
+      const thinFeed = Number(thinRow?.feedRateLargeFeaturesMmPerMin);
+      if (fed && typeof pierce === 'number' && Number.isFinite(thinFeed) && thinFeed > 0) {
+        // Thinner plate never cuts slower on one machine than thicker plate: a heavy machine whose data starts thicker and faster than the
+        // workbook's thin-plate feed (a 1000 A table's 12.7 mm row, 3,068 mm/min) keeps that row's feed.
+        const atCurve = fed.feedMmPerMin >= thinFeed;
+        const feed = atCurve ? fed.feedMmPerMin : thinFeed;
+        const name = machineTypeKeyFragment === 'PlasmaCut' ? 'Plasma Cut' : 'Plasma Punch';
+        return {
+          feedRateLargeFeaturesMmPerMin: feed, pierceTimeSec: pierce, dataFound: true,
+          source: atCurve
+            ? `${name}: the plasma cut data's thinnest ${plasmaMaterial} row is ${thinnest} mm (${thinFeed} mm/min); ${thicknessMm} mm plate is fed at the `
+              + `machining workbook's plasma curve (${WORKBOOK_PLASMA.table}): ${fed.feedMmPerMin} mm/min at its ${fed.thicknessMm} mm row, with the `
+              + `${thinnest} mm row's pierce time ${pierce} s`
+            : `${name}: the plasma cut data's thinnest ${plasmaMaterial} row is ${thinnest} mm; ${thicknessMm} mm plate is fed at that row's `
+              + `${thinFeed} mm/min, faster than the machining workbook's plasma curve (${fed.feedMmPerMin} mm/min at its ${fed.thicknessMm} mm row): `
+              + `thinner plate does not cut slower on one machine`,
+        };
+      }
+    }
     const nearestThick = nearestKey(thicknessMm, thicknesses);
     const row = rowsAtPower.find((r: any) => Number(r.raw?.thicknessMm) === nearestThick);
     const feedRate = row?.raw?.feedRateLargeFeaturesMmPerMin;
