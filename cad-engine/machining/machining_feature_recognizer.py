@@ -120,9 +120,12 @@ from shared.machining_geometry import (
     TAP_DRILL_RANGES as _TAP_DRILL_RANGES,
     HELICOIL_DRILL_RANGES as _HELICOIL_DRILL_RANGES,
     MAX_COAXIAL_DIST_MM as _MAX_COAXIAL_DIST_MM,
+    HOLE_MIN_SWEEP_RAD,
     classify_hole as _classify_hole,
     annotate_hole_depth as _annotate_hole_depth,
     classify_cone as _classify_cone,
+    countersink_mouths as _countersink_mouths,
+    same_axis_line as _same_axis_line,
     detect_counterbores as _detect_counterbores,
     detect_multistep_holes as _detect_multistep_holes,
     point_to_axis_distance as _point_to_axis_distance,
@@ -166,8 +169,39 @@ def _is_bore(f: MachiningFeature) -> bool:
 
 
 def _is_plain_bore(f: MachiningFeature) -> bool:
-    """An untapped axial bore -- the only kind that can be a counterbore/step member."""
+    """An untapped axial bore -- the only kind that can be a multi-step hole member."""
     return f.type == "SimpleHole" and f.variant in ("through", "blind")
+
+
+def _merge_counterbores(features: List[MachiningFeature], bore_id_to_cyl: Dict[str, Dict]) -> List[MachiningFeature]:
+    """
+    Coaxial bore pairs, the outer wider and shallower, become one MultiStepHole counterbore (shared detect_counterbores). Tapped bores
+    are paired too: the thread of a bore is read from its diameter alone, so a short counterbore step at a tap-drill size read as a
+    thread of its own (Motor Mount: six Ø4.5 x 2.03 counterbores over M3 tapped holes were six M4 helicoil holes). The outer step is
+    the counterbore and is absorbed into it. A tapped inner bore stays the threaded hole it is (it is drilled and tapped; the
+    counterbore carries its bore_spec), so the counterbore claims only the outer step's faces; a plain inner bore is absorbed as before.
+    """
+    counterbores = _detect_counterbores([f for f in features if _is_bore(f)], bore_id_to_cyl)
+    if not counterbores:
+        return features
+    by_id = {f.id: f for f in features}
+    absorbed: set = set()
+    added: List[MachiningFeature] = []
+    for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
+        inner_tapped = by_id[inner_id].variant == "threaded"
+        members = [outer_id] if inner_tapped else [outer_id, inner_id]
+        added.append(MachiningFeature(
+            id=f"cbore_{cb_idx}",
+            type="MultiStepHole",
+            variant="counterbore",
+            params=params,
+            confidence=0.78,
+            children=[outer_id, inner_id],
+            # Union face_ids from the absorbed bores for visual coverage
+            face_ids=list(set(fid for m in members for fid in bore_id_to_cyl.get(m, {}).get("face_indices", []))),
+        ))
+        absorbed.update(members)
+    return [f for f in features if f.id not in absorbed] + added
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -328,6 +362,10 @@ class MachiningFeatureRecognizer:
         half_turns = [c for c in raw_cylinders if c["kind"] == "cross_hole" and c.get("u_range", 2.0 * math.pi) < HOLE_MIN_SWEEP_RAD]
         recess_ends = {i for c in half_turns for i in c.get("face_indices", [])} & recess_faces
 
+        # The countersinks at the bores' mouths, read before the bores: one wide enough to seat a screw head makes the hole it
+        # opens into a clearance hole, whatever its diameter (classify_hole countersink_entry_mm).
+        mouths = _countersink_mouths(cones, cylinders)
+
         # ── Cylinders → external_diameter / through_hole / blind_hole / cross_hole ─
         # bore_id_to_cyl lets PCD detection read dist_from_axis and angle_deg after
         # bore features are emitted, without storing those fields in the public API.
@@ -369,6 +407,7 @@ class MachiningFeatureRecognizer:
                 hole_variant, tap_spec, is_helicoil = _classify_hole(
                     diameter_mm, through=(kind == "through_hole"),
                     full_turn=cyl.get("u_range", 2.0 * math.pi) >= HOLE_MIN_SWEEP_RAD,
+                    countersink_entry_mm=max((mouths.get(i, 0.0) for i in face_ids), default=0.0) or None,
                 )
 
                 params: Dict = {
@@ -543,30 +582,8 @@ class MachiningFeatureRecognizer:
         if multistep_absorbed:
             features = [f for f in features if f.id not in multistep_absorbed]
 
-        # ── Detect counterbores (coaxial cylinder pairs) ──────────────────────
-        counterbores = _detect_counterbores(
-            [f for f in features if _is_plain_bore(f)],
-            bore_id_to_cyl,
-        )
-        if counterbores:
-            absorbed: set = set()
-            for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
-                # Union face_ids from both constituent bores for visual coverage
-                cb_face_ids = list(set(
-                    bore_id_to_cyl.get(outer_id, {}).get("face_indices", []) +
-                    bore_id_to_cyl.get(inner_id, {}).get("face_indices", [])
-                ))
-                features.append(MachiningFeature(
-                    id=f"cbore_{cb_idx}",
-                    type="MultiStepHole",
-                    variant="counterbore",
-                    params=params,
-                    confidence=0.78,
-                    children=[outer_id, inner_id],
-                    face_ids=cb_face_ids,
-                ))
-                absorbed.update([outer_id, inner_id])
-            features = [f for f in features if f.id not in absorbed]
+        # ── Detect counterbores (coaxial cylinder pairs, a tapped bore included) ─
+        features = _merge_counterbores(features, bore_id_to_cyl)
 
         # ── Toroids → groove / fillet ─────────────────────────────────────────
         for tor_idx, tor in enumerate(toroids):
@@ -693,6 +710,10 @@ class MachiningFeatureRecognizer:
                 confidence=0.75,
                 face_ids=sorted(set(a.get("face_indices", [])) | set(b.get("face_indices", []))),
             ))
+        # The countersinks at the holes' mouths, read before the holes: one wide enough to seat a screw head makes the hole it
+        # opens into a clearance hole, whatever its diameter (classify_hole countersink_entry_mm).
+        mouths = _countersink_mouths(cones, cylinders)
+
         round_idx = 0
         for cyl in cylinders:
             if id(cyl) in slot_arc_ids:
@@ -732,6 +753,7 @@ class MachiningFeatureRecognizer:
             kind = cyl["kind"] if cyl["kind"] in ("through_hole", "blind_hole") else "blind_hole"
             hole_variant, tap_spec, is_helicoil = _classify_hole(
                 diameter_mm, through=(kind == "through_hole"),
+                countersink_entry_mm=max((mouths.get(i, 0.0) for i in cyl.get("face_indices", [])), default=0.0) or None,
             )
 
             params: Dict = {
@@ -758,15 +780,10 @@ class MachiningFeatureRecognizer:
             bore_id_to_cyl[fid] = cyl
             bore_idx += 1
 
-        # Counterbore detection with centroid distance guard. Without bore_id_to_cyl the
-        # O(n²) pair check would produce thousands of false positives from non-coaxial
-        # bore pairs that happen to satisfy diam_outer > diam_inner + depth_outer < depth_inner.
-        bore_features = [f for f in features if _is_bore(f)]
-
         # Multi-step holes (3+ coaxial bores) BEFORE counterbores — see the
         # matching comment in _recognize_turned for why the ordering matters.
         multistep_groups = _detect_multistep_holes(
-            [f for f in bore_features if _is_plain_bore(f)],
+            [f for f in features if _is_plain_bore(f)],
             bore_id_to_cyl,
         )
         multistep_absorbed: set = set()
@@ -783,30 +800,10 @@ class MachiningFeatureRecognizer:
             multistep_absorbed.update(member_ids)
         if multistep_absorbed:
             features = [f for f in features if f.id not in multistep_absorbed]
-            bore_features = [f for f in bore_features if f.id not in multistep_absorbed]
 
-        counterbores = _detect_counterbores(
-            [f for f in bore_features if _is_plain_bore(f)],
-            bore_id_to_cyl,
-        )
-        if counterbores:
-            absorbed: set = set()
-            for cb_idx, (outer_id, inner_id, params) in enumerate(counterbores):
-                cb_face_ids = list(set(
-                    bore_id_to_cyl.get(outer_id, {}).get("face_indices", []) +
-                    bore_id_to_cyl.get(inner_id, {}).get("face_indices", [])
-                ))
-                features.append(MachiningFeature(
-                    id=f"cbore_{cb_idx}",
-                    type="MultiStepHole",
-                    variant="counterbore",
-                    params=params,
-                    confidence=0.78,
-                    children=[outer_id, inner_id],
-                    face_ids=cb_face_ids,
-                ))
-                absorbed.update([outer_id, inner_id])
-            features = [f for f in features if f.id not in absorbed]
+        # Counterbores: coaxial bore pairs, a tapped bore included (_merge_counterbores). With bore_id_to_cyl the
+        # pair must share one axis line; without it the O(n²) pair check would pair bores that only lie near each other.
+        features = _merge_counterbores(features, bore_id_to_cyl)
 
         for cone_idx, cone in enumerate(cones):
             edge_variant, params, conf = _classify_cone(cone, cylinders)
@@ -1277,9 +1274,8 @@ def _count_face_types(shape) -> Dict[str, int]:
 # ── Deduplication ────────────────────────────────────────────────────────────
 
 
-# A cylinder face is a bore only if it sweeps at least this much of a full turn (its patches
-# merged). 97 %: a bore split into patches measures 2*pi to within the sampling of the sweep.
-HOLE_MIN_SWEEP_RAD = 0.97 * 2.0 * math.pi
+# HOLE_MIN_SWEEP_RAD (the sweep a cylinder face needs to be a bore) lives in shared/machining_geometry.py, imported above:
+# classify_cone asks it of the hole a countersink opens into.
 # Smallest partial arc kept as a round (the torus detector uses the same 0.5 mm floor).
 MIN_ARC_RADIUS_MM = 0.5
 
@@ -1337,18 +1333,9 @@ def _pair_slot_ends(arcs: List[Dict], walls_of=None) -> List[Tuple[Dict, Dict, f
     return out
 
 
-def _same_axis_line(a: Dict, b: Dict) -> bool:
-    """Patches of ONE cylinder lie on the same axis line. Arcs that only share a radius and a
-    distance from the part axis (the four corners of a rounded pocket) are different features."""
-    ax, bx = a.get("axis"), b.get("axis")
-    ca, cb = a.get("centroid"), b.get("centroid")
-    if ax is None or bx is None or ca is None or cb is None:
-        return True  # no axis recorded: the position / distance test above is all there is
-    if abs(sum(x * y for x, y in zip(ax, bx))) < 0.9999:
-        return False
-    d = (cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2])
-    cross = (d[1] * ax[2] - d[2] * ax[1], d[2] * ax[0] - d[0] * ax[2], d[0] * ax[1] - d[1] * ax[0])
-    return math.sqrt(sum(c * c for c in cross)) <= 0.02 + 0.005 * a["radius"]
+# _same_axis_line (patches of ONE cylinder lie on the same axis line; arcs that only share a radius and a distance from the part
+# axis, the four corners of a rounded pocket, are different features) is shared.machining_geometry.same_axis_line, imported above:
+# the countersink and counterbore tests ask it too.
 
 
 def _deduplicate_cylinders(raw: List[Dict]) -> List[Dict]:
@@ -1843,6 +1830,9 @@ def build_machining_feature_graph_v2(
                 # A threaded hole, or a cross hole the tap-drill check found tapped (its thread is a param; it stays a cross hole).
                 "tapped": variant == "threaded" or bool(variant == "cross" and p.get("spec")),
                 "spec": p.get("spec"),
+                # A counterbore over a tapped bore that is a threaded hole of its own (detect_counterbores): the bore's thread, so the
+                # costing drills and taps the bore once, as that hole, and adds only the counterbore's step here.
+                **({"bore_spec": p["bore_spec"]} if p.get("bore_spec") else {}),
                 "material_removed_mm3": round(math.pi * (diam / 2) ** 2 * depth, 2) if depth else 0.0,
             })
 
@@ -1939,6 +1929,8 @@ def build_machining_feature_graph_v2(
                 occ_entry["ld_ratio"] = round(depth / max(diam, 0.1), 3) if (diam and depth) else None
                 occ_entry["tapped"] = occ["tapped"]
                 occ_entry["spec"] = occ["spec"]
+                if occ.get("bore_spec"):
+                    occ_entry["bore_spec"] = occ["bore_spec"]
             elif shape == _TOROID:
                 occ_entry["radius_mm"] = occ["radius_mm"]
             elif shape == _PATTERN:

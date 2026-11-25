@@ -753,8 +753,13 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
 
       case "MultiStepHole:counterbore":
         if (diamMm > 0) {
-          ops.push({ name: "Center Drilling", ...spotOp(diamMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
-          ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, count, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm }); // through bore
+          // A counterbore over a tapped bore the CAD lists as a threaded hole of its own (bore_spec): that hole is drilled and tapped as
+          // itself, so the counterbore adds only its step. One whose bore is part of it is spotted and drilled here, as before.
+          const ownBore = occurrences.length > 0 ? occurrences.filter((o: any) => !o.bore_spec).length : count;
+          if (ownBore > 0) {
+            ops.push({ name: "Center Drilling", ...spotOp(diamMm, ownBore), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore });
+            ops.push({ name: "Drilling", ...drillOp(diamMm * 0.6, depthMm, ownBore, materialGrade, workbook, calculators), source: "feature", cadFeatureType: ft, diameterMm: diamMm, count: ownBore }); // through bore
+          }
           // The counterbore itself: the catalog's Step Drilling, timed as the workbook's Step Drilling sheet times it.
           ops.push({ name: "Step Drilling", ...stepOp(diamMm, depthMm, count), source: "feature", cadFeatureType: ft, diameterMm: diamMm });
         }

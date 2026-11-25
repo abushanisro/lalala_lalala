@@ -30,6 +30,7 @@ re-exports every name here unchanged.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── Tap drill size table ──────────────────────────────────────────────────────
@@ -63,8 +64,47 @@ HELICOIL_DRILL_RANGES: List[Tuple[float, float, str]] = [
 # and detect_multistep_holes so both use the exact same real tolerance.
 MAX_COAXIAL_DIST_MM = 5.0
 
+# A cylinder face is a bore only if it sweeps at least this much of a full turn (its patches
+# merged). 97 %: a bore split into patches measures 2*pi to within the sampling of the sweep.
+# Less is an arc of something else: a pocket's rounded inside corner, a slot end, a fillet.
+HOLE_MIN_SWEEP_RAD = 0.97 * 2.0 * math.pi
 
-def classify_hole(diameter_mm: float, through: bool, full_turn: bool = True) -> Tuple[str, Optional[str], bool]:
+# The countersink at the mouth of a tapped hole only breaks the thread's first turn: DIN 76-1 sizes it at about 1.05 x the thread's
+# nominal diameter, and shop practice countersinks a tapped hole 90 degrees to at most ~1.2 x. A countersunk screw's head is far wider
+# than its own thread: ISO 2009 / ISO 7046-1 head diameter dk (actual) M2 3.8, M2.5 4.7, M3 5.5, M4 8.4, M5 9.3, M6 11.3, M8 15.8 mm
+# (1.8-2.1 x d), ISO 10642 (hexagon socket) M3 6.72 ... M8 15.96 (2.0-2.24 x d). A clearance hole for such a screw (ISO 273 fine series:
+# M2 2.2, M3 3.2, M4 4.3, M8 8.4) falls in the tap-drill band of the next size up (M2.5, M4, M5, M10 here), so measured against that
+# larger thread its seat is still >= 1.37 x (M3 head 5.5 on a hole read as M4) and usually 1.5-2.1 x. A countersink whose entry is wider
+# than this many times the nominal diameter of the thread a hole's size suggests is a screw-head seat: the hole is a clearance hole, not
+# tapped. Between the 1.2 of a tapped hole's chamfer and the 1.37 of the narrowest screw seat.
+COUNTERSUNK_SEAT_MIN_RATIO = 1.3
+
+# The shortest thread a tapped hole is given: about one nominal diameter of engagement (Machinery's Handbook, "Length of engagement"
+# of tapped holes: 1 x D in steel, 1.5 x D in cast iron, 2 x D in aluminium; an ISO 4032 nut is 0.8-0.9 x d high). A coaxial step at
+# a tap-drill size that is shallower than this, over a smaller bore it opens into, is a counterbore (a seat, a recess), not a thread.
+MIN_THREAD_ENGAGEMENT_DIAMETERS = 1.0
+
+_THREAD_NOMINAL = re.compile(r"M\s*(\d+(?:\.\d+)?)")
+
+
+def thread_nominal_mm(spec: Optional[str]) -> Optional[float]:
+    """The nominal (major) diameter of a metric thread spec such as "M2.5×0.45"; None when the spec names none."""
+    m = _THREAD_NOMINAL.match(spec or "")
+    return float(m.group(1)) if m else None
+
+
+def is_screw_seat(countersink_entry_mm: Optional[float], spec: Optional[str]) -> bool:
+    """A countersink of this entry diameter, at the mouth of a hole whose size reads as `spec`, seats a countersunk screw's head
+    (COUNTERSUNK_SEAT_MIN_RATIO): the hole is the screw's clearance hole, not a tapped hole."""
+    nominal = thread_nominal_mm(spec)
+    if not countersink_entry_mm or not nominal:
+        return False
+    return countersink_entry_mm > COUNTERSUNK_SEAT_MIN_RATIO * nominal
+
+
+def classify_hole(
+    diameter_mm: float, through: bool, full_turn: bool = True, countersink_entry_mm: Optional[float] = None,
+) -> Tuple[str, Optional[str], bool]:
     """
     Returns (SimpleHole variant, thread_spec_or_None, is_helicoil) -- variant is
     one of "threaded" / "through" / "blind" (see machining/feature_models.VARIANTS).
@@ -72,6 +112,11 @@ def classify_hole(diameter_mm: float, through: bool, full_turn: bool = True) -> 
     full_turn: the hole's wall goes all the way round its axis. A tap needs a
     round hole, so a hole whose wall is interrupted (closed by a flat: a D bore,
     a double D; opened by a keyway) is never read as threaded: it is plain
+    "through" / "blind" whatever its diameter.
+
+    countersink_entry_mm: the entry diameter of the countersink at the hole's
+    mouth, when it has one (countersink_mouths). A countersink that seats a
+    screw head (is_screw_seat) makes the hole a clearance hole: plain
     "through" / "blind" whatever its diameter.
 
     Heuristic: holes whose diameter falls within a known tap pre-drill range are
@@ -89,12 +134,12 @@ def classify_hole(diameter_mm: float, through: bool, full_turn: bool = True) -> 
     Helicoil variant flagged separately for the process planner.
     """
     if full_turn:
-        for lo, hi, spec in TAP_DRILL_RANGES:
-            if lo <= diameter_mm <= hi:
-                return "threaded", spec, False
-        for lo, hi, spec in HELICOIL_DRILL_RANGES:
-            if lo <= diameter_mm <= hi:
-                return "threaded", spec, True
+        for ranges, helicoil in ((TAP_DRILL_RANGES, False), (HELICOIL_DRILL_RANGES, True)):
+            for lo, hi, spec in ranges:
+                if lo <= diameter_mm <= hi:
+                    if is_screw_seat(countersink_entry_mm, spec):
+                        return ("through" if through else "blind"), None, False
+                    return "threaded", spec, helicoil
     return ("through" if through else "blind"), None, False
 
 
@@ -167,6 +212,28 @@ def annotate_hole_depth(params: Dict, diameter_mm: float, depth_mm: float) -> No
         params["deep_hole"] = True
 
 
+def _countersink_hole(cone: Dict, cylinders: List[Dict]) -> Optional[Tuple[Dict, List[Dict]]]:
+    """The hole a cone is the mouth of (classify_cone's test), as (its cylinder, the faces of its wall at the cone); None when the
+    cone is no countersink."""
+    cx, cy, cz = cone["centroid"]
+    ref_r = cone.get("max_radius", cone["ref_radius"])
+    touching = set(cone["adjacent_faces"]) if cone["concave"] else set()
+    holes = [c for c in cylinders if c["kind"] in ("through_hole", "blind_hole") and touching & set(c["face_indices"])]
+    for cyl in holes:
+        # The hole's stored origin must also lie within 5 mm of the cone's, as it always had to. That is not a measure of
+        # the part (the origin is wherever the CAD system put it), but without it every chamfered bore mouth reads as a
+        # countersink, and nothing here tells a broken edge from a screw seat yet.
+        dcx, dcy, dcz = cyl["centroid"]
+        dist = math.sqrt((cx - dcx) ** 2 + (cy - dcy) ** 2 + (cz - dcz) ** 2)
+        if dist < 5.0 and cyl["radius"] < ref_r:
+            # The hole's wall at the cone: every face of that radius on that axis line the cone touches (one merged face, or
+            # the patches of a bore whose faces were not merged). A hole's goes all the way round.
+            wall = [c for c in holes if abs(c["radius"] - cyl["radius"]) <= 0.02 + 0.005 * cyl["radius"] and same_axis_line(c, cyl)]
+            if sum(c.get("u_range", 2.0 * math.pi) for c in wall) >= HOLE_MIN_SWEEP_RAD:
+                return cyl, wall
+    return None
+
+
 def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     """
     A cone is a countersink when it is the mouth of a hole: a concave cone (the
@@ -178,7 +245,14 @@ def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     params, confidence).
 
     cone: as _collect_cones lists it, with "concave" and "adjacent_faces" (the
-    faces that share an edge with it); cylinders: as collect_cylinders lists them.
+    faces that share an edge with it); cylinders: as collect_cylinders lists them,
+    face patches merged or not.
+
+    The hole is a hole: its wall at the cone goes all the way round (the cylinder
+    faces of that radius on that axis line that touch the cone sweep
+    HOLE_MIN_SWEEP_RAD together). The quarter cone of a chamfer round a pocket's
+    rim, where it runs round the pocket's rounded inside corner, touches a quarter
+    cylinder: it is a chamfer, not a countersink.
     """
     cx, cy, cz = cone["centroid"]
     half_angle = cone["half_angle_deg"]
@@ -186,31 +260,54 @@ def classify_cone(cone: Dict, cylinders: List[Dict]) -> Tuple[str, Dict, float]:
     # it; RefRadius alone can be the narrow end (see _collect_cones).
     ref_r = cone.get("max_radius", cone["ref_radius"])
 
-    touching = set(cone["adjacent_faces"]) if cone["concave"] else set()
-    for cyl in cylinders:
-        if cyl["kind"] in ("through_hole", "blind_hole") and touching & set(cyl["face_indices"]):
-            # The hole's stored origin must also lie within 5 mm of the cone's, as it always had to. That is not a measure of
-            # the part (the origin is wherever the CAD system put it), but without it every chamfered bore mouth reads as a
-            # countersink, and nothing here tells a broken edge from a screw seat yet.
-            dcx, dcy, dcz = cyl["centroid"]
-            dist = math.sqrt((cx - dcx) ** 2 + (cy - dcy) ** 2 + (cz - dcz) ** 2)
-            if dist < 5.0 and cyl["radius"] < ref_r:
-                return "countersink", {
-                    "entry_diameter_mm": round(ref_r * 2.0, 3),
-                    "bore_diameter_mm": round(cyl["radius"] * 2.0, 3),
-                    "half_angle_deg": round(half_angle, 1),
-                    # centroid required by build_machining_feature_graph_v2 to
-                    # place this feature -- the cone's own centroid, already
-                    # computed above, was never actually propagated into the
-                    # returned params before this fix.
-                    "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
-                }, 0.78
+    hole = _countersink_hole(cone, cylinders)
+    if hole is not None:
+        cyl, _wall = hole
+        return "countersink", {
+            "entry_diameter_mm": round(ref_r * 2.0, 3),
+            "bore_diameter_mm": round(cyl["radius"] * 2.0, 3),
+            "half_angle_deg": round(half_angle, 1),
+            # centroid required by build_machining_feature_graph_v2 to
+            # place this feature -- the cone's own centroid, already
+            # computed above, was never actually propagated into the
+            # returned params before this fix.
+            "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
+        }, 0.78
 
     return "chamfer", {
         "half_angle_deg": round(half_angle, 1),
         "diameter_mm": round(ref_r * 2.0, 3),
         "centroid": (round(cx, 3), round(cy, 3), round(cz, 3)),
     }, 0.85
+
+
+def countersink_mouths(cones: List[Dict], cylinders: List[Dict]) -> Dict[int, float]:
+    """The entry diameter of the countersink at each hole's mouth, by the face ids of the hole's wall (the countersinks classify_cone
+    finds), for classify_hole(countersink_entry_mm=...): a hole a countersink opens into is tapped or a clearance hole by its size."""
+    mouths: Dict[int, float] = {}
+    for cone in cones:
+        hole = _countersink_hole(cone, cylinders)
+        if hole is None:
+            continue
+        entry = round(cone.get("max_radius", cone["ref_radius"]) * 2.0, 3)
+        for fid in (i for c in hole[1] for i in c["face_indices"]):
+            mouths[fid] = max(mouths.get(fid, 0.0), entry)
+    return mouths
+
+
+def same_axis_line(a: Dict, b: Dict) -> bool:
+    """Two cylinders (as collect_cylinders lists them) lie on one axis line: their axes are parallel and the line through one's
+    origin passes within 0.02 mm + 0.5 % of its radius of the other's. Patches of one cylinder, and the steps of a stepped bore, do;
+    two holes side by side, however close, do not. True when either carries no axis: there is nothing to tell them apart by."""
+    ax, bx = a.get("axis"), b.get("axis")
+    ca, cb = a.get("centroid"), b.get("centroid")
+    if ax is None or bx is None or ca is None or cb is None:
+        return True
+    if abs(sum(x * y for x, y in zip(ax, bx))) < 0.9999:
+        return False
+    d = (cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2])
+    cross = (d[1] * ax[2] - d[2] * ax[1], d[2] * ax[0] - d[0] * ax[2], d[0] * ax[1] - d[1] * ax[0])
+    return math.sqrt(sum(c * c for c in cross)) <= 0.02 + 0.005 * a["radius"]
 
 
 def detect_counterbores(
@@ -223,28 +320,47 @@ def detect_counterbores(
 
     bore_features: objects with .id/.params (duck-typed -- both machining's
     real MachiningFeature and Sheet Metal's own compatible construction work).
+    A bore may carry a thread (params "spec", read from its diameter by
+    classify_hole). The outer step of a pair is a counterbore whatever its
+    diameter when it is shallower than a thread's minimum engagement
+    (MIN_THREAD_ENGAGEMENT_DIAMETERS x the nominal diameter of the thread its
+    size suggests); one at least that deep stays the tapped hole it reads as.
+    A tapped inner bore is the counterbore's bore: params carry its bore_spec.
+
+    With bore_id_to_cyl the two bores must lie on one axis line
+    (same_axis_line) and meet along it (_steps_meet: the shoulder between them
+    is all that parts them), not only lie near each other: two holes side by
+    side, or two holes drilled from opposite faces on one axis with metal
+    between them, are not a counterbore. The cylinders' stored origins are not
+    compared: an origin is any point of the axis (a Ø4.5 x 2 counterbore's lay
+    8 mm from its Ø2.5 bore's). A cylinder with no axis falls back to the
+    origins lying within MAX_COAXIAL_DIST_MM. Each bore is in one counterbore at
+    most.
 
     Returns list of (outer_id, inner_id, params).
     """
     results = []
-    checked: set = set()
+    paired: set = set()
     for i, outer in enumerate(bore_features):
         for j, inner in enumerate(bore_features):
-            if i >= j:
+            if i == j or outer.id in paired or inner.id in paired:
                 continue
-            pair_key = (outer.id, inner.id)
-            if pair_key in checked:
-                continue
-            checked.add(pair_key)
             od = outer.params["diameter_mm"]
             id_ = inner.params["diameter_mm"]
             if od <= id_:
                 continue
             oc = None
             if bore_id_to_cyl:
-                oc = bore_id_to_cyl.get(outer.id, {}).get("centroid")
-                ic = bore_id_to_cyl.get(inner.id, {}).get("centroid")
-                if oc and ic:
+                ocyl = bore_id_to_cyl.get(outer.id, {})
+                icyl = bore_id_to_cyl.get(inner.id, {})
+                oc = ocyl.get("centroid")
+                ic = icyl.get("centroid")
+                if ocyl.get("axis") and icyl.get("axis"):
+                    if not same_axis_line(ocyl, icyl) or not _steps_meet(ocyl, icyl):
+                        continue
+                elif oc and ic:
+                    # No axis to compare: the stored origins must lie near each other (an origin is any point of the axis, so
+                    # this is only a coarse guard).
                     dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(oc, ic)))
                     if dist > MAX_COAXIAL_DIST_MM:
                         continue
@@ -252,12 +368,17 @@ def detect_counterbores(
             inner_depth = inner.params["depth_mm"]
             if outer_depth >= inner_depth:
                 continue
+            outer_nominal = thread_nominal_mm(outer.params.get("spec"))
+            if outer_nominal and outer_depth >= MIN_THREAD_ENGAGEMENT_DIAMETERS * outer_nominal:
+                continue  # deep enough to be the thread its size reads as: a tapped hole over a smaller bore
             params = {
                 "counterbore_diameter_mm": od,
                 "counterbore_depth_mm": round(outer_depth, 3),
                 "bore_diameter_mm": id_,
                 "bore_depth_mm": round(inner_depth, 3),
             }
+            if inner.params.get("spec"):
+                params["bore_spec"] = inner.params["spec"]
             # centroid (the outer/visible bore's position -- where a tool
             # approaches from) is required by build_machining_feature_graph_v2
             # to place this feature; without bore_id_to_cyl there is no real
@@ -266,7 +387,24 @@ def detect_counterbores(
             if oc:
                 params["centroid"] = oc
             results.append((outer.id, inner.id, params))
+            paired.update((outer.id, inner.id))
     return results
+
+
+# Two coaxial bores are steps of one hole when their extents along the axis meet to within this: the face bounds they are measured from
+# carry the model's tolerance, far below any metal left between two holes.
+STEP_GAP_TOLERANCE_MM = 0.05
+
+
+def _steps_meet(a: Dict, b: Dict) -> bool:
+    """Two cylinders on one axis line meet along it: their axial extents (collect_cylinders axial_range, along each one's own axis
+    direction) overlap or touch. True when either has no extent recorded."""
+    ra, rb = a.get("axial_range"), b.get("axial_range")
+    if not ra or not rb:
+        return True
+    sign = 1.0 if sum(x * y for x, y in zip(a["axis"], b["axis"])) >= 0 else -1.0
+    rb = sorted((sign * rb[0], sign * rb[1]))
+    return max(ra[0], rb[0]) - min(ra[1], rb[1]) <= STEP_GAP_TOLERANCE_MM
 
 
 def detect_multistep_holes(
