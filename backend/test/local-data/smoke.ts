@@ -215,6 +215,22 @@ async function main(): Promise<void> {
     must(rows.length === 2 && cost?.default_value === '1.06' && life?.default_value === '300'
       && /Threading sheet C10/.test(cost?.input_config.source ?? '') && /Threading sheet C11/.test(life?.input_config.source ?? ''), `rows ${JSON.stringify(rows)}`);
   });
+  await check('migration 1162 priced the counterbore\'s wear by the minutes it cuts: USD 6.00 for 15 min (memory/Machining), each default with its source, version 2', async () => {
+    type Field = { field_name: string; default_value: string; unit: string | null; input_config: { source?: string } };
+    const rows = await (await api('/calculator_fields?calculator_id=eq.edccd27a-c91c-479d-a440-d00053249a3a&select=field_name,default_value,unit,input_config&order=field_name', minter.forService())).json() as Field[];
+    const by = (name: string) => rows.find((r) => r.field_name === name);
+    const [calc] = await (await api('/calculators?id=eq.edccd27a-c91c-479d-a440-d00053249a3a&select=version', minter.forService())).json() as { version: number }[];
+    must(by('Tool Cost')?.default_value === '6' && by('Tool Life')?.default_value === '15' && by('Tool Life')?.unit === 'min'
+      && by('Tool Cost per Part')?.default_value === 'IF({Tool Life} > 0, {Tool Cost} * {No of Uses} * {Machining Time Min} / {Tool Life}, 0)'
+      && /tblCounterboring/.test(by('Tool Cost')?.input_config.source ?? '') && /Knurling sheet K4/.test(by('No of Uses')?.input_config.source ?? '')
+      && calc?.version === 2, `rows ${JSON.stringify(rows)} version ${JSON.stringify(calc)}`);
+  });
+  await check('migration 1163 timed the visual inspection checks by the BasicMOST measure card, each row with its source', async () => {
+    const rows = await (await api('/inspection_operation_defaults?method=eq.visual&select=feature,cycle_time_sec,equipment,source&order=feature', minter.forService())).json() as { feature: string; cycle_time_sec: number; equipment: string; source: string | null }[];
+    const sec = Object.fromEntries(rows.map((r) => [r.feature, Number(r.cycle_time_sec)]));
+    must(sec['hole'] === 5.76 && sec['bend'] === 3.6 && sec['thickness'] === 15.12 && sec['dimension'] === 5.76 && sec['thread'] === 8.64 && sec['visual_base'] === 5
+      && rows.every((r) => (r.source ?? '').length > 40) && /M16, plug gauge/.test(rows.find((r) => r.feature === 'hole')?.source ?? ''), `rows ${JSON.stringify(rows)}`);
+  });
   await check('the data API refuses an anonymous request to a protected function', async () => {
     const res = await fetch(`${env.POSTGREST_URL}/rpc/link_identity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ p_provider: 'auth0', p_sub: 'x', p_email: 'alice@example.com', p_email_verified: true, p_connection: 'company-sso', p_trusted_connections: ['company-sso'] }) });
     must(res.status === 401 || res.status === 403 || res.status === 404, `HTTP ${res.status}`);

@@ -35,6 +35,9 @@ export function ingateVelocityNote(materialType: string | null, ingateMetresPerS
     : `${head} Within ${limit.limitMetresPerSecond} m/s (${limit.source}).`;
 }
 
-/** The standing note on the riser sizing: its feeding efficiency has no source that could be verified. */
+/**
+ * The standing note on the riser sizing: the feeding efficiency it assumes and where it comes from (Sand Casting - Risers, version 2, migration 1160).
+ * Until 1160 it was 14 %, a rule with no source that could be verified; Foseco gives 14-16 % for a live natural feeder and 10 % for the others.
+ */
 export const RISER_EFFICIENCY_NOTE =
-  'Riser sizing uses a 14 % feeding efficiency, a rule with no published source that could be verified (the modulus factor 1.2 and the height-to-diameter ratio 1.5 are standard rules): check it before relying on the riser weights.';
+  'Riser sizing assumes natural (unsleeved) feeders that are not live, which feed 10 % of their volume (Foseco Ferrous Foundryman\'s Handbook, 2000, pp. 296-297 and 309-310: 33-50 % with a sleeve, 14-16 % for a live natural feeder, 10 % for other natural feeders); the modulus factor 1.2 is Foseco\'s and the height-to-diameter ratio 1.5 the SFSA side-riser rule. A sleeved or live feeder would be smaller.';

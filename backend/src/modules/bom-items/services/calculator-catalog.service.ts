@@ -3,7 +3,7 @@ import { DatabaseService } from '../../../common/database/database.service';
 import { cachedRead } from '../costing/shared/core/request-cache';
 import { loadDieCastingCalculatorSpec } from '../costing/casting/calculators/die-casting-calculator-spec';
 import type { ReferenceCalculators } from '../costing/shared/calculators/reference-calculator';
-import type { DomainCalculatorSpec } from '../costing/shared/calculators/domain-calculator-spec';
+import { withDomainSpecNotes, type DomainCalculatorSpec } from '../costing/shared/calculators/domain-calculator-spec';
 import { loadHeatTreatmentCalculatorSpec } from '../costing/heat/calculators/heat-treatment-calculator-spec';
 import { loadSandCastingCalculatorSpec } from '../costing/casting/sand/calculators/sand-casting-calculator-spec';
 import { loadInvestmentCastingCalculatorSpec } from '../costing/casting/investment/calculators/investment-casting-calculator-spec';
@@ -171,7 +171,8 @@ export class CalculatorCatalogService {
         const row = (calcs ?? []).find((x: any) => x.name === c.name);
         const fs = (fields ?? []).filter((f: any) => f.calculator_id === row?.id);
         if (!row || fs.length === 0) continue;
-        const def = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: fs };
+        // Each field with where the value it states comes from (the spec's note; the database has no column for it).
+        const def = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: withDomainSpecNotes(spec, row.name, fs) };
         for (const op of c.operations) out[op] = def;
       }
       this.reportMissingCalculators(spec.domain, operational, new Set(Object.values(out).map((d) => d.name)));
@@ -292,7 +293,8 @@ export class CalculatorCatalogService {
       for (const c of spec.calculators) {
         const row = (calcs ?? []).find((x: any) => x.name === c.name);
         const fs = (fields ?? []).filter((f: any) => f.calculator_id === row?.id);
-        if (row && fs.length) out[c.name] = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: fs };
+        // Each field with where the value it states comes from (the spec's note; the database has no column for it).
+        if (row && fs.length) out[c.name] = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: withDomainSpecNotes(spec, row.name, fs) };
       }
       return out;
     });
@@ -326,7 +328,8 @@ export class CalculatorCatalogService {
       for (const c of spec.calculators) {
         const row = (calcs ?? []).find((x: any) => x.name === c.name);
         const fs = (fields ?? []).filter((f: any) => f.calculator_id === row?.id);
-        if (row && fs.length) out[c.name] = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: fs };
+        // Each field with where the value it states comes from (the spec's note; the database has no column for it).
+        if (row && fs.length) out[c.name] = { calculatorId: row.id, name: row.name, version: row.version ?? 1, fields: withDomainSpecNotes(spec, row.name, fs) };
       }
       this.reportMissingCalculators('Plastic molding', spec.calculators.map((c) => c.name), new Set(Object.keys(out)));
       return out;
