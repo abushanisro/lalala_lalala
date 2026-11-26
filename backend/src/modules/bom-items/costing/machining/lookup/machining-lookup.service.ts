@@ -16,6 +16,7 @@ import { MACHINING_REFERENCE_SOURCE_VERSION } from './machining-lookup-tables';
 import { rowKeys } from '../calculators/machining-source-refs';
 import { SETUP_AXIS_VARIABLE_KEYS, resolveSetupAxisRule, type SetupAxisRule } from '../setup-axis-rule';
 import { ReferenceMemo } from '../../../../../common/cache/reference-memo';
+import { SELECTION_POLICY_KEYS, type PolicyVariableRow } from '../../shared/capability/machine-selection/selection-policy';
 import {
   CAPABILITY_GTOL_TABLE,
   CAPABILITY_RULES_SOURCE_VERSION,
@@ -265,6 +266,19 @@ export class MachiningLookupService {
   /** A staged lookup table by name, for a calculator whose spec names the table (specLookupSeeds). */
   async getTable(name: string): Promise<any[] | null> {
     return this.loadTable(name);
+  }
+
+  /**
+   * The machine selection variables (usePreferredMachines, preferVirtualMachines) of every folder of memory/, each under its folder's
+   * source_version: what selection-policy.ts narrows the capable machines by. Sheet Metal's are in its own table (SheetMetalLookupService).
+   */
+  @ReferenceMemo()
+  async getMachineSelectionVariables(): Promise<PolicyVariableRow[]> {
+    const { data } = await this.referenceDb
+      .from('machining_reference_data').select('source_version, key, value')
+      .eq('category', 'variable').in('key', [...SELECTION_POLICY_KEYS]);
+    return ((data ?? []) as Array<{ source_version: string | null; key: string; value: unknown }>)
+      .map((r) => ({ source_version: r.source_version, key: r.key, value: r.value == null ? null : String(r.value) }));
   }
 
   /** The named machining variables as numbers; a variable that is absent or not a number is null. */

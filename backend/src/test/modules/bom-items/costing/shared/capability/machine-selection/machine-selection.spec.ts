@@ -13,6 +13,7 @@ import {
   rollBendingRequirement,
 } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/physics';
 import { classifyMachineRecord, fitScore, isCapable, selectMachine } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selector';
+import { NO_SELECTION_POLICY, selectionPolicyOf } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selection-policy';
 import type { MachineCandidate } from '../../../../../../../modules/bom-items/dto/machine-selection.dto';
 import { EMPTY_CAPABILITY, lookupSeedCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
 import type { MachineCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
@@ -39,12 +40,15 @@ function candidate(overrides: {
   capability?: Partial<MachineCapability>;
   availabilityStatus?: MachineCandidate['availabilityStatus'];
   scheduledLoadPct?: number | null;
+  processGroup?: string | null;
+  preferred?: boolean | null;
+  virtual?: boolean | null;
 }): MachineCandidate {
   return {
     machineId: overrides.machineId ?? 'id-' + Math.random().toString(36).slice(2),
     machineName: overrides.machineName ?? 'Test Machine',
     commodityCode: null,
-    processGroup: null,
+    processGroup: overrides.processGroup ?? null,
     machineClass: overrides.machineClass,
     hourlyRate: overrides.hourlyRate,
     utilizationPct: overrides.utilizationPct ?? 75,
@@ -76,6 +80,8 @@ function candidate(overrides: {
     machinePowerKw: null,
   directOverheadRate: null,
   indirectOverheadRate: null,
+    preferred: overrides.preferred ?? null,
+    virtual: overrides.virtual ?? null,
   };
 }
 
@@ -459,21 +465,37 @@ describe('selectMachine', () => {
     expect(result.confidence).toBe(0);
   });
 
-  it('cheapest profile picks the lowest-rate capable machine', () => {
+  it('of the capable machines the lowest rate is chosen, whatever its load', () => {
     const cap = { maxXMm: 3000, maxYMm: 1500, maxThicknessMsMm: 25 };
     const cheap = candidate({ machineId: 'cheap', machineClass: 'fiber_laser', hourlyRate: 800, utilizationPct: 30, capability: cap });
     const ideal = candidate({ machineId: 'ideal', machineClass: 'fiber_laser', hourlyRate: 1400, utilizationPct: 75, capability: cap });
     const result = selectMachine({
-      pool: [cheap, ideal],
+      pool: [ideal, cheap],
       location,
       machineClass: 'fiber_laser',
       requirement: laserRequirement({ thicknessMm: 3, materialGrade: 'MS', bedLengthMm: 400, bedWidthMm: 250 }),
     });
+    // A machine at the 75 % target load used to win on a weighted score; the machines are equally capable, so the cheaper one is taken.
+    expect(result.balanced.candidate.machineId).toBe('cheap');
     expect(result.cheapest.candidate.machineId).toBe('cheap');
-    // Balanced weights utilization at 0.3 — the 75%-loaded machine wins there
-    expect(result.balanced.candidate.machineId).toBe('ideal');
-    // Alternatives must not duplicate the balanced pick
-    expect(result.alternatives.every((a) => a.machineId !== result.balanced.candidate.machineId)).toBe(true);
+    expect(result.decision).toEqual({ winnerId: 'cheap', runnerUpId: 'ideal', decidingFactor: 'cost' });
+    // Alternatives must not duplicate the chosen machine
+    expect(result.alternatives.map((a) => a.machineId)).toEqual(['ideal']);
+  });
+
+  it('a tighter fit never beats a lower rate: fit only breaks a tie between equal rates', () => {
+    const req = vmcRequirement({ bboxXMm: 350, bboxYMm: 250, bboxZMm: 180, finishedWeightKg: 10, materialMrrCm3PerMin: 60 });
+    const snug = candidate({ machineId: 'snug', machineName: 'B snug', machineClass: '3_axis_mill', hourlyRate: 900, capability: { maxXMm: 500, maxYMm: 400, maxZMm: 300, maxWorkpieceWeightKg: 500 } });
+    const huge = candidate({ machineId: 'huge', machineName: 'A huge', machineClass: '3_axis_mill', hourlyRate: 800, capability: { maxXMm: 4000, maxYMm: 3000, maxZMm: 2000, maxWorkpieceWeightKg: 9000 } });
+    const pick = (pool: MachineCandidate[]) => selectMachine({ pool, location, machineClass: '3_axis_mill', requirement: req });
+    expect(pick([snug, huge]).balanced.candidate.machineId).toBe('huge');
+    const sameRate = pick([{ ...huge, hourlyRate: 900 }, snug]);
+    expect(sameRate.balanced.candidate.machineId).toBe('snug');
+    expect(sameRate.decision!.decidingFactor).toBe('fit');
+    // Equal rate and fit: by name, so the order the machines were read in never decides.
+    const twin = { ...snug, machineId: 'twin', machineName: 'A snug' };
+    expect(pick([snug, twin]).balanced.candidate.machineId).toBe('twin');
+    expect(pick([twin, snug]).decision).toEqual({ winnerId: 'twin', runnerUpId: 'snug', decidingFactor: 'name' });
   });
 
   it('honours a user override even outside the capability filter', () => {
@@ -1172,6 +1194,123 @@ describe('Machine Economics — roll_bending_2/3/4 get their own real RollBendin
 // swing class, both at 95% utilization) differ only in hourly rate — the
 // selection must say that the rate decided it, show every capable machine's
 // scores, and list the machine too small for the part as rejected.
+// The reference data's own order (memory/ variables usePreferredMachines, preferVirtualMachines; each machine's is_preferred and
+// is_virtual_machine): of the machines that can do the part, the virtual ones first where the family prefers them, then the preferred
+// ones, then the lowest rate. The mills are memory/Machining/machine/machiningusa.csv's 3 Axis Mills (travel, rate, flags).
+describe('selectMachine — technical first, then the reference data\'s order, then cost', () => {
+  const mill = (name: string, x: number, y: number, z: number, rate: number, flags: { preferred?: boolean; virtual?: boolean } = {}) => candidate({
+    machineId: name, machineName: name, machineClass: '3_axis_mill', hourlyRate: rate, processGroup: 'Machining',
+    capability: { maxXMm: x, maxYMm: y, maxZMm: z }, preferred: flags.preferred ?? false, virtual: flags.virtual ?? false,
+  });
+  const both = { preferred: true, virtual: true };
+  const mills = [
+    mill('Makino V22', 320, 280, 300, 25.24),
+    mill('Okuma MB-46VA', 560, 460, 460, 25.71),
+    mill('Virtual 3 Axis Mill - Small', 584.2, 406.4, 431.8, 27.8, both),
+    mill('Virtual 3 Axis Mill - Medium', 1016, 541.78, 635, 30, both),
+    mill('Virtual 3 Axis Mill - Large', 2032, 800.1, 764.54, 50.89, both),
+    mill('Giddings & Lewis H70F', 6096, 2438, 1524, 37.53),
+    mill('Haas VF10/50', 3048, 813, 762, 38.35),
+  ];
+  const machining = selectionPolicyOf([
+    { source_version: '2026-03', key: 'usePreferredMachines', value: 'true' },
+    { source_version: '2026-03', key: 'preferVirtualMachines', value: 'true' },
+    { source_version: '2026-Forging', key: 'usePreferredMachines', value: 'true' },
+    { source_version: '2026-StretchForm', key: 'usePreferedMachines', value: 'true' },
+  ], [{ key: 'usePreferredMachines', value: 'true' }]);
+  const part = (x: number, y: number, z: number) => vmcRequirement({ bboxXMm: x, bboxYMm: y, bboxZMm: z, finishedWeightKg: 1, materialMrrCm3PerMin: 0 });
+  const choose = (req: ReturnType<typeof part>, policyOf = machining, pool = mills) => selectMachine({ pool, location: 'USA', machineClass: '3_axis_mill', requirement: req, policyOf });
+
+  it('a small part goes on the smallest virtual mill it fits, not the cheapest real mill', () => {
+    const r = choose(part(80, 60, 30));
+    expect(r.balanced.candidate.machineName).toBe('Virtual 3 Axis Mill - Small');
+    // Makino V22 is cheaper and capable: it is the cheapest of all, an alternative, and listed as capable outside the choice.
+    expect(r.cheapest.candidate.machineName).toBe('Makino V22');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 7], ['virtual', 3], ['cheapest', 1]]);
+    expect(r.steps![1]!.text).toBe('3 virtual machines the part fits come first (preferVirtualMachines)');
+    expect(r.ranking!.filter((x) => x.inPool).map((x) => x.machineName)).toEqual(['Virtual 3 Axis Mill - Small', 'Virtual 3 Axis Mill - Medium', 'Virtual 3 Axis Mill - Large']);
+    expect(r.ranking!.filter((x) => !x.inPool).map((x) => x.machineName)).toEqual(['Makino V22', 'Okuma MB-46VA', 'Giddings & Lewis H70F', 'Haas VF10/50']);
+    expect(r.alternatives.map((a) => a.machineName)).toEqual(['Virtual 3 Axis Mill - Medium', 'Virtual 3 Axis Mill - Large']);
+    expect(r.decision).toEqual({ winnerId: 'Virtual 3 Axis Mill - Small', runnerUpId: 'Virtual 3 Axis Mill - Medium', decidingFactor: 'cost' });
+  });
+
+  it('a part too large for the small virtual mill goes on the next one that takes it', () => {
+    // The part must fit with the envelope margin (x 1.2): 800 mm needs 960 mm of travel, 1,600 mm needs 1,920 mm.
+    expect(choose(part(800, 400, 100)).balanced.candidate.machineName).toBe('Virtual 3 Axis Mill - Medium');
+    const large = choose(part(1600, 600, 200));
+    expect(large.balanced.candidate.machineName).toBe('Virtual 3 Axis Mill - Large');
+    expect(large.decision!.decidingFactor).toBe('only_in_pool');
+  });
+
+  it('a part no virtual mill takes goes on the cheapest real mill that can do it', () => {
+    const r = choose(part(2400, 600, 300));
+    expect(r.balanced.candidate.machineName).toBe('Giddings & Lewis H70F');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 2], ['cheapest', 1]]);
+    expect(r.decision).toEqual({ winnerId: 'Giddings & Lewis H70F', runnerUpId: 'Haas VF10/50', decidingFactor: 'cost' });
+    expect(r.rejected!.map((x) => x.machineName)).toContain('Virtual 3 Axis Mill - Large');
+  });
+
+  it('a capable machine is never passed over for an incapable preferred one', () => {
+    const r = choose(part(5000, 2000, 1000));
+    expect(r.balanced.candidate.machineName).toBe('Giddings & Lewis H70F');
+    expect(r.decision!.decidingFactor).toBe('only_capable');
+  });
+
+  it('of the virtual machines the preferred ones come first (memory: Virtual 2 Axis Lathe - Small is virtual, not preferred)', () => {
+    const lathe = (name: string, d: number, l: number, rate: number, flags: { preferred: boolean; virtual: boolean }) => candidate({
+      machineId: name, machineName: name, machineClass: '2_axis_lathe', hourlyRate: rate, processGroup: 'Machining',
+      capability: { maxDiameterMm: d, maxLengthMm: l }, ...flags,
+    });
+    const lathes = [
+      lathe('Mazak 6T', 42, 195, 18.78, { preferred: false, virtual: false }),
+      lathe('Virtual 2 Axis Lathe - Small', 304.8, 635, 21.39, { preferred: false, virtual: true }),
+      lathe('Virtual 2 Axis Lathe - Medium', 609.6, 1270, 27.86, both),
+      lathe('Virtual 2 Axis Lathe - Large', 1524, 3048, 49.02, both),
+    ];
+    const r = selectMachine({ pool: lathes, location: 'USA', machineClass: '2_axis_lathe', requirement: latheRequirement({ maxDiameterMm: 30, maxLengthMm: 100 }), policyOf: machining });
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 4], ['virtual', 3], ['preferred', 2], ['cheapest', 1]]);
+    expect(r.balanced.candidate.machineName).toBe('Virtual 2 Axis Lathe - Medium');
+  });
+
+  it('a family that only uses preferred machines takes the cheapest preferred one (sheet metal)', () => {
+    const cap = { maxXMm: 3000, maxYMm: 1500, maxThicknessMsMm: 25 };
+    const laser = (name: string, rate: number, preferred: boolean | null) => candidate({ machineId: name, machineName: name, machineClass: 'fiber_laser', hourlyRate: rate, processGroup: 'Sheet Metal', capability: cap, preferred });
+    const lasers = [laser('Real cheap', 30, false), laser('Fiber Laser - 2 kW', 45, true), laser('Fiber Laser - 4 kW', 60, true), laser('No flag', 20, null)];
+    const req = laserRequirement({ thicknessMm: 3, materialGrade: 'MS', bedLengthMm: 400, bedWidthMm: 250 });
+    const r = selectMachine({ pool: lasers, location: 'USA', machineClass: 'fiber_laser', requirement: req, policyOf: machining });
+    expect(r.balanced.candidate.machineName).toBe('Fiber Laser - 2 kW');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 4], ['preferred', 2], ['cheapest', 1]]);
+    expect(r.steps![1]!.text).toBe('2 preferred machines of them come first (usePreferredMachines)');
+    expect(r.cheapest.candidate.machineName).toBe('No flag');
+  });
+
+  it('with no policy (or a family with neither variable on file) nothing is narrowed: the cheapest capable machine', () => {
+    expect(selectMachine({ pool: mills, location: 'USA', machineClass: '3_axis_mill', requirement: part(80, 60, 30) }).balanced.candidate.machineName).toBe('Makino V22');
+    const unknownGroup = mills.map((m) => ({ ...m, processGroup: 'A group with no variables' }));
+    expect(choose(part(80, 60, 30), machining, unknownGroup).balanced.candidate.machineName).toBe('Makino V22');
+  });
+
+  it('reads each family\'s policy from its own variables', () => {
+    expect(machining('Machining')).toEqual({ usePreferredMachines: true, preferVirtualMachines: true });
+    expect(machining('Sheet Metal')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
+    expect(machining('Forging')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
+    // The stretch forming folder spells the variable usePreferedMachines.
+    expect(machining('Sheet Metal Stretch Forming')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
+    expect(machining('Powder Metal')).toEqual(NO_SELECTION_POLICY);
+    expect(machining(null)).toEqual(NO_SELECTION_POLICY);
+    const off = selectionPolicyOf([{ source_version: '2026-03', key: 'usePreferredMachines', value: 'false' }], []);
+    expect(off('Machining')).toEqual(NO_SELECTION_POLICY);
+    expect(off('Sheet Metal')).toEqual(NO_SELECTION_POLICY);
+  });
+
+  it('an engineer\'s machine stands over the rule', () => {
+    const r = selectMachine({ pool: mills, location: 'USA', machineClass: '3_axis_mill', requirement: part(80, 60, 30), policyOf: machining, overrideMachineId: 'Makino V22' });
+    expect(r.balanced.candidate.machineName).toBe('Makino V22');
+    expect(r.overridden).toBe(true);
+    expect(r.decision!.decidingFactor).toBe('override');
+  });
+});
+
 describe('selectMachine — why a machine was selected', () => {
   const ds30 = candidate({ machineId: 'ds30', machineName: 'Haas DS-30 with BAR3010SS Feeder', machineClass: '2_axis_bar_feed_lathe_with_sub_spindle' as any, hourlyRate: 2841.505, utilizationPct: 95, capability: { maxDiameterMm: 457, maxLengthMm: 1524 } });
   const ds30ss = candidate({ machineId: 'ds30ss', machineName: 'Haas DS-30SS with BAR3010SS Feeder', machineClass: '2_axis_bar_feed_lathe_with_sub_spindle' as any, hourlyRate: 2866.555, utilizationPct: 95, capability: { maxDiameterMm: 457, maxLengthMm: 1524 } });
@@ -1184,18 +1323,19 @@ describe('selectMachine — why a machine was selected', () => {
     requirement: latheRequirement({ maxDiameterMm: 17.6, maxLengthMm: 3 }),
   });
 
-  it('ranks every capable machine with its component scores', () => {
+  it('lists every capable machine, cheapest first, with its rate and fit', () => {
     expect(result.ranking!.map((r) => r.machineId)).toEqual(['ds30', 'ds30ss']);
     const [a, b] = result.ranking!;
     expect(a!.fit).toBe(b!.fit);
-    expect(a!.util).toBe(b!.util);
-    expect(a!.cost).toBe(1);
-    expect(b!.cost).toBeCloseTo(2841.505 / 2866.555, 3);
+    expect([a!.hourlyRate, b!.hourlyRate]).toEqual([2841.505, 2866.555]);
+    expect([a!.inPool, b!.inPool]).toEqual([true, true]);
   });
 
-  it('says the rate decided it, against the runner-up', () => {
+  it('says the rate decided it, against the runner-up, and how the machine was chosen', () => {
     expect(result.decision).toEqual({ winnerId: 'ds30', runnerUpId: 'ds30ss', decidingFactor: 'cost' });
-    expect(result.profileWeights!.balanced).toEqual({ fit: 0.5, util: 0.3, cost: 0.2, avail: 0 });
+    expect(result.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 2], ['cheapest', 1]]);
+    expect(result.steps![0]!.text).toBe('2 machines of 3 can do the part');
+    expect(result.steps![1]!.text).toBe('the lowest machine hour rate of those 2');
   });
 
   it('lists the machine that cannot hold the part as rejected, not silently dropped', () => {
@@ -1340,6 +1480,25 @@ describe('deburr line (Phase 4)', () => {
     const r = selectMachine({ pool: [deslag(20), manual(14.13)], location: 'USA', machineClass: 'deburring', requirement: req });
     expect(r.balanced.candidate.machineId).toBe('deslag');
     expect(r.alternatives.map((a) => a.machineId)).toContain('manual');
+  });
+
+  it("each family narrows its own machines: machining's virtual manual deburr never sets sheet metal's deslag machines aside", () => {
+    const policyOf = selectionPolicyOf([
+      { source_version: '2026-03', key: 'usePreferredMachines', value: 'true' },
+      { source_version: '2026-03', key: 'preferVirtualMachines', value: 'true' },
+    ], [{ key: 'usePreferredMachines', value: 'true' }]);
+    const flex = candidate({ machineId: 'flex', machineName: 'Flex - L 1109 S', machineClass: 'deburring', hourlyRate: 15, processGroup: 'Sheet Metal', preferred: false });
+    const preferredDeslag = candidate({ machineId: 'deslag', machineName: 'Default Deslag', machineClass: 'deburring', hourlyRate: 20, processGroup: 'Sheet Metal', preferred: true });
+    const virtualManual = candidate({ machineId: 'manual', machineName: 'Default Manual Deburr', machineClass: 'manual_deburr' as any, hourlyRate: 14.13, processGroup: 'Machining', preferred: true, virtual: true });
+    const r = selectMachine({ pool: [flex, preferredDeslag, virtualManual], location: 'USA', machineClass: 'deburring', requirement: req, policyOf });
+    // Sheet metal keeps its preferred deslag machine (Flex is cheaper per part, not preferred); machining keeps its one machine; then the
+    // lowest cost per part: Deslag 20 x 2.855 s against Manual 14.13 x 20.99 s.
+    expect(r.ranking!.filter((x) => x.inPool).map((x) => x.machineId)).toEqual(['deslag', 'manual']);
+    expect(r.balanced.candidate.machineId).toBe('deslag');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 3], ['preferred', 2], ['cheapest', 1]]);
+    expect(r.steps![2]!.text).toBe('the lowest cost per part (machine hour rate x its time) of those 2');
+    expect(r.ranking![0]!.costPerPart).toBeCloseTo((20 * 2.855) / 3600, 6);
+    expect(r.cheapest.candidate.machineId).toBe('flex');
   });
 
   it('always offers Manual Deburr even when every Deslag machine ranks ahead of it', () => {

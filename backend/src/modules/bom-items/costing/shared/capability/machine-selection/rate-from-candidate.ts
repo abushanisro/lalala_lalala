@@ -5,7 +5,7 @@ import type { MHRRateInput } from '../../core/cost-engine';
 import type { MachineClass } from '../../core/default-rates.constants';
 
 /**
- * Every hour rate a selection carries (the three picks, the alternatives, the ranking), through `conv`. Used to bring a selection into the
+ * Every hour rate a selection carries (the two picks, the alternatives, the ranking), through `conv`. Used to bring a selection into the
  * factory currency (the candidates are read in USD) and from there into the display currency, so the machine list beside a line is always in
  * the line's own currency.
  */
@@ -19,9 +19,8 @@ export function convertSelectionRates(ms: MachineSelectionResult | undefined, co
     ...ms,
     balanced: recommendation(ms.balanced),
     cheapest: recommendation(ms.cheapest),
-    fastest: recommendation(ms.fastest),
     alternatives: ms.alternatives.map(candidate),
-    ...(ms.ranking ? { ranking: ms.ranking.map((r) => ({ ...r, hourlyRate: conv(r.hourlyRate) })) } : {}),
+    ...(ms.ranking ? { ranking: ms.ranking.map((r) => ({ ...r, hourlyRate: conv(r.hourlyRate), ...(r.costPerPart != null ? { costPerPart: conv(r.costPerPart) } : {}) })) } : {}),
   };
 }
 

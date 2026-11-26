@@ -4,10 +4,10 @@
 // checked. Pure.
 //
 // Casting machines are chosen by fixed, sourced rules (clamp and tie-bar fit,
-// temperature, weight, cheapest per part), not by the physics machine-selection
-// scoring (fit / utilization / availability) of MachineSelectionResult, whose
-// inputs these machines do not carry -- so this states the rule actually used
-// instead of filling that shape with values that do not exist.
+// temperature, weight, cheapest per part) the route evaluates itself, each
+// machine costed in full, not through selectMachine's MachineSelectionResult
+// (which compares the machines of one class on their hour rate) -- so this
+// states the rule actually used instead of filling that shape.
 
 import type { MachineChoiceDto } from '../../dto/cost-breakdown.dto';
 

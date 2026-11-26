@@ -4,6 +4,7 @@ import { DatabaseService } from '../../../../../common/database/database.service
 import type { LookupResolution, LookupQueryParam, LookupTableRow } from '../../../dto/cost-breakdown.dto';
 import { classifyLaserMaterial, type LaserPowerRequirement } from '../../shared/capability/machine-selection/physics';
 import { ReferenceMemo } from '../../../../../common/cache/reference-memo';
+import { SELECTION_POLICY_KEYS } from '../../shared/capability/machine-selection/selection-policy';
 import { pressForceKnOf, pressForceTonnes, turretNibbleMmPerMin } from './turret-reference-tables';
 import type { TurretPunchMachineParams } from '../../shared/core/manufacturing-process.types';
 
@@ -892,6 +893,15 @@ export class SheetMetalLookupService {
   // such sourced threshold anywhere in the real reference data — none is
   // fabricated for them; callers must treat those two as the ONLY gated
   // classes.
+  /** Sheet Metal's machine selection variables (usePreferredMachines), as staged: what selection-policy.ts narrows the capable machines by. */
+  @ReferenceMemo()
+  async getMachineSelectionVariables(): Promise<Array<{ key: string; value: string | null }>> {
+    const { data } = await this.referenceClient()
+      .from('sm_reference_data').select('key, value')
+      .eq('category', 'variable').in('key', [...SELECTION_POLICY_KEYS]);
+    return ((data ?? []) as Array<{ key: string; value: unknown }>).map((r) => ({ key: r.key, value: r.value == null ? null : String(r.value) }));
+  }
+
   // Numeric sheet-metal variables (sm_reference_data category 'variable',
   // migration 479), by key. A key absent or non-numeric is absent from the
   // map: the caller decides what an unknown value means, never a default here.

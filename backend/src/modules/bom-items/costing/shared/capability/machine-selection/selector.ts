@@ -1,14 +1,15 @@
-// Capability-first, physics-scored machine selection.
+// Machine selection: technical first, then cost.
 //
 // Pipeline per (location, machine class, requirement):
 //   1. Fetch pool  — cache-first; one mhr_records query per location covers all classes
 //   2. Enrich      — DB capability columns → seed-registry by name → class defaults
-//   3. Filter      — process-specific physical eligibility (tonnage/thickness/envelope/…)
-//   4. Score       — Fit / Utilization / CostScore / Availability, each ∈ [0,1]
-//   5. Profiles    — balanced (cost engine default), cheapest, fastest
-//   6. Fallback    — LOCATION_MHR_DEFAULTS class rate when nothing is capable
+//   3. Filter      — process-specific physical eligibility (tonnage/thickness/envelope/…): only capable machines go on
+//   4. Narrow      — the reference data's own order (selection-policy.ts): virtual machines first where the family prefers them,
+//                    then the preferred machines, each only when one of them is capable
+//   5. Cost        — the lowest machine hour rate of those (cost per part where a line's machines run at different speeds)
+//   6. Absence     — no capable machine is reported as that, with no rate; never priced from anywhere else
 //
-// No Euclidean distance anywhere — all fit ratios are normalized and dimensionless.
+// The fit of a part in a machine (fitScore, a normalized dimensionless ratio) only breaks a tie between equal costs.
 
 import { readAllRows, type RowPage } from '../../../../../../common/database/read-all-rows';
 import type { DbClient } from '../../../../../../common/db/postgrest-client';
@@ -40,11 +41,12 @@ import {
   type CapabilityCheck,
   type MachineCandidate,
   type MachineRecommendation,
-  type MachineScoreBreakdown,
+  type MachineRankEntry,
   type MachineSelectionDecision,
   type MachineSelectionResult,
 } from '../../../../dto/machine-selection.dto';
 import { getCachedMachinePool, setCachedMachinePool } from './pool-cache';
+import { NO_SELECTION_POLICY, narrowByPolicy, type SelectionPolicyOf, type SelectionStep } from './selection-policy';
 
 // Fit floor: any physically capable machine keeps a meaningful score even when
 // grossly oversized, so a huge-but-only-capable machine still gets recommended.
@@ -72,6 +74,9 @@ const BASE_COLUMNS =
   // specs object.
   'spindle_speed_rpm:specs->spindle_speed_rpm, live_tooling_speed_rpm:specs->live_tooling_speed_rpm, ' +
   'rapid_traverse_mm_per_min:specs->rapid_traverse_mm_per_min, ' +
+  // The machine file's own flags (every family's seed; migration 1164 for machining and sheet metal): the reference data chooses a virtual
+  // and a preferred machine first (selection-policy.ts).
+  'is_preferred:specs->is_preferred, is_virtual_machine:specs->is_virtual_machine, ' +
   // The two components the canonical MHR is DEFINED as (migration 581:
   // MHR = Direct Overhead + Indirect Overhead). Carried so the benchmark
   // override guard can tell a real, self-consistent machine rate apart from
@@ -135,6 +140,8 @@ interface RawMachineRow {
   spindle_speed_rpm?: number | string | null;
   live_tooling_speed_rpm?: number | string | null;
   rapid_traverse_mm_per_min?: number | string | null;
+  is_preferred?: boolean | string | null;
+  is_virtual_machine?: boolean | string | null;
   setup_time_hr?: number | string | null;
   machine_power_kw?: number | string | null;
   direct_overhead_rate?: number | string | null;
@@ -167,6 +174,13 @@ interface RawMachineRow {
   min_mold_height_mm?: number | string | null;
   max_mold_height_mm?: number | string | null;
   live_tooling_power_kw?: number | string | null;
+}
+
+/** A flag of a machine's specs (a JSON boolean, or the text some seeds wrote); null when the machine carries none. */
+function flag(v: boolean | string | null | undefined): boolean | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  return s === 'true' ? true : s === 'false' ? false : null;
 }
 
 function num(v: number | string | null | undefined): number | null {
@@ -470,6 +484,8 @@ export async function fetchMachinePool(
       rapidTraverseMmPerMin: num(raw.rapid_traverse_mm_per_min),
       setupTimeHr: num(raw.setup_time_hr),
       machinePowerKw: num(raw.machine_power_kw),
+      preferred: flag(raw.is_preferred),
+      virtual: flag(raw.is_virtual_machine),
       directOverheadRate: num(raw.direct_overhead_rate),
       indirectOverheadRate: num(raw.indirect_overhead_rate),
     });
@@ -839,18 +855,6 @@ export function fitScore(candidate: MachineCandidate, req: MachineRequirement): 
   return Math.max(FIT_FLOOR, avg);
 }
 
-function utilizationScore(candidate: MachineCandidate): number {
-  // Reward machines closest to the 75% target load
-  return clamp01(1 - Math.abs(0.75 - candidate.utilizationPct / 100));
-}
-
-function availabilityScore(candidate: MachineCandidate, now: Date): number {
-  if (candidate.availabilityStatus === 'commissioning') return 0.5;
-  if (isInMaintenanceWindow(candidate, now)) return 0;
-  if ((candidate.scheduledLoadPct ?? 0) >= 80) return 0.7;
-  return 1.0;
-}
-
 function isInMaintenanceWindow(candidate: MachineCandidate, now: Date): boolean {
   if (candidate.availabilityStatus === 'maintenance') return true;
   if (candidate.maintenanceWindowStart && candidate.maintenanceWindowEnd) {
@@ -1063,9 +1067,9 @@ function buildCapabilityCheck(
 }
 
 // Explain one SPECIFIC machine (by ID) against a requirement, independent of
-// whether it's currently top-ranked. Needed because a saved process row's
-// machine can drift out of "balanced/cheapest/fastest" over time (utilization/
-// cost scores shift) without the saved pick itself becoming invalid — showing
+// whether it's currently the chosen one. Needed because a saved process row's
+// machine can stop being the choice over time (a rate or a flag changes)
+// without the saved pick itself becoming invalid — showing
 // nothing (or worse, another candidate's reasoning) under that row would be
 // either unhelpful or actively misleading. Searches the FULL class pool, not
 // just eligible candidates, so a since-changed-out-of-spec machine still gets
@@ -1089,14 +1093,6 @@ export function explainCandidate(
 }
 
 // ── Selection ─────────────────────────────────────────────────────────────────
-
-interface ProfileWeights { fit: number; util: number; cost: number; avail: number }
-
-const PROFILES: Record<'balanced' | 'cheapest' | 'fastest', ProfileWeights> = {
-  balanced: { fit: 0.5, util: 0.3, cost: 0.2, avail: 0 },
-  cheapest: { fit: 0.2, util: 0.1, cost: 0.7, avail: 0 },
-  fastest:  { fit: 0.2, util: 0.5, cost: 0.2, avail: 0.1 },
-};
 
 // The "no machine" result: what selectMachine returns when this location has no
 // real, capable machine of the class. It is an explicit absence, not a stand-in
@@ -1138,6 +1134,8 @@ function makeNoMachineCandidate(cls: MachineClass): MachineCandidate {
     rapidTraverseMmPerMin: null,
     setupTimeHr: null,
     machinePowerKw: null,
+    preferred: null,
+    virtual: null,
     directOverheadRate: null,
     indirectOverheadRate: null,
   };
@@ -1148,13 +1146,27 @@ interface SelectMachineInput {
   location: string;
   machineClass: MachineClass;
   requirement: MachineRequirement;
-  overrideMachineId?: string | null; // user override — short-circuits scoring
+  overrideMachineId?: string | null; // user override: the engineer's machine, whatever the rule would choose
+  /**
+   * How the reference data narrows the capable machines (selection-policy.ts): the virtual and the preferred machines first, as the
+   * variables of the machine's family say. Absent: no narrowing, the cheapest capable machine.
+   */
+  policyOf?: SelectionPolicyOf;
   now?: Date;
 }
 
+/**
+ * The machine a line is costed on: technical first, then cost.
+ *   1. Only the machines of the class that can do the part (isCapable).
+ *   2. Of them the virtual and then the preferred machines, when the family's variables say so and one is capable (narrowByPolicy).
+ *   3. Of those the lowest machine hour rate; for a line whose machines run at different speeds (deburr), the lowest cost per part.
+ * Equal costs go to the machine the part fills best, then by name, so the choice never depends on the order the machines were read in.
+ * The result's `balanced` is that machine (the field keeps its first name: saved lines and the API carry it).
+ */
 export function selectMachine(input: SelectMachineInput): MachineSelectionResult {
   const { pool, location, machineClass, requirement } = input;
   const now = input.now ?? new Date();
+  const policyOf = input.policyOf ?? (() => NO_SELECTION_POLICY);
 
   // A deburr line draws from both deburr machine families (Deslag + Manual
   // Deburr); every other line from its own class only.
@@ -1183,7 +1195,7 @@ export function selectMachine(input: SelectMachineInput): MachineSelectionResult
       reasons: [reason],
     };
     return {
-      balanced: rec, cheapest: rec, fastest: rec,
+      balanced: rec, cheapest: rec,
       alternatives: [],
       confidence: 0,
       requirement,
@@ -1194,46 +1206,31 @@ export function selectMachine(input: SelectMachineInput): MachineSelectionResult
 
   // Cost basis: the hourly rate, except where machines of one line run at
   // different speeds (deburr) — there it is cost per part, rate × time.
+  const perPart = requirement.kind === 'deburr';
   const costBasis = (c: MachineCandidate) =>
-    requirement.kind === 'deburr' ? c.hourlyRate * (deburrCycleSec(c, requirement) ?? Infinity) : c.hourlyRate;
-  const minRate = Math.min(...eligible.map(costBasis));
+    perPart ? c.hourlyRate * (deburrCycleSec(c, requirement) ?? Infinity) : c.hourlyRate;
+  const fitOf = new Map(eligible.map((c) => [c, fitScore(c, requirement)] as const));
+  // Cheapest first; an equal cost goes to the machine the part fills best, then by name.
+  const byCost = (a: MachineCandidate, b: MachineCandidate) =>
+    costBasis(a) - costBasis(b) || fitOf.get(b)! - fitOf.get(a)! || String(a.machineName ?? '').localeCompare(String(b.machineName ?? ''));
 
-  const scored = eligible.map((candidate) => {
-    const fit = fitScore(candidate, requirement);
-    const util = utilizationScore(candidate);
-    const cost = minRate > 0 ? clamp01(minRate / costBasis(candidate)) : 0;
-    const avail = availabilityScore(candidate, now);
-    return { candidate, fit, util, cost, avail };
-  });
+  // Technical first (the capable machines), then the family's own narrowing, then cost.
+  const { pool: choicePool, steps: narrowing } = narrowByPolicy(eligible, policyOf);
+  const inPool = new Set(choicePool);
+  const ranked = [...choicePool].sort(byCost);
+  const outside = eligible.filter((c) => !inPool.has(c)).sort(byCost);
+  const cheapestOfAll = [...eligible].sort(byCost)[0];
 
-  const rank = (weights: ProfileWeights) =>
-    [...scored].sort((a, b) => {
-      const sa = a.fit * weights.fit + a.util * weights.util + a.cost * weights.cost + a.avail * weights.avail;
-      const sb = b.fit * weights.fit + b.util * weights.util + b.cost * weights.cost + b.avail * weights.avail;
-      return sb - sa || a.candidate.hourlyRate - b.candidate.hourlyRate;
-    });
-
-  const toRecommendation = (
-    s: (typeof scored)[number],
-    weights: ProfileWeights,
-  ): MachineRecommendation => ({
-    candidate: s.candidate,
-    score: Math.round((s.fit * weights.fit + s.util * weights.util + s.cost * weights.cost + s.avail * weights.avail) * 1000) / 1000,
-    reasons: buildReasons(s.candidate, requirement, laserOpts),
-    capabilityCheck: buildCapabilityCheck(s.candidate, requirement, laserOpts),
+  const toRecommendation = (c: MachineCandidate): MachineRecommendation => ({
+    candidate: c,
+    score: Math.round(fitOf.get(c)! * 1000) / 1000,
+    reasons: buildReasons(c, requirement, laserOpts),
+    capabilityCheck: buildCapabilityCheck(c, requirement, laserOpts),
   });
 
   // User override: force the pick, even outside the capability filter (their judgment)
   let overridden = false;
-  let balancedRec: MachineRecommendation;
-  // Deburr machines differ in speed, so the recommendation is the lowest cost
-  // per part (rate × time), not the utilization-weighted balance.
-  const balancedRanked = requirement.kind === 'deburr'
-    ? [...scored].sort((a, b) => costBasis(a.candidate) - costBasis(b.candidate))
-    : rank(PROFILES.balanced);
-  const cheapestRanked = rank(PROFILES.cheapest);
-  const fastestRanked = rank(PROFILES.fastest);
-
+  let chosenRec: MachineRecommendation | null = null;
   if (input.overrideMachineId) {
     // classPool is already scoped to machineClass === machineClass — the
     // whole-pool fallback below exists so an override ID always resolves to
@@ -1248,70 +1245,60 @@ export function selectMachine(input: SelectMachineInput): MachineSelectionResult
     if (forced) {
       overridden = true;
       const fit = fitScore(forced, requirement);
-      balancedRec = {
+      chosenRec = {
         candidate: forced,
         score: Math.round(fit * 1000) / 1000,
         reasons: ['Manually selected by cost engineer', ...buildReasons(forced, requirement, laserOpts)],
         capabilityCheck: buildCapabilityCheck(forced, requirement, laserOpts),
       };
       if (forced.machineClass !== machineClass) {
-        balancedRec.reasons.unshift(
+        chosenRec.reasons.unshift(
           `⚠ Manually overridden with a machine from a different class ('${forced.machineClass}', ` +
           `not '${machineClass}') — verify this is intentional before quoting`,
         );
       }
       if (!isCapable(forced, requirement, laserOpts)) {
-        balancedRec.reasons.unshift('⚠ Outside computed capability for this part — verify feasibility');
+        chosenRec.reasons.unshift('⚠ Outside computed capability for this part — verify feasibility');
       }
-    } else {
-      balancedRec = toRecommendation(balancedRanked[0], PROFILES.balanced);
     }
-  } else {
-    balancedRec = toRecommendation(balancedRanked[0], PROFILES.balanced);
   }
+  // An override naming a machine that is no longer in HR Rates, with no capable machine left: the absence, as above.
+  if (!chosenRec && !ranked[0]) {
+    const rec: MachineRecommendation = {
+      candidate: makeNoMachineCandidate(machineClass), score: 0,
+      reasons: [`No machine of this class in HR Rates for ${location} can do this part — not costed`],
+    };
+    return { balanced: rec, cheapest: rec, alternatives: [], confidence: 0, requirement, allowOverride: true, overridden: false };
+  }
+  chosenRec ??= toRecommendation(ranked[0]!);
+  const cheapestRec = cheapestOfAll ? toRecommendation(cheapestOfAll) : chosenRec;
 
-  const cheapestRec = toRecommendation(cheapestRanked[0], PROFILES.cheapest);
-  const fastestRec = toRecommendation(fastestRanked[0], PROFILES.fastest);
-
-  // Alternatives: top cheapest + top fastest, deduped against the balanced pick
+  // Alternatives: the next machines of the choice, then the cheapest capable machine outside it.
   const alternatives: MachineCandidate[] = [];
-  for (const rec of [cheapestRec, fastestRec]) {
-    if (
-      rec.candidate.machineId !== balancedRec.candidate.machineId &&
-      !alternatives.some((a) => a.machineId === rec.candidate.machineId)
-    ) {
-      alternatives.push(rec.candidate);
-    }
-  }
-  // Fill from balanced ranking if still short
-  for (const s of balancedRanked.slice(1)) {
-    if (alternatives.length >= 2) break;
-    if (
-      s.candidate.machineId !== balancedRec.candidate.machineId &&
-      !alternatives.some((a) => a.machineId === s.candidate.machineId)
-    ) {
-      alternatives.push(s.candidate);
-    }
-  }
+  const offer = (c: MachineCandidate | undefined) => {
+    if (c && c.machineId !== chosenRec.candidate.machineId && !alternatives.some((a) => a.machineId === c.machineId)) alternatives.push(c);
+  };
+  for (const c of ranked) { if (alternatives.length < 2) offer(c); }
+  if (alternatives.length < 2) offer(cheapestOfAll);
+  for (const c of outside) { if (alternatives.length < 2) offer(c); }
   // A line drawing on several machine families (deburr: Deslag + Manual
   // Deburr) always offers the best machine of every family, so each stays
   // selectable even when it ranks below the top two.
-  alternatives.splice(2);
   if (lineClasses.length > 1) {
     for (const cls of lineClasses) {
-      const shown = [balancedRec.candidate, ...alternatives].some((c) => c.machineClass === cls);
-      const best = balancedRanked.find((s) => s.candidate.machineClass === cls);
-      if (!shown && best) alternatives.push(best.candidate);
+      const shown = [chosenRec.candidate, ...alternatives].some((c) => c.machineClass === cls);
+      const best = [...eligible].sort(byCost).find((c) => c.machineClass === cls);
+      if (!shown && best) alternatives.push(best);
     }
   }
 
-  const balancedFit = fitScore(balancedRec.candidate, requirement);
-  const confidence = balancedRec.candidate.capabilitySource === 'default_class'
+  const chosenFit = fitScore(chosenRec.candidate, requirement);
+  const confidence = chosenRec.candidate.capabilitySource === 'default_class'
     ? 40
-    : Math.round(balancedFit * 100);
+    : Math.round(chosenFit * 100);
 
   let availabilityWarning: string | undefined;
-  const picked = balancedRec.candidate;
+  const picked = chosenRec.candidate;
   if (isInMaintenanceWindow(picked, now)) {
     availabilityWarning = picked.nextAvailableAt
       ? `Under maintenance until ${picked.nextAvailableAt.slice(0, 10)}`
@@ -1320,40 +1307,47 @@ export function selectMachine(input: SelectMachineInput): MachineSelectionResult
     availabilityWarning = `Heavily booked (${Math.round(picked.scheduledLoadPct!)}% scheduled load)`;
   }
 
-  const W = PROFILES.balanced;
-  const composite = (s: (typeof scored)[number]) => s.fit * W.fit + s.util * W.util + s.cost * W.cost + s.avail * W.avail;
   const r3 = (v: number) => Math.round(v * 1000) / 1000;
-  const ranking: MachineScoreBreakdown[] = balancedRanked.map((s) => ({
-    machineId: s.candidate.machineId,
-    machineName: s.candidate.machineName,
-    hourlyRate: s.candidate.hourlyRate,
-    fit: r3(s.fit), util: r3(s.util), cost: r3(s.cost), avail: r3(s.avail),
-    score: r3(composite(s)),
-  }));
+  // Every capable machine: the ones the choice was made from first, cheapest first; then the capable machines the narrowing set aside.
+  const entry = (c: MachineCandidate, chosenFrom: boolean): MachineRankEntry => ({
+    machineId: c.machineId, machineName: c.machineName, hourlyRate: c.hourlyRate,
+    preferred: c.preferred, virtual: c.virtual, inPool: chosenFrom, fit: r3(fitOf.get(c)!),
+    ...(perPart ? { costPerPart: costBasis(c) / 3600 } : {}),
+  });
+  const ranking: MachineRankEntry[] = [...ranked.map((c) => entry(c, true)), ...outside.map((c) => entry(c, false))];
   const rejected = classPool
     .filter((c) => !eligible.includes(c))
     .map((c) => ({ machineId: c.machineId, machineName: c.machineName, reasons: buildReasons(c, requirement, laserOpts) }));
+
+  // How the machine was chosen, step by step, as the line tells it.
+  const many = (n: number, one: string, more: string) => `${n} ${n === 1 ? one : more}`;
+  const steps: SelectionStep[] = [
+    { rule: 'capable', count: eligible.length, text: `${many(eligible.length, 'machine', 'machines')} of ${classPool.length} can do the part` },
+    ...narrowing,
+    {
+      rule: 'cheapest', count: 1,
+      text: ranked.length > 1
+        ? `the lowest ${perPart ? 'cost per part (machine hour rate x its time)' : 'machine hour rate'} of those ${ranked.length}`
+        : 'the one machine left',
+    },
+  ];
+
   let decision: MachineSelectionDecision;
   if (overridden) {
-    decision = { winnerId: balancedRec.candidate.machineId, runnerUpId: null, decidingFactor: 'override' };
-  } else if (balancedRanked.length < 2) {
-    decision = { winnerId: balancedRec.candidate.machineId, runnerUpId: null, decidingFactor: 'only_capable' };
+    decision = { winnerId: chosenRec.candidate.machineId, runnerUpId: null, decidingFactor: 'override' };
+  } else if (ranked.length < 2) {
+    decision = { winnerId: chosenRec.candidate.machineId, runnerUpId: null, decidingFactor: eligible.length < 2 ? 'only_capable' : 'only_in_pool' };
   } else {
-    const [a, b] = balancedRanked as [(typeof scored)[number], (typeof scored)[number]];
-    const deltas = (['fit', 'util', 'cost', 'avail'] as const)
-      .map((k) => ({ k, d: (a[k] - b[k]) * W[k] }))
-      .sort((x, y) => y.d - x.d);
+    const [a, b] = ranked as [MachineCandidate, MachineCandidate];
     decision = {
-      winnerId: a.candidate.machineId,
-      runnerUpId: b.candidate.machineId,
-      decidingFactor: deltas[0]!.d > 1e-9 ? deltas[0]!.k : 'tie_rate',
+      winnerId: a.machineId, runnerUpId: b.machineId,
+      decidingFactor: costBasis(a) !== costBasis(b) ? 'cost' : fitOf.get(a) !== fitOf.get(b) ? 'fit' : 'name',
     };
   }
 
   return {
-    balanced: balancedRec,
+    balanced: chosenRec,
     cheapest: cheapestRec,
-    fastest: fastestRec,
     alternatives,
     confidence,
     requirement,
@@ -1362,7 +1356,7 @@ export function selectMachine(input: SelectMachineInput): MachineSelectionResult
     availabilityWarning,
     ranking,
     rejected,
-    profileWeights: PROFILES,
+    steps,
     decision,
   };
 }

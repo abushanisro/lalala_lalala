@@ -246,6 +246,8 @@ ALTER TABLE public.process_taxonomy ADD COLUMN IF NOT EXISTS default_tool_shop_n
 INSERT INTO public.raw_materials (name, material_group) VALUES ('Aluminum, AA 1100', 'Sheet Metal Roll Forming');
 -- the machine envelope columns as the real database has them (migration 755 fills them for the lathes): migration 1093 fills them for the multi-spindle machines
 ALTER TABLE public.mhr_records ADD COLUMN max_diameter_mm numeric(10,2), ADD COLUMN max_length_mm numeric(10,2);
+-- the thickness limits as the real database has them (migration 324): migration 1164 leaves alone the one row that breaks their constraint
+ALTER TABLE public.mhr_records ADD COLUMN max_thickness_ms_mm numeric(10,2), ADD COLUMN max_thickness_al_mm numeric(10,2);
 -- the taxonomy columns as the real database has them (migration 609): migration 1094 adds the Multi-Spindle Machining > Simultaneous Turning row
 ALTER TABLE public.process_taxonomy ADD COLUMN default_machine_name varchar(200), ADD COLUMN notes text;
 -- the operation catalog as the real database has it (migration 609, with its tenant column), and the six lathes' Thread Turning//Ring rows

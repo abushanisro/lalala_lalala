@@ -169,7 +169,7 @@ export function injectionPressRequirements(a: {
 
 /**
  * The press selection as the line shows it, with the press the part was costed on as the pick: when the cavity search (costMoldOnPresses)
- * molded the part on another press than the scored pick, that press leads, the scored pick becomes the first alternative, and the reason says
+ * molded the part on another press than the selector's pick, that press leads, the selector's pick becomes the first alternative, and the reason says
  * why. `candidate` is in USD (the machine pool); the selection is in the factory currency, so its rate is converted with `usdToLocal`.
  */
 export function selectionCostedOn(selection: MachineSelectionResult, candidate: MachineCandidate, reason: string, usdToLocal: number): MachineSelectionResult {
@@ -180,7 +180,7 @@ export function selectionCostedOn(selection: MachineSelectionResult, candidate: 
   const ranked = selection.ranking?.find((r) => r.machineId === candidate.machineId);
   return {
     ...selection,
-    balanced: { candidate: local, score: ranked?.score ?? selection.balanced.score, reasons: [reason] },
+    balanced: { candidate: local, score: ranked?.fit ?? selection.balanced.score, reasons: [reason] },
     alternatives: [selection.balanced.candidate, ...selection.alternatives.filter((c) => c.machineId !== candidate.machineId)].slice(0, 2),
     ...(selection.decision ? { decision: { winnerId: candidate.machineId, runnerUpId: selection.balanced.candidate.machineId, decidingFactor: 'cost' as const } } : {}),
   };

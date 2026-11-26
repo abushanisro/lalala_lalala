@@ -41,14 +41,15 @@ describe('mhrRateFromCandidate', () => {
     const cand = (id: string, hourlyRate: number) => ({ ...press, machineId: id, hourlyRate }) as MachineCandidate;
     const pick = (c: MachineCandidate) => ({ candidate: c, reasons: [] });
     const selection = {
-      balanced: pick(cand('a', 10)), cheapest: pick(cand('a', 10)), fastest: pick(cand('b', 12)),
-      alternatives: [cand('b', 12)], ranking: [{ machineId: 'a', hourlyRate: 10 }],
+      balanced: pick(cand('a', 10)), cheapest: pick(cand('b', 12)),
+      alternatives: [cand('b', 12)], ranking: [{ machineId: 'a', hourlyRate: 10, costPerPart: 0.5 }],
     } as unknown as MachineSelectionResult;
     const rate = mhrRateFromCandidate(cand('a', 10), 'injection_molding', 2, selection);
     expect(rate.selection!.balanced.candidate.hourlyRate).toBe(20);
-    expect(rate.selection!.fastest.candidate.hourlyRate).toBe(24);
+    expect(rate.selection!.cheapest.candidate.hourlyRate).toBe(24);
     expect(rate.selection!.alternatives[0]!.hourlyRate).toBe(24);
     expect(rate.selection!.ranking![0]!.hourlyRate).toBe(20);
+    expect(rate.selection!.ranking![0]!.costPerPart).toBe(1);
     expect(selection.balanced.candidate.hourlyRate).toBe(10); // the selection given is not changed
     expect(mhrRateFromCandidate(cand('a', 10), 'injection_molding', 1, selection).selection).toBe(selection);
     expect(convertSelectionRates(undefined, (v) => v * 2)).toBeUndefined();

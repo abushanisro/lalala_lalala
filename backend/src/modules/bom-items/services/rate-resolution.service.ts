@@ -8,6 +8,9 @@ import {
 import type { MachineClass } from '../costing/shared/core/default-rates.constants';
 import { mhrRateFromCandidate } from '../costing/shared/capability/machine-selection/rate-from-candidate';
 import { fetchMachinePool, selectMachine } from '../costing/shared/capability/machine-selection/selector';
+import { selectionPolicyOf } from '../costing/shared/capability/machine-selection/selection-policy';
+import { MachiningLookupService } from '../costing/machining/lookup/machining-lookup.service';
+import { SheetMetalLookupService } from '../costing/sheet-metal/lookup/sheet-metal-lookup.service';
 import type { MachineRequirement } from '../costing/shared/capability/machine-selection/physics';
 import type { RateSnapshot } from '../../../common/exchange-rate/exchange-rate.service';
 import { cachedRead } from '../costing/shared/core/request-cache';
@@ -62,6 +65,8 @@ export class RateResolutionService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly calculatorCatalogService: CalculatorCatalogService,
+    private readonly machiningLookupService: MachiningLookupService,
+    private readonly sheetMetalLookupService: SheetMetalLookupService,
   ) {}
 
   async resolveMHRRates(
@@ -206,7 +211,9 @@ export class RateResolutionService {
     qaInspectorRate: number | null;
   }> {
     // ONE source for every machine and labour rate below: a real mhr_records
-    // row, chosen by selectMachine() for this class and location. Since
+    // row, chosen by selectMachine() for this class and location (of the
+    // machines that can do the part, the cheapest after the reference data's
+    // own virtual / preferred order). Since
     // migration 805 every mhr_records row is memory/-backed.
     //
     // There is deliberately no substitute of any kind — no mhr_benchmark_rates
@@ -216,6 +223,12 @@ export class RateResolutionService {
     // with source 'no_db_rate', which every engine treats as "not costed" and
     // names in a warning; it is never shown or charged as a price.
     const pool = await fetchMachinePool(this.databaseService.getClient(accessToken), location);
+    // Technical first, then cost: of the machines that can do the part, the reference data takes a virtual and a preferred machine first
+    // where the machine's family says so (its variables usePreferredMachines, preferVirtualMachines), then the cheapest.
+    const policyOf = selectionPolicyOf(
+      await this.machiningLookupService.getMachineSelectionVariables(),
+      await this.sheetMetalLookupService.getMachineSelectionVariables(),
+    );
     const requirements = physics?.requirements ?? {};
     const overrides = physics?.overrides ?? new Map<string, string>();
     const localCurrencyCode = (LOCATION_INFO[location] ?? LOCATION_INFO['Other']).code;
@@ -231,6 +244,7 @@ export class RateResolutionService {
         machineClass: cls,
         requirement: requirements[cls] ?? { kind: 'generic' },
         overrideMachineId: overrides.get(cls) ?? null,
+        policyOf,
       });
       return mhrRateFromCandidate(selection.balanced.candidate, cls, usdToLocal, selection);
     };

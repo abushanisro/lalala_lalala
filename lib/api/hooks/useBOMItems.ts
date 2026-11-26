@@ -685,6 +685,9 @@ export interface MachineCandidate {
   capability: MachineCapability;
   capabilitySource: CapabilitySource;
   capabilityVersion: number | null;
+  /** The machine's own flags in the reference data: the choice takes a virtual and a preferred machine first where its family says so. */
+  preferred?: boolean | null;
+  virtual?: boolean | null;
 }
 
 export interface CapabilityCheck {
@@ -704,36 +707,45 @@ export interface MachineRecommendation {
 }
 
 export interface MachineSelectionResult {
+  /**
+   * The machine the line is costed on: of the machines that can do the part, the virtual and then the preferred ones as the reference data
+   * says, then the cheapest (backend selector.ts selectMachine). The field keeps its first name.
+   */
   balanced: MachineRecommendation;
+  /** The lowest-cost capable machine of all, the virtual and preferred steps left aside. */
   cheapest: MachineRecommendation;
-  fastest: MachineRecommendation;
   alternatives: MachineCandidate[];
   confidence: number;
   requirement: { kind: string } & Record<string, unknown>;
   allowOverride: true;
   overridden: boolean;
   availabilityWarning?: string;
-  /** Every capable machine in balanced-profile order, with its 0-1 component scores. */
-  ranking?: MachineScoreBreakdown[];
+  /** Every capable machine: the ones the choice was made from first, cheapest first, then the capable machines the steps set aside. */
+  ranking?: MachineRankEntry[];
   /** Machines of this class that failed the part's capability check. */
   rejected?: Array<{ machineId: string | null; machineName: string | null; reasons: string[] }>;
-  profileWeights?: Record<'balanced' | 'cheapest' | 'fastest', { fit: number; util: number; cost: number; avail: number }>;
+  /** How the machine was chosen, step by step: the capable machines, the virtual and preferred steps taken, the lowest cost. */
+  steps?: Array<{ rule: 'capable' | 'virtual' | 'preferred' | 'cheapest'; count: number; text: string }>;
   decision?: {
     winnerId: string | null;
     runnerUpId: string | null;
-    decidingFactor: 'fit' | 'util' | 'cost' | 'avail' | 'tie_rate' | 'only_capable' | 'override';
+    decidingFactor: 'cost' | 'fit' | 'name' | 'only_capable' | 'only_in_pool' | 'override';
   };
 }
 
-export interface MachineScoreBreakdown {
+/** One capable machine as the choice saw it (backend MachineRankEntry). */
+export interface MachineRankEntry {
   machineId: string | null;
   machineName: string | null;
   hourlyRate: number;
+  preferred: boolean | null;
+  virtual: boolean | null;
+  /** Among the machines the choice was made from; false for a capable machine the virtual or preferred step set aside. */
+  inPool: boolean;
+  /** How tightly the part fills the machine (1 = sized for it): the tie-break between equal costs. */
   fit: number;
-  util: number;
-  cost: number;
-  avail: number;
-  score: number;
+  /** Its cost per part, where the line's machines run at different speeds and are compared on it. */
+  costPerPart?: number;
 }
 
 /** One real GD&T callout this part carries — backend costing/shared/physics/gdt-callouts.ts. */

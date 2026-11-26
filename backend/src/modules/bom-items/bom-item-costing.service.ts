@@ -1219,7 +1219,6 @@ export class BomItemCostingService {
     return {
       balanced: rec,
       cheapest: rec,
-      fastest: rec,
       alternatives: [],
       confidence: primary.confidence,
       requirement: { kind: 'generic' },

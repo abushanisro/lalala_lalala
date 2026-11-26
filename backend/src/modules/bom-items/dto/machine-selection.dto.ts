@@ -96,6 +96,13 @@ export interface MachineCandidate {
    */
   directOverheadRate: number | null;
   indirectOverheadRate: number | null;
+  /**
+   * mhr_records.specs is_preferred / is_virtual_machine: the machine file's own flags (migration 1164 stages them for machining and sheet
+   * metal; the other families' seeds carry them). The reference data chooses a virtual machine first where the family prefers them
+   * (preferVirtualMachines) and then a preferred machine (usePreferredMachines): selection-policy.ts. null when the file gives none.
+   */
+  preferred: boolean | null;
+  virtual: boolean | null;
 }
 
 // Structured version of the material/thickness-vs-capacity check — lets the
@@ -115,59 +122,66 @@ export interface CapabilityCheck {
 
 export interface MachineRecommendation {
   candidate: MachineCandidate;
-  score: number;      // 0-1 composite for the profile
+  score: number;      // 0-1: how tightly the part fills this machine's capability envelope (1 = sized for it)
   reasons: string[];  // human-readable "why this machine"
   capabilityCheck?: CapabilityCheck | null;
 }
 
-/** Component scores of one capable machine (each 0-1) and its composite on a profile. */
-export interface MachineScoreBreakdown {
+/** One capable machine as the choice saw it. */
+export interface MachineRankEntry {
   machineId: string | null;
   machineName: string | null;
   hourlyRate: number;
-  /** How tightly the part fills this machine's capability envelope (1 = perfectly sized). */
+  /** The machine's own flags (MachineCandidate.preferred / virtual). */
+  preferred: boolean | null;
+  virtual: boolean | null;
+  /** Among the machines the choice was made from, after the virtual and preferred steps. A capable machine those steps set aside is false. */
+  inPool: boolean;
+  /** How tightly the part fills this machine's capability envelope (1 = sized for it): the tie-break between equal costs. */
   fit: number;
-  /** Closeness of the machine's utilization to the 75% target load. */
-  util: number;
-  /** Lowest capable hourly rate / this machine's rate. */
-  cost: number;
-  /** 1 available, 0.7 heavily scheduled, 0.5 commissioning, 0 in maintenance. */
-  avail: number;
-  /** Composite on the balanced profile. */
-  score: number;
+  /** Its cost per part, for a line whose machines run at different speeds and are compared on it (deburr). Absent: compared on the hour rate. */
+  costPerPart?: number;
 }
 
-interface ProfileWeightsDto { fit: number; util: number; cost: number; avail: number }
+/** One step of the choice, in the order taken (selection-policy.ts SelectionStep). */
+export interface MachineSelectionStep {
+  rule: 'capable' | 'virtual' | 'preferred' | 'cheapest';
+  /** Machines left after the step. */
+  count: number;
+  text: string;
+}
 
 /**
- * Why the balanced pick won: the runner-up it beat and the factor whose
- * weighted score difference decided it. 'only_capable' when no other machine
- * passed the capability check; 'override' when a user forced the pick.
+ * Why the chosen machine won over the next one of the machines it was chosen from: a lower cost; at an equal cost the tighter fit, then the
+ * name. 'only_capable' when no other machine passed the capability check, 'only_in_pool' when it was the one machine the virtual and
+ * preferred steps left, 'override' when a user forced the pick.
  */
 export interface MachineSelectionDecision {
   winnerId: string | null;
   runnerUpId: string | null;
-  decidingFactor: 'fit' | 'util' | 'cost' | 'avail' | 'tie_rate' | 'only_capable' | 'override';
+  decidingFactor: 'cost' | 'fit' | 'name' | 'only_capable' | 'only_in_pool' | 'override';
 }
 
 export interface MachineSelectionResult {
-  // Balanced is the default the cost engine prices with; cheapest/fastest are
-  // surfaced so a cost engineer can flip profiles per line without an API call.
+  /**
+   * The machine the cost engine prices the line on: of the machines that can do the part, the virtual and then the preferred ones as the
+   * reference data says, then the cheapest (selector.ts selectMachine). The field keeps its first name: saved lines and the API carry it.
+   */
   balanced: MachineRecommendation;
+  /** The lowest-cost capable machine of all, the virtual and preferred steps left aside. */
   cheapest: MachineRecommendation;
-  fastest: MachineRecommendation;
-  alternatives: MachineCandidate[];   // up to 2, deduped against balanced pick
-  confidence: number;                 // balanced Fit × 100
+  alternatives: MachineCandidate[];   // up to 2, deduped against the chosen machine
+  confidence: number;                 // the chosen machine's fit × 100
   requirement: MachineRequirement;
   allowOverride: true;
   overridden: boolean;                // true when a user override forced the pick
   availabilityWarning?: string;
-  /** Every capable machine, in balanced-profile order, with its component scores. */
-  ranking?: MachineScoreBreakdown[];
+  /** Every capable machine: the ones the choice was made from first, cheapest first, then the capable machines the steps set aside. */
+  ranking?: MachineRankEntry[];
   /** Machines of this class that failed the part's capability check, with the compared values. */
   rejected?: Array<{ machineId: string | null; machineName: string | null; reasons: string[] }>;
-  /** The profile weights the scores were combined with. */
-  profileWeights?: Record<'balanced' | 'cheapest' | 'fastest', ProfileWeightsDto>;
+  /** How the machine was chosen, step by step. */
+  steps?: MachineSelectionStep[];
   decision?: MachineSelectionDecision;
 }
 

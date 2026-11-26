@@ -1,9 +1,10 @@
 'use client';
 
 /**
- * MachineSelector — renders the physics-based machine recommendation inside an
- * expanded process-line row: recommended (balanced) machine + confidence, up
- * to two alternatives, and a full-list override picker. Overrides persist via
+ * MachineSelector — renders the machine a process line is costed on inside an
+ * expanded process-line row: the chosen machine (of the machines that can do
+ * the part, the reference data's virtual / preferred order, then the cheapest),
+ * up to two alternatives, and a full-list override picker. Overrides persist via
  * POST /bom-items/:id/machine-override.
  */
 
@@ -15,82 +16,76 @@ import { useMachineOverride } from '@/lib/api/hooks/useBOMItems';
 import type {
   CapabilityCheck,
   MachineCandidate,
+  MachineRankEntry,
   MachineSelectionResult,
 } from '@/lib/api/hooks/useBOMItems';
 import { cn } from '@/lib/utils';
 
-const FACTOR_LABEL = { fit: 'Fit', util: 'Load', cost: 'Cost', avail: 'Avail' } as const;
-
 /**
- * Why the selector picked this machine, straight from the backend's scoring:
- * the runner-up it beat and the factor that decided it, every capable
- * machine's component scores with the profile weights they were combined
- * with, and the machines rejected because they cannot hold the part.
+ * How the machine was chosen, straight from the backend: technical first (the machines that can do the part), then the reference data's
+ * order (virtual machines, then preferred ones, where the machine's family says so), then the lowest cost. Opens to every capable machine
+ * (the ones chosen from, cheapest first, then the capable machines those steps set aside) and the machines that cannot hold the part.
  */
-function SelectionWhy({ selection, fmtRate }: { selection: MachineSelectionResult; fmtRate: (r: number) => string }) {
+function SelectionWhy({ selection, fmtRate, currencySymbol }: { selection: MachineSelectionResult; fmtRate: (r: number) => string; currencySymbol: string }) {
   const [open, setOpen] = useState(false);
-  const { ranking, decision, profileWeights, rejected } = selection;
-  if (!ranking?.length || !decision) return null;
+  const { ranking, decision, steps, rejected } = selection;
+  if (!ranking?.length || !decision || !steps?.length) return null;
   const winner = ranking.find((r) => r.machineId === decision.winnerId) ?? ranking[0]!;
   const runner = ranking.find((r) => r.machineId === decision.runnerUpId);
   const name = (r: { machineName: string | null }) => r.machineName ?? 'Class default';
+  const perPart = ranking.some((r) => r.costPerPart != null);
+  const cost = (r: MachineRankEntry) => (r.costPerPart != null ? `${currencySymbol}${r.costPerPart.toFixed(4)} per part` : fmtRate(r.hourlyRate));
 
-  let sentence: string | null = null;
-  if (decision.decidingFactor === 'only_capable') {
-    sentence = 'Only machine of this class that passes the capability check for this part.';
-  } else if (runner) {
-    const vs = `over ${name(runner)}`;
+  let over: string | null = null;
+  if (runner) {
     switch (decision.decidingFactor) {
-      case 'cost': sentence = `Picked ${vs}: lower rate ${fmtRate(winner.hourlyRate)} vs ${fmtRate(runner.hourlyRate)} (fit ${winner.fit} vs ${runner.fit}, load ${winner.util} vs ${runner.util}).`; break;
-      case 'fit': sentence = `Picked ${vs}: tighter capability fit ${winner.fit} vs ${runner.fit} — the part uses more of this machine's envelope.`; break;
-      case 'util': sentence = `Picked ${vs}: load closer to the 75% target (score ${winner.util} vs ${runner.util}).`; break;
-      case 'avail': sentence = `Picked ${vs}: better availability (${winner.avail} vs ${runner.avail}).`; break;
-      case 'tie_rate': sentence = `Identical scores to ${name(runner)}; the lower rate breaks the tie.`; break;
-      default: sentence = null;
+      case 'cost': over = `${cost(winner)} against ${cost(runner)} on ${name(runner)}`; break;
+      case 'fit': over = `the same cost as ${name(runner)}; the part fills this machine better (fit ${winner.fit} against ${runner.fit})`; break;
+      case 'name': over = `the same cost and fit as ${name(runner)}; taken by name`; break;
+      default: over = null;
     }
   }
-  const w = profileWeights?.balanced;
+  const flags = (r: MachineRankEntry) => [r.virtual ? 'virtual' : null, r.preferred ? 'preferred' : null].filter(Boolean).join(', ');
+  const setAside = ranking.filter((r) => !r.inPool).length;
 
   return (
     <div className="space-y-1">
-      {sentence && (
-        <p className="text-[10px] text-muted-foreground leading-snug">
-          <span className="font-semibold">Selected:</span> {sentence}
-        </p>
-      )}
+      <p className="text-[10px] text-muted-foreground leading-snug">
+        <span className="font-semibold">Chosen:</span> {steps.map((s) => s.text).join('; ')}{over ? ` (${over})` : ''}.
+      </p>
       <button type="button" onClick={() => setOpen((v) => !v)} className="text-[10px] text-muted-foreground hover:text-foreground">
-        {open ? 'Hide scores' : `Show scores (${ranking.length} capable${rejected?.length ? `, ${rejected.length} rejected` : ''})`}
+        {open ? 'Hide machines' : `Show machines (${ranking.length} capable${rejected?.length ? `, ${rejected.length} rejected` : ''})`}
       </button>
       {open && (
         <div className="rounded border border-border/40 p-1.5 space-y-1">
-          {w && (
-            <div className="text-[9px] text-muted-foreground/70">
-              Balanced weights: fit {w.fit * 100}% · load {w.util * 100}% · cost {w.cost * 100}%{w.avail ? ` · availability ${w.avail * 100}%` : ''}
-            </div>
-          )}
           <table className="w-full text-[10px] tabular-nums">
             <thead>
               <tr className="text-muted-foreground">
                 <th className="text-left font-normal">Machine</th>
-                {(Object.keys(FACTOR_LABEL) as Array<keyof typeof FACTOR_LABEL>).map((k) => (
-                  <th key={k} className="text-right font-normal">{FACTOR_LABEL[k]}</th>
-                ))}
-                <th className="text-right font-normal">Score</th>
+                <th className="text-left font-normal">In the reference data</th>
+                <th className="text-right font-normal">Rate</th>
+                {perPart && <th className="text-right font-normal">Per part</th>}
               </tr>
             </thead>
             <tbody>
               {ranking.map((r) => (
-                <tr key={r.machineId ?? r.machineName ?? 'x'} className={r.machineId === winner.machineId ? 'text-foreground' : 'text-muted-foreground'}>
-                  <td className="text-left truncate max-w-[140px]" title={`${name(r)} · ${fmtRate(r.hourlyRate)}`}>{name(r)}</td>
-                  <td className="text-right">{r.fit}</td>
-                  <td className="text-right">{r.util}</td>
-                  <td className="text-right">{r.cost}</td>
-                  <td className="text-right">{r.avail}</td>
-                  <td className="text-right font-medium">{r.score}</td>
+                <tr
+                  key={r.machineId ?? r.machineName ?? 'x'}
+                  className={r.machineId === winner.machineId ? 'text-foreground font-medium' : r.inPool ? 'text-foreground' : 'text-muted-foreground'}
+                >
+                  <td className="text-left truncate max-w-[140px]" title={name(r)}>{name(r)}</td>
+                  <td className="text-left">{flags(r) || '—'}</td>
+                  <td className="text-right">{fmtRate(r.hourlyRate)}</td>
+                  {perPart && <td className="text-right">{r.costPerPart != null ? `${currencySymbol}${r.costPerPart.toFixed(4)}` : '—'}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
+          {setAside > 0 && (
+            <p className="text-[9px] text-muted-foreground/70 leading-snug">
+              The {setAside} greyed machine{setAside === 1 ? ' is' : 's are'} capable too; the choice was made from the others first, as the steps above say.
+            </p>
+          )}
           {rejected && rejected.length > 0 && (
             <div className="space-y-0.5 pt-1 border-t border-border/30">
               {rejected.map((r) => (
@@ -226,11 +221,9 @@ export function MachineSelector({
     ? (savedExplanation ?? null)
     : { reasons: active.reasons, capabilityCheck: active.capabilityCheck ?? null };
 
-  const alternativeTag = (c: MachineCandidate): string | null => {
-    if (c.machineId === selection.cheapest.candidate.machineId) return 'cheapest';
-    if (c.machineId === selection.fastest.candidate.machineId) return 'fastest';
-    return null;
-  };
+  const alternativeTag = (c: MachineCandidate): string | null => (
+    c.machineId === selection.cheapest.candidate.machineId ? 'lowest rate of all capable' : null
+  );
 
   const alternativeCandidates = selection.alternatives.filter((c) => c.machineId !== recommended.machineId);
 
@@ -319,7 +312,7 @@ export function MachineSelector({
           <span className="font-semibold">Why:</span> {explanation.reasons.join('; ')}
         </p>
       )}
-      {!differsFromLive && !selection.overridden && <SelectionWhy selection={selection} fmtRate={fmtRate} />}
+      {!differsFromLive && !selection.overridden && <SelectionWhy selection={selection} fmtRate={fmtRate} currencySymbol={currencySymbol} />}
       {differsFromLive && !savedExplanation && (
         <p className="text-[10px] text-muted-foreground/60 italic">
           Manually selected — differs from the current algorithm recommendation
