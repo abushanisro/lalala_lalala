@@ -79,7 +79,8 @@
 // The tool shop rates are USA only: anywhere else the hours are reported, not priced.
 
 
-import type { CalculatorRunDto } from '../../dto/cost-breakdown.dto';
+import type { CalculatorRunDto, SourceRef } from '../../dto/cost-breakdown.dto';
+import { calculationRef, inputStep, resultStep } from './casting-source-refs';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalculators } from '../shared/calculators/reference-calculator';
 import { castingSeed, runView, SeedSet } from './casting-calculator-seeds';
 
@@ -276,7 +277,8 @@ export interface DieToolingInput {
   borders: DieBorders;
   /** The die-casting machine clamping force (kN); null for a gravity machine. */
   pressForceKn: number | null;
-  cavities: { count: number; lengthWise: number; widthWise: number };
+  /** The die layout; `ref`, how its count was decided (HpdcCavities.ref), when the casting line says. */
+  cavities: { count: number; lengthWise: number; widthWise: number; ref?: SourceRef };
   footprintMm: [number, number];
   pullExtentMm: number | null;
   projectedAreaMm2: number;
@@ -356,10 +358,20 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
   const layoutA = Math.max(input.cavities.lengthWise * fa, input.cavities.widthWise * fb);
   const layoutB = Math.min(input.cavities.lengthWise * fa, input.cavities.widthWise * fb);
   const layout = `${input.cavities.lengthWise} × ${input.cavities.widthWise} cavity layout of ${r2(fa)} × ${r2(fb)} mm parts`;
+  // The cavity count of the die (how it was decided, when the casting line says) and the layout's sides worked out from it.
+  const cavitiesRef: SourceRef = input.cavities.ref ?? calculationRef('Cavities per die', [resultStep('Cavities', null, n, 'The count of the costed die layout')]);
+  const layoutSide = (value: number, which: 'longer' | 'shorter'): SourceRef => calculationRef(`Layout ${which === 'longer' ? 'Length' : 'Width'}`, [
+    inputStep('Cavities length-wise', null, input.cavities.lengthWise, 'The die layout (layoutNumCav)', cavitiesRef),
+    inputStep('Cavities width-wise', null, input.cavities.widthWise, 'The die layout (layoutNumCav)', cavitiesRef),
+    inputStep('Part footprint, longer side', 'mm', fa, 'CAD: the silhouette on the parting plane', { kind: 'cad', evidence: 'projected_area' }),
+    inputStep('Part footprint, shorter side', 'mm', fb, 'CAD: the silhouette on the parting plane', { kind: 'cad', evidence: 'projected_area' }),
+    resultStep(`Layout ${which === 'longer' ? 'Length' : 'Width'}`, 'mm', value,
+      `The ${which} of (length-wise x longer side) and (width-wise x shorter side)`),
+  ]);
   const b = input.borders;
   const size = run('Die Size', 'Die Casting - Die Size', 'Die Steel Weight', {
-    'Layout Length': castingSeed.engine(layoutA, `${layout} (longer side, mm)`),
-    'Layout Width': castingSeed.engine(layoutB, `${layout} (shorter side, mm)`),
+    'Layout Length': castingSeed.engine(layoutA, `${layout} (longer side, mm)`, layoutSide(layoutA, 'longer')),
+    'Layout Width': castingSeed.engine(layoutB, `${layout} (shorter side, mm)`, layoutSide(layoutB, 'shorter')),
     'Edge Border X': b.x, 'Edge Border Y': b.y,
     'Cavity Half Depth Border': b.cavityDepth, 'Core Half Depth Border': b.coreDepth,
     'Pull Extent': castingSeed.cad(input.pullExtentMm, 'part depth along the pull axis (mm)', 'die_depth'),
@@ -401,7 +413,12 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
   });
   if (unsized.length) warnings.push(`Die tooling: slide${unsized.length === 1 ? '' : 's'} ${unsized.join(', ')} not costed as steel: slide bundle width not measured (re-run analysis).`);
   const sized = input.slideWidthsMm.length - unsized.length;
-  const slideSum = (value: number, what: string) => castingSeed.engine(value, sized ? `sum over the ${sized} sized slide${sized === 1 ? '' : 's'} (Slide calculator): ${what}` : 'no sized slides');
+  const slideSum = (value: number, what: string) => castingSeed.engine(value, sized ? `sum over the ${sized} sized slide${sized === 1 ? '' : 's'} (Slide calculator): ${what}` : 'no sized slides',
+    calculationRef(`Slides: ${what}`, [
+      inputStep('Slide bundles', null, input.slideWidthsMm.length, 'CAD: the slide bundles of the part'),
+      inputStep('Sized slides', null, sized, 'Slide bundles with a measured width, each sized by the Slide calculator'),
+      resultStep(what, null, value, sized ? 'The sum over the sized slides (one Slide calculator run each)' : 'No sized slide: 0'),
+    ]));
 
   // ── Die Build ───────────────────────────────────────────────────────────
   const width = Math.min(dieX, dieY);
@@ -421,13 +438,15 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
     'Base Design Time': castingSeed.lookup('tblMoldBaseDesignTime', ref.customBase ? 'Custom Base Design Time (hr)' : 'Standard Base Design Time (hr)',
       ref.customBase ? design.customHr : design.standardHr, designRow),
     'Per Slide Design Time': castingSeed.lookup('tblMoldBaseDesignTime', 'Per Slide Design Time (hr)', design.perSlideHr, designRow),
-    'Slides': castingSeed.cad(input.slideCount, 'slide bundles'),
+    'Slides': castingSeed.engine(input.slideCount, 'CAD: slide bundles', calculationRef('Slides', [
+      inputStep('Slide bundles', null, input.slideCount, 'CAD: the SlideBundle features of the part (the side actions the die needs)'),
+    ])),
     'Parting Line Base Design Time': vs('partingLineBaseDesignTime'),
     'Parting Line Design Time per Slide': vs('partingLineDesignTimePerSlide'),
     'Hours per Square Inch': castingSeed.lookup(COMPLEXITY_TABLE[complexity], `Hrs Per Sq Inch ${complexity} (hr / in^2)`, hrRow.hrPerIn2,
       { [`Surface Area ${complexity} (in^2)`]: hrRow.maxAreaIn2 }),
     'Surface Area': castingSeed.cad(input.surfaceAreaMm2, 'part surface area (mm²)', 'part_surface'),
-    'Cavities': castingSeed.engine(n, `${n} cavit${n === 1 ? 'y' : 'ies'} per die`),
+    'Cavities': castingSeed.engine(n, `${n} cavit${n === 1 ? 'y' : 'ies'} per die`, cavitiesRef),
     'H13 Machinability': vs('machinabilityMultiplierH13ToolSteel'),
     'Projected Area': castingSeed.cad(input.projectedAreaMm2, 'projected area on the parting plane (mm²)', 'projected_area'),
     'Projected Area per Ejector Pin': vs('projAreaPerEjectorPin'),
@@ -437,7 +456,11 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
     'Guide Pin Cost': { ...castingSeed.lookup('componentStandardCosts', 'Cost (USD)', gp.costUsd, { Name: 'guidePinAssy', Model: gp.model }),
       source: `componentStandardCosts guidePinAssy ${gp.model} (${gp.sizeMm} mm, the smallest catalogued: memory has no size rule)` },
     'Guide Pin Assembly Time': vs('guidePinsAssTimePerTool'),
-    'Pressure Die': castingSeed.engine(pressure ? 1 : 0, pressure ? 'pressure die: the shot enters through a sprue bushing and spreader' : 'gravity die: no sprue bushing or spreader'),
+    'Pressure Die': castingSeed.engine(pressure ? 1 : 0, pressure ? 'pressure die: the shot enters through a sprue bushing and spreader' : 'gravity die: no sprue bushing or spreader',
+      calculationRef('Pressure Die', [
+        inputStep('Press force', 'kN', input.pressForceKn ?? 'none', pressure ? 'The die casting press the die is built for' : 'A gravity die is on no press'),
+        resultStep('Pressure Die', null, pressure ? 1 : 0, pressure ? '1: a press force, so the shot enters through a sprue bushing and spreader' : '0: no press, no sprue bushing or spreader'),
+      ])),
     'Sprue Bushing Cost': vs('sprueBushingCost'),
     'Sprue Spreader Cost': vs('sprueSpreaderCost'),
     'Sprue Assembly Time': vs('sprBushSpreadAssTimePerTool'),
@@ -508,8 +531,8 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
     : vs('defaultToolLife');
   result.shotsPerDie = shots.value;
   const life = new SeedSet()
-    .put('Annual Volume', input.annualVolume != null && input.annualVolume > 0 ? input.annualVolume : null, (x) => castingSeed.scenario(x, 'annual volume'), 'annual volume')
-    .put('Production Life', input.productionLifeYears != null && input.productionLifeYears > 0 ? input.productionLifeYears : null, (x) => castingSeed.scenario(x, 'production life (yr)'), 'production life');
+    .put('Annual Volume', input.annualVolume != null && input.annualVolume > 0 ? input.annualVolume : null, (x) => castingSeed.scenario(x, 'annual volume', 'annualVolume'), 'annual volume')
+    .put('Production Life', input.productionLifeYears != null && input.productionLifeYears > 0 ? input.productionLifeYears : null, (x) => castingSeed.scenario(x, 'production life (yr)', 'productionLifeYears'), 'production life');
   if (life.missing.length) {
     warnings.push('Die tooling not amortised: annual volume or production life not set.');
     return result;
@@ -518,7 +541,7 @@ export function computeDieTooling(input: DieToolingInput): DieToolingResult {
     'Die Cost': castingSeed.calculator(cost.value, 'Die Cost', cost),
     'Replacement Die Cost': castingSeed.calculator(cost.outputs['Replacement Die Cost']!, 'Die Cost', cost),
     'Shots per Die': shots,
-    'Cavities': castingSeed.engine(n, `${n} cavit${n === 1 ? 'y' : 'ies'} per die`),
+    'Cavities': castingSeed.engine(n, `${n} cavit${n === 1 ? 'y' : 'ies'} per die`, cavitiesRef),
   }));
   if (amort.value == null) return { ...result, warnings: [...warnings, `Die tooling not amortised: ${amort.missing.join('; ')}`] };
   result.diesRequired = amort.outputs['Dies Required']!;

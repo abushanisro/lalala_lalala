@@ -102,8 +102,8 @@ describe('the injection molding cycle inputs carry where they were read', () => 
     expect(refOf(trace, 'Press Dry Cycle Time')).toEqual({ ...refOf(trace, 'Press Injection Rate'), column: 'press_cycle_time_s' });
   });
 
-  it('a value with no place the dialog can open carries none: the computed shot volume', () => {
-    expect(refOf(trace, 'Shot Melt Volume')).toBeUndefined();
+  it('the computed shot volume opens the calculation it is: the CAD volume, the runner, the cavities and the melt density', () => {
+    expect(refOf(trace, 'Shot Melt Volume')).toMatchObject({ kind: 'calculation', evidence: 'part_volume', name: 'Shot Melt Volume: every cavity\'s shot, at the melt density' });
   });
 
   it('without the records (an older caller) the cycle is the same and the machine and material inputs carry no ref', () => {
@@ -115,9 +115,12 @@ describe('the injection molding cycle inputs carry where they were read', () => 
     expect(bare.totalCost).toBe(result.totalCost);
   });
 
-  it('a value the part overrides was not read from the source: no ref', () => {
+  it('a value the part overrides was not read from the source: it opens the engineer\'s value and the source of the value it replaces', () => {
     const r = computeInjectionMoldedCostSummary(part({ calculatorOverrides: { 'Injection Molding - Cycle Time': { 'Cycle Time Adjustment Factor': { value: 1.1, reason: 'plant trial' } } } }));
-    expect(refOf(lineNamed(r.processLines, 'Injection Molding - Cycle Time').calculationTrace, 'Cycle Time Adjustment Factor')).toBeUndefined();
+    const ref = refOf(lineNamed(r.processLines, 'Injection Molding - Cycle Time').calculationTrace, 'Cycle Time Adjustment Factor');
+    expect(ref).toMatchObject({ kind: 'calculation', name: 'Cycle Time Adjustment Factor: set by the engineer on this part' });
+    if (ref?.kind !== 'calculation') throw new Error('not a calculation');
+    expect(ref.steps.map((s) => s.ref)).toEqual([undefined, { kind: 'variable', domain: 'injection_molding', name: 'cycleTimeAdjustmentFactor' }, undefined]);
   });
 });
 
@@ -132,15 +135,21 @@ describe('the secondary operations', () => {
     expect(drying('Press Time Per Part')?.ref).toEqual({ kind: 'calculation', name: 'Injection Molding - Cycle Time', evidence: null, steps: molding().filter((t) => !t.group) });
   });
 
-  it('material drying: the bundled reference package values carry none (no viewer serves them)', () => {
-    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Electricity Price', 'Equipment Life']) expect(drying(field)).toBeDefined();
-    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Electricity Price', 'Equipment Life']) expect(drying(field)?.ref).toBeUndefined();
+  it('material drying: the bundled reference package values open their file (served as a lookup), the row outlined', () => {
+    for (const field of ['Drying Temperature', 'Dryer Throughput', 'Equipment Life']) {
+      expect(drying(field)?.ref).toMatchObject({ kind: 'lookup', domain: 'plastic_reference_package' });
+    }
+    // An electricity price given without its row (this fixture's) opens nothing; one read by electricityUsd opens the table (every-input-has-a-source.spec.ts).
+    expect(drying('Electricity Price')?.ref).toBeUndefined();
   });
 
-  it('deflashing: the trimming rate is the staged variable; the CAD parting line has no face evidence yet', () => {
+  it('deflashing: the trimming rate is the staged variable; the CAD parting line lights its PartingLine feature when the graph names it', () => {
     const trace = lineNamed(result.processLines, 'Injection Molding - Deflashing').calculationTrace;
     expectServedVariable(refOf(trace, 'Manual Flash Trimming Rate'));
     expect(refOf(trace, 'Parting Line Length')).toBeUndefined();
+    const named = computeInjectionMoldedCostSummary(part({ signals: { ...part().signals, partingLineFeatureId: 'parting-line' } }));
+    expect(refOf(lineNamed(named.processLines, 'Injection Molding - Deflashing').calculationTrace, 'Parting Line Length'))
+      .toEqual({ kind: 'features', label: 'parting line', features: [{ featureId: 'parting-line' }] });
   });
 
   it('visual inspection: the surface is the CAD surface, the rate and share are memory/Secondary process variables', () => {
@@ -185,10 +194,12 @@ describe('the mold tooling inputs', () => {
     expect(refOf(t, 'Tool Life Shots')).toEqual({ kind: 'variable', domain: 'injection_molding', name: 'defaultToolLife' });
   });
 
-  it('sums over several rows, bounding-box sizes and the scenario carry none', () => {
-    for (const field of ['Purchased Components Cost', 'Assembly Hours', 'Plate Setup Hours', 'Part Height', 'Mold Base Area', 'Annual Volume', 'Cavities per Mold']) {
-      expect(refOf(trace, field)).toBeUndefined();
+  it('sums over several rows and bounding-box sizes open the calculations they are; the scenario opens the costing inputs', () => {
+    for (const field of ['Purchased Components Cost', 'Assembly Hours', 'Plate Setup Hours', 'Part Height', 'Mold Base Area']) {
+      expect(refOf(trace, field)).toMatchObject({ kind: 'calculation' });
     }
+    expect(refOf(trace, 'Annual Volume')).toEqual({ kind: 'costingInput', field: 'annualVolume' });
+    expect(refOf(trace, 'Cavities per Mold')).toEqual({ kind: 'variable', domain: 'injection_molding', name: 'defaultNumCavities' });
   });
 });
 
@@ -206,12 +217,16 @@ describe('compression and reaction injection molding', () => {
     });
   });
 
-  it('compression: a grade with no cure time is seeded 0 from nowhere, so no ref', () => {
+  it('compression: a grade with no cure time is seeded 0, and its eye opens that: the record\'s empty cure_time_min and the 0 it gives', () => {
     const r = computeCompressionMoldingCost({
       batchSize: 250, rate: { ...rate('compression_molding', 40, 'Compression press'), pressCycleTimeS: 26.2 }, cureTimeMinFromMaterial: null,
       materialRecord: { id: 'rm-smc', name: 'SMC' }, calculators: CALCULATORS,
     });
-    expect(refOf(r.processLines[0]!.calculationTrace, 'Material Cure Time')).toBeUndefined();
+    const ref = refOf(r.processLines[0]!.calculationTrace, 'Material Cure Time');
+    expect(ref).toMatchObject({ kind: 'calculation', name: 'Material Cure Time: none on file' });
+    if (ref?.kind !== 'calculation') throw new Error('not a calculation');
+    expect(ref.steps[0]!.ref).toEqual({ kind: 'material', materialId: 'rm-smc', materialName: 'SMC', column: 'cure_time_min' });
+    expect(ref.steps.at(-1)).toMatchObject({ kind: 'calculated', value: 0 });
   });
 
   it('reaction injection: the injection rate opens the machine record, the part volume its CAD faces, the cure time the material', () => {

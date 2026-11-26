@@ -20,6 +20,7 @@ import { turnedGrooveGroups } from './costing/machining/operation/turned-grooves
 import { calculatorInputSteps, groupedRunsTrace } from './costing/machining/process/machining-trace';
 import { turnedRings, type TurnedRing } from './costing/machining/process/turned-diameters';
 import { inspectedOccurrences } from './costing/machining/inspection-reference';
+import { calculationRef, inputStep, resultStep } from './costing/machining/calculators/machining-source-refs';
 import { featuresRef, occurrenceByFace, occurrencesOfFaces, type FeatureOccurrenceRef } from './costing/machining/feature-occurrences';
 import { drawingThreadsOf, holeGroupsOfFeatures, normalizeThreadSpecs, tappedHolesOfFeatures, tappedHolesOfGraph, mergeThreads, type ThreadEntry } from './costing/machining/feature-holes';
 import { knurlsOnRings, splitExternalThreads, type ExternalThread, type KnurlOp } from './costing/machining/external-threads';
@@ -45,7 +46,7 @@ import { reconcileSheetGeometry } from './costing/shared/geometry-reconciliation
 import type { CalculationTraceStep, PhysicsGap, UnsupportedOperationGap, ManufacturingPhysicsResult, ConfidenceLevel, ResolutionStatus, LookupResolution, ValidatedInput } from './dto/cost-breakdown.dto';
 import { computeCostSummary, computeSustainability, applyPersistedRouteToSummary, selectAppliedGeneration, detectAppliedGenerationDrift } from './costing/shared/core/cost-engine';
 import type { MHRRateInput, AppliedProcessCostRecord } from './costing/shared/core/cost-engine';
-import { planInspection, finalizeInspectionLine } from './costing/shared/process/inspection-engine';
+import { planInspection, finalizeInspectionLine, inspectionSeedProvenance } from './costing/shared/process/inspection-engine';
 import type { InspectionInput } from './costing/shared/process/inspection-engine';
 import { evaluateCalculatorFormulas, normalizeFieldName } from '../calculators/calculator-formula-evaluator';
 import type { CalculatorFieldRow } from '../calculators/calculator-formula-evaluator';
@@ -77,7 +78,7 @@ import { SecondaryProcessService } from './services/secondary-process.service';
 import { resolveGdtCallouts } from './costing/shared/physics/gdt-callouts';
 import { detectDrawingCadMismatches, drawingStatedBendCount, drawingStatedThreadCount, type FactMismatch } from './costing/shared/physics/drawing-cad-consistency';
 import type { MachiningCalculators } from './costing/machining/calculators/machining-calculator';
-import { loadMachiningCalculatorSpec, machineSourcedFields } from './costing/machining/calculators/machining-calculator-spec';
+import { loadMachiningCalculatorSpec, machineSourcedFields, withSpecNotes } from './costing/machining/calculators/machining-calculator-spec';
 import { isWorkbookField, specLookupSeeds, type KeywayBroachReference, type LookupSeeds } from './costing/machining/calculators/machining-lookup-seeds';
 
 /** Lookup tables read by the generic spec resolver (specLookupSeeds), not by a resolver of their own. */
@@ -105,7 +106,7 @@ import { appliedOtherMoldingRouteId, projectMoldingRoute, type OtherMoldingRoute
 import type { InjectionMoldingCostInput } from './costing/plastic-molding/process/cost-injection-molding-engine';
 import { requiredClampForce, type MaterialClampProperties } from './costing/plastic-molding/clamp-force';
 import { shotGppsGramsPerCavity, shotWeightKgPerPart } from './costing/plastic-molding/shot-size';
-import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
+import { MATERIAL_OVERHEAD_PCT, RATES_SOURCE_LABEL, computeTapCycleSec, resolveTapPhysicsInputs, TAP_UNLOAD_SEC, TAP_MOTION_SOURCES, TAP_SURFACE_SPEED_SOURCE, TAP_ENGAGEMENT_SOURCE, isoCoarsePitchMm, resolveDrillingSpeedFeed, COUNTERSINK_SPEED_FACTOR, DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL, HOLE_OP_UNLOAD_SEC, resolveReamPhysicsInputs, TIGHT_TOLERANCE_REAM_THRESHOLD_MM, LOCATION_INFO, CURRENCY_SYMBOLS, recommendedBendTonnage, bendShoulderWidthMm, BEND_SHOULDER_RULE_SOURCE, estimateBurlTonnage, estimateBurlDiameterMm, type SurfaceTreatmentDbRate, resolveYieldPct } from './costing/shared/core/default-rates.constants';
 import type { MachineClass } from './costing/shared/core/default-rates.constants';
 import { rawMaterialPricePerKg } from './costing/shared/core/material-location-price';
 import { checkMachineCapability } from './costing/shared/capability/machine-capability';
@@ -213,7 +214,7 @@ import { forgingRouteFor, forgingRouteId } from './costing/forging/forging-route
 import { FORGING_ROUTES } from './costing/forging/forging-route';
 import { castingFamilyOption, chooseCastingFamily } from './costing/casting/casting-process-choice';
 import {
-  MULTI_SHOT_CYCLE_CALC, MULTI_SHOT_DESIGN_HOURS_FACTOR, MULTI_SHOT_PRESS_CLASS, MULTI_SHOT_ROUTE_KEY, MULTI_SHOT_ROUTES, chooseMultiShotRoute, multiShotRouteId,
+  MULTI_SHOT_DESIGN_HOURS_FACTOR, MULTI_SHOT_PRESS_CLASS, MULTI_SHOT_ROUTE_KEY, MULTI_SHOT_ROUTES, chooseMultiShotRoute, multiShotCycleRun, multiShotRouteId,
   priceMultiShotRoutes, shotEntriesOf, type MultiShotShot, type ShotNeed,
 } from './costing/plastic-molding/multi-shot/multi-shot';
 import { multiShotRouteFor } from './costing/plastic-molding/multi-shot/multi-shot-route-comparison';
@@ -229,7 +230,7 @@ import { buildCastingCostSummary, castingProcessOfFamily } from './costing/casti
 import { FeatureToleranceService } from './services/feature-tolerance.service';
 import { priceSecondaryMachining } from './costing/shared/tolerance/secondary-machining-cost';
 import { selectCastingOperations, topLevelCatalogRows } from './costing/casting/casting-feature-operations';
-import { runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
+import { calculatorDefaultSource, calculatorFieldRef, runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
 import { castingSeed } from './costing/casting/casting-calculator-seeds';
 import { cleaningLine, meltingLine, partingLineGrindingLine, trimLine, visualInspectionLine } from './costing/casting/casting-finishing';
 import { computeDieTooling, type DieToolingResult } from './costing/casting/die-tooling';
@@ -253,7 +254,8 @@ import type { DieCastingProcessChoiceDto, DieCastingProcessOptionDto, SourceRef 
 import { cadEvidenceKey } from './costing/shared/cad-evidence';
 import { sourceRefOfSeed } from './costing/shared/seed-source-ref';
 import {
-  deburrTimeRef, inspectionSeedRefs, laserCutSeedRefs, materialSeedRefs, pressBrakeSeedRefs, smVariableRef, turretSeedRefs, waterjetSeedRefs,
+  burringSeedRefs, counterboreDepthRef, countersinkDepthRef, drillingFeedRef, drillingSpeedRef, holeOperationSeedRefs, pemSeedRefs, reamingSeedRefs, utsRef,
+  deburrTimeRef, inspectionSeedRefs, laserCutSeedRefs, manualDeburrRef, materialSeedRefs, pressBrakeSeedRefs, sheetThicknessRef, smVariableRef, turretSeedRefs, waterjetSeedRefs,
 } from './costing/sheet-metal/lookup/sheet-metal-source-refs';
 import { realBendLengthsMm } from './costing/shared/bend-lengths';
 import { cachedRead } from './costing/shared/core/request-cache';
@@ -333,6 +335,8 @@ interface StockRouteMaterial {
     name: string | null; grade: string | null; densityKgM3: number; pricesPerKg: Partial<Record<StockPriceForm, number>>;
     /** The material a form's price is borrowed from (resolveMaterialForFamily stockFormPriceBorrowedFrom). */
     priceBorrowedFrom?: Partial<Record<StockPriceForm, string>>;
+    /** The Raw Materials record the density was read from (its eye opens it); null when no record matched. */
+    record?: { id: string; name: string; densityColumn: string | null } | null;
   };
 }
 /**
@@ -419,6 +423,59 @@ import { NestingCostService } from './services/nesting-cost.service';
  * Costing of a BOM item: the cost summary, the route comparison, calculator inputs and nesting. Split from BOMItemsService, which keeps the item records;
  * this class is being taken apart into one service per concern.
  */
+/** A fixed allowance the engine adds (an unload, a clear), as the calculation the eye opens: its value and where it is stated. */
+function allowanceRef(label: string, sec: number, source: string): SourceRef {
+  return calculationRef(label, [inputStep(label, 's', sec, source), resultStep(label, 's', sec, 'A fixed allowance, once per operation')]);
+}
+
+/**
+ * Where each input of a tapping run was read: the tapped holes (or the drawing's callout when the CAD found none), the thread size the
+ * diameter is parsed from, the tapped depth (or the sheet it is taken through), the published surface speed of the material family, and
+ * the pitch (the holes', or ISO 261's coarse pitch of the diameter).
+ */
+function tappingSeedRefs(
+  t: { size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] },
+  tap: ReturnType<typeof resolveTapPhysicsInputs>,
+  sheetThicknessMm: number,
+  fallbackDepthMm: number | null,
+): Record<string, SourceRef> {
+  const holes = featuresRef(`${t.size} tapped holes`, t.occurrences) ?? calculationRef(`${t.size} thread callout`, [
+    inputStep('Thread size', null, t.size, 'The thread callout (drawing analysis, or the CAD thread recognition)'),
+    inputStep('Threads', null, t.count, 'The thread callout: threads of this size'),
+  ]);
+  const size = inputStep('Thread size', null, t.size, 'The thread callout of this size group', holes);
+  return {
+    'No of Uses': holes,
+    'Tap Diameter': calculationRef('Tap Diameter', [size, resultStep('Tap Diameter', 'mm', tap.diameterMm, tap.diameterIsAssumed ? 'No M-diameter in the size: the assumed tap diameter' : 'The M-diameter of the thread size')]),
+    Length: tap.depthIsAssumed
+      ? fallbackDepthMm != null
+        ? calculationRef('Tapped length (no tapped-hole depth)', [
+          inputStep('Sheet thickness', 'mm', sheetThicknessMm, 'CAD: the sheet thickness the thread is tapped through'),
+          resultStep('Length', 'mm', tap.depthMm, 'The sheet thickness'),
+        ])
+        : calculationRef('Tapped length (no tapped-hole depth): the thread engagement', [
+          resultStep('Tap Diameter', 'mm', tap.diameterMm, tap.diameterIsAssumed ? 'No M-diameter in the size: the assumed tap diameter' : 'The M-diameter of the thread size'),
+          inputStep('Material family', null, tap.materialFamily, 'The material grade\'s family (classifyMaterialFamily)'),
+          resultStep('Length', 'mm', tap.depthMm, `${tap.materialFamily === 'aluminum' ? '2' : '1'} x Tap Diameter. ${TAP_ENGAGEMENT_SOURCE}`),
+        ])
+      : holes,
+    'Cutting Speed': calculationRef(`Tapping surface speed, ${tap.materialFamily}`, [
+      inputStep('Material family', null, tap.materialFamily, 'The material grade\'s family (classifyMaterialFamily)'),
+      resultStep('Cutting Speed', 'm/min', tap.surfaceSpeedMMin, `HSS tapping surface speed of the family: ${TAP_SURFACE_SPEED_SOURCE[tap.materialFamily] ?? TAP_SURFACE_SPEED_SOURCE.__default__} (TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL)`),
+    ]),
+    'Feed per Rev': t.pitchMm != null
+      ? holes
+      : calculationRef('Thread pitch', [size, resultStep('Feed per Rev', 'mm', tap.pitchMm, tap.pitchIsAssumed ? 'Off the ISO 261 coarse series: the assumed pitch' : 'The ISO 261 coarse pitch of the nominal diameter')]),
+  };
+}
+
+/** Where a database calculator field's default comes from, when its row states it (input_config.source, else its help text); null: not yet sourced. */
+function fieldSourceNote(field: { input_config?: unknown }): string | null {
+  const config = (field.input_config ?? {}) as Record<string, unknown>;
+  const note = config.source ?? config.helpText;
+  return typeof note === 'string' && note.trim() ? note.trim() : null;
+}
+
 @Injectable()
 export class BomItemCostingService {
   private readonly logger = new Logger(BomItemCostingService.name);
@@ -920,6 +977,7 @@ export class BomItemCostingService {
             ? {
                 secPerMm: passes / manual.linearSpeedMmPerSec,
                 source: `tblDeburring ${manual.linearSpeedMmPerSec} mm/s (material code ${manual.materialCutCode ?? '?'}) × ${passes} pass`,
+                ref: manualDeburrRef({ linearSpeedMmPerSec: manual.linearSpeedMmPerSec, materialCutCode: manual.materialCutCode, match: manual.match, passes }),
               }
             : null,
         };
@@ -1968,7 +2026,8 @@ export class BomItemCostingService {
     materialGrade: string | null,
   ): FeatureOp[] {
     if (threads.length === 0) return [];
-    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : 3;
+    // A sheet is tapped through its thickness; a hole in solid stock, for its thread engagement (tapEngagementDepthMm).
+    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : null;
     const result: FeatureOp[] = [];
     for (const t of threads) {
       const b = computeTapCycleSec(t.size, t.count, t.pitchMm, t.depthMm, fallbackDepthMm, materialGrade);
@@ -2021,7 +2080,7 @@ export class BomItemCostingService {
         'Burr Edge Length': 'CAD feature extraction — cut edge length (the burr sits on the cut edge)',
         'Deburr Time Per mm': rate?.source ?? `no deburr time rate on file for "${cand.machineName}"`,
       },
-      ...(rate && deburrTimeRef(cand) ? { seedRefs: { 'Deburr Time Per mm': deburrTimeRef(cand)! } } : {}),
+      ...(rate && deburrTimeRef(cand, req.manualDeburr) ? { seedRefs: { 'Deburr Time Per mm': deburrTimeRef(cand, req.manualDeburr)! } } : {}),
     });
   }
 
@@ -2490,7 +2549,10 @@ export class BomItemCostingService {
       // Stock Machining part, the band saw. Null for a multi-spindle's part, whose bar is its own engine's.
       const stock = usesStockModel(item, family) ? await this.stockMachiningRoutes(item, fg, family as MachiningFamily, {
         location, accessToken, batchSize, usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
-        material: { name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom },
+        material: {
+          name: materialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom,
+          record: materialRecord ? { id: materialRecord.id, name: materialRecord.name, densityColumn: materialRecord.columns.densityKgM3 } : null,
+        },
       }) : null;
       // The milling engine prices no parting, so a mill's piece is sawn; a lathe's is cut off as its class says (a bar-fed lathe parts it off the bar).
       const stockCutOffFor = (cls: string): StockCutOff => (family === 'milled' ? 'saw' : stockCutOffOf(cls));
@@ -3583,7 +3645,7 @@ export class BomItemCostingService {
             ductileIron: ductile && ductileUsd != null ? { id: ductile.id, name: ductile.name, costPerKg: ductileUsd * usdToLocal } : null,
             regionConvFactor: refSet.reference?.variables.regionConvFactor ?? NaN,
             furnaceCapacitySafetyFactor: refSet.reference?.variables.furnaceCapacitySafetyFactor ?? NaN,
-            shotVolumeMm3: line.shotVolumeMm3, shotVolumeRun: line.shotVolumeRun, cavities: line.cavities?.count ?? null,
+            shotVolumeMm3: line.shotVolumeMm3, shotVolumeRun: line.shotVolumeRun, cavities: line.cavities?.count ?? null, cavitiesRef: line.cavities?.ref ?? null,
             alloy: castingAlloy, densityKgM3: castingAlloy?.densityKgM3 ?? null,
             injectionTempC: castingAlloy?.injectionTempC ?? null,
             batchSize, processGroup: 'Die Casting', machineClass: 'die_casting_melting',
@@ -4176,7 +4238,7 @@ export class BomItemCostingService {
             'Bending Line Length': smRealBendLengths.length > 0
               ? `CAD feature extraction — longest of ${smRealBendLengths.length} bend lines`
               : (((item as any).maxLength != null) ? 'CAD/BOM part geometry — max length (flat-pattern proxy: no per-bend lengths in this analysis)' : 'Default (200mm, no CAD length available)'),
-            'Shoulder Width': 'Approximated as 8× sheet thickness (standard V-die shoulder rule)',
+            'Shoulder Width': `8 × sheet thickness: ${BEND_SHOULDER_RULE_SOURCE}`,
             UTS: 'raw_materials — material grade Ultimate Tensile Strength (verified DB value, or an approved material-family default; omitted when neither is available)',
             'No Of Bends': 'CAD/drawing feature extraction — bend count',
             'Time Per Stroke': this.rates.describeStrokeTimeProvenance(sheetThicknessMm, strokeComplexity, smStrokeResult.resolution, smStrokeResult.roundedFromTonnage),
@@ -4194,7 +4256,11 @@ export class BomItemCostingService {
           },
           seedRefs: pressBrakeSeedRefs({
             stroke: smStrokeResult, handling: smHandlingResult, toolSetup: smBrakeSetupResult,
-            material: materialRecord, utsFromRecord: utsSource === 'db',
+            material: materialRecord, utsFromRecord: utsSource === 'db', machineName: mhrRates.pressBrake.machineName, uts: { mpa: smUtsMpa, grade },
+            thickness: {
+              mm: sheetThicknessMm,
+              ref: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm }),
+            },
           }),
         })
       : this.emptyPhysicsResult(['Cycle Time', 'Setup Time']);
@@ -4251,6 +4317,8 @@ export class BomItemCostingService {
       holeDiametersMm: smHoleDiameters,
       holeCount,
       tightestToleranceMm: smTightTolerance,
+      thicknessRef: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm }),
+      utsRef: utsRef({ material: materialRecord, fromRecord: utsSource === 'db', mpa: smUtsMpa, grade }),
     });
     materialWarnings.push(...smSecondary.warnings);
     const {
@@ -4321,7 +4389,10 @@ export class BomItemCostingService {
             'Thickness': 'Effective CAD thickness (override-aware)',
             'Material Density': 'raw_materials lookup',
           },
-          seedRefs: materialSeedRefs(materialRecord, { 'Material Density': 'densityKgM3' }),
+          seedRefs: {
+            ...materialSeedRefs(materialRecord, { 'Material Density': 'densityKgM3' }),
+            Thickness: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm }),
+          },
         })
       : null;
     const smNetWeightKg = !hasValidDimensions
@@ -4418,6 +4489,8 @@ export class BomItemCostingService {
         },
         seedRefs: {
           ...materialSeedRefs(materialRecord, { 'Material Density': 'densityKgM3', 'Shear Strength': 'shearStrengthMpa' }),
+          Thickness: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm }),
+          ...(hasQty ? { 'Batch Quantity': { kind: 'costingInput' as const, field: 'batchSize' as const } } : {}),
           // The net weight is the Net Material Usage calculator's result (the fallback formula, when that calculator is not mapped, has no steps).
           ...(smNetWeightCalc?.outputs['Net Usage'] != null
             ? { 'Net Weight Per Part': { kind: 'calculation' as const, name: 'Sheet Metal - Net Material Usage', evidence: 'flat_pattern_area' as const, steps: smNetWeightCalc.trace } }
@@ -4577,20 +4650,9 @@ export class BomItemCostingService {
             'Has Dimension Check': smInspectionPlan.hasDimensionCheck ? 1 : 0,
             'Dimension Check Time': smInspectionPlan.dimensionCheckSec,
           },
-          seedProvenance: {
-            'Visual Pass Base': 'inspection_operation_defaults — visual_base cycle time',
-            'Holes to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Hole Check Time': `inspection_operation_defaults — hole check time for ${smInspectionPlan.method} method`,
-            'Bends to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Bend Check Time': `inspection_operation_defaults — bend check time for ${smInspectionPlan.method} method`,
-            'Threads to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-            'Thread Gauge Time': `inspection_operation_defaults — thread gauge time for ${smInspectionPlan.method} method`,
-            'Has Thickness Check': 'Real geometry — sheet thickness known',
-            'Thickness Check Time': `inspection_operation_defaults — thickness check time for ${smInspectionPlan.method} method`,
-            'Has Dimension Check': 'Real geometry — overall dimensions known',
-            'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${smInspectionPlan.method} method`,
-          },
-          seedRefs: inspectionSeedRefs(smInspectionPlan),
+          // Each check time with its row of inspection_operation_defaults and where that time comes from (migration 1163).
+          seedProvenance: inspectionSeedProvenance(smInspectionPlan),
+          seedRefs: inspectionSeedRefs(smInspectionPlan, smInspectionInput),
         });
     const smInspectionLineResult = finalizeInspectionLine(smInspectionInput, smInspectionPlan, {
       cycleTimeSec: smInspectionCalc.outputs['Total Time'],
@@ -5170,12 +5232,12 @@ export class BomItemCostingService {
     const routes = priceInsertRoutes({
       ...inputs, inserts, batchSize: a.batchSize,
       costContext: { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 },
-      press: { name: pressName, tablePress: isTablePress(tableConfiguration) },
+      press: { name: pressName, tablePress: isTablePress(tableConfiguration), record: press?.record ?? null, tableConfiguration: rawTable },
       toLocal: (l) => (usdToLocal === 1 ? l : lineToLocal(l, usdToLocal)),
       // The molding's insert operations (the pull test) count the inserts the loading loads: BOM, Cost Guide or CAD.
       // Each load method prices every cavity layout the insert press holds (its loading grows with the cavities) and keeps the lowest cost per part.
       runEngine: (shot) => costMoldOnPresses({
-        ...pressInput, shotCycle: shot,
+        ...pressInput, shotCycle: shot, inserts,
         signals: { ...pressInput.signals, insertCount: inserts.reduce((n, i) => n + i.perPart, 0) || (pressInput.signals?.insertCount ?? 0) },
       }, [{
         mhrRate: pressInput.mhrRate, machineClampTonnes: pressInput.machineClampTonnes ?? null, machineShotCapacityG: pressInput.machineShotCapacityG ?? null,
@@ -5324,15 +5386,7 @@ export class BomItemCostingService {
         goodPartYield: press.timing?.goodPartYield ?? null,
       }),
       runEngine: (input) => computeInjectionMoldedCostSummary(input),
-      cycle: (longest, load, index) => {
-        const val = (value: number, source: string) => ({ value, source });
-        const run = runReferenceCalculator(inputs.calculators, MULTI_SHOT_CYCLE_CALC, {
-          'Longest Shot Cycle': val(longest, 'the longest of the shots\' injection cycles on this press'),
-          'Load Time': val(load, load > 0 ? 'the component loading of the shot (Pick and Place)' : 'no components to load'),
-          'Tool Index Time': val(index, 'the press: toolIndexTime (memory/Countries data, migration 1085)'),
-        }, 'Shot Cycle');
-        return run.value == null ? null : { sec: run.value, trace: run.trace };
-      },
+      cycle: multiShotCycleRun(inputs.calculators),
       toLocal: (l) => (usdToLocal === 1 ? l : lineToLocal(l, usdToLocal)),
       appendLines,
     });
@@ -6846,7 +6900,10 @@ export class BomItemCostingService {
       // What the part's stock is priced from, for every route builder below.
       const stockMaterial: StockRouteMaterial = {
         usdToLocal: locInfo.code === 'USD' ? 1 : rates.convertStrict('USD', locInfo.code), fx: rates,
-        material: { name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom },
+        material: {
+          name: rcMaterialRecord?.name ?? null, grade, densityKgM3: materialDensityKgM3, pricesPerKg: resolvedMaterial.stockFormPricesPerKg, priceBorrowedFrom: resolvedMaterial.stockFormPriceBorrowedFrom,
+          record: rcMaterialRecord ? { id: rcMaterialRecord.id, name: rcMaterialRecord.name, densityColumn: rcMaterialRecord.columns.densityKgM3 } : null,
+        },
       };
       if (family === 'milled') {
         return attachToRoutes(await this.buildMilledRoutes(
@@ -7065,7 +7122,7 @@ export class BomItemCostingService {
         seedProvenance: {
           Thickness: 'BOM sheet thickness',
           'Bending Line Length': 'CAD/BOM part geometry — max bend length',
-          'Shoulder Width': 'Approximated as 8× sheet thickness (standard V-die shoulder rule)',
+          'Shoulder Width': `8 × sheet thickness: ${BEND_SHOULDER_RULE_SOURCE}`,
           UTS: 'raw_materials — material grade Ultimate Tensile Strength',
           'No Of Bends': 'CAD/drawing feature extraction — bend count',
           'Time Per Stroke': this.rates.describeStrokeTimeProvenance(thk, rcBendComplexity, rcStrokeResult.resolution, rcStrokeResult.roundedFromTonnage),
@@ -7083,7 +7140,11 @@ export class BomItemCostingService {
         },
         seedRefs: pressBrakeSeedRefs({
           stroke: rcStrokeResult, handling: rcHandlingResult, toolSetup: rcBrakeSetupResult,
-          material: rcMaterialRecord, utsFromRecord: rcUtsSource === 'db',
+          material: rcMaterialRecord, utsFromRecord: rcUtsSource === 'db', machineName: mhrRates.pressBrake.machineName, uts: { mpa: utsMpa, grade },
+          thickness: {
+            mm: thk,
+            ref: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm, fallbackMm: 2.0 }),
+          },
         }),
       });
 
@@ -7268,20 +7329,9 @@ export class BomItemCostingService {
               'Has Dimension Check': rcInspectionPlan.hasDimensionCheck ? 1 : 0,
               'Dimension Check Time': rcInspectionPlan.dimensionCheckSec,
             },
-            seedProvenance: {
-              'Visual Pass Base': 'inspection_operation_defaults — visual_base cycle time',
-              'Holes to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Hole Check Time': `inspection_operation_defaults — hole check time for ${rcInspectionPlan.method} method`,
-              'Bends to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Bend Check Time': `inspection_operation_defaults — bend check time for ${rcInspectionPlan.method} method`,
-              'Threads to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
-              'Thread Gauge Time': `inspection_operation_defaults — thread gauge time for ${rcInspectionPlan.method} method`,
-              'Has Thickness Check': 'Real geometry — sheet thickness known',
-              'Thickness Check Time': `inspection_operation_defaults — thickness check time for ${rcInspectionPlan.method} method`,
-              'Has Dimension Check': 'Real geometry — overall dimensions known',
-              'Dimension Check Time': `inspection_operation_defaults — dimension check time for ${rcInspectionPlan.method} method`,
-            },
-            seedRefs: inspectionSeedRefs(rcInspectionPlan),
+            // Each check time with its row of inspection_operation_defaults and where that time comes from (migration 1163).
+            seedProvenance: inspectionSeedProvenance(rcInspectionPlan),
+            seedRefs: inspectionSeedRefs(rcInspectionPlan, rcInspectionInput),
           });
       const rcInspectionResult = finalizeInspectionLine(rcInspectionInput, rcInspectionPlan, {
         cycleTimeSec: rcInspectionCalc.outputs['Total Time'],
@@ -7333,6 +7383,8 @@ export class BomItemCostingService {
       holeDiametersMm: (summary.holeDiameters ?? []) as number[],
       holeCount,
       tightestToleranceMm: ((item as any).tightestToleranceMm ?? null) as number | null,
+      thicknessRef: sheetThicknessRef({ scenarioOverrides: item.scenarioOverrides, detectedMm: summary.sheetThicknessMm, bomMm: item.sheetThicknessMm }),
+      utsRef: utsRef({ material: rcMaterialRecord, fromRecord: rcUtsSource === 'db', mpa: utsMpa, grade }),
     });
     comparisonWarnings.push(...rcSecondary.warnings);
 
@@ -8338,7 +8390,8 @@ export class BomItemCostingService {
       if (calc && !machiningCalculatorNames.has(calc.name)) continue;
       const fields = (catalog.fields as any[]).filter((f) => f.calculator_id === m.calculator_id);
       if (!calc || fields.length === 0) continue;
-      out[m.operation] = { calculatorId: calc.id, name: calc.name, version: calc.version ?? 1, fields };
+      // Each field with where its default comes from (the spec's note; the database has no column for it).
+      out[m.operation] = { calculatorId: calc.id, name: calc.name, version: calc.version ?? 1, fields: withSpecNotes(calc.name, fields) };
     }
     return out;
   }
@@ -8662,7 +8715,12 @@ export class BomItemCostingService {
     const missing = [...unresolved, ...(lookup?.missing ?? []).filter((m) => !Object.keys(inputs).some((f) => m.startsWith(`${f}`)))];
     for (const f of def.fields) {
       if (f.field_type === 'calculated' || f.field_name in inputs) continue;
-      if (f.default_value != null && f.default_value !== '') continue;
+      if (f.default_value != null && f.default_value !== '') {
+        // The dialog shows the calculator's own value: where it comes from, and the calculator's table of defaults for the eye.
+        provenance[f.field_name] = calculatorDefaultSource(def.name, f.note);
+        refs[f.field_name] = calculatorFieldRef(def, f.field_name);
+        continue;
+      }
       if (!missing.some((m) => m.includes(f.field_name))) missing.push(`${f.field_name}: not on this part (${f.data_source ?? 'input'}) — enter it`);
     }
     return { calculatorId, operation, materialClass: matClass, inputs, provenance, lookupMatches, refs, missing, machineFields };
@@ -9395,7 +9453,7 @@ export class BomItemCostingService {
         material: {
           name, grade: ctx.material.grade, densityKgM3: ctx.material.densityKgM3 > 0 ? ctx.material.densityKgM3 : null,
           pricePerKgUsd: Object.fromEntries(Object.entries(ctx.material.pricesPerKg).filter(([, v]) => v > 0).map(([form, v]) => [form, v / ctx.usdToLocal])),
-          priceBorrowedFrom: ctx.material.priceBorrowedFrom,
+          priceBorrowedFrom: ctx.material.priceBorrowedFrom, record: ctx.material.record ?? null,
         },
         batchSize: ctx.batchSize, usdToLocal: ctx.usdToLocal, costContext: zeroCtx,
         ...(roughing ? { roughing } : {}),
@@ -9996,6 +10054,8 @@ export class BomItemCostingService {
       // (still shown as documentation even when physics-backed — see comment
       // above).
       const trace: CalculationTraceStep[] = [];
+      // The calculator with where each default comes from, for an input that takes its default.
+      const defaultDef = { name: String((calcRow as any)?.name ?? 'The calculator'), fields: (calcFields as any[]).map((cf) => ({ ...cf, note: fieldSourceNote(cf) })) };
       for (const f of calcFields as any[]) {
         const val = usesExactFieldNames ? scope[f.field_name] : scope[normalizeFieldName(f.field_name)];
         if (f.field_type !== 'calculated') {
@@ -10003,15 +10063,16 @@ export class BomItemCostingService {
           const hasDefault = f.default_value !== undefined && f.default_value !== null && f.default_value !== '';
           if (!hasSeed && !hasDefault) continue; // genuinely unset — omit, don't fabricate
           const evidence = cadEvidenceKey(f.field_name, seedProvenance[f.field_name]);
-          // Only a seeded value was read from a source; a calculator default has none to open.
-          const ref = hasSeed ? sourceRefOfSeed(seedRefs[f.field_name], evidence) : undefined;
+          // A seeded value opens where it was read; a calculator default opens the calculator's table of defaults, with where each comes from
+          // (calculator_fields.input_config's source note, when the row states one).
+          const ref = hasSeed ? sourceRefOfSeed(seedRefs[f.field_name], evidence) : calculatorFieldRef(defaultDef, f.field_name);
           trace.push({
             fieldName: f.field_name,
             displayLabel: f.display_label ?? f.field_name,
             kind: 'input',
             value: hasSeed ? (seedScope[f.field_name] as any) : (typeof val === 'number' || typeof val === 'string' ? val : (val ?? f.default_value)),
             unit: f.unit ?? null,
-            source: seedProvenance[f.field_name] ?? (hasSeed ? 'Provided value' : "Calculator's own default value"),
+            source: seedProvenance[f.field_name] ?? (hasSeed ? 'Provided value' : calculatorDefaultSource(defaultDef.name, fieldSourceNote(f))),
             ...(evidence ? { evidence } : {}),
             ...(ref ? { ref } : {}),
           });
@@ -10433,13 +10494,14 @@ export class BomItemCostingService {
    */
   private async resolveTappingCycleTimeSec(
     accessToken: string,
-    threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number }>,
+    threads: Array<{ size: string; count: number; pitchMm?: number; depthMm?: number; occurrences?: readonly FeatureOccurrenceRef[] }>,
     sheetThicknessMm: number,
     materialGrade: string | null,
   ): Promise<{ cycleTimeSec: number | undefined; gap: PhysicsGap | null; calculatorId: string | null; calculatorVersion: number | null; confidence: ConfidenceLevel; resolutionStatus: ResolutionStatus; trace: CalculationTraceStep[] }> {
     if (threads.length === 0) return { cycleTimeSec: undefined, gap: null, calculatorId: null, calculatorVersion: null, confidence: 'unsupported', resolutionStatus: 'unsupported_operation', trace: [] };
 
-    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : 3;
+    // A sheet is tapped through its thickness; a hole in solid stock, for its thread engagement (tapEngagementDepthMm).
+    const fallbackDepthMm = sheetThicknessMm > 0 ? sheetThicknessMm : null;
     let totalSec = 0;
     let anyResolved = false;
     let gap: PhysicsGap | null = null;
@@ -10485,6 +10547,7 @@ export class BomItemCostingService {
               : 'Standard ISO 261 coarse pitch for this nominal diameter (no real pitch extracted)',
           'No of Uses': 'CAD/drawing feature extraction — thread count for this size group',
         },
+        seedRefs: tappingSeedRefs(t, tapInputs, sheetThicknessMm, fallbackDepthMm),
       });
       calculatorId = tapCalc.calculatorId ?? calculatorId;
       calculatorVersion = tapCalc.calculatorVersion ?? calculatorVersion;
@@ -10514,7 +10577,10 @@ export class BomItemCostingService {
       confidence: anyResolved ? confidence : 'unsupported',
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each thread size's run, and the unload once per operation.
-      trace: anyResolved ? groupedRunsTrace('Tapping', groupTraces, { label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)' }, totalSec + TAP_UNLOAD_SEC) : [],
+      trace: anyResolved ? groupedRunsTrace('Tapping', groupTraces, {
+        label: 'Unload Time', sec: TAP_UNLOAD_SEC, source: `Final spindle stop and clear, once per operation. ${TAP_MOTION_SOURCES.unload}`,
+        ref: allowanceRef('Unload Time', TAP_UNLOAD_SEC, `TAP_UNLOAD_SEC: the final spindle stop and clear of the tapping cycle, once per operation (default-rates.constants.ts). ${TAP_MOTION_SOURCES.unload}`),
+      }, totalSec + TAP_UNLOAD_SEC) : [],
     };
   }
 
@@ -10616,11 +10682,15 @@ export class BomItemCostingService {
       holeCount: number;
       /** bom_items.tightestToleranceMm — null when the drawing carries no callout. */
       tightestToleranceMm: number | null;
+      /** Where the sheet thickness came from (sheetThicknessRef), for the inputs taken from it. */
+      thicknessRef?: SourceRef;
+      /** Where the UTS came from (utsRef), when one is seeded. */
+      utsRef?: SourceRef;
     },
   ) {
     const { summary, sheetThicknessMm, materialGrade: grade, threads, utsMpa: smUtsMpa,
       strokeComplexity, holeFormingRate, holeDiametersMm: smHoleDiameters,
-      holeCount, tightestToleranceMm: smTightTolerance } = args;
+      holeCount, tightestToleranceMm: smTightTolerance, thicknessRef } = args;
     const warnings: string[] = [];
 
     // ── Feature-driven secondary hole operations (counterbore/countersink/PEM) ──
@@ -10646,10 +10716,14 @@ export class BomItemCostingService {
       operation: 'Counterboring',
       process: 'Counterboring',
       materialGrade: grade,
-      resolveDepthMm: () => ({
-        depthMm: sheetThicknessMm > 0 ? sheetThicknessMm : 3,
-        provenance: 'Assumed — real counterbore depth not yet CAD-extracted; capped at sheet thickness as a conservative upper bound',
-      }),
+      resolveDepthMm: () => {
+        const depthMm = sheetThicknessMm > 0 ? sheetThicknessMm : 3;
+        return {
+          depthMm,
+          provenance: 'Assumed — real counterbore depth not yet CAD-extracted; capped at sheet thickness as a conservative upper bound',
+          ref: counterboreDepthRef(sheetThicknessMm, depthMm, thicknessRef),
+        };
+      },
     });
 
     const smCountersinkCount = smCountersinkGroups.reduce((s, g) => s + g.count, 0);
@@ -10669,6 +10743,7 @@ export class BomItemCostingService {
         return {
           depthMm,
           provenance: `Real cone geometry — Depth = (Diameter/2) / tan(90°/2), standard included angle (no real angle extracted)`,
+          ref: countersinkDepthRef(diameterMm, depthMm),
         };
       },
     });
@@ -10744,6 +10819,7 @@ export class BomItemCostingService {
           'Insertion Cycle Time': `sm_lookup_pem_hardware — ${match.partSpec}, matched by hole diameter ${g.diameter_mm}mm + sheet thickness`,
           'No Of Insertions': 'CAD feature extraction — hole count for this diameter group',
         },
+        seedRefs: pemSeedRefs(match.row),
       });
       smPemCalculatorId = smPemGroupCalc.calculatorId ?? smPemCalculatorId;
       smPemCalculatorVersion = smPemGroupCalc.calculatorVersion ?? smPemCalculatorVersion;
@@ -10833,6 +10909,11 @@ export class BomItemCostingService {
           lookupResolutions: {
             'Stroke Time': smBurlStrokeResult.resolution,
           },
+          seedRefs: burringSeedRefs({
+            diameterMm: smBurlDiameterMmForCalc, threads, holeCount: (summary.holeDiameters ?? []).length,
+            thickness: { mm: sheetThicknessMm, ref: thicknessRef ?? sheetThicknessRef({ scenarioOverrides: null, detectedMm: sheetThicknessMm, bomMm: null }) },
+            stroke: smBurlStrokeResult, uts: smUtsMpa != null ? args.utsRef : undefined, flangeCount: smExtrudedFlangeCount,
+          }),
         })
       : this.emptyPhysicsResult(['Total Time']);
     const smBurringTotalSec = smBurringCalc.outputs['Total Time'];
@@ -10894,6 +10975,10 @@ export class BomItemCostingService {
               'Feed per Rev': 'Standard HSS reaming feed — diameter-scaled (engineering-standard assumption, disclosed)',
               'No of Uses': 'CAD feature extraction — hole count for this diameter group',
             },
+            seedRefs: reamingSeedRefs({
+              sheetThicknessMm, depthMm: reamDepthMm, thicknessRef, materialFamily: reamInputs.materialFamily,
+              speedMMin: reamInputs.surfaceSpeedMMin, diameterMm: g.diameter_mm, feedMmPerRev: reamInputs.feedMmPerRev,
+            }),
           });
           smReamCalculatorId = reamCalc.calculatorId ?? smReamCalculatorId;
           smReamCalculatorVersion = reamCalc.calculatorVersion ?? smReamCalculatorVersion;
@@ -10949,7 +11034,7 @@ export class BomItemCostingService {
       // today (disclosed fallback); Countersink's depth is real cone
       // geometry derived from diameter + included angle. Kept out of this
       // shared method so neither operation's convention leaks into the other.
-      resolveDepthMm: (diameterMm: number) => { depthMm: number; provenance: string };
+      resolveDepthMm: (diameterMm: number) => { depthMm: number; provenance: string; ref: SourceRef };
     },
   ): Promise<{ cycleTimeSec: number | undefined; gap: PhysicsGap | null; calculatorId: string | null; calculatorVersion: number | null; confidence: ConfidenceLevel; resolutionStatus: ResolutionStatus; trace: CalculationTraceStep[] }> {
     if (groups.length === 0) return { cycleTimeSec: undefined, gap: null, calculatorId: null, calculatorVersion: null, confidence: 'unsupported', resolutionStatus: 'unsupported_operation', trace: [] };
@@ -10968,7 +11053,7 @@ export class BomItemCostingService {
     const groupTraces: { label: string; trace: CalculationTraceStep[] }[] = [];
 
     for (const g of groups) {
-      const { depthMm, provenance: depthProvenance } = config.resolveDepthMm(g.diameter_mm);
+      const { depthMm, provenance: depthProvenance, ref: depthRef } = config.resolveDepthMm(g.diameter_mm);
       const calc = await this.resolvePhysicsQuantity(accessToken, {
         machineClass: 'drill_press',
         operation: config.operation,
@@ -10988,6 +11073,14 @@ export class BomItemCostingService {
           'Feed per Rev': 'Standard HSS drilling/counterbore feed (engineering-standard assumption, disclosed)',
           'No of Uses': 'CAD feature extraction — hole count for this diameter group',
         },
+        seedRefs: holeOperationSeedRefs({
+          depthRef,
+          speedRef: drillingSpeedRef({
+            operation: config.operation, materialFamily: speedFeed.materialFamily, speedFactor: config.speedFactor, speedMMin: speedFeed.surfaceSpeedMMin,
+            baseSpeedMMin: DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL[speedFeed.materialFamily] ?? DRILL_SURFACE_SPEED_M_MIN_BY_MATERIAL['__default__']!,
+          }),
+          feedRef: drillingFeedRef(speedFeed.feedMmPerRev),
+        }),
       });
       calculatorId = calc.calculatorId ?? calculatorId;
       calculatorVersion = calc.calculatorVersion ?? calculatorVersion;
@@ -11017,7 +11110,10 @@ export class BomItemCostingService {
       confidence: anyResolved ? confidence : 'unsupported',
       resolutionStatus: anyResolved ? resolutionStatus : (failureStatus ?? 'unsupported_operation'),
       // The calculation behind the line's cycle: each hole diameter's run, and the unload once per operation.
-      trace: anyResolved ? groupedRunsTrace(config.operation, groupTraces, { label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: 'Assumption: final clear and unload, once per operation (a fixed allowance)' }, totalSec + HOLE_OP_UNLOAD_SEC) : [],
+      trace: anyResolved ? groupedRunsTrace(config.operation, groupTraces, {
+        label: 'Unload Time', sec: HOLE_OP_UNLOAD_SEC, source: `Final spindle stop and clear, once per operation (the tapping cycle's). ${TAP_MOTION_SOURCES.unload}`,
+        ref: allowanceRef('Unload Time', HOLE_OP_UNLOAD_SEC, `HOLE_OP_UNLOAD_SEC: the final spindle stop and clear of the hole operation, once per operation, as the tapping cycle's (default-rates.constants.ts). ${TAP_MOTION_SOURCES.unload}`),
+      }, totalSec + HOLE_OP_UNLOAD_SEC) : [],
     };
   }
 }

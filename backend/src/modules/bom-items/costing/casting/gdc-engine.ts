@@ -34,6 +34,7 @@ import { machineChoice, type ChoiceEval } from './machine-choice';
 import { resolveHpdcCavities, type CastingGeometry, type HpdcCavities, type HpdcResult, type TraceStep } from './hpdc-engine';
 import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '../shared/calculators/reference-calculator';
 import { castingSeed, SeedSet } from './casting-calculator-seeds';
+import { calculationRef, inputStep, resultStep, wallSeed } from './casting-source-refs';
 
 export const GDC_PROCESS = 'Gravity Die Casting';
 export const GDC_MACHINE_CLASS_ID = 'die_casting_gravity_die_casting';
@@ -96,7 +97,7 @@ export function computeGdc(input: {
     reference: ref, requested: input.cavityCountOverride ?? null, partMassKg,
     defaultCount: v.defaultNumCavitiesGravityDieCasting, defaultName: 'defaultNumCavitiesGravityDieCasting',
   });
-  cavities = cav.cavities;
+  cavities = cav.ok ? { ...cav.cavities, ref: cav.ref } : cav.cavities;
   if (!cav.ok) return gapLine(cav.reason);
   if (cav.note) warnings.push(cav.note);
   const n = cav.cavities.count;
@@ -131,12 +132,16 @@ export function computeGdc(input: {
 
   const pos = (x: number | null | undefined) => (x != null && x > 0 ? x : null);
   const seeds = new SeedSet()
-    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace), 'cavities')
+    .put('Cavities', n, (x) => castingSeed.engine(x, cav.trace, cav.ref), 'cavities')
     .put('Projected Area', pos(g.projectedAreaMm2), (x) => castingSeed.cad(x, 'projected area on the parting plane (mm²)', 'projected_area'), 'measured projected area')
     .put('Part Volume', pos(vol), (x) => castingSeed.cad(x, 'part volume (mm³)', 'part_volume'), 'part volume')
-    .put('Wall Max', pos(g.wallMaxMm), (x) => castingSeed.cad(x, 'thickest wall (mm)'), 'measured maximum wall thickness')
+    .put('Wall Max', pos(g.wallMaxMm), (x) => wallSeed(x, 'thickest', 'CAD: thickest wall (mm)'), 'measured maximum wall thickness')
     .put('Core Count', input.coreCount != null ? input.coreCount * n : null,
-      (x) => castingSeed.cad(x, `sand cores loaded per shot: ${input.coreCount} (trapped regions no die half reaches) x ${n} cavit${n === 1 ? 'y' : 'ies'}`),
+      (x) => castingSeed.engine(x, `CAD: sand cores loaded per shot: ${input.coreCount} (trapped regions no die half reaches) x ${n} cavit${n === 1 ? 'y' : 'ies'}`, calculationRef('Core Count', [
+        inputStep('Cores per part', null, input.coreCount!, 'CAD casting analysis (core_geometry trapped_cores): the regions no die half reaches by a straight pull, each a sand core'),
+        inputStep('Cavities', null, n, 'The die layout', cav.ref),
+        resultStep('Core Count', null, x, 'Cores per part x cavities: the sand cores loaded each shot'),
+      ])),
       'the part cores (re-run analysis as a casting process)')
     .put('Ladle Fill Time', v.ladleFillTimeGravityDieCasting, (x) => castingSeed.variable('ladleFillTimeGravityDieCasting', x), 'variables ladleFillTimeGravityDieCasting')
     .put('Lube Time Constant', v.lubeTimeConstant, (x) => castingSeed.variable('lubeTimeConstant', x), 'variables lubeTimeConstant')

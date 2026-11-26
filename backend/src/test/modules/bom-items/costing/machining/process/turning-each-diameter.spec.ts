@@ -8,11 +8,13 @@
 //   n              = min(machine's spindle limit, v * 1000 / (pi * the Ø the cut starts at))
 //   time           = ceil((Ring length + 10) / (feed * n) * passes * 60)                  whole seconds per cut
 //
-// The fixture is aluminium on carbide, read from the workbook's Turning cutting conditions at the middle of each range:
-//   rough, depth of cut 2 (band 0.5-2):     90-450 m/min -> 270, 0.2-0.3 mm/rev -> 0.25
-//   finish, depth of cut 0.5 (band 0.1-0.5): 150-600 m/min -> 375, 0.05-0.2 mm/rev -> 0.125
-// and the lathe (a 2 axis bar feed lathe with sub spindle, the Haas DS-30) turns at most 4000 rpm, which every cut on these small
-// diameters reaches: rough feed 0.25 * 4000 = 1000 mm/min, finish feed 0.125 * 4000 = 500 mm/min.
+// The fixture is aluminium on carbide, read from the workbook's Turning cutting conditions at the calculators' Range Position 0.3 of
+// each range (migration 1158):
+//   rough, depth of cut 2 (band 0.5-2):     90-450 m/min -> 198, 0.2-0.3 mm/rev -> 0.23
+//   finish, depth of cut 0.5 (band 0.1-0.5): 150-600 m/min -> 285, 0.05-0.2 mm/rev -> 0.095
+// and the lathe (a 2 axis bar feed lathe with sub spindle, the Haas DS-30) turns at most 4000 rpm. Every finish cut on these small
+// diameters reaches it (finish feed 0.095 * 4000 = 380 mm/min); a rough cut from a Ø16 bar turns at 198 000 / (pi * 16) = 3939.08 rpm
+// (feed 0.23 * 3939.08 = 905.99 mm/min), from a Ø14 bar at the limit (0.23 * 4000 = 920 mm/min).
 import {
   computeTurningCostSummary,
   type MachiningCostInput,
@@ -89,7 +91,7 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
   const finish = lineOf(result.processLines, 'Finish Turning')!;
 
   it('faces both ends first: across the bar radius, one pass over the 0.5 mm end allowance, whole seconds a face, with the tool', () => {
-    // (8 + 10) / 500 = 0.036 min = 2.16 s -> 3 s a face; both ends: 6 s.
+    // (8 + 10) / 380 = 0.0474 min = 2.84 s -> 3 s a face; both ends: 6 s.
     expect(sec(facing)).toBeCloseTo(6, 2);
     // Tool wear: the workbook's turning insert holder, Rs 732.40 over 1000 parts = Rs 0.7324 a part.
     expect(facing.otherCostPerPart).toBeCloseTo(0.7324 / TEST_INR_PER_USD, 8);
@@ -98,9 +100,9 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
   });
 
   it('rough turns every diameter from the bar, each a whole pass and whole seconds', () => {
-    // Ø14 x 8:  finish start 15, ceil((16 - 15) / 4) = 1 pass; (8 + 10) / 1000 = 1.08 s -> 2 s.
-    // Ø12 x 18: finish start 13, ceil((16 - 13) / 4) = 1 pass; (18 + 10) / 1000 = 1.68 s -> 2 s.
-    // Ø12 x 5:  1 pass; (5 + 10) / 1000 = 0.9 s -> 1 s.  Line: 5 s.
+    // Ø14 x 8:  finish start 15, ceil((16 - 15) / 4) = 1 pass; (8 + 10) / 905.99 = 1.19 s -> 2 s.
+    // Ø12 x 18: finish start 13, ceil((16 - 13) / 4) = 1 pass; (18 + 10) / 905.99 = 1.85 s -> 2 s.
+    // Ø12 x 5:  1 pass; (5 + 10) / 905.99 = 0.99 s -> 1 s.  Line: 5 s.
     expect(sec(rough)).toBeCloseTo(5, 2);
     expect(rough.featureBreakdown).toEqual([
       { name: 'Rough Turning // Ring Ø14 x 8 mm', timeSec: expect.closeTo(2, 2), featureType: 'Ring', count: 1, faceIds: [9] },
@@ -112,14 +114,14 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
   });
 
   it('finish turns all three, one pass each', () => {
-    // Ø14 x 8: (8 + 10) / 500 = 2.16 s -> 3 s.  Ø12 x 18: (18 + 10) / 500 = 3.36 s -> 4 s.  Ø12 x 5: (5 + 10) / 500 = 1.8 s -> 2 s.
-    expect(sec(finish)).toBeCloseTo(9, 2);
+    // Ø14 x 8: (8 + 10) / 380 = 2.84 s -> 3 s.  Ø12 x 18: (18 + 10) / 380 = 4.42 s -> 5 s.  Ø12 x 5: (5 + 10) / 380 = 2.37 s -> 3 s.
+    expect(sec(finish)).toBeCloseTo(11, 2);
     expect(finish.featureBreakdown).toEqual([
       { name: 'Finish Turning // Ring Ø14 x 8 mm', timeSec: expect.closeTo(3, 2), featureType: 'Ring', count: 1, faceIds: [9] },
-      { name: 'Finish Turning // Ring Ø12 x 18 mm', timeSec: expect.closeTo(4, 2), featureType: 'Ring', count: 1, faceIds: [17] },
-      { name: 'Finish Turning // Ring Ø12 x 5 mm', timeSec: expect.closeTo(2, 2), featureType: 'Ring', count: 1, faceIds: [24] },
+      { name: 'Finish Turning // Ring Ø12 x 18 mm', timeSec: expect.closeTo(5, 2), featureType: 'Ring', count: 1, faceIds: [17] },
+      { name: 'Finish Turning // Ring Ø12 x 5 mm', timeSec: expect.closeTo(3, 2), featureType: 'Ring', count: 1, faceIds: [24] },
     ]);
-    expect(finish.totalCost).toBeCloseTo((9 * 900) / 3600, 6);
+    expect(finish.totalCost).toBeCloseTo((11 * 900) / 3600, 6);
   });
 
   it('the setup is on the facing, the lathe\'s first cut, once', () => {
@@ -147,12 +149,12 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
     // The speed and feed are the workbook's ranges, picked at the Range Position; the spindle is capped at the machine's limit.
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Rough Speed Min')).toMatchObject({ value: 90, source: expect.stringContaining('tblTurningConditions: Aluminium alloys') });
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Rough Speed Max')).toMatchObject({ value: 450 });
-    expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Rough Cutting Speed')).toMatchObject({ value: 270 });
+    expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Rough Cutting Speed')).toMatchObject({ value: 198 });
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Max Spindle Speed')).toMatchObject({ value: 4000, source: expect.stringContaining('spindle_speed_rpm') });
-    expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Spindle Speed')).toMatchObject({ value: 4000, unit: 'rpm' });
+    expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Spindle Speed')).toMatchObject({ value: 3939.08, unit: 'rpm' });
     // The workbook's 10 mm approach is an input of each run, stated as the allowance it is.
     expect(trace.find((s) => s.fieldName === 'Ring Ø12 x 18 mm · Approach Length')).toMatchObject({
-      kind: 'input', value: 10, unit: 'mm', source: expect.stringMatching(/^Assumption: .*length of cut \+ 10 mm/),
+      kind: 'input', value: 10, unit: 'mm', source: expect.stringMatching(/Turning sheet: the length of cut plus 10 mm/), ref: { kind: 'calculatorField', calculator: 'Machining - Rough Turning', field: 'Approach Length' },
     });
     expect(trace.find((s) => s.fieldName === 'Rough Turning cycle time')).toMatchObject({ kind: 'calculated', value: 5, unit: 's' });
     // Reopened, the calculator fills from the first Ring, whose inputs open that Ring's faces on the model.
@@ -166,33 +168,33 @@ describe('a stepped shaft from a Ø16 bar: each diameter is turned on its own ra
 describe('the bar at the largest diameter: that diameter is left as supplied, the steps are still turned', () => {
   it('Ø14 bar, Ø12 steps: one rough pass, then one finish pass', () => {
     // Ø14: radial 0 -> as supplied, on neither line.
-    // Ø12 x 18: rough 2 s, finish 4 s;  Ø12 x 5: rough 1 s, finish 2 s.
+    // Ø12 x 18: rough (18 + 10) / 920 = 1.83 s -> 2 s, finish 5 s;  Ø12 x 5: rough 0.98 s -> 1 s, finish 3 s.
     const { processLines } = cost(shaft({ blankResult: bar(14) }));
     expect(sec(lineOf(processLines, 'Rough Turning'))).toBeCloseTo(3, 2);
-    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(6, 2);
+    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(8, 2);
     expect(lineOf(processLines, 'Rough Turning')!.featureBreakdown!.map((f) => f.name)).toEqual(['Rough Turning // Ring Ø12 x 18 mm', 'Rough Turning // Ring Ø12 x 5 mm']);
   });
 
   it('Ø14 bar, Ø13 steps: stock no deeper than the finish cut is one finish pass and no rough pass', () => {
     // Ø13: radial (14 - 13) / 2 = 0.5, the finish depth of cut: finish start min(13 + 1, 14) = 14, ceil(0 / 4) = 0 rough passes
-    //      -> no Rough Turning line at all; finish 4 s + 2 s.
+    //      -> no Rough Turning line at all; finish 5 s + 3 s.
     const rings: TurnedRing[] = [RINGS[0]!, { ...RINGS[1]!, diameterMm: 13 }, { ...RINGS[2]!, diameterMm: 13 }];
     const { processLines, warnings } = cost(shaft({ blankResult: bar(14), turnedGeometry: { ...shaft().turnedGeometry!, rings } }));
     expect(lineOf(processLines, 'Rough Turning')).toBeUndefined();
     const finish = lineOf(processLines, 'Finish Turning')!;
-    expect(sec(finish)).toBeCloseTo(6, 2);
+    expect(sec(finish)).toBeCloseTo(8, 2);
     expect(finish.featureBreakdown!.map((f) => f.name)).toEqual(['Finish Turning // Ring Ø13 x 18 mm', 'Finish Turning // Ring Ø13 x 5 mm']);
     expect(lineDataGap(finish)).toBeNull();
     expect(warnings.some((w) => w.includes('Turning not priced'))).toBe(false);
   });
 
   it('Ø14 bar, a Ø10 step: 2 mm of radial stock is one rough pass', () => {
-    // Ø10 x 20: finish start 11, ceil((14 - 11) / 4) = 1 pass; rough (20 + 10) / 1000 = 1.8 s -> 2 s; finish (20 + 10) / 500 = 3.6 s -> 4 s.
+    // Ø10 x 20: finish start 11, ceil((14 - 11) / 4) = 1 pass; rough (20 + 10) / 920 = 1.96 s -> 2 s; finish (20 + 10) / 380 = 4.74 s -> 5 s.
     const rings: TurnedRing[] = [{ id: 'od_0', diameterMm: 14, lengthMm: 12, faceIds: [1] }, { id: 'od_1', diameterMm: 10, lengthMm: 20, faceIds: [2] }];
     const { processLines } = cost(shaft({ blankResult: bar(14), turnedGeometry: { ...shaft().turnedGeometry!, rings } }));
     const rough = lineOf(processLines, 'Rough Turning')!;
     expect(sec(rough)).toBeCloseTo(2, 2);
-    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(4, 2);
+    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(5, 2);
     expect(rough.featureBreakdown).toEqual([{ name: 'Rough Turning // Ring Ø10 x 20 mm', timeSec: expect.closeTo(2, 2), featureType: 'Ring', count: 1, faceIds: [2] }]);
     // One Ring turned: its run is the line's calculation as it is, under the calculator's own field names.
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Turned Diameter')).toMatchObject({ value: 10, source: 'CAD: turned outer diameter (Ring feature)' });
@@ -201,9 +203,9 @@ describe('the bar at the largest diameter: that diameter is left as supplied, th
 
 describe('a part analysed without Ring features: one run on its fallback cylinder, as before', () => {
   // Ø20 x 100 from a Ø30 bar: finish start 21, ceil((30 - 21) / 4) = 3 passes.
-  //   rough  n = 270 * 1000 / (pi * 30) = 2864.79 rpm (under the limit); feed 716.20 mm/min; (100 + 10) / 716.20 * 3 = 0.4608 min
-  //          = 27.65 s -> 28 s.
-  //   finish n = min(4000, 375 * 1000 / (pi * 21)) = 4000; (100 + 10) / 500 = 13.2 s -> 14 s.
+  //   rough  n = 198 * 1000 / (pi * 30) = 2100.85 rpm (under the limit); feed 0.23 * 2100.85 = 483.19 mm/min;
+  //          (100 + 10) / 483.19 * 3 = 0.6830 min = 40.98 s -> 41 s.
+  //   finish n = min(4000, 285 * 1000 / (pi * 21)) = 4000; (100 + 10) / 380 = 17.37 s -> 18 s.
   const fallback = {
     diameterMm: 20, lengthMm: 100,
     diameterSource: 'CAD: bounding-box cross-section (no turned-diameter feature recognised)',
@@ -215,9 +217,9 @@ describe('a part analysed without Ring features: one run on its fallback cylinde
     const { processLines } = cost(input());
     const rough = lineOf(processLines, 'Rough Turning')!;
     const finish = lineOf(processLines, 'Finish Turning')!;
-    expect(sec(rough)).toBeCloseTo(28, 2);
-    expect(sec(finish)).toBeCloseTo(14, 2);
-    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 2864.79 });
+    expect(sec(rough)).toBeCloseTo(41, 2);
+    expect(sec(finish)).toBeCloseTo(18, 2);
+    expect(rough.calculationTrace!.find((s) => s.fieldName === 'Spindle Speed')).toMatchObject({ value: 2100.85 });
     expect(rough.featureBreakdown).toBeUndefined();
     expect(finish.featureBreakdown).toBeUndefined();
     expect(rough.calculationTrace!.find((s) => s.fieldName === 'Turned Diameter')).toMatchObject({ value: 20, source: fallback.diameterSource });
@@ -298,7 +300,7 @@ describe('turning that cannot be priced is still a gap line, with its reason and
     const rough = lineOf(processLines, 'Rough Turning')!;
     expect(rough.cycleTimeMin).toBe(0);
     expect(rough.physicsGap).toMatchObject({ reason: expect.stringContaining('a calculator for "Rough Turning"') });
-    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(9, 2);
+    expect(sec(lineOf(processLines, 'Finish Turning'))).toBeCloseTo(11, 2);
   });
 
   it('nothing to turn needs no cutting data: no turning gap', () => {

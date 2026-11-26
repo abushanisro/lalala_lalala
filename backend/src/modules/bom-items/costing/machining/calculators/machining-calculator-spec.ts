@@ -119,10 +119,31 @@ export function specFieldToRow(f: SpecField, order: number): MachiningCalculator
   };
 }
 
-/** The spec as the per-operation calculator set the engine receives (ids are the spec names). */
+/**
+ * Where each field's default comes from (the spec's `note`), by calculator name then field name. The database rows have no column for it
+ * (specFieldToRow writes none), so whoever loads a machining calculator lays these over its fields (withSpecNotes), for the step's source
+ * and the calculator's table of defaults (calculatorField).
+ */
+export function specFieldNotes(s: MachiningCalculatorSpec = loadMachiningCalculatorSpec()): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  return new Map(s.calculators.map((c) => [c.name, new Map(c.fields.flatMap((f) => (f.note ? [[f.name, f.note] as const] : [])))]));
+}
+
+let notesCache: ReadonlyMap<string, ReadonlyMap<string, string>> | null = null;
+
+/** A machining calculator's fields with the spec's note on each that has one (a calculator not in the spec: as they are). */
+export function withSpecNotes<F extends MachiningCalculatorField>(calculatorName: string, fields: readonly F[]): F[] {
+  notesCache ??= specFieldNotes();
+  const notes = notesCache.get(calculatorName);
+  return fields.map((f) => {
+    const note = notes?.get(f.field_name);
+    return note ? { ...f, note } : f;
+  });
+}
+
+/** The spec as the per-operation calculator set the engine receives (ids are the spec names), each field with its note. */
 export function specAsCalculators(s: MachiningCalculatorSpec = loadMachiningCalculatorSpec()): MachiningCalculators {
   return Object.fromEntries(s.calculators.flatMap((c) => {
-    const def = { calculatorId: c.name, name: c.name, version: 1, fields: c.fields.map((f, i) => specFieldToRow(f, i + 1)) };
+    const def = { calculatorId: c.name, name: c.name, version: 1, fields: c.fields.map((f, i) => ({ ...specFieldToRow(f, i + 1), ...(f.note ? { note: f.note } : {}) })) };
     const operations = c.operation === STATION_OPERATION ? c.machineClasses.map((cls) => s.stations[cls]!) : [c.operation];
     return operations.map((op) => [op, def]);
   }));

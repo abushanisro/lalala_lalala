@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from 'react';
 
+import { useSourceRefEye } from '@/components/costing/SourceRefEye';
 import type { ConfidenceLevel, PhysicsGap, LookupTableRow, CalculationTraceStep } from '@/lib/api/hooks/useBOMItems';
 
 // Narrower than ProcessLineCost -- lets non-process callers (e.g. a material
@@ -129,6 +130,38 @@ function PhysicsGapPanel({ gap }: { gap: PhysicsGap }) {
   );
 }
 
+/** One input of the trace: its value, where it came from, and the eye that opens that source (its SourceRef). */
+function TraceInput({ step, renderInput }: { step: CalculationTraceStep; renderInput: ((step: CalculationTraceStep) => ReactNode) | undefined }) {
+  const eye = useSourceRefEye(step);
+  return (
+    <div className="text-[11px]">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-muted-foreground truncate min-w-0">
+          {step.displayLabel}
+          {step.stepType === 'lookup' && (
+            <span className="ml-1.5 text-[9px] font-semibold px-1 py-px rounded bg-primary/15 text-primary dark:text-primary">
+              lookup
+            </span>
+          )}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          <span className="tabular-nums text-foreground">
+            {step.value ?? '—'}{step.unit ? ` ${step.unit}` : ''}
+          </span>
+          {eye.button}
+        </span>
+      </div>
+      {step.source && (
+        <div className="text-[10px] text-muted-foreground/60 truncate" title={step.source}>
+          {step.source}
+        </div>
+      )}
+      {eye.panel}
+      {renderInput?.(step)}
+    </div>
+  );
+}
+
 /**
  * On-screen calculation trace — the real audit trail (inputs with
  * provenance, formulas with their real DB formula string, calculator
@@ -174,29 +207,7 @@ export function CalculationTracePanel({ line, renderInput }: {
           {inputs.length > 0 && (
             <div className="p-2 space-y-1.5">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Inputs</div>
-              {inputs.map((step, i) => (
-                <div key={i} className="text-[11px]">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-muted-foreground truncate min-w-0">
-                      {step.displayLabel}
-                      {step.stepType === 'lookup' && (
-                        <span className="ml-1.5 text-[9px] font-semibold px-1 py-px rounded bg-primary/15 text-primary dark:text-primary">
-                          lookup
-                        </span>
-                      )}
-                    </span>
-                    <span className="tabular-nums text-foreground shrink-0">
-                      {step.value ?? '—'}{step.unit ? ` ${step.unit}` : ''}
-                    </span>
-                  </div>
-                  {step.source && (
-                    <div className="text-[10px] text-muted-foreground/60 truncate" title={step.source}>
-                      {step.source}
-                    </div>
-                  )}
-                  {renderInput?.(step)}
-                </div>
-              ))}
+              {inputs.map((step, i) => <TraceInput key={i} step={step} renderInput={renderInput} />)}
             </div>
           )}
           {formulas.length > 0 && (

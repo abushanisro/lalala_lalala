@@ -71,6 +71,12 @@ export function variableProvider(ref: SandReference): SeedProvider {
   };
 }
 
+/** A numeric variable of memory/Sand casting as a seed the route supplies itself: its value, where it is, and the variable it opens. */
+export function sandVariableSeed(ref: SandReference, name: string, value: number = ref.number(name) ?? NaN, note = ''): CalcSeed {
+  const seed = variableProvider(ref)(name);
+  return { value, source: `${seed?.source ?? `Sand casting variable ${name}`}${note}`, ref: { kind: 'variable', domain: SAND_DOMAIN, name } };
+}
+
 /** A provider over values the caller already holds, each with its source text. */
 export function valuesProvider(values: Readonly<Record<string, CalcSeed | undefined>>): SeedProvider {
   return (key) => values[key] ?? null;

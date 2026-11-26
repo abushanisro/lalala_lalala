@@ -111,7 +111,7 @@ export function runCompressionCycleTime(input: Parameters<typeof pressCycleTimeS
 }
 
 /** The time to trim the flash off the parting line by hand (length / rate), by the stored calculator. */
-export function runDeflashingTime(input: { partingLineLengthMm: number | null; rateMmPerS: number | null }, calculators: ReferenceCalculators | null | undefined): PressCycle {
+export function runDeflashingTime(input: Parameters<typeof deflashingSeeds>[0], calculators: ReferenceCalculators | null | undefined): PressCycle {
   return runPress(DEFLASH_CALCULATOR, deflashingSeeds(input), calculators);
 }
 
@@ -136,7 +136,7 @@ export function runInsertPullTest(input: InsertPullTestInput, calculators: Refer
 }
 
 /** The time the hydraulic slides add to each part (F-32), by the stored slide movement calculator, or what is missing. */
-export function runSlideMovementTime(input: { slideStrokeMm: number | null; slideStrokeBundleId?: string | null; rateMmPerS: number | null; cavities: number }, calculators: ReferenceCalculators | null | undefined): PressCycle {
+export function runSlideMovementTime(input: Parameters<typeof slideMovementSeeds>[0], calculators: ReferenceCalculators | null | undefined): PressCycle {
   return runPress(SLIDE_MOVEMENT_CALCULATOR, slideMovementSeeds(input), calculators);
 }
 

@@ -7,7 +7,9 @@
 // the curing time that dominates is not modelled). Hot box has no cycle time in the data: its calculator times the blow from the sand, the cure
 // from heat conduction into the sand (the plant's box temperature, binder cure temperature and strip depth, set in the Cost Guide; none assumed)
 // and the strip from the handling table.
-import type { ReferenceCalcRun } from '../../shared/calculators/reference-calculator';
+import type { CalcSeed, ReferenceCalcRun } from '../../shared/calculators/reference-calculator';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
+import { calculatedSeed, calculationRef, costGuideSeed, energySeed, inputStep, resultStep } from '../casting-source-refs';
 import { machineValue, type SandMachine } from './sand-machines';
 import { handlingTime } from './sand-handling';
 import { valuesProvider } from './sand-seeds';
@@ -43,17 +45,36 @@ export type CoreProcess = (typeof CORE_PROCESSES)[number];
  * cure temperature", "normal pattern operating temperatures (450 to 550° F.)", massive cores cured "to a shallower skin depth, 1/4 to 1/2 inch". The box is
  * taken at the range's lower bound and the skin at its upper bound: both the slower cure. The cured depth is capped at half the core's section (calculator).
  */
+const PATENT = 'US 5,365,995 (Ford, "Method of curing hot box sand cores")';
+// Each published value as the conversion it is: the patent's figure in its own unit, to the unit the calculator reads.
+const fToC = (name: string, f: number, quote: string): SourceRef => calculationRef(name, [
+  inputStep(`${name} (published)`, '°F', f, `${PATENT}: ${quote}`),
+  resultStep(name, '°C', Math.round(((f - 32) * 5) / 9 * 10) / 10, '({published} - 32) x 5 / 9'),
+]);
 const HOT_BOX_PUBLISHED = {
-  coreboxTempC: { value: 232.2, source: 'US 5,365,995: pattern 450-550 °F, the lower bound 450 °F (the slower cure)' },
-  cureTempC: { value: 48.9, source: 'US 5,365,995: "the 120° F. critical cure temperature"' },
-  curedDepthMm: { value: 12.7, source: 'US 5,365,995: massive cores cured to a skin of 1/4 to 1/2 inch, the upper bound 1/2 inch (the slower cure)' },
+  coreboxTempC: {
+    value: 232.2, source: 'US 5,365,995: pattern 450-550 °F, the lower bound 450 °F (the slower cure)',
+    ref: fToC('Corebox Temperature', 450, 'normal pattern operating temperatures (450 to 550° F.), the lower bound (the slower cure)'),
+  },
+  cureTempC: { value: 48.9, source: 'US 5,365,995: "the 120° F. critical cure temperature"', ref: fToC('Cure Temperature', 120, '"the 120° F. critical cure temperature"') },
+  curedDepthMm: {
+    value: 12.7, source: 'US 5,365,995: massive cores cured to a skin of 1/4 to 1/2 inch, the upper bound 1/2 inch (the slower cure)',
+    ref: calculationRef('Required Cured Depth', [
+      inputStep('Required Cured Depth (published)', 'in', 0.5, `${PATENT}: massive cores cured "to a shallower skin depth, 1/4 to 1/2 inch", the upper bound (the slower cure)`),
+      resultStep('Required Cured Depth', 'mm', 12.7, '{published} x 25.4'),
+    ]),
+  },
 } as const;
 const HOT_BOX_SET_IN = { coreboxTempC: 'core box temperature', cureTempC: "binder's cure temperature", curedDepthMm: 'cured depth before stripping' } as const;
+const HOT_BOX_KEY = { coreboxTempC: 'hotBoxCoreboxTempC', cureTempC: 'hotBoxCureTempC', curedDepthMm: 'hotBoxCuredDepthMm' } as const;
+const HOT_BOX_UNIT = { coreboxTempC: '°C', cureTempC: '°C', curedDepthMm: 'mm' } as const;
 
-function hotBoxValues(ctx: SandRouteContext): Record<keyof typeof HOT_BOX_PUBLISHED, { value: number; source: string }> {
-  const of = (k: keyof typeof HOT_BOX_PUBLISHED) => {
+function hotBoxValues(ctx: SandRouteContext): Record<keyof typeof HOT_BOX_PUBLISHED, CalcSeed> {
+  const of = (k: keyof typeof HOT_BOX_PUBLISHED): CalcSeed => {
     const set = ctx.hotBox[k];
-    return set != null ? { value: set, source: `${HOT_BOX_SET_IN[k]} set in the Cost Guide` } : HOT_BOX_PUBLISHED[k];
+    return set != null
+      ? costGuideSeed(HOT_BOX_SET_IN[k], HOT_BOX_UNIT[k], set, HOT_BOX_KEY[k], `the published value of ${PATENT}`, `${HOT_BOX_SET_IN[k]} set in the Cost Guide`)
+      : HOT_BOX_PUBLISHED[k];
   };
   return { coreboxTempC: of('coreboxTempC'), cureTempC: of('cureTempC'), curedDepthMm: of('curedDepthMm') };
 }
@@ -95,7 +116,19 @@ export function sandCores(ctx: SandRouteContext, regions: readonly CoreRegion[])
     }
     const r = runStep(
       ctx, CORE_SAND, null,
-      { core_volume_mm3: { value: region.volumeMm3, source: 'worker' }, core_length_mm: { value: region.sizeMm[0], source: "worker: the core's longest side" } },
+      {
+        core_volume_mm3: {
+          value: region.volumeMm3, source: 'worker',
+          ref: calculationRef('Core Volume', [inputStep('Core Volume', 'mm³', region.volumeMm3, "CAD casting analysis: the core's volume (a region no straight pull of the pattern reaches)")]),
+        },
+        core_length_mm: {
+          value: region.sizeMm[0], source: "worker: the core's longest side",
+          ref: calculationRef('Core Length', [
+            inputStep('Core box', 'mm', region.sizeMm.map((v) => Math.round(v * 10) / 10).join(' x '), "CAD casting analysis: the core's box"),
+            resultStep('Core Length', 'mm', region.sizeMm[0], "The core's longest side"),
+          ]),
+        },
+      },
       {},
       'Core Sand',
     );
@@ -139,9 +172,15 @@ export function makeCoreStep(ctx: SandRouteContext, machine: SandMachine, core: 
   const r = runStep(
     ctx, isHotBox ? HOT_BOX : COREMAKING, machine,
     {
-      core_sand_kg: { value: core.kg, source: 'Sand Casting - Core sand' },
+      core_sand_kg: { value: core.kg, source: 'Sand Casting - Core sand', ref: { kind: 'calculation', name: CORE_SAND, evidence: null, steps: core.run.trace } },
       // The core's smallest side: heat arrives from every face, so no sand is further from a face than half of it.
-      core_section_mm: { value: core.region.sizeMm[2], source: "worker: the core's smallest side" },
+      core_section_mm: {
+        value: core.region.sizeMm[2], source: "worker: the core's smallest side",
+        ref: calculationRef('Core Section', [
+          inputStep('Core box', 'mm', core.region.sizeMm.map((v) => Math.round(v * 10) / 10).join(' x '), "CAD casting analysis: the core's box (a region no straight pull of the pattern reaches)"),
+          resultStep('Core Section', 'mm', core.region.sizeMm[2], "The core's smallest side: heat arrives from every face, so no sand is further from one than half of it"),
+        ]),
+      },
     },
     isHotBox
       ? {
@@ -150,7 +189,7 @@ export function makeCoreStep(ctx: SandRouteContext, machine: SandMachine, core: 
             hot_box_cure_temp_c: hot.cureTempC,
             hot_box_cured_depth_mm: hot.curedDepthMm,
             // As for melting: an energy price the user has not set is not assumed; the energy is then not charged, and the line says so.
-            energy_price: { value: priced ? ctx.energyPricePerKwh! : 0, source: priced ? ctx.energyPriceSource ?? 'energy price (USD/kWh)' : 'no energy price: none set in the Cost Guide and none for the location' },
+            energy_price: energySeed(ctx),
           }),
           lookup: valuesProvider({ 'tblHandlingTimes.Handling Time (s)': { value: band!.seconds, source: `tblHandlingTimes: ${band!.equipment} up to ${band!.maxKg} kg` } }),
         }
@@ -225,12 +264,19 @@ export function coreboxTooling(ctx: SandRouteContext, lifetimeVolume: number): {
     const r = runStep(
       ctx, CORE_BOX, null, {},
       {
-        scenario: valuesProvider({ lifetime_volume: { value: lifetimeVolume, source: 'parts made over the tooling life (scenario)' } }),
+        scenario: valuesProvider({
+          lifetime_volume: calculatedSeed(lifetimeVolume, 'parts made over the tooling life (scenario)', 'Lifetime Volume', [
+            inputStep('Lifetime volume', null, lifetimeVolume, "The part's annual volume x production life (its costing inputs)", { kind: 'costingInput', field: 'annualVolume' }),
+            resultStep('Lifetime Volume', null, lifetimeVolume, '{Annual volume} x {Production life}: the parts the core boxes make'),
+          ]),
+        }),
         variable: variableProvider(ctx.ref),
         lookup: (key: string) => {
           const col = key.replace(/^tblCoreboxMaterial\./, '');
           const value = Number(row[col]);
-          return key.startsWith('tblCoreboxMaterial.') && Number.isFinite(value) ? { value, source: where, lookup: true } : null;
+          return key.startsWith('tblCoreboxMaterial.') && Number.isFinite(value)
+            ? { value, source: where, lookup: true, match: { table: 'tblCoreboxMaterial', row: { Type: String(row['Type']) } } }
+            : null;
         },
       },
       'Cost per Part',

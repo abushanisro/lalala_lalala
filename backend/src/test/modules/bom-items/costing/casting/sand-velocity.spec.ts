@@ -22,8 +22,9 @@ describe('ingateVelocityNote: a limit is applied only where a published one is h
     }
   });
 
-  it('the riser note says the 14 % has no verifiable source and what has', () => {
-    expect(RISER_EFFICIENCY_NOTE).toMatch(/14 %.*no published source that could be verified/);
+  it('the riser note says which feeding efficiency the sizing assumes and where each rule comes from', () => {
+    expect(RISER_EFFICIENCY_NOTE).toMatch(/natural \(unsleeved\) feeders that are not live, which feed 10 %/);
+    expect(RISER_EFFICIENCY_NOTE).toMatch(/Foseco/);
     expect(RISER_EFFICIENCY_NOTE).toMatch(/1\.2/);
   });
 });

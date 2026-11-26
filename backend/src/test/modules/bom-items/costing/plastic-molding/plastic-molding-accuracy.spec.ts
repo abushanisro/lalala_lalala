@@ -128,19 +128,19 @@ describe('cooling and cycle time', () => {
     expect(c.coolSec).toBe(54.3);
   });
 
-  it('cycle = fill 0.29 + pack 4.8 + cool 13.6 + dry 2.0 = 20.69 s', () => {
+  it('cycle = fill 0.29 + pack 2.7 + cool 13.6 + dry 2.0 = 18.59 s', () => {
     // fill: 56.16 g / 885 kg/m3 = 63,457.6 mm3 / 130,000 = 0.4881 s x 1.0 (1 cavity) x 0.6 (1 gate) = 0.2929 -> 0.29
-    // pack: max(2, 0.35 x 13.6 = 4.76 -> 4.8)
+    // pack (F-06 v2, migration 1161): max(max(2 x 0.29, 1 s) = 1, 0.20 x 13.6 = 2.72 -> 2.7). It was max(2, 0.35 x 13.6 -> 4.8): 20.69 s.
     const c = runInjectionCycleTime({
       wallMm: 2, isLsr: false, real: ABS_RESIN, model: REF.cycleModel, press: MID.timing,
       shotMeltVolumeMm3: (0.05616 / 885) * 1e9, cavityCount: 1, gatesPerCavity: 1,
     }, plasticMoldingCalculatorsByName(), 'injection');
     if (!c.derivable) throw new Error(c.missing.join());
     expect(c.fillSec).toBe(0.29);
-    expect(c.packSec).toBe(4.8);
+    expect(c.packSec).toBe(2.7);
     expect(c.coolSec).toBe(13.6);
     expect(c.moldMotionSec).toBe(2);
-    expect(c.totalCycleSec).toBe(20.69);
+    expect(c.totalCycleSec).toBe(18.59);
   });
 });
 
@@ -175,11 +175,11 @@ describe('cost summary: worked ABS part', () => {
     expect(r.processLines.every((l) => !l.physicsGap)).toBe(true);
   });
 
-  it('prices material 56.16 g x 3.046 = 0.171063, press and operator 20.69 s x (29.18 + 30) USD/h = 0.340125, visual inspection 0.04 m2 x 5 min/m2 = 12 s x 30 USD/h = 0.1, gate trimming 0.37 s x 30 USD/h = 0.003083: to the millionth, not to the cent; no weight check unless asked for', () => {
+  it('prices material 56.16 g x 3.046 = 0.171063, press and operator 18.59 s x (29.18 + 30) USD/h = 0.305603, visual inspection 0.04 m2 x 5 min/m2 = 12 s x 30 USD/h = 0.1, gate trimming 0.37 s x 30 USD/h = 0.003083: to the millionth, not to the cent; no weight check unless asked for', () => {
     expect(r.grossWeightKg).toBeCloseTo(0.05616, 6);
-    expect(im.cycleTimeSec).toBe(20.69);
+    expect(im.cycleTimeSec).toBe(18.59);
     const material = 0.05616 * 3.046;
-    const run = (20.69 * (29.18 + 30)) / 3600;
+    const run = (18.59 * (29.18 + 30)) / 3600;
     expect(r.materialCost).toBeCloseTo(material, 6);
     expect(r.processLines[0]!.runCost).toBeCloseTo(run, 6);
     // the bench rate (deburring, operator 30 USD/h): 40,000 mm2 = 0.04 m2 x 5 min/m2 (memory/Secondary process visualInspectTimeStandard) x 100 % = 12 s
@@ -194,13 +194,14 @@ describe('cost summary: worked ABS part', () => {
     expect(r.totalCost).toBeCloseTo(material + run + inspect + trim, 5);
   });
 
-  it('with the weight check switched on: 10 s every 1,000 parts x (30 + scale 0.0377) USD/h, total 0.614350 as before', () => {
+  it('with the weight check switched on: 10 s every 1,000 parts x (30 + scale 0.0377) USD/h, total 0.579828', () => {
     const checked = computeInjectionMoldedCostSummary(absPart({ secondaryChecks: { insertPullTest: false, weightCheck: true } }));
     // weight check (F-35): 10 s every 1,000 parts by the operator (30 USD/h) on the OHAUS scale, its rate by the migration 580 pattern
     const scale = (1051.99 / 10 + 1051.99 * 0.05 + 1051.99 * 0.2 / 10) / (6240 * 0.8 * 0.95);
     const weigh = (10 / 1000) * (30 + scale) / 3600;
     expect(checked.processLines.find((l) => l.process === 'Weight Check')?.totalCost).toBeCloseTo(weigh, 6);
-    expect(checked.totalCost).toBe(0.61435);
+    // 0.614350 at the 20.69 s cycle; the 18.59 s cycle (migration 1161's pack) takes 2.1 s x 59.18 USD/h = 0.034522 off the press and operator.
+    expect(checked.totalCost).toBe(0.579828);
   });
 
   it('tooling, USA, 10,000/yr x 3 yr: BOM 1,930 + labour 2,859.53 + base steel 871.56 + cavity machining 1,122.14 + polish 1,843.44 + ejector pins 48.41 + sprue and ring 155 + try-out 2,765.16 + heat treatment 0 (P20, pre-hardened) + cooling 715.29 + water baffles 1,351.54 = 13,662.06, one mold, 0.4554 per part', () => {
@@ -470,20 +471,20 @@ describe('the slide movement in each shot (F-32)', () => {
 describe('material drying (F-36)', () => {
   const USA = { usdPerKwh: 0.0851, source: 'USA electricity price: 0.0851 USD/kWh (EIA)' };
 
-  it('charges the dryer hour with the press time per part on the molding line: ABS 9.77 kg/h -> Bry-Air DRY-30 (12 kg/h, 2.43 kW), the used dX50 price, USA electricity', () => {
+  it('charges the dryer hour with the press time per part on the molding line: ABS 10.88 kg/h -> Bry-Air DRY-30 (12 kg/h, 2.43 kW), the used dX50 price, USA electricity', () => {
     const r = computeInjectionMoldedCostSummary(absPart({ electricity: USA }));
     const without = computeInjectionMoldedCostSummary(absPart());
     // The dryer runs with the press (user decision 2026-11-25): no process line of its own, its cost is the molding line's other cost.
     expect(r.processLines.some((l) => l.process === 'Material Drying')).toBe(false);
     const line = r.processLines[0]!;
     const step = (f: string) => line.calculationTrace?.find((t) => t.fieldName === `Material Drying · ${f}`);
-    // demand 0.05616 kg x 3600 / 20.69 s = 9.77 kg/h; ownership (11,900 / 10 + 11,900 x 5 % + 11,900 x 20 % / 10) / (6,240 x 0.8 x 0.95)
+    // demand 0.05616 kg x 3600 / 18.59 s = 10.88 kg/h; ownership (11,900 / 10 + 11,900 x 5 % + 11,900 x 20 % / 10) / (6,240 x 0.8 x 0.95)
     const ownership = (11900 / 10 + 11900 * 0.05 + 11900 * 0.2 / 10) / (6240 * 0.8 * 0.95);
     const hourly = ownership + 2.43 * 0.0851;
     expect(step('Dryer Throughput')?.value).toBe(12);
     expect(step('Dryer Hourly Cost')?.value).toBeCloseTo(hourly, 4); // the trace shows 4 decimals
-    expect(line.otherCostPerPartUsd).toBeCloseTo((hourly * 20.69) / 3600, 6);
-    expect(line.totalCost).toBeCloseTo(without.processLines[0]!.totalCost + (hourly * 20.69) / 3600, 6);
+    expect(line.otherCostPerPartUsd).toBeCloseTo((hourly * 18.59) / 3600, 6);
+    expect(line.totalCost).toBeCloseTo(without.processLines[0]!.totalCost + (hourly * 18.59) / 3600, 6);
     expect(line.laborCostPerPart).toBe(without.processLines[0]!.laborCostPerPart);
     expect(line.otherCostDetail).toMatch(/^material drying: the desiccant dryer runs with the press/);
     expect(step('Drying Temperature')?.source).toMatch(/ABS \(Lotte Chemical/);

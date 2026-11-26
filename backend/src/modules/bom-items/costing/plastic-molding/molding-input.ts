@@ -34,6 +34,12 @@ function partingLineLengthMm(graph: MoldingSummary['plasticFeatureGraph']): numb
   return positive(Number(line?.attributes?.length_mm));
 }
 
+/** The PartingLine feature that length was measured on (its plastic feature graph id), when it has one and a length. */
+function partingLineFeatureId(graph: MoldingSummary['plasticFeatureGraph']): string | null {
+  const line = graph?.items.find((f) => f.feature_type === 'PartingLine');
+  return line && typeof line.id === 'string' && line.id && positive(Number(line.attributes?.length_mm)) != null ? line.id : null;
+}
+
 /** Routing signals from the CAD analysis. A signal the analysis did not produce is null: the router then records a warning instead of assuming one. */
 export function moldingSignals(summary: MoldingSummary, bbox: readonly [number, number, number]): NonNullable<InjectionMoldingCostInput['signals']> {
   const sideActions = sideActionSignals(summary.plasticFeatureGraph);
@@ -57,6 +63,7 @@ export function moldingSignals(summary: MoldingSummary, bbox: readonly [number, 
     ribs: ribSignals(summary.plasticFeatureGraph),
     partingComplexity: summary.partingComplexity ?? null,
     partingLineLengthMm: partingLineLengthMm(summary.plasticFeatureGraph),
+    partingLineFeatureId: partingLineFeatureId(summary.plasticFeatureGraph),
     insertCount: positive(summary.insertCandidateCount),
   };
 }

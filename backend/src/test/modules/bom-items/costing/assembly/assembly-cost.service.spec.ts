@@ -59,12 +59,14 @@ describe('a part set to Assembly with no parts under it in the BOM', () => {
     expect(load!.calculationTrace!.find((t) => t.fieldName === 'Quantity')?.ref).toEqual({ kind: 'cad', evidence: 'part_volume' });
   });
 
-  it('other parts\' features are not on the page: an assembly of children names them but points at none', async () => {
+  it('other parts\' features are not on the page: an assembly of children names them, lighting none (the joint\'s row: the child\'s threaded holes)', async () => {
     const child = { ...holder, id: 'c' } as unknown as BOMItemResponseDto;
     const r = await service().price(request({ item: { ...holder, id: 'asm', name: 'Asm' } as unknown as BOMItemResponseDto, children: [child] }));
     expect(r.route!.lines.some((l) => l.actsOnWholePart)).toBe(false);
     const m4 = r.route!.lines.find((l) => l.process === 'Mechanical Assembly')!;
-    expect(m4.calculationTrace!.find((t) => t.fieldName === 'Joints')?.ref).toBeUndefined();
+    const ref = m4.calculationTrace!.find((t) => t.fieldName === 'Joints')?.ref;
+    expect(ref).toMatchObject({ kind: 'calculation', name: 'M4×0.7 screws ×5: joints' });
+    expect((ref as { steps: Array<{ source?: string }> }).steps[0]!.source).toMatch(/threaded holes of Cannula Holder Left/);
   });
 
   it('a child with no weight is weighed by its volume at its material\'s density', async () => {

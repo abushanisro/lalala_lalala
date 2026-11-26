@@ -14,17 +14,18 @@ import type { MachineCapability } from '../../shared/capability/machine-selectio
 import { liveToolingVerdict, type LiveToolWork } from '../capability/live-tooling';
 import type { MHRRateInput } from '../../shared/core/cost-engine';
 import { computeSustainability } from '../../shared/core/cost-engine';
-import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CostSummaryDto, FeatureOp, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MachiningCapabilityRules } from '../capability-rules';
-import { variableSeed } from '../calculators/machining-source-refs';
+import { MACHINING_REFERENCE_DOMAIN, variableSeed } from '../calculators/machining-source-refs';
 import type { StockFacing } from '../../stock/stock-facing';
 import { featuresRef, type FeatureOccurrenceRef } from '../feature-occurrences';
 import type { GearRoute } from '../operation/gear-routing';
-import type { OperationLine } from '../operation/operation-sequencer';
+import { removalRateSeed, stockFacingSeeds, type OperationLine } from '../operation/operation-sequencer';
 import type { TurnedGroove } from '../operation/turned-grooves';
 import { timeOperations } from '../operation/time-operations';
 import { runMachiningCalculator, runPlanned, type CalcRun, type CalcSeed, type MachiningCalculators, type PlannedRun } from '../calculators/machining-calculator';
-import { calculationRef, resultStep, seedStep } from '../calculators/machining-source-refs';
+import { calculationRef, inputStep, resultStep, seedStep } from '../calculators/machining-source-refs';
+import { calculatorDefaultSeed } from '../../shared/calculators/reference-calculator';
 import { loadMachiningCalculatorSpec } from '../calculators/machining-calculator-spec';
 import {
   keywayBroachingLookupSeeds, deburringLookupSeeds, deepBoreLookupSeeds, isWorkbookField, specLookupSeeds,
@@ -176,6 +177,9 @@ export interface MachiningCostInput {
     tubeIdMm?: number;
     /** What a mill faces off the piece before the part's features (stock/stock-facing.ts). Absent: nothing to face. */
     facing?: StockFacing;
+    /** How the stock model arrived at the bar's diameter and its end allowance (calculations over its tables and variables), for the eye. */
+    barDiameterRef?: SourceRef;
+    endAllowanceRef?: SourceRef;
   };
   /**
    * What cut the piece off its stock before this machine (costing/stock-machining stockCutOffOf): 'saw' = it is loaded as a piece cut to
@@ -447,6 +451,8 @@ export interface MillingMoves {
   location?: string | null;
   /** The part's box length (mm): the rapid transfer distance is rapidTransferDistanceFactor x it. */
   partBoxLengthMm: number | null;
+  /** The part's CAD bounding box (mm), when known: what the box length is read from. */
+  partBox?: { lengthMm: number; widthMm: number; heightMm: number } | null;
   rapidTransferDistanceFactor: number | null;
 }
 
@@ -500,21 +506,43 @@ function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>,
     g.ops.add(o.name);
     for (const id of o.featureIds ?? []) g.featureIds.add(id);
   }
+  // The operation sequence, one step per operation, under the time group each counts toward: what a group with no features opens.
+  const sequenced = featureOps.filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name));
+  const sequenceRef = (field: string): SourceRef => calculationRef(`${field}: the operation sequence`, [
+    ...sequenced.map((o) => inputStep(o.name, 's', o.timeSec, `Counts toward ${MILLING_TIME_INPUT[o.name] ?? 'Other Operations Time'}`)),
+    resultStep(field, 's', groups.get(field)?.sec ?? 0, `Sum of the operations that count toward ${field} (none on this part: 0)`),
+  ]);
   const groupSeeds = Object.fromEntries([...groups].map(([field, g]) => [field, {
     value: g.sec,
     source: g.ops.size > 0 ? `CAD features: ${[...g.ops].join(', ')} (operation sequence)` : 'CAD features: none of this group on the part',
-    // The features the time was computed on: the calculator input shows them on the model.
-    ...(g.featureIds.size > 0 ? { ref: { kind: 'features' as const, label: field, features: [...g.featureIds].map((featureId) => ({ featureId })) } } : {}),
+    // The features the time was computed on: the calculator input shows them on the model. A group of no feature (nothing of it on the
+    // part, or an operation on the stock): the sequence its time is summed from.
+    ref: g.featureIds.size > 0 ? { kind: 'features' as const, label: field, features: [...g.featureIds].map((featureId) => ({ featureId })) } : sequenceRef(field),
   }]));
   // The moves: only an operation that cuts (has a time) changes to its cutter and moves to its features.
   const cutting = featureOps.filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && o.timeSec > 0);
   const tools = new Set(cutting.flatMap(cuttersOf));
   const visits = cutting.reduce((n, o) => n + (o.count ?? 1), 0);
+  const toolsRef = calculationRef('Tools: one per operation and cutter size', [
+    ...cutting.map((o) => inputStep(o.name, null, [...new Set(cuttersOf(o))].map((c) => c.split('|')[1] || 'one tool').join(', '), `Cutter size${cuttersOf(o).length === 1 ? '' : 's'} its calculator runs state`)),
+    resultStep('Tools', null, tools.size, 'The distinct operation and cutter size pairs'),
+  ]);
+  const visitsRef = calculationRef('Feature Visits: the features the operations cut', [
+    ...cutting.map((o) => inputStep(o.name, null, o.count ?? 1, 'CAD: the features (or holes) the operation cuts')),
+    resultStep('Feature Visits', null, visits, 'Sum of the features each cutting operation visits'),
+  ]);
+  const box = moves.partBox;
+  const boxRef: SourceRef | undefined = box ? calculationRef('Part Box Length', [
+    inputStep('Bounding box length', 'mm', box.lengthMm, 'CAD: the part\'s bounding box'),
+    inputStep('Bounding box width', 'mm', box.widthMm, 'CAD: the part\'s bounding box'),
+    inputStep('Bounding box height', 'mm', box.heightMm, 'CAD: the part\'s bounding box'),
+    resultStep('Part Box Length', 'mm', moves.partBoxLengthMm ?? 0, 'The bounding box length'),
+  ]) : undefined;
   return {
     ...groupSeeds,
-    'Tools': { value: tools.size, source: `Operation sequence: the cutters of ${[...new Set(cutting.map((o) => o.name))].join(', ') || 'no operation'}, one per operation and cutter size` },
-    'Feature Visits': { value: visits, source: 'Operation sequence: the features the operations cut' },
-    ...(moves.partBoxLengthMm != null && moves.partBoxLengthMm > 0 ? { 'Part Box Length': { value: moves.partBoxLengthMm, source: 'CAD: the part\'s bounding box length' } } : {}),
+    'Tools': { value: tools.size, source: `Operation sequence: the cutters of ${[...new Set(cutting.map((o) => o.name))].join(', ') || 'no operation'}, one per operation and cutter size`, ref: toolsRef },
+    'Feature Visits': { value: visits, source: 'Operation sequence: the features the operations cut', ref: visitsRef },
+    ...(moves.partBoxLengthMm != null && moves.partBoxLengthMm > 0 ? { 'Part Box Length': { value: moves.partBoxLengthMm, source: 'CAD: the part\'s bounding box length', ...(boxRef ? { ref: boxRef } : {}) } } : {}),
     ...(moves.rapidTransferDistanceFactor != null && moves.rapidTransferDistanceFactor > 0
       ? { 'Rapid Transfer Distance Factor': variableSeed(moves.rapidTransferDistanceFactor, 'rapidTransferDistanceFactor') } : {}),
     ...rapidTraverseSeed(moves.mhrRate, moves.location),
@@ -617,6 +645,14 @@ export function largestDrillMm(workbook: MachiningWorkbookInput | null | undefin
   return bands.length > 0 ? Math.max(...bands) : null;
 }
 
+/** The workbook's drilling-table row of the material's largest drill (its top band): where a bored hole's initial diameter is read. */
+export function largestDrillRef(workbook: MachiningWorkbookInput | null | undefined, matClass: MaterialClass, largestMm: number): SourceRef | undefined {
+  const groups = (workbook?.tables.tblCuttingMaterialGroup ?? []) as Array<{ MaterialClass?: string; DrillReamMaterial?: string }>;
+  const group = groups.find((r) => r.MaterialClass === matClass)?.DrillReamMaterial;
+  if (!group) return undefined;
+  return { kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table: 'tblDrillReamData', column: 'DiameterMaxMm', row: { WorkMaterial: group, Operation: 'Drilling', DiameterMaxMm: largestMm } };
+}
+
 /**
  * Boring a hole the drills do not reach, from the largest drilled diameter to the hole's (Internal Boring on a lathe, Boring on a
  * mill: the workbook's Internal Boring sheet).
@@ -629,7 +665,10 @@ export function computeBoreCycle(
   const ref = featuresRef(`Ø${finalMm} holes`, occurrences);
   const withRef = (seed: CalcSeed): CalcSeed => (ref ? { ...seed, ref } : seed);
   const seeds: Record<string, CalcSeed> = {
-    'Initial Diameter': { value: initialMm, source: `The largest drill of the workbook's drilling table for the material (Ø${initialMm} mm)` },
+    'Initial Diameter': {
+      value: initialMm, source: `The largest drill of the workbook's drilling table for the material (Ø${initialMm} mm)`,
+      ...(largestDrillRef(workbook, matClass, initialMm) ? { lookup: true, ref: largestDrillRef(workbook, matClass, initialMm)! } : {}),
+    },
     'Final Diameter': withRef({ value: finalMm, source: 'CAD: hole diameter' }),
     'Bores': withRef({ value: bores, source: 'CAD: holes of this diameter' }),
     ...(lengthMm != null && lengthMm > 0 ? { 'Bore Length': withRef({ value: lengthMm, source: 'CAD: hole depth' }) } : {}),
@@ -758,7 +797,7 @@ function secondaryLine(
   const runCost = (runMin / 60) * rate.rate;
   return withRun(
     makeLine(process, setupCost, runCost, runMin, rate, identity, { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source }),
-    run, setupTraceSteps(setupResolution, rate.machineName, batchSize), extraMissing,
+    run, setupTraceSteps(setupResolution, rate, batchSize), extraMissing,
   );
 }
 
@@ -1184,20 +1223,27 @@ function computePartSetupLine(
   if (!ps) return null;
   const maxDim = Math.max(input.maxLength, input.maxWidth, input.maxHeight);
   const row = stockWeightKg > 0 && maxDim > 0 ? componentLoadRow(ps.loadTable, stockWeightKg, maxDim) : null;
+  // The setups the feature tool axes need (setup-axis-rule.ts): the features the part is cut on, as the analysis counts them.
+  const setupsRef = (value: number, why: string): SourceRef => calculationRef('Setups', [
+    inputStep('Feature tool axes', null, why, 'CAD: the tool axes of the part\'s machined features (setup-axis-rule.ts)'),
+    resultStep('Setups', null, value, 'One setup per side the tool axes need, at least one'),
+  ]);
   const seeds: Record<string, CalcSeed> = {
     'Setups': ps.setups != null && ps.setups > 0
-      ? { value: ps.setups, source: 'CAD: setups the feature tool axes need' }
-      : { value: 1, source: 'Assumption: one setup (the CAD analysis carries no feature tool axes)' },
+      ? { value: ps.setups, source: 'CAD: setups the feature tool axes need', ref: setupsRef(ps.setups, `${ps.setups} side${ps.setups === 1 ? '' : 's'} to cut`) }
+      : { value: 1, source: 'Assumption: one setup (the CAD analysis carries no feature tool axes)', ref: setupsRef(1, 'none on the analysis (re-analyse the part for its tool axes)') },
   };
   if (row) {
     const src = `componentLoadTime: ${row.equipment === 'None' ? 'by hand' : row.equipment}, up to ${row.weight_kg} kg and ${row.part_max_dimension_mm} mm (stock ${r3(stockWeightKg)} kg, ${r2(maxDim)} mm)`;
-    const match = { table: 'componentLoadTime', row: { equipment: row.equipment, weight_kg: row.weight_kg, part_max_dimension_mm: row.part_max_dimension_mm } };
-    seeds['Load Time'] = { value: Number(row.load_time_s), source: src, lookup: true, match };
-    seeds['Unload Time'] = { value: Number(row.unload_time_s), source: src, lookup: true, match };
-    seeds['Reorientation Time'] = { value: Number(row.reorientation_time_s), source: src, lookup: true, match };
+    const key = { equipment: row.equipment, weight_kg: row.weight_kg, part_max_dimension_mm: row.part_max_dimension_mm };
+    const match = { table: 'componentLoadTime', row: key };
+    const loadRef = (column: string): SourceRef => ({ kind: 'lookup', domain: MACHINING_REFERENCE_DOMAIN, table: 'componentLoadTime', column, row: key });
+    seeds['Load Time'] = { value: Number(row.load_time_s), source: src, lookup: true, match, ref: loadRef('load_time_s') };
+    seeds['Unload Time'] = { value: Number(row.unload_time_s), source: src, lookup: true, match, ref: loadRef('unload_time_s') };
+    seeds['Reorientation Time'] = { value: Number(row.reorientation_time_s), source: src, lookup: true, match, ref: loadRef('reorientation_time_s') };
   }
-  if (ps.adjustmentFactor != null) seeds['Adjustment Factor'] = { value: ps.adjustmentFactor, source: 'variables: partSetupTimeAdjustmentFactor', lookup: true };
-  if (ps.repetitions != null) seeds['Repetitions'] = { value: ps.repetitions, source: 'variables: repetitionsOfIndividualPartSetup', lookup: true };
+  if (ps.adjustmentFactor != null) seeds['Adjustment Factor'] = variableSeed(ps.adjustmentFactor, 'partSetupTimeAdjustmentFactor');
+  if (ps.repetitions != null) seeds['Repetitions'] = variableSeed(ps.repetitions, 'repetitionsOfIndividualPartSetup');
   const run = runMachiningCalculator(input.machiningCalculators, 'Part Setup', seeds);
   const extraMissing = row ? [] : [`a componentLoadTime row for a ${r3(stockWeightKg)} kg, ${r2(maxDim)} mm part`];
   // On the part's own machine: no second setup, and the line is named for the operation, not the station.
@@ -1239,7 +1285,7 @@ function computeDeburringLine(
   const line = withRun(
     makeLine('Deburring', setupCost, (min / 60) * deburrRate.rate, min, deburrRate, input.processIdentityByMachineClass,
       { setupTimeMin: setup.setupMin, setupTimeSource: setup.source }),
-    { ...run, missing }, setup.setupMin > 0 ? setupTraceSteps(setup, deburrRate.machineName, input.batchSize) : [],
+    { ...run, missing }, setup.setupMin > 0 ? setupTraceSteps(setup, deburrRate, input.batchSize, input.location) : [],
   );
   // The sharp edges deburred, for the Process tree: a row that lights the faces they lie between when the analysis recorded them
   // (edges.sharp_edge_face_ids); an analysis before that still lists the row, without a highlight, until it is refreshed.
@@ -1284,27 +1330,27 @@ function withFeatureGroups(line: ProcessLineCost, groups: readonly FeatureOp[]):
 /** A turned cylinder's diameter and length as calculator seeds; a Ring's open its faces on the model. */
 function turnedCylinderSeeds(cylinder: TurnedCylinder): Record<string, CalcSeed> {
   const faceIds = cylinder.ring?.faceIds ?? [];
-  const ref = faceIds.length > 0 ? { ref: { kind: 'faces' as const, label: cylinder.label, faceIds: [...faceIds] } } : {};
+  // A cylinder of no Ring (a part analysed without turned diameters): the CAD measurements it is taken from, step by step.
+  const ref: SourceRef = faceIds.length > 0
+    ? { kind: 'faces', label: cylinder.label, faceIds: [...faceIds] }
+    : calculationRef(cylinder.label, [
+      inputStep('Turned Diameter', 'mm', cylinder.diameterMm, cylinder.diameterSource),
+      inputStep('Turned Length', 'mm', cylinder.lengthMm, cylinder.lengthSource),
+    ]);
   return {
-    'Turned Diameter': { value: cylinder.diameterMm, source: cylinder.diameterSource, ...ref },
-    'Turned Length': { value: cylinder.lengthMm, source: cylinder.lengthSource, ...ref },
+    'Turned Diameter': { value: cylinder.diameterMm, source: cylinder.diameterSource, ref },
+    'Turned Length': { value: cylinder.lengthMm, source: cylinder.lengthSource, ref },
   };
 }
 
 /**
- * The approach and overrun a turning calculator adds to each pass, seeded with where it comes from: the value is the calculator's own
- * stored one (the Machining calculator workbook's Turning sheet times a cut over its length plus 10 mm). An allowance, not a measurement,
- * so it is stated as an assumption. Nothing when the calculator has no such field.
+ * The approach and overrun a turning calculator adds to each pass: the calculator's own stored value (the Machining calculator workbook's
+ * Turning sheet times a cut over its length plus 10 mm), seeded with where it comes from (the spec's note) and the calculator's table of
+ * defaults for the eye. Nothing when the calculator has no such field.
  */
 function approachSeed(calculators: MachiningCalculators | null | undefined, operation: string): Record<string, CalcSeed> {
-  const mm = Number(calculators?.[operation]?.fields.find((f) => f.field_name === 'Approach Length')?.default_value);
-  if (!(mm > 0)) return {};
-  return {
-    'Approach Length': {
-      value: mm,
-      source: `Assumption: the tool's approach and overrun on each pass (Machining calculator workbook: length of cut + ${mm} mm)`,
-    },
-  };
+  const seed = calculatorDefaultSeed(calculators, operation, 'Approach Length');
+  return seed && seed.value > 0 ? { 'Approach Length': seed } : {};
 }
 
 /** The machining workbook's data (migration 1137) for its calculators, and the rupee rates its tool prices are converted with. */
@@ -1453,21 +1499,36 @@ function machineSetupOnce(setup: MachineSetup): { take: TakeMachineSetup; charge
   };
 }
 
-/** Where a resolved setup time came from, as trace steps (see resolveSetupMinutes). */
+/** The batch a line is costed at: the part's resolved costing input, which the eye opens. */
+export const BATCH_SIZE_REF: SourceRef = { kind: 'costingInput', field: 'batchSize' };
+
+/**
+ * Where a resolved setup time came from, as trace steps (see resolveSetupMinutes): the setup time opens the machine's HR Rates record at
+ * its setup_time_hr (a machine with none on file shows it blank: the setup is not costed), the batch the part's costing inputs.
+ */
 function setupTraceSteps(
   resolution: SetupTimeResolution,
-  machineName: string | null,
+  machine: MHRRateInput,
   batchSize: number,
+  location?: string | null,
 ): CalculationTraceStep[] {
+  const machineName = machine.machineName;
   const source =
     resolution.source === 'machine' ? `Machine: ${machineName ?? 'selected machine'} setup_time_hr (mhr_records)`
     : resolution.source === 'calculator' ? 'Calculator: setup modelled for this part'
     : resolution.source === 'operation_lookup' ? 'Lookup: per-operation setup time'
     : 'Assumption: class default setup (no setup time on the machine record)';
   const batch = Math.max(batchSize, 1);
+  const machineId = machineRecordId(machine);
+  const setupRef: SourceRef = machineId
+    ? { kind: 'machine', machineId, machineName: machineName ?? '', machineClass: machine.machineClass, location: location ?? null, column: 'setup_time_hr' }
+    : calculationRef('Setup time', [
+      inputStep('Machine setup_time_hr', 'min', resolution.setupMin, `${machineName ?? 'The machine'}: no HR Rates record is selected for this line, so no setup time is read (not costed)`),
+      resultStep('Setup time', 'min', resolution.setupMin, 'The machine\'s setup_time_hr x 60'),
+    ]);
   return [
-    traceInput('Setup time', resolution.setupMin, 'min', source),
-    traceInput('Batch size', batch, null, 'BOM: batch size'),
+    { ...traceInput('Setup time', resolution.setupMin, 'min', source), ref: setupRef },
+    { ...traceInput('Batch size', batch, null, 'BOM: batch size'), ref: BATCH_SIZE_REF },
     traceCalc('Setup per part', resolution.setupMin / batch, 'min', 'Setup time / Batch size'),
   ];
 }
@@ -1580,26 +1641,43 @@ export function computeTapCycle(
   if (!m) return none([`a metric thread size (got "${thread.size}")`]);
   const diameterMm = Number(m[1]);
   const pitchMm = thread.pitchMm != null && thread.pitchMm > 0 ? thread.pitchMm : isoCoarsePitchMm(diameterMm);
-  // The tapped holes on the model, when the threads came from the CAD: their inputs light exactly those holes.
-  const holesRef = featuresRef(`${thread.size} tapped holes`, thread.occurrences);
+  // The tapped holes on the model, when the threads came from the CAD: their inputs light exactly those holes. A thread the drawing names
+  // and the CAD did not find tapped opens its callout: the size and count the drawing states.
+  const holesRef = featuresRef(`${thread.size} tapped holes`, thread.occurrences)
+    ?? calculationRef(`${thread.size} thread callout`, [
+      inputStep('Thread size', null, thread.size, 'The drawing\'s thread callout (drawing analysis)'),
+      inputStep('Threads', null, thread.count, 'The drawing\'s thread callout (drawing analysis): threads of this size'),
+    ]);
   const seeds: Record<string, CalcSeed> = {
-    'Thread Diameter': { value: diameterMm, source: `Thread size ${thread.size}`, ...(holesRef ? { ref: holesRef } : {}) },
-    'Threads': { value: thread.count, source: 'CAD/drawing: threads of this size', ...(holesRef ? { ref: holesRef } : {}) },
+    'Thread Diameter': { value: diameterMm, source: `Thread size ${thread.size}`, ref: holesRef },
+    'Threads': { value: thread.count, source: 'CAD/drawing: threads of this size', ref: holesRef },
   };
   if (pitchMm != null) {
     seeds['Thread Pitch'] = thread.pitchMm != null && thread.pitchMm > 0
-      ? { value: pitchMm, source: 'CAD/drawing: thread pitch' }
-      : { value: pitchMm, source: `ISO 261 coarse pitch of M${diameterMm}` };
+      ? { value: pitchMm, source: 'CAD/drawing: thread pitch', ref: holesRef }
+      : {
+        value: pitchMm, source: `ISO 261 coarse pitch of M${diameterMm}`,
+        ref: calculationRef(`ISO 261 coarse pitch of M${diameterMm}`, [
+          inputStep('Nominal diameter', 'mm', diameterMm, `Thread size ${thread.size}`, holesRef),
+          resultStep('Thread Pitch', 'mm', pitchMm, 'The coarse pitch of the nominal diameter in ISO 261 (no pitch on the CAD or the drawing)'),
+        ]),
+      };
   }
   if (thread.depthMm != null && thread.depthMm > 0) {
-    seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ...(holesRef ? { ref: holesRef } : {}) };
+    seeds['Thread Depth'] = { value: thread.depthMm, source: 'CAD: tapped hole depth', ref: holesRef };
   } else {
     // No depth on file (a thread the drawing names and the CAD did not find tapped): the thread engagement a tapped hole is cut for, by
     // the material it is tapped in.
     const factor = THREAD_ENGAGEMENT[matClass];
+    const depth = Math.round(factor * diameterMm * 1000) / 1000;
     seeds['Thread Depth'] = {
-      value: Math.round(factor * diameterMm * 1000) / 1000,
+      value: depth,
       source: `Thread engagement rule: ${factor} x the ${diameterMm} mm nominal diameter in ${matClass.replace('_', ' ')} (${THREAD_ENGAGEMENT_SOURCE}); no tapped hole of this size in the CAD`,
+      ref: calculationRef('Thread engagement depth', [
+        inputStep('Nominal diameter', 'mm', diameterMm, `Thread size ${thread.size}`, holesRef),
+        inputStep('Engagement factor', null, factor, `Thread engagement in ${matClass.replace('_', ' ')}: ${THREAD_ENGAGEMENT_SOURCE}`),
+        resultStep('Thread Depth', 'mm', depth, 'Engagement factor x Nominal diameter'),
+      ]),
     };
   }
   if (pitchMm == null) return none([`a thread pitch (M${diameterMm} is off the ISO 261 coarse series and none was given)`]);
@@ -1677,7 +1755,7 @@ function computeInspectionLine(
 ): ProcessLineCost {
   const batch = Math.max(batchSize, 1);
   const seeds: Record<string, CalcSeed> = {
-    'Batch Size': { value: batch, source: 'BOM: the batch size, the batch the sample is taken from' },
+    'Batch Size': { value: batch, source: 'BOM: the batch size, the batch the sample is taken from', ref: BATCH_SIZE_REF },
   };
   // The gauge's price and life, from the workbook's tool table (the same for every material).
   const gauge = workbookSeeds(workbook, 'Inspection', null, matClass, seeds);
@@ -1698,7 +1776,7 @@ function computeInspectionLine(
   const runCost = (cycleMin / 60) * inspectionRate.rate;
   const line = withRun(makeLine('Inspection', setupCost, runCost, cycleMin, inspectionRate, processIdentityByMachineClass, {
     setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source,
-  }), run, setupTraceSteps(setupResolution, inspectionRate.machineName, batchSize));
+  }), run, setupTraceSteps(setupResolution, inspectionRate, batchSize));
   // The holes inspected (Special Inspection: Feature Inspection), for the Process tree: the batch's sample inspection covers them all.
   if (inspected.length > 0) {
     line.featureBreakdown = [{
@@ -1726,7 +1804,7 @@ function computeRmCompositionLine(
 ): ProcessLineCost {
   const batch = Math.max(batchSize, 1);
   const run = runMachiningCalculator(calculators, 'RM Composition Analysis', {
-    'Lot Size': { value: batch, source: 'BOM: the batch size, one raw material lot (the workbook\'s lot is its part volume)' },
+    'Lot Size': { value: batch, source: 'BOM: the batch size, one raw material lot (the workbook\'s lot is its part volume)', ref: BATCH_SIZE_REF },
   });
   if (run.missing.length > 0) warnings.push(`RM Composition Analysis not priced — missing real input: ${run.missing.join('; ')}.`);
   const cycleMin = (run.sec ?? 0) / 60;
@@ -2016,7 +2094,10 @@ export function computeMillingCostSummary(
     // operation group's time on the part's features, then a tool change for each cutter and a rapid move to
     // each feature, at this machine's rapid traverse rate.
     // The drilling operations are timed on the Drilling line, by the same station calculator on them alone (MILLING_DRILLING_OPERATIONS).
-    const moves = { mhrRate, location: input.location, partBoxLengthMm: input.maxLength, rapidTransferDistanceFactor: input.rapidTransferDistanceFactor ?? null };
+    const moves = {
+      mhrRate, location: input.location, partBoxLengthMm: input.maxLength, rapidTransferDistanceFactor: input.rapidTransferDistanceFactor ?? null,
+      partBox: { lengthMm: input.maxLength, widthMm: input.maxWidth, heightMm: input.maxHeight },
+    };
     const millOps = input.featureOps.filter((o) => !MILLING_DRILLING_OPERATIONS.has(o.name));
     const drillOps = input.featureOps.filter((o) => MILLING_DRILLING_OPERATIONS.has(o.name));
     millRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(millOps, moves));
@@ -2035,10 +2116,7 @@ export function computeMillingCostSummary(
     const machine = spindleLimitSeed(mhrRate, input.location);
     const facing = input.blankResult?.facing;
     const faced = facing ? workbookCycle('Facing', input.workbook, input.machiningCalculators, matClass, {
-      'Face Length': { value: facing.lengthMm, source: `Stock: ${facing.basis}` },
-      'Face Width': { value: facing.widthMm, source: `Stock: ${facing.basis}` },
-      'Stock Depth': { value: facing.depthMm, source: `Stock: ${facing.basis}` },
-      'Faces': { value: facing.faces, source: `Stock: ${facing.basis}` },
+      ...stockFacingSeeds(facing),
     }, machine) : null;
     const facingMin = (faced?.sec ?? 0) / 60;
     const facingMissing = faced && faced.sec == null ? faced.missing : [];
@@ -2047,12 +2125,16 @@ export function computeMillingCostSummary(
     const materialRemovalMm3 = Math.max(0, billetVolMm3 - volume - (facing?.volumeMm3 ?? 0));
     const rate = input.millingRemovalRateMm3PerMin;
     const bulk = runMachiningCalculator(input.machiningCalculators, 'Bulk Milling', {
-      'Removed Volume': { value: materialRemovalMm3, source: 'Stock volume less the CAD part volume' },
-      ...(rate != null && rate > 0 ? { 'Material Removal Rate': {
-        value: rate * machinabilityFactor, lookup: true,
-        source: `tblMillingRemovalRate: ${matClass} ${rate} mm^3/min x machinability factor ${machinabilityFactor}`,
-        match: { table: 'tblMillingRemovalRate', row: { MaterialClass: matClass } },
-      } } : {}),
+      'Removed Volume': {
+        value: materialRemovalMm3, source: 'Stock volume less the CAD part volume',
+        ref: calculationRef('Stock volume less the part', [
+          inputStep('Stock piece volume', 'mm^3', billetVolMm3, `The stock chosen for the part: ${input.blankResult?.sizeLabel ?? 'none'}`, input.blankResult?.barDiameterRef),
+          inputStep('Part volume', 'mm^3', volume, 'CAD: the part\'s volume'),
+          ...(facing?.volumeMm3 ? [inputStep('Volume faced off the piece', 'mm^3', facing.volumeMm3, 'The Facing of the piece\'s faces (the stock model)')] : []),
+          resultStep('Removed Volume', 'mm^3', materialRemovalMm3, `Stock piece volume - Part volume${facing?.volumeMm3 ? ' - Volume faced off the piece' : ''}`),
+        ]),
+      },
+      ...(rate != null && rate > 0 ? { 'Material Removal Rate': removalRateSeed(matClass, rate, machinabilityFactor) } : {}),
     });
     const bulkMissing = !input.blankResult ? ['the stock the part is cut from'] : materialRemovalMm3 > 0 ? bulk.missing : [];
     if (bulkMissing.length > 0) warnings.push(`Bulk Milling not priced — missing real input: ${bulkMissing.join('; ')}.`);
@@ -2405,7 +2487,7 @@ export function computeTurningCostSummary(
   const fixtureCost = (input.fixtureUnitCostLocal ?? 0) / Math.max(batchSize, 1);
   const setupCostVal = (setupMin / 60) * mhrRate.rate + fixtureCost;
   const setupDisclosure = { setupTimeMin: setupResolution.setupMin, setupTimeSource: setupResolution.source };
-  const setupTrace = setupTraceSteps(setupResolution, mhrRate.machineName, batchSize);
+  const setupTrace = setupTraceSteps(setupResolution, mhrRate, batchSize, input.location);
 
   // ── OD Turning ───────────────────────────────────────────────────────────
   // Real per-pass physics only (the Rough Turning and Finish Turning
@@ -2447,7 +2529,14 @@ export function computeTurningCostSummary(
   // Each turning calculator in the workbook's form: its speed and feed from the workbook's Turning cutting conditions (the band holding
   // its depth of cut), its spindle capped at this machine's. A material the workbook has no row for is the run's named gap.
   const lathe = { ...spindleLimitSeed(mhrRate, input.location) };
-  const bar: Record<string, CalcSeed> = { 'Bar Diameter': { value: barDiameterMm, source: barDiameterSource } };
+  // How the stock model arrived at the bar (stockSizeRefs); a bar given without it (a multi-spindle's own) opens the stock it is.
+  const stockRef = (field: string, value: number): SourceRef => calculationRef(`${field}: the stock chosen for the part`, [
+    inputStep('Stock', null, input.blankResult?.sizeLabel ?? 'none', input.blankResult?.sizeSource ?? 'The stock chosen for the part'),
+    resultStep(field, 'mm', value, field === 'Bar Diameter' ? 'The bar\'s diameter (the circle round its corners)' : 'The stock left on each end of the piece'),
+  ]);
+  const bar: Record<string, CalcSeed> = {
+    'Bar Diameter': { value: barDiameterMm, source: barDiameterSource, ref: input.blankResult?.barDiameterRef ?? stockRef('Bar Diameter', barDiameterMm) },
+  };
   const workbookRun = (operation: string, seeds: Record<string, CalcSeed>) => {
     const all = { ...seeds, ...lathe, ...approachSeed(input.machiningCalculators, operation) };
     const lookups = workbookSeeds(input.workbook, operation, machineClass, matClass, all);
@@ -2560,8 +2649,12 @@ export function computeTurningCostSummary(
     const endAllowance = input.blankResult?.endAllowanceMm;
     const facing = workbookRun('End Machining', {
       ...bar,
-      ...(endAllowance != null ? { 'Facing Stock': { value: endAllowance, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the end allowance left on each end of the piece` } } : {}),
-      'Faces': { value: 2, source: 'Both ends of the part (Machining calculator workbook, Facing sheet: No of uses 2)' },
+      ...(endAllowance != null ? { 'Facing Stock': {
+        value: endAllowance, source: `${input.blankResult?.sizeSource ?? 'The stock chosen for the part'}: the end allowance left on each end of the piece`,
+        ref: input.blankResult?.endAllowanceRef ?? stockRef('Facing Stock', endAllowance),
+      } } : {}),
+      // Both ends: the calculator's own value for the field (the workbook's Facing sheet), with its table of defaults.
+      'Faces': calculatorDefaultSeed(input.machiningCalculators, 'End Machining', 'Faces') ?? { value: 2, source: 'Both ends of the part (Machining calculator workbook, Facing sheet: No of uses 2)' },
     });
     const facingMin = (facing.sec ?? 0) / 60;
     if (facing.missing.length > 0) warnings.push(`End facing not priced — missing real input: ${facing.missing.join('; ')}.`);
@@ -2602,9 +2695,9 @@ export function computeTurningCostSummary(
         'Groove Diameter': { value: g.diameterMm!, source: 'CAD: the groove\'s major diameter (the circle its round profile runs round)', ...ref },
         'Groove Depth': { value: g.depthMm!, source: 'CAD: the depth of the groove\'s round profile', ...ref },
         'Groove Width': { value: g.widthMm!, source: 'CAD: the chord width of the groove\'s round profile', ...ref },
-        'Grooves': { value: g.grooves, source: 'CAD: grooves of this size' },
+        'Grooves': { value: g.grooves, source: 'CAD: grooves of this size', ...ref },
       };
-      const lookup = groovingLookupSeeds({ matClass, groovingTable: input.groovingTable }, { 'Groove Width': g.widthMm!, 'Groove Depth': g.depthMm! });
+      const lookup = groovingLookupSeeds({ matClass, groovingTable: input.groovingTable, ...(ref.ref ? { grooveRef: ref.ref } : {}) }, { 'Groove Width': g.widthMm!, 'Groove Depth': g.depthMm! });
       const run = workbookRun('Plunging', { ...seeds, ...lookup.seeds });
       return { g, label, run: lookup.missing.length > 0 ? { ...run, sec: null, missing: [...lookup.missing, ...run.missing.filter((m) => !m.startsWith('Plunging:'))] } : run };
     });
@@ -2625,7 +2718,7 @@ export function computeTurningCostSummary(
   // of its workbook calculator (the Threading and Knurling sheets, migration 1138) on this lathe's spindle: one line per operation, each
   // run under its Ring's name, each Ring cut a row the Process tree lists and lights. With no bar the turning gap above says why.
   if (!barMissing) {
-    const ringRef = (ring: TurnedRing | null) => (ring && ring.faceIds.length > 0
+    const ringRef = (ring: TurnedRing | null): { ref?: SourceRef } => (ring && ring.faceIds.length > 0
       ? { ref: { kind: 'faces' as const, label: ringLabel(ring), faceIds: [...ring.faceIds] } } : {});
     /** A run whose op names what it lacks: those names (with any workbook row it lacks), not the calculator's bare field names. */
     const withNamedGaps = (operation: string, run: CalcRun & { outputs?: Record<string, number> }, missing: readonly string[]) =>
@@ -2644,19 +2737,41 @@ export function computeTurningCostSummary(
     };
     ringOpLine('Thread Turning', (input.externalThreads ?? []).map((t) => {
       const ref = ringRef(t.ring);
+      // The drawing's callout the thread is read from (its size, pitch and count), with the turned diameter it is cut on.
+      const callout = calculationRef(`${t.size} thread callout`, [
+        inputStep('Thread callout', null, t.size, 'The drawing\'s thread callout (drawing analysis)'),
+        ...(t.ring ? [inputStep('Turned diameter', 'mm', t.ring.diameterMm, 'CAD: the turned diameter the thread is cut on (Ring feature)', ref.ref)] : []),
+        ...(t.pitchMm != null ? [inputStep('Pitch', 'mm', t.pitchMm, t.pitchSource)] : []),
+        inputStep('Threads', null, t.threads, t.threadsSource),
+      ]);
       const seeds: Record<string, CalcSeed> = {
-        'Thread Diameter': { value: t.diameterMm, source: t.diameterSource, ...ref },
-        'Threads': { value: t.threads, source: t.threadsSource },
-        ...(t.lengthMm != null ? { 'Thread Length': { value: t.lengthMm, source: t.lengthSource, ...ref } } : {}),
-        ...(t.pitchMm != null ? { 'Pitch': { value: t.pitchMm, source: t.pitchSource } } : {}),
+        'Thread Diameter': { value: t.diameterMm, source: t.diameterSource, ref: ref.ref ?? callout },
+        'Threads': { value: t.threads, source: t.threadsSource, ref: callout },
+        ...(t.lengthMm != null ? { 'Thread Length': { value: t.lengthMm, source: t.lengthSource, ref: ref.ref ?? callout } } : {}),
+        ...(t.pitchMm != null ? { 'Pitch': { value: t.pitchMm, source: t.pitchSource, ref: callout } } : {}),
       };
       return { label: t.label, ring: t.ring, count: t.threads, run: withNamedGaps('Thread Turning', workbookRun('Thread Turning', seeds), t.missing) };
     }));
     ringOpLine('Knurling', (input.knurls ?? []).map((k) => {
       const ref = ringRef(k.ring);
+      // A knurl the drawing places on no turned diameter: its callout.
+      const callout = calculationRef('Knurl callout', [
+        inputStep('Knurl', null, k.label, 'The drawing\'s knurl callout (drawing analysis)'),
+        ...(k.diameterMm != null ? [inputStep('Knurl Diameter', 'mm', k.diameterMm, k.diameterSource)] : []),
+        ...(k.lengthMm != null ? [inputStep('Knurl Length', 'mm', k.lengthMm, k.lengthSource)] : []),
+        ...(k.tpi != null && k.pitchMm == null ? [inputStep('TPI', null, k.tpi, k.tpiSource)] : []),
+      ]);
+      // The knurl's pitch, the run's feed: the callout's TPI, or its pitch in mm as 25.4 / pitch. None stated: the calculator's own TPI.
+      const tpiRef = k.pitchMm != null
+        ? calculationRef('Knurl TPI', [
+          inputStep('Knurl pitch', 'mm', k.pitchMm, `Drawing: the knurl callout's pitch (${k.label})`, callout),
+          resultStep('TPI', null, 25.4 / k.pitchMm, '25.4 / Knurl pitch'),
+        ])
+        : callout;
       const seeds: Record<string, CalcSeed> = {
-        ...(k.diameterMm != null ? { 'Knurl Diameter': { value: k.diameterMm, source: k.diameterSource, ...ref } } : {}),
-        ...(k.lengthMm != null ? { 'Knurl Length': { value: k.lengthMm, source: k.lengthSource, ...ref } } : {}),
+        ...(k.diameterMm != null ? { 'Knurl Diameter': { value: k.diameterMm, source: k.diameterSource, ref: ref.ref ?? callout } } : {}),
+        ...(k.lengthMm != null ? { 'Knurl Length': { value: k.lengthMm, source: k.lengthSource, ref: ref.ref ?? callout } } : {}),
+        ...(k.tpi != null ? { TPI: { value: k.tpi, source: k.tpiSource, ref: tpiRef } } : {}),
       };
       return { label: k.label, ring: k.ring, count: 1, run: withNamedGaps('Knurling', workbookRun('Knurling', seeds), k.missing) };
     }));
@@ -2738,7 +2853,7 @@ export function computeTurningCostSummary(
   // tblInstallingTurningWorkholders row and is spread over the batch.
   if (SETUP_COUNT[machineClass] > 1) {
     const seeds: Record<string, CalcSeed> = {
-      'Batch Size': { value: Math.max(batchSize, 1), source: 'BOM: batch size' },
+      'Batch Size': { value: Math.max(batchSize, 1), source: 'BOM: batch size', ref: BATCH_SIZE_REF },
       ...rechuckLookupSeeds({ matClass, workholderTable: input.workholderTable }).seeds,
     };
     const run = runMachiningCalculator(input.machiningCalculators, 'Secondary Setup (Rechuck)', seeds);

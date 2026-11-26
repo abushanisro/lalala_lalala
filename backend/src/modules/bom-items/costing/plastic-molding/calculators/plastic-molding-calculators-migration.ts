@@ -26,14 +26,29 @@ import { loadPlasticMoldingCalculatorSpec } from './plastic-molding-calculator-s
  *   1082 the injection mold tooling calculator, version 10: the water baffles (1022, version 9, is now history and kept as committed)
  *   1083 the injection molding gate trimming calculator
  *   1084 the injection molding insert pull test calculator
+ *   1161 the injection and structural foam calculators, version 4 (pack 20 % of cooling, floor max(2 x fill, 1 s)), and the LSR calculator, version 2
+ *        (A fitted to Dow's 3-5 s/mm): the sourced defaults of 2026-11-25 (1008 and the LSR's 977 entries are kept, superseded, as they shipped)
  */
-export const PLASTIC_MOLDING_CALCULATOR_MIGRATIONS = [976, 1008, 1010, 1021, 1023, 1024, 1082, 1083, 1084] as const;
+export const PLASTIC_MOLDING_CALCULATOR_MIGRATIONS = [976, 1008, 1010, 1021, 1023, 1024, 1082, 1083, 1084, 1161] as const;
 export type PlasticMoldingCalculatorMigration = (typeof PLASTIC_MOLDING_CALCULATOR_MIGRATIONS)[number];
 
 const GENERATOR = 'scripts/generate-plastic-molding-calculators-migration.ts';
 const SPEC = 'src/modules/bom-items/costing/plastic-molding/calculators/plastic-molding-calculators.json';
 
 const TEXT: Record<PlasticMoldingCalculatorMigration, Pick<DomainMigrationText, 'title' | 'rootCause'>> = {
+  1161: {
+    title: 'Injection and structural foam calculators, version 4, and the LSR calculator, version 2 -- the pack and cure constants from stated sources.',
+    rootCause: [
+      'The pack phase was 35 % of the cooling time with a 2 s floor, called the Menges gate-freeze rule; no published source gives either number (research',
+      'of 2026-11-25). The floor is now Moldflow\'s default hold time, the greater of 2 x the injection time and 1 s (patent US 7,037,452 B1), and the ratio',
+      'the closest published figure, 0.20: holding 10 % and cooling 50 % of the cycle (Priamus patent US 7,931,837 B2). The liquid silicone cure was',
+      '0.008 x exp(3500 / T) x wall, 18.1 s per mm at 180 C, cited to "Ossipov et al., Polymer Engineering 2002", which could not be found anywhere; Dow',
+      'gives 3-5 s per mm as the standard vulcanization time (XIAMETER LSR injection molding guide, p. 13), so A is 0.0022 (5 s per mm at 180 C) with',
+      'Ea/R kept. Each constant\'s source is in the spec (its note). A part that cools long holds for less (20 % of cooling, not 35 %); one that fills',
+      'slowly holds for 2 x its fill time (the worked mirror cover: 2 s -> 5.38 s); an LSR part cures in about a quarter of the time.',
+      'Replaced under a new version (a calculator in use is not edited in place).',
+    ].join('\n'),
+  },
   1084: {
     title: 'Injection molding insert pull test calculator -- a destructive AQL sample pulled to failure.',
     rootCause: [
@@ -123,8 +138,9 @@ const TEXT: Record<PlasticMoldingCalculatorMigration, Pick<DomainMigrationText, 
 
 /** The SQL of migrations/<number>_*.sql: the calculators of the spec that this migration writes. */
 export function buildPlasticMoldingCalculatorsMigrationSql(number: PlasticMoldingCalculatorMigration): string {
+  // Every entry, superseded ones too: a migration writes the entries that name it, as they shipped.
   return buildDomainCalculatorsMigrationSql(
-    loadPlasticMoldingCalculatorSpec(),
+    loadPlasticMoldingCalculatorSpec({ includeSuperseded: true }),
     { number, generator: GENERATOR, specPath: SPEC, ...TEXT[number] },
     (c) => c.migration === number,
   );
@@ -140,4 +156,5 @@ export const PLASTIC_MOLDING_CALCULATOR_MIGRATION_FILES: Record<PlasticMoldingCa
   1082: '1082_plastic_mold_water_baffles.sql',
   1083: '1083_plastic_gate_trimming_calculator.sql',
   1084: '1084_plastic_insert_pull_test_calculator.sql',
+  1161: '1161_plastic_sourced_cycle_constants.sql',
 };

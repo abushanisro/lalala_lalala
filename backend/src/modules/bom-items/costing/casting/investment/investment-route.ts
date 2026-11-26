@@ -6,7 +6,7 @@
 // Everything a tree shares (a dip, a furnace load, the pour) is divided by the patterns on the tree, which the Tree calculator decides.
 // Nothing is substituted: what the data or the measurements lack is named, and a step no machine can do is a named gap line, which makes the
 // route incomplete. Every number is computed by a calculator of calculators/investment-casting-calculators.json.
-import type { ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../../shared/calculators/reference-calculator';
 import type { CostContext } from '../casting-finishing';
@@ -15,6 +15,7 @@ import type { SandReference } from '../sand/sand-reference';
 import { seedsFor, valuesProvider, type SeedProvider, type SeedProviders } from '../sand/sand-seeds';
 import { energyBasisOf, selectAndCost, type CostedStep, type SandMaterial, type StepOutcome } from '../sand/sand-steps';
 import { INVESTMENT_CLASS, INVESTMENT_DOMAIN, INVESTMENT_PROCESS_GROUP } from './investment-reference';
+import { batchSeed, calculatedSeed, costGuideSeed, energySeed, inputStep, resultStep, seedStep } from '../casting-source-refs';
 
 const CALC = (name: string) => `Investment Casting - ${name}`;
 export const TREE = CALC('Tree');
@@ -46,6 +47,8 @@ export interface InvestmentScenario {
   /** USD per kWh: the Cost Guide's, else the location's sourced electricity price; null when neither exists (melt energy not charged). */
   energyPricePerKwh: number | null;
   energyPriceSource?: string | null;
+  /** The record it was read from (the location's electricity price row, or the Cost Guide entry), for the trace's eye. */
+  energyPriceRef?: SourceRef | null;
   /** Parts made over the die's life; null: the die is not costed (and said so), never spread over an assumed volume. */
   lifetimeVolume: number | null;
 }
@@ -58,6 +61,8 @@ export interface InvestmentRouteInput {
   material: SandMaterial;
   /** Where the alloy's price comes from (the location's price list, or the USA price). */
   priceSource: string;
+  /** The row or record the price was read from (alloyPrice); absent: the alloy's cost_usa column. */
+  priceRef?: SourceRef;
   part: InvestmentPart;
   machinesByClass: Readonly<Record<string, readonly SandMachine[]>>;
   scenario: InvestmentScenario;
@@ -171,15 +176,21 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   const lookup: SeedProvider = (key) => lookups[key.slice(0, key.indexOf('.'))]?.(key) ?? null;
   const gates = Number(massRow['Number of Gates']);
 
+  // A side of the part's bounding box, as the step it is: the box, and which of its sides is taken (and why).
+  const box = `${r2(lengthMm)} x ${r2(widthMm)} x ${r2(heightMm)}`;
+  const side = (value: number, source: string, name: string, which: string): CalcSeed => calculatedSeed(value, source, name, [
+    inputStep('Part box', 'mm', box, "CAD: the part's bounding box, longest side first"),
+    resultStep(name, 'mm', value, which),
+  ]);
   const cad: Record<string, CalcSeed> = {
     volume_mm3: { value: part.volumeMm3, source: 'part volume (mm³)' },
     area_mm2: { value: part.surfaceAreaMm2, source: 'part surface (mm²)' },
     modulus_mm: { value: part.volumeMm3 / part.surfaceAreaMm2, source: 'casting modulus: volume / surface (mm)' },
-    length_mm: { value: lengthMm, source: 'longest side of the part (mm)' },
-    width_mm: { value: widthMm, source: 'second side of the part (mm)' },
-    height_mm: { value: heightMm, source: 'shortest side of the part (mm): the wax die opens along it' },
-    stack_mm: { value: widthMm, source: 'second side of the part (mm): along the tree, the plant\'s default pattern orientation' },
-    radial_mm: { value: heightMm, source: 'shortest side of the part (mm): out from the down pole' },
+    length_mm: side(lengthMm, 'longest side of the part (mm)', 'Part Length', 'The longest side'),
+    width_mm: side(widthMm, 'second side of the part (mm)', 'Part Width', 'The second side'),
+    height_mm: side(heightMm, 'shortest side of the part (mm): the wax die opens along it', 'Pattern Height', 'The shortest side: the wax die opens along it'),
+    stack_mm: side(widthMm, 'second side of the part (mm): along the tree, the plant\'s default pattern orientation', 'Stack', "The second side: along the tree, the plant's default pattern orientation"),
+    radial_mm: side(heightMm, 'shortest side of the part (mm): out from the down pole', 'Radial', 'The shortest side: out from the down pole'),
   };
   const variable: SeedProvider = (name) => {
     const value = num(name);
@@ -188,13 +199,19 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
       ref: { kind: 'variable', domain: INVESTMENT_DOMAIN, name },
     };
   };
+  /** A plant variable of memory/Casting Investment as a seed the route supplies itself, opening the variable. */
+  const ivar = (name: string, note = ''): CalcSeed => ({
+    value: num(name) ?? NaN, source: `Investment casting variable ${name}${note}`, ref: { kind: 'variable', domain: INVESTMENT_DOMAIN, name },
+  });
   const scenarioSeeds: Record<string, CalcSeed | undefined> = {
-    batch_size: { value: scenario.batchSize, source: 'batch size' },
-    lifetime_volume: scenario.lifetimeVolume != null ? { value: scenario.lifetimeVolume, source: 'annual volume x production life' } : undefined,
-    energy_price: {
-      value: scenario.energyPricePerKwh ?? 0,
-      source: scenario.energyPricePerKwh != null ? scenario.energyPriceSource ?? 'energy price (USD/kWh)' : 'no energy price: none set in the Cost Guide and none for the location',
-    },
+    batch_size: batchSeed(scenario.batchSize, 'batch size'),
+    lifetime_volume: scenario.lifetimeVolume != null
+      ? calculatedSeed(scenario.lifetimeVolume, 'annual volume x production life', 'Lifetime Volume', [
+        inputStep('Lifetime volume', null, scenario.lifetimeVolume, "The part's annual volume x production life (its costing inputs)", { kind: 'costingInput', field: 'annualVolume' }),
+        resultStep('Lifetime Volume', null, scenario.lifetimeVolume, '{Annual volume} x {Production life}'),
+      ])
+      : undefined,
+    energy_price: energySeed(scenario),
   };
 
   /** One calculator run: every input seeded from its declared source, or the inputs nobody could supply. */
@@ -206,7 +223,9 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
       material: (key) => {
         const value = material.columns[key];
         if (value == null) return null;
-        if (key === 'price_usd_per_kg') return { value, source: `${material.name}: ${input.priceSource}` };
+        if (key === 'price_usd_per_kg') {
+          return { value, source: `${material.name}: ${input.priceSource}`, ref: input.priceRef ?? { kind: 'material', materialId: material.id, materialName: material.name, column: 'cost_usa' } };
+        }
         return { value, source: `${material.name}: ${key}`, ref: { kind: 'material', materialId: material.id, materialName: material.name, column: key } };
       },
       machine: (key) => {
@@ -227,14 +246,20 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   const cavitiesOfDie = scenario.cavities ?? num('defaultWaxPatternsNumCavities');
   if (cavitiesOfDie == null) return none('investment casting variable defaultWaxPatternsNumCavities');
   // The tallest tree the plant builds (defaultMaxTreeBoxHeight) that every step can also take: a tank's working depth, a furnace bed, the knockout machine.
-  const heightLimits: Array<{ limit: number; source: string }> = [];
+  const heightLimits: Array<{ limit: number; source: string; ref?: SourceRef }> = [];
   const treeLimit = num('defaultMaxTreeBoxHeight');
   if (treeLimit == null) return none('investment casting variable defaultMaxTreeBoxHeight');
-  heightLimits.push({ limit: treeLimit, source: 'Investment casting variable defaultMaxTreeBoxHeight' });
+  heightLimits.push({ limit: treeLimit, source: 'Investment casting variable defaultMaxTreeBoxHeight', ref: { kind: 'variable', domain: INVESTMENT_DOMAIN, name: 'defaultMaxTreeBoxHeight' } });
   const tankDepthFactor = num('slurryTankSafetyMultiplier_depth');
   const tallest = (machineClass: string, key: string, factor = 1) => {
-    const heights = (input.machinesByClass[machineClass] ?? []).map((m) => machineValue(m, key)).filter((h): h is number => h != null && h > 0);
-    if (heights.length) heightLimits.push({ limit: Math.max(...heights) * factor, source: `the tallest ${machineClass.replace('casting_investment_', '').replace(/_/g, ' ')} machine` });
+    const sized = (input.machinesByClass[machineClass] ?? []).map((m) => ({ m, h: machineValue(m, key) })).filter((x): x is { m: SandMachine; h: number } => x.h != null && x.h > 0);
+    const top = sized.sort((a, b) => b.h - a.h)[0];
+    if (top) {
+      heightLimits.push({
+        limit: top.h * factor, source: `the tallest ${machineClass.replace('casting_investment_', '').replace(/_/g, ' ')} machine${factor !== 1 ? ` x ${factor}` : ''}`,
+        ref: { kind: 'machine', machineId: top.m.id, machineName: top.m.name, machineClass: top.m.machineClass, location: top.m.location, column: key },
+      });
+    }
   };
   const dewaxClass = ref.text('isEnabledFlashFireFurnace') === 'true' ? INVESTMENT_CLASS.flashFire : INVESTMENT_CLASS.autoclave;
   for (const c of [dewaxClass, INVESTMENT_CLASS.burnout, INVESTMENT_CLASS.preheat]) tallest(c, 'bed_height_mm');
@@ -243,9 +268,12 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   const height = heightLimits.reduce((a, b) => (b.limit < a.limit ? b : a));
 
   const treeRun = run(TREE, null, {
-    max_tree_height_mm: { value: height.limit, source: `${height.source}: the tallest tree the plant builds that every step can take` },
-    layer_spacing_mm: { value: num(named.spacing)!, source: `Investment casting variable ${named.spacing} (${spacingClass} part weight)` },
-    runner_width_mm: { value: num(named.runnerWidth)!, source: `Investment casting variable ${named.runnerWidth} (${gateClass} part)` },
+    max_tree_height_mm: calculatedSeed(height.limit, `${height.source}: the tallest tree the plant builds that every step can take`, 'Max Tree Height', [
+      ...heightLimits.map((h) => inputStep(h.source, 'mm', h.limit, h.source, h.ref)),
+      resultStep('Max Tree Height', 'mm', height.limit, 'The lowest of the limits: the tallest tree the plant builds that every step can take'),
+    ]),
+    layer_spacing_mm: ivar(named.spacing, ` (${spacingClass} part weight)`),
+    runner_width_mm: ivar(named.runnerWidth, ` (${gateClass} part)`),
   }, 'Patterns per Tree');
   if (!('run' in treeRun)) return none(...treeRun.reasons);
   const patterns = treeRun.run.value!;
@@ -253,14 +281,15 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
     patternsPerTree: patterns, layers: treeRun.run.outputs['Layers']!, heightMm: r2(treeRun.run.outputs['Tree Height']!), widthMm: r2(treeRun.run.outputs['Tree Width']!),
     treesInBatch: treeRun.run.outputs['Trees in Batch']!, primaryDips, backupDips, gatesPerPattern: gates,
   };
+  const treeRef: SourceRef = { kind: 'calculation', name: TREE, evidence: null, steps: treeRun.run.trace };
   const perTree: Record<string, CalcSeed> = {
-    patterns_per_tree: { value: patterns, source: 'patterns on the tree (Tree calculator)', ref: { kind: 'calculation', name: TREE, evidence: null, steps: treeRun.run.trace } },
-    trees_in_batch: { value: tree.treesInBatch, source: 'trees the batch needs (Tree calculator)' },
-    tree_width_mm: { value: tree.widthMm, source: 'tree width (Tree calculator)' },
+    patterns_per_tree: { value: patterns, source: 'patterns on the tree (Tree calculator)', ref: treeRef },
+    trees_in_batch: { value: tree.treesInBatch, source: 'trees the batch needs (Tree calculator)', ref: treeRef },
+    tree_width_mm: { value: tree.widthMm, source: 'tree width (Tree calculator)', ref: treeRef },
   };
   const metalRun = run(METAL_PER_CASTING, null, {
     ...perTree,
-    gating_efficiency: { value: num(named.gatingEfficiency)!, source: `Investment casting variable ${named.gatingEfficiency} (${gateClass} part)` },
+    gating_efficiency: ivar(named.gatingEfficiency, ` (${gateClass} part)`),
   }, 'Poured Weight');
   if (!('run' in metalRun)) return none(...metalRun.reasons);
   const pouredKg = metalRun.run.value!;
@@ -313,6 +342,19 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   const measuredWall = part.wallMm ?? (2 * part.volumeMm3) / part.surfaceAreaMm2;
   if (part.wallMm == null) warnings.push(`Wall thickness not measured: the wax cooling time uses 2 x volume / surface (${r2(measuredWall)} mm), the thickness of a plate of the part's volume and surface.`);
   const chilled = chillAt != null && measuredWall > chillAt;
+  // The wall the wax cools through, as measured (the casting analysis's thickest wall), else the plate of the part's volume and surface.
+  const wallSeedOf: CalcSeed = part.wallMm != null
+    ? calculatedSeed(measuredWall, 'thickest wall of the part (mm)', 'Thickest wall', [
+      inputStep('Thickest wall', 'mm', measuredWall, 'CAD casting analysis: the wall thickness profile, rays cast inward from every face of the part, its thickest sample (else the nominal wall)', { kind: 'cad', evidence: 'part_surface' }),
+    ])
+    : calculatedSeed(measuredWall, '2 x volume / surface (mm)', 'Wall', [
+      inputStep('Part volume', 'mm³', part.volumeMm3, 'CAD: the part volume', { kind: 'cad', evidence: 'part_volume' }),
+      inputStep('Part surface', 'mm²', part.surfaceAreaMm2, 'CAD: the part surface', { kind: 'cad', evidence: 'part_surface' }),
+      resultStep('Wall', 'mm', measuredWall, "Not measured: 2 x {Part volume} / {Part surface}, a plate of the part's volume and surface"),
+    ]);
+  const cavitiesSeed: CalcSeed = scenario.cavities != null
+    ? costGuideSeed('Cavities', null, cavitiesOfDie, 'cavityCount', 'defaultWaxPatternsNumCavities', 'cavities set in the Cost Guide')
+    : ivar('defaultWaxPatternsNumCavities');
   if (chilled) warnings.push(`The pattern is thicker than ${chillAt} mm (waxPatternChillMaxThicknessThreshold): it is molded around a chill, so the wax cools through ${chillAt} mm and the chill is loaded each shot.`);
   const waxPattern = step('Wax Pattern Molding', INVESTMENT_CLASS.waxPattern, (m) => {
     const need = ['formingRegionLengthMargin_patternWax', 'formingRegionWidthMargin_patternWax', 'moldBaseLengthMargin_patternWax', 'moldBaseWidthMargin_patternWax',
@@ -328,19 +370,23 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
     if (Math.max(toolL, toolW) > Math.max(pl, pw) || Math.min(toolL, toolW) > Math.min(pl, pw)) return fail(`the die is ${toolL.toFixed(0)} x ${toolW.toFixed(0)} mm, the platen ${pl} x ${pw} mm`);
     if (open > daylight) return fail(`the die and its opening stroke need ${open.toFixed(0)} mm, the daylight is ${daylight} mm`);
     return timed(CALC('Wax pattern molding'), m, {
-      cavities: { value: cavitiesOfDie, source: scenario.cavities != null ? 'cavities set in the Cost Guide' : 'Investment casting variable defaultWaxPatternsNumCavities' },
-      cooling_wall_mm: { value: chilled ? chillAt! : measuredWall, source: chilled ? 'Investment casting variable waxPatternChillMaxThicknessThreshold (the pattern is chilled)' : part.wallMm != null ? 'thickest wall of the part (mm)' : '2 x volume / surface (mm)' },
-      chill_load_s: { value: chilled ? num('defaultWaxPatternLoadChillTime')! : 0, source: chilled ? 'Investment casting variable defaultWaxPatternLoadChillTime' : 'no chill: the pattern is not thicker than waxPatternChillMaxThicknessThreshold' },
+      cavities: cavitiesSeed,
+      cooling_wall_mm: chilled ? ivar('waxPatternChillMaxThicknessThreshold', ' (the pattern is chilled)') : wallSeedOf,
+      chill_load_s: chilled ? ivar('defaultWaxPatternLoadChillTime') : calculatedSeed(0, 'no chill: the pattern is not thicker than waxPatternChillMaxThicknessThreshold', 'Chill Load Time', [
+        seedStep('Wall', 'mm', wallSeedOf),
+        seedStep('waxPatternChillMaxThicknessThreshold', 'mm', ivar('waxPatternChillMaxThicknessThreshold')),
+        resultStep('Chill Load Time', 's', 0, 'No chill: the wall is not thicker than waxPatternChillMaxThicknessThreshold'),
+      ]),
     });
   }, ['The platen takes the wax die (pattern with its forming and mold base margins)', 'The daylight takes the die and its opening stroke']);
 
   // ── The shell ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   const dipTime = robotic ? 'slurryDipTimePerTreeRobotic' : gateClass === 'large' ? 'slurryDipTimePerTree_large' : 'slurryDipTimePerTree_small';
   const coatTime = robotic ? 'sandCoatTimePerTreeRobotic' : 'sandCoatTimePerTree';
-  const coatGroup = (dips: number, label: string): Record<string, CalcSeed> => ({
-    dips: { value: dips, source: label },
-    dip_time_s: { value: num(dipTime) ?? NaN, source: `Investment casting variable ${dipTime}` },
-    coat_time_s: { value: num(coatTime) ?? NaN, source: `Investment casting variable ${coatTime}` },
+  const coatGroup = (dips: CalcSeed): Record<string, CalcSeed> => ({
+    dips,
+    dip_time_s: ivar(dipTime),
+    coat_time_s: ivar(coatTime),
   });
   const tank = (m: SandMachine): string[] => {
     const [diameter, depth] = [machineValue(m, 'tank_d_header_truncated'), machineValue(m, 'tank_dept_header_truncated')];
@@ -352,22 +398,27 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
     if (tree.heightMm > depth * kh) reasons.push(`the tree is ${tree.heightMm} mm high, the tank works to ${r2(depth * kh)} mm`);
     return reasons;
   };
-  const dipping = (process: string, machineClass: string, dips: number, label: string) =>
+  const dipping = (process: string, machineClass: string, dips: CalcSeed) =>
     step(process, machineClass, (m) => {
       const unfit = tank(m);
-      return unfit.length ? fail(...unfit) : timed(CALC('Slurry dipping'), m, coatGroup(dips, label));
+      return unfit.length ? fail(...unfit) : timed(CALC('Slurry dipping'), m, coatGroup(dips));
     }, ['The slurry tank takes the tree within its working diameter and depth']);
-  const coating = (process: string, machineClass: string, dips: number, label: string) =>
-    step(process, machineClass, (m) => timed(CALC('Sand coating'), m, coatGroup(dips, label)), ['A machine hour rate on file']);
-  const primaryLabel = 'Investment casting variable defaultNumPrimaryDipCycles';
-  const backupLabel = `Investment casting variable ${backupName} (${dipClass} part weight)`;
-  const totalDipsSeed = { total_dips: { value: totalDips, source: 'primary and backup dip cycles' } };
+  const coating = (process: string, machineClass: string, dips: CalcSeed) =>
+    step(process, machineClass, (m) => timed(CALC('Sand coating'), m, coatGroup(dips)), ['A machine hour rate on file']);
+  const primarySeed = ivar(named.primaryDips);
+  const backupSeed = ivar(backupName, ` (${dipClass} part weight)`);
+  const totalDipsSeed = {
+    total_dips: calculatedSeed(totalDips, 'primary and backup dip cycles', 'Dip Cycles', [
+      seedStep('Primary dips', null, primarySeed), seedStep('Backup dips', null, backupSeed),
+      resultStep('Dip Cycles', null, totalDips, '{Primary dips} + {Backup dips}'),
+    ]),
+  };
 
   const shell: CostedStep[] = [
-    dipping('Primary Slurry Dipping', INVESTMENT_CLASS.primaryDip, primaryDips, primaryLabel),
-    coating('Primary Sand Coating', INVESTMENT_CLASS.primarySand, primaryDips, primaryLabel),
-    dipping('Secondary Slurry Dipping', INVESTMENT_CLASS.secondaryDip, backupDips, backupLabel),
-    coating('Secondary Sand Coating', INVESTMENT_CLASS.secondarySand, backupDips, backupLabel),
+    dipping('Primary Slurry Dipping', INVESTMENT_CLASS.primaryDip, primarySeed),
+    coating('Primary Sand Coating', INVESTMENT_CLASS.primarySand, primarySeed),
+    dipping('Secondary Slurry Dipping', INVESTMENT_CLASS.secondaryDip, backupSeed),
+    coating('Secondary Sand Coating', INVESTMENT_CLASS.secondarySand, backupSeed),
     ...(robotic ? [step('Robotic Assist', INVESTMENT_CLASS.robot, (m) => {
       const payload = machineValue(m, 'max_pa_header_truncated');
       if (payload == null) return fail(`machine ${m.name}: maximum payload`);
@@ -383,9 +434,14 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   const dewax = dewaxClass === INVESTMENT_CLASS.flashFire
     ? furnace('Flash Fire De-Waxing', 'Flash fire de-waxing', INVESTMENT_CLASS.flashFire)
     : furnace('Steam Autoclave De-Waxing', 'Steam autoclave de-waxing', INVESTMENT_CLASS.autoclave);
-  const ventSeed = { wax_vents: { value: vents, source: vents > 0 ? 'Investment casting variable defaultNumWaxVentsPerTree' : 'wax vents are off (defaultEnableWaxVents)' } };
+  // A step the plant switches off (a variable not 'true'): 0, opening the switch.
+  const off = (name: string, switchName: string, source: string): CalcSeed => calculatedSeed(0, source, name, [
+    inputStep(switchName, null, ref.text(switchName) ?? 'none', `Investment casting variable ${switchName}`, { kind: 'variable', domain: INVESTMENT_DOMAIN, name: switchName }),
+    resultStep(name, null, 0, `Off (${switchName} is not true): 0`),
+  ]);
+  const ventSeed = { wax_vents: vents > 0 ? ivar('defaultNumWaxVentsPerTree') : off('Wax Vents', 'defaultEnableWaxVents', 'wax vents are off (defaultEnableWaxVents)') };
   const inspectionTime = (switchName: string, timeName: string): CalcSeed =>
-    (enabled(switchName) ? { value: num(timeName) ?? NaN, source: `Investment casting variable ${timeName}` } : { value: 0, source: `off (${switchName})` });
+    (enabled(switchName) ? ivar(timeName) : off(timeName, switchName, `off (${switchName})`));
 
   const pourTemp = material.columns['pour_temp'];
   const needsVacuum = material.materialType != null && VACUUM_MELTED.has(material.materialType);
@@ -465,7 +521,10 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
   if (pouring.machine) {
     const m = run(MATERIAL_COST, null, {
       net_kg: { value: netKg, source: 'metal per casting', ref: metalRef }, poured_kg: { value: pouredKg, source: 'metal per casting', ref: metalRef },
-      furnace_yield: { value: machineValue(pouring.machine, 'yield_l_header_truncated') ?? NaN, source: `machine ${pouring.machine.name}: yield` },
+      furnace_yield: {
+        value: machineValue(pouring.machine, 'yield_l_header_truncated') ?? NaN, source: `machine ${pouring.machine.name}: yield`,
+        ref: { kind: 'machine', machineId: pouring.machine.id, machineName: pouring.machine.name, machineClass: pouring.machine.machineClass, location: pouring.machine.location, column: 'yield_l_header_truncated' },
+      },
     }, 'Material Cost');
     if ('run' in m) {
       materialCost = m.run.value!;
@@ -481,9 +540,9 @@ export function buildInvestmentRoute(input: InvestmentRouteInput): { route: Inve
     const tolerance = (ref.text('defaultWaxPatternToolingTolerance') ?? '').split(' ')[0]!.toLowerCase();
     const toleranceName = `waxPatternToleranceFactor_${tolerance}`;
     const t = run(PATTERN_TOOLING, null, {
-      tolerance_factor: { value: num(toleranceName) ?? NaN, source: `Investment casting variable ${toleranceName} (defaultWaxPatternToolingTolerance)` },
-      slides: { value: part.slides, source: 'slide bundles of the part' },
-      cavities: { value: cavitiesOfDie, source: scenario.cavities != null ? 'cavities set in the Cost Guide' : 'Investment casting variable defaultWaxPatternsNumCavities' },
+      tolerance_factor: ivar(toleranceName, ' (defaultWaxPatternToolingTolerance)'),
+      slides: calculatedSeed(part.slides, 'slide bundles of the part', 'Slides', [inputStep('Slide bundles', null, part.slides, "CAD: the SlideBundle features of the part (the wax die's side actions)")]),
+      cavities: cavitiesSeed,
     }, 'Cost per Part');
     if ('run' in t) {
       tooling = { tools: t.run.outputs['Tools']!, toolCostUsd: r2(t.run.outputs['Tool Cost']!), toolingCostUsd: r2(t.run.outputs['Tooling Cost']!), perPartUsd: r4(t.run.value!), run: t.run };

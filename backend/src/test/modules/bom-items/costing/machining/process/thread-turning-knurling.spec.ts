@@ -107,7 +107,10 @@ describe('an M12 x 1.75 external thread on the Ø12 x 18.329 journal', () => {
     expect(steps.find((s) => s.fieldName === 'Pitch')).toMatchObject({ value: 1.75, source: 'Drawing: pitch of the M12 x 1.75 callout' });
     expect(steps.find((s) => s.fieldName === 'Threads')).toMatchObject({ value: 1, source: 'Drawing: one M12 thread on this turned diameter' });
     expect(steps.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ value: 4000 });
-    expect(steps.find((s) => s.fieldName === 'Approach Length')).toMatchObject({ value: 4, source: expect.stringMatching(/^Assumption: /) });
+    // The calculator's own value, with where it comes from (the workbook's Threading sheet) and its table of defaults to open.
+    expect(steps.find((s) => s.fieldName === 'Approach Length')).toMatchObject({
+      value: 4, source: expect.stringMatching(/Threading sheet: the length of cut plus 4 mm/), ref: { kind: 'calculatorField', field: 'Approach Length' },
+    });
   });
 
   it('an external thread by its class with no Ring: 1.5 x its nominal diameter long, stated as the assumption it is', () => {
@@ -137,15 +140,37 @@ describe('a knurl on the Ø14 x 8.145 collar', () => {
     expect(knurling.confidence).toBe('derived');
   });
 
-  it('timed as the Knurling sheet times it, on the finishing feed, with the knurling tool\'s wear', () => {
-    // n = 6000 / (pi x 14) = 136.42 rpm; feed 0.125; (8.145 + 4) / (0.125 x 136.42) x 4 = 2.8488 min = 170.93 s -> 171 s.
-    expect(sec(knurling)).toBeCloseTo(171, 4);
+  it('timed as the Knurling sheet times it, fed the knurl\'s pitch (25.4 / TPI), with the knurling tool\'s wear', () => {
+    // The note states no pitch: the sheet's example, 32 TPI (Knurling!G11), a feed of 25.4 / 32 = 0.79375 mm a rev (G13).
+    // n = 6000 / (pi x 14) = 136.42 rpm; (8.145 + 4) / (0.79375 x 136.42) x 4 = 0.4486 min = 26.92 s -> 27 s.
+    expect(sec(knurling)).toBeCloseTo(27, 4);
+    expect(calculatorInputSteps(knurling.calculationTrace!).find((s) => s.fieldName === 'TPI')).toMatchObject({
+      value: 32, ref: { kind: 'calculatorField', calculator: 'Machining - Knurling', field: 'TPI' }, source: expect.stringContaining('Knurling!G11'),
+    });
     expect(knurling.calculatorId).toBe('Machining - Knurling');
     expect(knurling.otherCostPerPart).toBeCloseTo(TOOL_USD, 8);
     expect(knurling.featureBreakdown).toEqual([
-      { name: 'Knurling // Ring Ø14 x 8.15 mm', timeSec: expect.closeTo(171, 4), featureType: 'Ring', count: 1, faceIds: [9] },
+      { name: 'Knurling // Ring Ø14 x 8.15 mm', timeSec: expect.closeTo(27, 4), featureType: 'Ring', count: 1, faceIds: [9] },
     ]);
     expect(lineDataGap(knurling)).toBeNull();
+  });
+
+  it('a knurl callout that states its pitch is fed that pitch: 30 TPI, or 0.8 mm as 25.4 / 0.8 TPI', () => {
+    // 30 TPI: feed 25.4 / 30 = 0.84667; 12.145 / (0.84667 x 136.42) x 4 = 0.4206 min = 25.24 s -> 26 s.
+    const [tpi30] = knurlsOnRings([{ pattern: 'straight', tpi: 30, text: 'STRAIGHT KNURL 30 TPI' }], RINGS);
+    const byTpi = lineOf(cost(shaft({ knurls: [tpi30!] })).processLines, 'Knurling')!;
+    expect(sec(byTpi)).toBeCloseTo(26, 4);
+    expect(calculatorInputSteps(byTpi.calculationTrace!).find((s) => s.fieldName === 'TPI')).toMatchObject({
+      value: 30, source: 'Drawing: the knurl callout "STRAIGHT KNURL 30 TPI" states 30 TPI',
+    });
+    // 0.8 mm: feed 0.8; 12.145 / (0.8 x 136.42) x 4 = 0.4451 min = 26.71 s -> 27 s; the TPI is worked out from the pitch, shown as such.
+    const [metric] = knurlsOnRings([{ pattern: 'diamond', pitchMm: 0.8, text: 'DIAMOND KNURL 0.8' }], RINGS);
+    expect(metric).toMatchObject({ tpi: expect.closeTo(31.75, 9), pitchMm: 0.8 });
+    const byPitch = lineOf(cost(shaft({ knurls: [metric!] })).processLines, 'Knurling')!;
+    expect(sec(byPitch)).toBeCloseTo(27, 4);
+    expect(calculatorInputSteps(byPitch.calculationTrace!).find((s) => s.fieldName === 'TPI')).toMatchObject({
+      value: expect.closeTo(31.75, 4), ref: { kind: 'calculation', name: 'Knurl TPI' },
+    });
   });
 
   it('a knurl with no diameter to knurl is the line\'s named gap, never a guess', () => {
@@ -191,7 +216,7 @@ describe('on a multi-spindle', () => {
       turned: RINGS, barSectionAreaMm2: Math.PI * 64, stockLengthMm: 28,
     });
     expect(work.ops.filter((o) => o.name === 'Thread Turning' || o.name === 'Knurling').map((o) => [o.name, o.slide, Math.round(o.seconds)]))
-      .toEqual([['Thread Turning', 'od', 24], ['Knurling', 'od', 171]]);
+      .toEqual([['Thread Turning', 'od', 24], ['Knurling', 'od', 27]]);
     expect(work.offMachine.map((l) => l.process)).not.toContain('Thread Turning');
   });
 });

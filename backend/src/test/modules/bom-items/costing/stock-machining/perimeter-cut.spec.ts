@@ -8,7 +8,7 @@
 //   Cycle Time    = Passes * Path per Pass / Feed Rate * 60                                               [s]
 //
 // The cutter is the material class's tblMillingFinishing row (aluminium: Ø10, 3 teeth, 183 m/min, 0.008 per diameter; mild steel: Ø10, 4
-// teeth, 76 m/min, 0.008). Max Spindle Speed 10 000 rpm and Slotting Depth Ratio 0.2 are read off the keyway's stored calculator,
+// teeth, 76 m/min, 0.008). Max Spindle Speed 10 000 rpm and Slotting Depth Ratio 1 (migration 1158) are read off the keyway's stored calculator,
 // "Machining - Obround Slot Milling". Every expected number is worked out by hand from these.
 import { specAsCalculators } from '../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
 import { buildOperationSequence, type MillingFinishingRow, type SequenceOptions } from '../../../../../modules/bom-items/costing/machining/operation/operation-sequencer';
@@ -49,7 +49,7 @@ describe('the perimeter cut: the catalog\'s operation and its calculator', () =>
 
   it('reads the slotting rule off the keyway\'s stored calculator, and has none without it', () => {
     // The depth ratio only: the spindle is the mill's own (migration 1150), not a speed stated on the keyway's calculator.
-    expect(SLOTTING).toEqual({ depthRatio: 0.2 });
+    expect(SLOTTING).toEqual({ depthRatio: 1 });
     expect(slottingRuleOf({})).toBeNull();
     expect(slottingRuleOf(null)).toBeNull();
     const { 'Obround Slot Milling': keyway, ...rest } = MACHINING;
@@ -60,35 +60,35 @@ describe('the perimeter cut: the catalog\'s operation and its calculator', () =>
 });
 
 describe('Stock Machining - Perimeter Cut: the calculator, by hand', () => {
-  it('aluminium, 12.7 mm plate: 5825 rpm, 1398 mm/min, 7 passes of 407.81 mm = 122.52 s', () => {
+  it('aluminium, 12.7 mm plate: 5825 rpm, 1398 mm/min, 2 passes of 407.81 mm = 35.00 s', () => {
     // 183 000 / (pi x 10) = 5825.07 rpm (under the 10 000 limit). Feed 5825.07 x 3 x 0.008 x 10 = 1398.017 mm/min.
-    // Passes ceil(12.7 / (0.2 x 10)) = ceil(6.35) = 7. Path 397.81 + 10 = 407.81 mm. 7 x 407.81 / 1398.017 x 60 = 122.516 s.
+    // Passes ceil(12.7 / (1 x 10)) = ceil(1.27) = 2. Path 397.81 + 10 = 407.81 mm. 2 x 407.81 / 1398.017 x 60 = 35.005 s.
     const op = cutOf();
     expect(step(op, 'Spindle Speed')!.value).toBeCloseTo(5825.07, 1);
     expect(step(op, 'Feed Rate')!.value).toBeCloseTo(1398.017, 2);
-    expect(step(op, 'Passes')!.value).toBe(7);
+    expect(step(op, 'Passes')!.value).toBe(2);
     expect(step(op, 'Path per Pass')!.value).toBeCloseTo(407.81, 6);
-    expect(op.timeSec).toBeCloseTo((7 * 407.81) / ((183000 / (Math.PI * 10)) * 3 * 0.008 * 10) * 60, 6);
-    expect(op.timeSec).toBeCloseTo(122.516, 2);
+    expect(op.timeSec).toBeCloseTo((2 * 407.81) / ((183000 / (Math.PI * 10)) * 3 * 0.008 * 10) * 60, 6);
+    expect(op.timeSec).toBeCloseTo(35.005, 2);
     expect(op.missing).toBeUndefined();
   });
 
-  it('mild steel: 2419 rpm, 774 mm/min = 221.26 s', () => {
-    // 76 000 / (pi x 10) = 2419.16 rpm. Feed 2419.16 x 4 x 0.008 x 10 = 774.13 mm/min. 7 x 407.81 / 774.13 x 60 = 221.26 s.
+  it('mild steel: 2419 rpm, 774 mm/min = 63.22 s', () => {
+    // 76 000 / (pi x 10) = 2419.16 rpm. Feed 2419.16 x 4 x 0.008 x 10 = 774.13 mm/min. 2 x 407.81 / 774.13 x 60 = 63.22 s.
     const op = cutOf({ finishing: MILD_STEEL, matClass: 'mild_steel' });
     expect(step(op, 'Feed Rate')!.value).toBeCloseTo(774.13, 1);
-    expect(op.timeSec).toBeCloseTo(221.26, 1);
+    expect(op.timeSec).toBeCloseTo(63.22, 1);
   });
 
-  it('a free-machining aluminium (machinability 150: factor 2) on a 10 000 rpm mill runs at the mill\'s limit: 2400 mm/min = 71.37 s', () => {
-    // 2 x 183 000 / (pi x 10) = 11 650 rpm, held to the mill's 10 000. Feed 10 000 x 0.24 = 2400 mm/min. 7 x 407.81 / 2400 x 60 = 71.367 s.
+  it('a free-machining aluminium (machinability 150: factor 2) on a 10 000 rpm mill runs at the mill\'s limit: 2400 mm/min = 20.39 s', () => {
+    // 2 x 183 000 / (pi x 10) = 11 650 rpm, held to the mill's 10 000. Feed 10 000 x 0.24 = 2400 mm/min. 2 x 407.81 / 2400 x 60 = 20.3905 s.
     const [onMill] = timeOperations([cutOf({ machinabilityFactor: 2 })], null, onAMill(10000));
     expect(step(onMill!, 'Spindle Speed')!.value).toBe(10000);
-    expect(onMill!.timeSec).toBeCloseTo(71.367, 2);
+    expect(onMill!.timeSec).toBeCloseTo(20.3905, 2);
     // On a 15 000 rpm mill it turns at its cutting speed, 11 650 rpm: 2796 mm/min.
     const [faster] = timeOperations([cutOf({ machinabilityFactor: 2 })], null, onAMill(15000));
     expect(step(faster!, 'Spindle Speed')!.value).toBeCloseTo(11650.14, 1);
-    expect(faster!.timeSec).toBeCloseTo((7 * 407.81) / ((2 * 183000 / (Math.PI * 10)) * 0.24) * 60, 4);
+    expect(faster!.timeSec).toBeCloseTo((2 * 407.81) / ((2 * 183000 / (Math.PI * 10)) * 0.24) * 60, 4);
   });
 
   it('before a mill is chosen the cut is compared uncapped, and says so; the mill line times it on its own spindle', () => {
@@ -100,12 +100,12 @@ describe('Stock Machining - Perimeter Cut: the calculator, by hand', () => {
   });
 
   it('takes one pass more for each slotting depth of plate, and none more for an exact number of them', () => {
-    // 0.2 x 10 = 2 mm a pass: 12 mm is 6 passes exactly, 12.01 mm is 7, 25.4 mm is ceil(12.7) = 13.
-    expect(step(cutOf({ plateThicknessMm: 12 }), 'Passes')!.value).toBe(6);
-    expect(step(cutOf({ plateThicknessMm: 12.01 }), 'Passes')!.value).toBe(7);
-    expect(step(cutOf({ plateThicknessMm: 25.4 }), 'Passes')!.value).toBe(13);
-    // 13 passes of 407.81 mm at 1398.017 mm/min: 227.53 s.
-    expect(cutOf({ plateThicknessMm: 25.4 }).timeSec).toBeCloseTo(227.53, 1);
+    // 1 x 10 = 10 mm a pass: 20 mm is 2 passes exactly, 20.01 mm is 3, 25.4 mm is ceil(2.54) = 3.
+    expect(step(cutOf({ plateThicknessMm: 20 }), 'Passes')!.value).toBe(2);
+    expect(step(cutOf({ plateThicknessMm: 20.01 }), 'Passes')!.value).toBe(3);
+    expect(step(cutOf({ plateThicknessMm: 25.4 }), 'Passes')!.value).toBe(3);
+    // 3 passes of 407.81 mm at 1398.017 mm/min: 52.51 s.
+    expect(cutOf({ plateThicknessMm: 25.4 }).timeSec).toBeCloseTo(52.51, 1);
   });
 
   it('says where each input was read', () => {

@@ -61,6 +61,8 @@ export interface InspectionOperationDefaultRow {
   cycle_time_sec: number;
   sampling_default: InspectionStrategy | null;
   equipment: string | null;
+  /** Where the row's cycle time comes from (migration 1163): the published time study, or that none was found. Null on a row that states none. */
+  source?: string | null;
 }
 
 export interface InspectionInput {
@@ -131,7 +133,7 @@ export interface InspectionPlan {
    * table's key): the escalated method's row, or the visual row it falls back to. Absent for a feature not checked, or timed from the
    * fallback constant (no row on file).
    */
-  sourceRows: Partial<Record<InspectionOperationDefaultRow['feature'], { feature: InspectionOperationDefaultRow['feature']; method: InspectionMethod }>>;
+  sourceRows: Partial<Record<InspectionOperationDefaultRow['feature'], { feature: InspectionOperationDefaultRow['feature']; method: InspectionMethod; source?: string | null }>>;
 }
 
 // What the caller resolved for this plan's cycle time — mirrors every other
@@ -217,6 +219,10 @@ export function planInspection(input: InspectionInput): InspectionPlan {
     method = 'caliper';
   }
 
+  // The visual method is the default for a part whose drawing states no tighter tolerance: no published source was found for a default
+  // method (research of 2026-11-25). The metrology "rule of ten" (a gauge resolving a tenth of the tolerance) would pick it from the drawing
+  // tolerance, which the two steps above and the GD&T escalation below read when the drawing gives one.
+
   // Level 3 — real GD&T escalation. gdtCallouts is real today but always []
   // (drawing parser Module 3 not built) — this branch is reachable, not dormant-but-faked.
   for (const callout of input.gdtCallouts) {
@@ -236,7 +242,7 @@ export function planInspection(input: InspectionInput): InspectionPlan {
   const getSec = (feature: InspectionOperationDefaultRow['feature'], m: InspectionMethod): { sec: number; dataFound: boolean } => {
     const row = defaultsByKey.get(`${feature}:${m}`) ?? defaultsByKey.get(`${feature}:visual`);
     if (row) {
-      sourceRows[feature] = { feature: row.feature, method: row.method };
+      sourceRows[feature] = { feature: row.feature, method: row.method, ...(row.source ? { source: row.source } : {}) };
       return { sec: row.cycle_time_sec, dataFound: true };
     }
     return { sec: FALLBACK_SEC[feature] ?? 0, dataFound: false };
@@ -409,20 +415,57 @@ export function finalizeInspectionLine(input: InspectionInput, plan: InspectionP
   };
 }
 
-// Bootstrap defaults used ONLY when inspection_operation_defaults has no row
-// yet for a feature — same disclosed-fallback convention as every other
-// sm_lookup_*/lookup-table consumer in this codebase (never silent). Based on
-// published general inspection-time ranges (3-12 sec/unit visual inspection
-// across multiple industry sources; Ph. Eur. 2.9.20's 5-second visual-pass
-// standard; thread go/no-go gauging described industry-wide as "a matter of
-// seconds") — no single authoritative per-feature-type standard exists for
-// sheet-metal QC specifically, so these are disclosed engineering estimates,
-// not a claimed citation for an exact number.
+// Bootstrap defaults used ONLY when inspection_operation_defaults has no row yet for a feature (disclosed, never silent: the plan warns and the
+// eye opens the table with no row). They are the table's visual-method times since migration 1163, each the BasicMOST "Measure" (M) value of the
+// instrument the visual method implies (Zandin, MOST Work Measurement Systems; 1 TMU = 0.036 s), except the visual pass, for which no
+// published time was found. Kept equal to the table's visual rows (inspection-engine.spec.ts).
 const FALLBACK_SEC: Record<InspectionOperationDefaultRow['feature'], number> = {
-  visual_base: 5,
-  hole: 1.2,
-  bend: 2.0,
-  thickness: 3.0,
-  dimension: 5.0,
-  thread: 4.0,
+  visual_base: 5,      // no published source found (migration 423 cited a 5 s visual pass of pharmaceutical QC, Ph. Eur. 2.9.20)
+  hole: 5.76,          // closest published basis: M16, plug gauge go/no-go to 1 in, 160 TMU (no visual hole-check time was found)
+  bend: 3.6,           // M10, profile gauge, 100 TMU
+  thickness: 15.12,    // M42, micrometer < 4 in, outside diameter, 420 TMU
+  dimension: 5.76,     // M16, calipers < 12 in, 160 TMU
+  thread: 8.64,        // M24, thread gauge go/no-go int/ext to 1 in, 240 TMU
 };
+
+/** Where each fallback time comes from, for the trace when the table has no row. */
+const FALLBACK_SOURCE: Record<InspectionOperationDefaultRow['feature'], string> = {
+  visual_base: 'no published source found for a visual pass (5 s, migration 423\'s estimate)',
+  hole: 'closest published basis: BasicMOST M16, plug gauge go/no-go, 5.76 s',
+  bend: 'BasicMOST M10, profile gauge, 3.60 s',
+  thickness: 'BasicMOST M42, micrometer, outside diameter, 15.12 s',
+  dimension: 'BasicMOST M16, calipers < 12 in, 5.76 s',
+  thread: 'BasicMOST M24, thread gauge go/no-go, 8.64 s',
+};
+
+const INSPECTION_TIME_FIELDS: readonly [string, InspectionOperationDefaultRow['feature'], string][] = [
+  ['Visual Pass Base', 'visual_base', 'visual_base cycle time'],
+  ['Hole Check Time', 'hole', 'hole check time'],
+  ['Bend Check Time', 'bend', 'bend check time'],
+  ['Thread Gauge Time', 'thread', 'thread gauge time'],
+  ['Thickness Check Time', 'thickness', 'thickness check time'],
+  ['Dimension Check Time', 'dimension', 'dimension check time'],
+];
+
+/**
+ * The source of every input the plan seeds into the "Sheet Metal - Inspection" calculator: each check time names its inspection_operation_defaults
+ * row and where that row's time comes from (its source, migration 1163), or the fallback constant's source when the table has no row.
+ */
+export function inspectionSeedProvenance(plan: Pick<InspectionPlan, 'method' | 'sourceRows'>): Record<string, string> {
+  const times = Object.fromEntries(INSPECTION_TIME_FIELDS.map(([field, feature, label]) => {
+    const row = plan.sourceRows[feature];
+    const which = feature === 'visual_base'
+      ? `inspection_operation_defaults — ${label}`
+      : `inspection_operation_defaults — ${label} for ${row?.method ?? plan.method} method`;
+    if (!row) return [field, `${which}: no row on file, the fallback ${FALLBACK_SEC[feature]} s (${FALLBACK_SOURCE[feature]})`];
+    return [field, row.source ? `${which}: ${row.source}` : which];
+  }));
+  return {
+    ...times,
+    'Holes to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
+    'Bends to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
+    'Threads to Inspect': 'Real sampling plan — feature count × AQL/strategy fraction',
+    'Has Thickness Check': 'Real geometry — sheet thickness known',
+    'Has Dimension Check': 'Real geometry — overall dimensions known',
+  };
+}

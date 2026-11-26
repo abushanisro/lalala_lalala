@@ -10,13 +10,14 @@
 //                 the material's reference values
 //   Fill          shot melt volume / the press's injectionRateMm3PerS, times the injectionTimeAdjustmentFactors for cavities per mold and gates per cavity
 //   Mold motion   the press's Euromap 6 dry cycle (time.dryCycleTimeS)
-//   Pack / hold   0.35 × cooling, floor 2 s: the Menges gate-freeze rule (the reference data holds no hold-time value)
+//   Pack / hold   0.20 × cooling, floor max(2 × fill, 1 s): the floor is Moldflow's default hold (US 7,037,452 B1), the ratio the closest published
+//                 figure (Priamus US 7,931,837 B2: hold 10 %, cooling 50 % of the cycle); the reference data holds no hold-time value
 //   Total         (fill + pack + cool + mold motion) × cycleTimeAdjustmentFactor
 // Ejector travel is not modelled. Any input missing makes the cycle not derivable, with each missing input named; nothing is filled from a default.
-// LSR (thermoset) cures instead of cooling (Arrhenius, literature constants), no pack phase.
+// LSR (thermoset) cures instead of cooling (Arrhenius, A and Ea/R fitted to Dow's standard 3-5 s/mm: 5 s/mm at 180 C), no pack phase.
 
 import type { CycleModel } from '../plastic-reference';
-import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MachineRecord, MaterialRecord } from '../calculators/plastic-input-sources';
 
 export type GateType = 'edge' | 'fan' | 'sub' | 'hot_tip';
@@ -99,6 +100,8 @@ export interface CycleTimeInput {
   press: PressTiming | null;
   /** Melt volume of one full shot (all cavities + runner), mm³. */
   shotMeltVolumeMm3: number | null;
+  /** How the engine worked the shot melt volume out (part volume, runner, cavities, melt density), for that input's eye; absent when not given. */
+  shotMeltVolumeRef?: SourceRef | null;
   cavityCount: number;
   gatesPerCavity: number;
   /** The Raw Materials record the thermal properties were read from (the calculator dialog opens it); absent when not known. */

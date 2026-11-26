@@ -126,8 +126,8 @@ describe('die-casting calculator inputs carry where they were read (SourceRef)',
     expect(vol.evidence).toBe('part_volume');
     // The projected area names the faces seen along the pull axis (feature_graph_v2.measurements.projected_area).
     expect(input(trace, 'Projected Area').ref).toEqual({ kind: 'cad', evidence: 'projected_area' });
-    // A CAD value with no recorded face set (the thickest wall) names none.
-    expect(input(trace, 'Wall Max').ref).toBeUndefined();
+    // The thickest wall has no face set of its own: it opens how it was measured, the wall profile cast from every face of the part.
+    expect(input(trace, 'Wall Max').ref).toMatchObject({ kind: 'calculation', name: 'Thickest wall', steps: [expect.objectContaining({ ref: { kind: 'cad', evidence: 'part_surface' } })] });
   });
 
   it('finishing: a machine spec, the part weight\'s calculation, a lookup row and the part surface', () => {

@@ -8,9 +8,10 @@
 //
 // timed by the stored calculator "Machining - Bulk Milling" (the fields of Rough Milling):
 //
-//   Cycle Time = (Removed Volume * 0.8 / Removal Rate + Removed Volume * 0.2 / (Removal Rate * 0.4)) * 60        [s]
+//   Cycle Time = (Removed Volume * 0.9 / Removal Rate + Removed Volume * 0.1 / (Removal Rate * 0.4)) * 60        [s]
 //
-// which for aluminium (60 000 mm^3/min, tblMillingRemovalRate) is Removed Volume * 1.3 / 1000 seconds. Every expected number below is
+// (Roughing Share 0.9 since 1158: Otsuka et al. 1997, primary roughing "cut out 90% of the stock"), which for aluminium (60 000 mm^3/min,
+// tblMillingRemovalRate) is Removed Volume * 1.15 / 1000 seconds. Every expected number below is
 // worked out by hand from these.
 import { BomItemCostingService } from '../../../../../../modules/bom-items/bom-item-costing.service';
 import { specAsCalculators } from '../../../../../../modules/bom-items/costing/machining/calculators/machining-calculator-spec';
@@ -32,7 +33,7 @@ import { timeOperations } from '../../../../../../modules/bom-items/costing/mach
 
 const CALCS = specAsCalculators();
 const ALUMINIUM: MillingFinishingRow = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
-const ASSUMED = 'Assumption: Machining - Bulk Milling default value (database) — no reference source';
+// The calculator's own value for a field whose source the spec does not state yet: said so (calculatorField's table reads "not yet sourced").
 
 // An aluminium part from an 80 x 50 x 25 mm piece (100 000 mm^3). The part fills a 76 x 46 x 21 box (73 416 mm^3) less its features:
 // two pockets (3000 + 1500 mm^3) and four 6 mm holes 10 mm deep (4 x 282.74 = 1130.96 mm^3), 5630.96 mm^3 in all. Part 67 785.04 mm^3.
@@ -50,8 +51,8 @@ const PIECE_MM3 = 80 * 50 * 25;
 const PART_MM3 = 67785.04;
 // Stock around the part: 100 000 - 67 785.04 - 5630.96 = 26 584 mm^3 (the piece less the part's 73 416 mm^3 box).
 const AROUND = stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(FEATURES) });
-// 26 584 x 1.3 / 1000 = 34.5592 s.
-const BULK_SEC = 34.5592;
+// 26 584 x 1.15 / 1000 = 30.5716 s.
+const BULK_SEC = 30.5716;
 
 const sequence = (features: unknown[] | null, stockAround: StockExcess | null, removalRate: number | null = 60000, machinabilityFactor = 1.0) =>
   buildOperationSequence(features, { matClass: 'aluminum', machinabilityFactor, materialGrade: 'Aluminum, ANSI 6061', workbook: workbookFixture(), calculators: CALCS, removalRateMm3PerMin: removalRate, finishing: ALUMINIUM, stockAround });
@@ -77,13 +78,14 @@ describe('the sequencer mills away the stock around the part', () => {
     expect(op!.featureIds).toBeUndefined();
     expect(op!.missing).toBeUndefined();
     expect(op!.timeSec).toBeCloseTo(BULK_SEC, 6);
-    expect(op!.timeSec).toBeCloseTo((26584 * 0.8 / 60000 + 26584 * 0.2 / (60000 * 0.4)) * 60, 6);
+    expect(op!.timeSec).toBeCloseTo((26584 * 0.9 / 60000 + 26584 * 0.1 / (60000 * 0.4)) * 60, 6);
     expect(op!.calculator).toMatchObject({ id: 'Machining - Bulk Milling' });
     expect(op!.trace!.filter((s) => s.kind === 'input').map((s) => [s.fieldName, s.value, s.source])).toEqual([
       ['Removed Volume', 26584, 'Stock around the part: the piece 100000 mm^3 less the part 67785.04 mm^3 and the 5630.96 mm^3 its features remove'],
       ['Material Removal Rate', 60000, 'tblMillingRemovalRate: aluminum 60000 mm^3/min x machinability factor 1'],
-      ['Roughing Share', 0.8, ASSUMED],
-      ['Finishing Rate Factor', 0.4, ASSUMED],
+      // Each default states its source (1158): a closest published basis, or that none was found.
+      ['Roughing Share', 0.9, expect.stringMatching(/^Closest published basis: Otsuka et al\., JSAE 1997/)],
+      ['Finishing Rate Factor', 0.4, expect.stringMatching(/^No published source found/)],
     ]);
     expect(op!.calculator!.lookups).toEqual({ 'Material Removal Rate': { table: 'tblMillingRemovalRate', row: { MaterialClass: 'aluminum' } } });
   });
@@ -98,7 +100,7 @@ describe('the sequencer mills away the stock around the part', () => {
 
   it('what Facing takes off the piece\'s top and bottom is faced, and only the rest is bulk milled', () => {
     // The 80 x 50 x 25 piece round the 76 x 46 x 21 part: Facing takes 80 x 50 x (25 - 21) = 16 000 mm^3 off its top and bottom (2 mm
-    // each), Bulk Milling the other 26 584 - 16 000 = 10 584 mm^3; x 1.3 / 1000 = 13.7592 s.
+    // each), Bulk Milling the other 26 584 - 16 000 = 10 584 mm^3; x 1.15 / 1000 = 12.1716 s.
     const facing = { faces: 2, lengthMm: 80, widthMm: 50, depthMm: 2, volumeMm3: 16000, basis: 'the 80 x 50 x 25 mm test piece' };
     const faced = stockExcess({ pieceMm3: PIECE_MM3, partMm3: PART_MM3, featureRemovedMm3: featureRemovedVolumeMm3(FEATURES), facedMm3: facing.volumeMm3 });
     expect(faced.excessMm3).toBeCloseTo(10584, 6);
@@ -107,15 +109,15 @@ describe('the sequencer mills away the stock around the part', () => {
       finishing: ALUMINIUM, stockAround: faced, facing,
     });
     expect(ops.slice(0, 2).map((o) => o.name)).toEqual(['Facing', 'Bulk Milling']);
-    expect(named(ops, 'Bulk Milling')[0]!.timeSec).toBeCloseTo(13.7592, 6);
+    expect(named(ops, 'Bulk Milling')[0]!.timeSec).toBeCloseTo(12.1716, 6);
     expect(named(ops, 'Facing')[0]!.plan).toEqual([expect.objectContaining({ operation: 'Facing' })]);
   });
 
   it('the removal rate carries the material\'s machinability, as the roughing of a pocket does', () => {
-    // Twice the baseline machinability: 120 000 mm^3/min, 26 584 x 1.3 / 2000 = 17.2796 s.
+    // Twice the baseline machinability: 120 000 mm^3/min, 26 584 x 1.15 / 2000 = 15.2858 s.
     const [op] = named(sequence(FEATURES, AROUND, 60000, 2.0), 'Bulk Milling');
     expect(op!.trace!.find((s) => s.fieldName === 'Material Removal Rate')).toMatchObject({ value: 120000 });
-    expect(op!.timeSec).toBeCloseTo(17.2796, 6);
+    expect(op!.timeSec).toBeCloseTo(15.2858, 6);
   });
 
   it('a part with no stock chosen, or with nothing left around it, gets no Bulk Milling', () => {
@@ -143,12 +145,12 @@ describe('the sequencer mills away the stock around the part', () => {
 
   it('a turned diameter costed on a mill is milled out of the stock around the part, once: its own cylinder is not milled', () => {
     // The ring states its cylinder (900 mm^3), which is the part's own material: nothing is taken off the stock for it, and no operation
-    // mills it. The stock around the part is the whole 3000 - 1600 = 1400 mm^3; x 1.3 / 1000 = 1.82 s (turned-diameter-on-a-mill.spec.ts).
+    // mills it. The stock around the part is the whole 3000 - 1600 = 1400 mm^3; x 1.15 / 1000 = 1.61 s (turned-diameter-on-a-mill.spec.ts).
     const ring = { id: 'Ring-outer_diameter_d14.0_c1', feature_type: 'Ring', variant: 'outer_diameter', diameter_mm: 14, occurrences: [{ depth_mm: 5.85, material_removed_mm3: 900 }] };
     const around = stockExcess({ pieceMm3: 3000, partMm3: 1600, featureRemovedMm3: featureRemovedVolumeMm3([ring]) });
     expect(around.excessMm3).toBe(1400);
     const bulk = named(sequence([ring], around), 'Bulk Milling');
-    expect(bulk.map((o) => [o.source, o.featureIds, Math.round(o.timeSec * 1e6) / 1e6])).toEqual([['fixed', undefined, 1.82]]);
+    expect(bulk.map((o) => [o.source, o.featureIds, Math.round(o.timeSec * 1e6) / 1e6])).toEqual([['fixed', undefined, 1.61]]);
   });
 });
 
@@ -188,13 +190,14 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
 
   it('counts toward the station calculator\'s Rough Milling Time, with the roughing of the pockets', () => {
     expect(line.calculatorId).toBe('Machining - Milling');
-    // 34.5592 s of bulk milling + 8 s of pocket roughing on the 8000 rpm mill: aluminium 0.15 mm/tooth x 3 teeth x 8000 rpm = 3600 mm/min;
-    // the 30 x 20 x 5 pocket 2 width x 3 depth passes of 45 mm (4.5 s -> 5 s), the 30 x 10 x 5 one 1 x 3 (2.25 s -> 3 s).
+    // 30.5716 s of bulk milling + 9 s of pocket roughing on the 8000 rpm mill: aluminium 0.13 mm/tooth (0.1 - 0.2 at Range Position 0.3)
+    // x 3 teeth x 8000 rpm = 3120 mm/min; the 30 x 20 x 5 pocket 2 width x 3 depth passes of 45 mm (5.19 s -> 6 s), the 30 x 10 x 5 one
+    // 1 x 3 (2.60 s -> 3 s).
     expect(input('Rough Milling Time')).toMatchObject({
-      value: 42.5592, source: 'CAD features: Bulk Milling, Rough Milling (operation sequence)',
+      value: 39.5716, source: 'CAD features: Bulk Milling, Rough Milling (operation sequence)',
       ref: { kind: 'features', label: 'Rough Milling Time', features: [{ featureId: 'PocketV2-default_c2' }] },
     });
-    expect(without.calculationTrace!.find((s) => s.fieldName === 'Rough Milling Time')).toMatchObject({ value: 8, source: 'CAD features: Rough Milling (operation sequence)' });
+    expect(without.calculationTrace!.find((s) => s.fieldName === 'Rough Milling Time')).toMatchObject({ value: 9, source: 'CAD features: Rough Milling (operation sequence)' });
     // No other group moved.
     for (const field of ['Facing Time', 'Finish Milling Time', 'Contouring Time', 'Slot and Groove Milling Time', 'Hole Making Time', 'Edge Treatment Time', 'Other Operations Time']) {
       expect(input(field).value).toBe(without.calculationTrace!.find((s) => s.fieldName === field)!.value);
@@ -204,10 +207,10 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
   it('makes the line longer by its time, one tool change and one rapid move', () => {
     const cutting = (l: typeof line) => l.calculationTrace!.find((s) => s.fieldName === 'Cutting Time')!.value as number;
     expect(cutting(line) - cutting(without)).toBeCloseTo(BULK_SEC, 2);
-    // 34.5592 s, a 5 s tool change and a rapid move of 0.5 x 76 mm at 30 000 mm/min (0.076 s): 39.635 s.
-    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(39.635, 1);
-    // At 900 per hour (0.25 per second): 9.91 more.
-    expect(line.runCost - without.runCost).toBeCloseTo(9.91, 1);
+    // 30.5716 s, a 4.2 s tool change and a rapid move of 0.5 x 76 mm at 30 000 mm/min (0.076 s): 34.848 s.
+    expect(line.cycleTimeMin * 60 - without.cycleTimeMin * 60).toBeCloseTo(34.848, 1);
+    // At 900 per hour (0.25 per second): 8.71 more.
+    expect(line.runCost - without.runCost).toBeCloseTo(8.71, 1);
   });
 
   it('shows its own calculation on the line, under its name', () => {
@@ -216,7 +219,7 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
       value: 26584, unit: 'mm^3', source: 'Stock around the part: the piece 100000 mm^3 less the part 67785.04 mm^3 and the 5630.96 mm^3 its features remove',
     });
     expect(step('Material Removal Rate')).toMatchObject({ value: 60000 });
-    expect(step('Cycle Time')).toMatchObject({ value: 34.5592 });
+    expect(step('Cycle Time')).toMatchObject({ value: 30.5716 });
     expect(line.physicsGap).toBeUndefined();
     expect(without.calculationTrace!.some((s) => s.fieldName.startsWith('Bulk Milling ·'))).toBe(false);
   });
@@ -230,9 +233,9 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
     // The plan timed on the 8000 rpm mill, as the route times it.
     const timed = timeOperations(sequence(FEATURES, AROUND), CALCS, { 'Max Spindle Speed': { value: 8000, source: 'Machine: test mill' } });
     const rows = breakdown(timed, '3_axis_mill', { '3_axis_mill': ['Facing', 'Bulk Milling', 'Rough Milling', 'Fine Finish Milling', 'Center Drilling', 'Drilling'] }, warnings);
-    expect(rows[0]).toEqual({ name: 'Bulk Milling', timeSec: 35, featureType: '', count: 1 });
+    expect(rows[0]).toEqual({ name: 'Bulk Milling', timeSec: 31, featureType: '', count: 1 });
     expect(warnings).toEqual([]);
-    expect(rows.filter((r) => r.name.startsWith('Rough Milling')).map((r) => [r.timeSec, r.featureIds])).toEqual([[8, ['PocketV2-default_c2']]]);
+    expect(rows.filter((r) => r.name.startsWith('Rough Milling')).map((r) => [r.timeSec, r.featureIds])).toEqual([[9, ['PocketV2-default_c2']]]);
   });
 
   it('that could not be timed makes the mill line a named gap: the route is not fully costed', () => {
@@ -255,9 +258,9 @@ describe('what the Bulk Milling of the stock around the part does not change', (
   });
 
   it('a part with no feature graph is, as before, one Bulk Milling of the whole stock-to-part volume', () => {
-    // 100 000 - 67 785.04 = 32 214.96 mm^3; x 1.3 / 1000 = 41.879448 s, and nothing else on the line.
+    // 100 000 - 67 785.04 = 32 214.96 mm^3; x 1.15 / 1000 = 37.047204 s, and nothing else on the line.
     const line = millLineOf(milled(undefined));
-    expect(line.cycleTimeMin * 60).toBeCloseTo(41.879448, 1);
+    expect(line.cycleTimeMin * 60).toBeCloseTo(37.047204, 1);
     expect(line.calculatorId).toBeUndefined();
   });
 

@@ -5,7 +5,8 @@ export const SAND_CASTING_CALCULATORS_MIGRATION = 956;
 
 /** The SQL of migrations/956_sand_casting_calculators.sql, built from the spec. */
 export function buildSandCastingCalculatorsMigrationSql(): string {
-  return buildDomainCalculatorsMigrationSql(loadSandCastingCalculatorSpec(), {
+  // The calculators as 956 shipped them: an entry a later migration replaced is written as it was, its replacement (which names its migration) is not.
+  return buildDomainCalculatorsMigrationSql(loadSandCastingCalculatorSpec({ includeSuperseded: true }), {
     number: SAND_CASTING_CALCULATORS_MIGRATION,
     title: 'Sand casting calculators -- every sand step time and sizing rule as a real database calculator.',
     generator: 'scripts/generate-sand-casting-calculators-migration.ts',
@@ -16,7 +17,7 @@ export function buildSandCastingCalculatorsMigrationSql(): string {
       'until the route that uses them exists. Sizing steps (risers, gating, metal, core sand, core box) and the machine',
       'variants (manual shakeout, cleaning room) are helper calculators: no catalog operation maps to them.',
     ].join('\n'),
-  });
+  }, (c) => c.migration == null);
 }
 
 export const SAND_HOT_BOX_PHYSICS_MIGRATION = 958;
@@ -56,9 +57,10 @@ export const SAND_GATING_VELOCITY_MIGRATION = 959;
  * harmless after a fresh 956).
  */
 export function buildSandGatingVelocityMigrationSql(): string {
-  const spec = loadSandCastingCalculatorSpec();
+  // The riser calculator as 959 shipped it (version 1; migration 1160 replaced it).
+  const spec = loadSandCastingCalculatorSpec({ includeSuperseded: true });
   return buildDomainCalculatorsMigrationSql(
-    { ...spec, calculators: spec.calculators.filter((c) => c.name === 'Sand Casting - Gating system' || c.name === 'Sand Casting - Risers') },
+    { ...spec, calculators: spec.calculators.filter((c) => (c.name === 'Sand Casting - Gating system' || c.name === 'Sand Casting - Risers') && c.migration == null) },
     {
       number: SAND_GATING_VELOCITY_MIGRATION,
       title: 'Sand casting gating and riser calculators -- the velocity of the metal in the gating; the riser feeding efficiency named as unverified.',
@@ -99,4 +101,27 @@ export function buildSandRefractoryMigrationSql(): string {
       ].join('\n'),
     },
   );
+}
+
+export const SAND_RISER_FEED_EFFICIENCY_MIGRATION = 1160;
+
+/**
+ * The SQL of migrations/1160_sand_riser_feed_efficiency.sql: the riser calculator, version 2. Its feed efficiency is Foseco's 10 % for a natural
+ * feeder that is not live (it was 14 %, the live-feeder figure, labelled an unverified rule since 959).
+ */
+export function buildSandRiserFeedEfficiencyMigrationSql(): string {
+  return buildDomainCalculatorsMigrationSql(loadSandCastingCalculatorSpec(), {
+    number: SAND_RISER_FEED_EFFICIENCY_MIGRATION,
+    title: 'Sand casting riser calculator, version 2 -- the feed efficiency of a natural feeder, 10 % (Foseco).',
+    generator: 'scripts/generate-sand-casting-calculators-migration.ts',
+    specPath: 'src/modules/bom-items/costing/casting/sand/calculators/sand-casting-calculators.json',
+    rootCause: [
+      'Migration 959 named the riser calculator\'s 14 % feed efficiency an unverified rule: no source for it had been found. The Foseco Ferrous',
+      'Foundryman\'s Handbook (2000, pp. 296-297 and 309-310) gives it: a natural feeder holds about 14 % of its volume, of which it uses some to feed',
+      'itself, so about 10 % is available; its safe values are 33-50 % with a sleeve, 14-16 % for a live natural feeder and 10 % for other natural',
+      'feeders. The risers this calculator sizes are natural (no sleeve is costed) top risers, not live, so the efficiency is 10 %: a riser is larger',
+      'and the casting yield lower. The field is renamed Feed Efficiency (natural feeder). Replaced under version 2 (a calculator in use is not edited',
+      'in place); the modulus factor 1.2 (Foseco) and the height-to-diameter ratio 1.5 (SFSA) are unchanged.',
+    ].join('\n'),
+  }, (c) => c.migration === SAND_RISER_FEED_EFFICIENCY_MIGRATION);
 }

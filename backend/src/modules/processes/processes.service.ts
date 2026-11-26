@@ -12,7 +12,11 @@ import { castingMaterialsAsTable, castingTableQuery, castingVariablesAsTable, ty
 import * as ExcelJS from 'exceljs';
 import { readWorkbook } from '../../common/heavy-work/heavy-work';
 import { REFERENCE_DOMAINS, REFERENCE_GROUP_DOMAIN, type ReferenceDomain } from './reference-domains';
-import { strokeRateFactorTable, turretMachinesTable, waterjetMachinesTable, type ReferenceTablePayload } from '../bom-items/costing/sheet-metal/lookup/turret-reference-tables';
+import {
+  COSTING_TABLES, PLASTIC_REFERENCE_PACKAGE_DOMAIN, PLASTIC_REFERENCE_PACKAGE_FILES, isServedTableDomain,
+} from '../bom-items/costing/shared/served-reference-tables';
+import { readReferenceCsv } from '../bom-items/costing/plastic-molding/reference/im-reference';
+import { pressBrakeMachinesTable, strokeRateFactorTable, turretMachinesTable, waterjetMachinesTable, type ReferenceTablePayload } from '../bom-items/costing/sheet-metal/lookup/turret-reference-tables';
 import { machineSourceTable, materialSourceTable, type MaterialProperty, type SourceTable } from './source-tables';
 import { Logger } from '../../common/logger/logger.service';
 import { DatabaseService } from '../../common/database/database.service';
@@ -322,6 +326,21 @@ export class ProcessesService {
       if (!data || data.length < PAGE) break;
     }
     return materialSourceTable(rows ?? [], { id: String(own.id), group: own.material_group ?? null }, column, props);
+  }
+
+  /**
+   * Every press brake of the machine library with its bend cycle time (the Press Brake calculator's time per stroke for that machine). The
+   * caller's own client: sm_reference_data is readable by everyone (its "Public read" policy).
+   */
+  async getPressBrakeMachinesTable(accessToken: string): Promise<ReferenceTablePayload> {
+    const { data, error } = await this.databaseService
+      .getClient(accessToken)
+      .from('sm_reference_data')
+      .select('key, raw')
+      .eq('category', 'machine')
+      .not('raw->bend_cycle_time_s', 'is', null);
+    if (error) throw new InternalServerErrorException('Failed to read the press brake machine library');
+    return pressBrakeMachinesTable(data ?? []);
   }
 
   /** Every waterjet machine with its nozzle delay (the waterjet calculator pierce time) and jet data. */
@@ -1311,6 +1330,7 @@ export class ProcessesService {
     key: string,
     accessToken: string,
   ): Promise<{ key: string; sourceVersion: string; columns: string[]; rows: Record<string, unknown>[] }> {
+    if (isServedTableDomain(domain)) return this.getServedTable(domain, key, accessToken);
     const { table, versions, excludeVersions } = REFERENCE_DOMAINS[domain];
     let q = this.databaseService.getClient(accessToken)
       .from(table)
@@ -1330,6 +1350,24 @@ export class ProcessesService {
       ? [...row.raw.columns, ...flat.columns.filter((c) => !row.raw.columns.includes(c))]
       : flat.columns;
     return { key: row.key, sourceVersion: row.source_version, columns, rows: flat.rows };
+  }
+
+  /**
+   * A table a calculator input is read from that is not a staged reference domain, served like a staged lookup (served-reference-tables.ts):
+   * a file of the plastic-molding reference package (only those listed, never a path), or a costing table of the database (the caller's
+   * own access).
+   */
+  private async getServedTable(domain: string, key: string, accessToken: string): Promise<{ key: string; sourceVersion: string; columns: string[]; rows: Record<string, unknown>[] }> {
+    if (domain === PLASTIC_REFERENCE_PACKAGE_DOMAIN) {
+      if (!(PLASTIC_REFERENCE_PACKAGE_FILES as readonly string[]).includes(key)) throw new NotFoundException(`No reference package file "${key}"`);
+      const rows = readReferenceCsv(key);
+      return { key, sourceVersion: 'plastic-molding reference package', columns: rows[0] ? Object.keys(rows[0]) : [], rows };
+    }
+    if (!(COSTING_TABLES as readonly string[]).includes(key)) throw new NotFoundException(`No costing table "${key}"`);
+    const { data, error } = await this.databaseService.getClient(accessToken).from(key).select('*').limit(500);
+    if (error) throw new InternalServerErrorException(`Failed to read ${key}: ${error.message}`);
+    const rows = (data ?? []) as Record<string, unknown>[];
+    return { key, sourceVersion: key, columns: rows[0] ? Object.keys(rows[0]) : [], rows };
   }
 
   // ============================================================================

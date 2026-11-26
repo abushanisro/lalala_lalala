@@ -3,7 +3,8 @@
 import { electricityUsd, type LocationElectricity } from '../../shared/location-electricity';
 import { roundPerPart } from '../machine-choice';
 import { roundLineCost } from '../casting-finishing';
-import type { ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
+import { costGuideEnergyRef } from '../casting-source-refs';
 import type { CoreRegion } from './sand-cores';
 import { COAT_CHOICES, DRY_METHODS } from './sand-refractory';
 import { MOULDING_PROCESSES, type SandPartInput, type SandRoute, type SandScenario } from './sand-route';
@@ -43,8 +44,8 @@ export type { LocationElectricity } from '../../shared/location-electricity';
  * The energy price the route charges: the Cost Guide's for this part, else the location's sourced electricity price converted to USD, else
  * none (energy is then not charged, and each line says so). Never assumed.
  */
-export function energyPrice(override: number | null, location: string | undefined, row: LocationElectricity | null | undefined, toUsd: (value: number, currency: string) => number | null, warnings: string[]): { usdPerKwh: number; source: string } | null {
-  if (override != null) return { usdPerKwh: override, source: 'energy price set in the Cost Guide (USD/kWh)' };
+export function energyPrice(override: number | null, location: string | undefined, row: LocationElectricity | null | undefined, toUsd: (value: number, currency: string) => number | null, warnings: string[]): { usdPerKwh: number; source: string; ref?: SourceRef } | null {
+  if (override != null) return { usdPerKwh: override, source: 'energy price set in the Cost Guide (USD/kWh)', ref: costGuideEnergyRef(override, SAND_SCENARIO_KEYS.energyPrice) };
   if (!row) return null;
   const priced = electricityUsd(row, location, toUsd);
   if (!priced) warnings.push(`The ${location ?? 'location'} electricity price is in ${row.currency}, which has no exchange rate to USD: energy is not charged.`);
@@ -78,7 +79,7 @@ export function sandScenario(input: {
       chosenCoreProcess: typeof o[SAND_SCENARIO_KEYS.coreProcess] === 'string' ? (o[SAND_SCENARIO_KEYS.coreProcess] as string) : null,
       ...(() => {
         const e = energyPrice(positive(o[SAND_SCENARIO_KEYS.energyPrice]), input.location, input.locationElectricity, input.toUsd ?? (() => null), warnings);
-        return { energyPricePerKwh: e?.usdPerKwh ?? null, energyPriceSource: e?.source ?? null };
+        return { energyPricePerKwh: e?.usdPerKwh ?? null, energyPriceSource: e?.source ?? null, energyPriceRef: e?.ref ?? null };
       })(),
       hotBox: {
         coreboxTempC: positive(o[SAND_SCENARIO_KEYS.hotBoxCoreboxTemp]),

@@ -5,7 +5,7 @@
 //   Obround Slot Milling (a keyway, cut by an end mill of its width in passes between its two end centres):
 //     Spindle Speed = min(10 000, Cutting Speed * 1000 / (pi * Keyway Width))                                   [rpm]
 //     Feed Rate     = Spindle Speed * Teeth * Feed per Tooth per Diameter * Keyway Width                        [mm/min]
-//     Passes        = ceil(Keyway Depth / (0.2 * Keyway Width))
+//     Passes        = ceil(Keyway Depth / (1 * Keyway Width))
 //     Path per Pass = max(Keyway Length - Keyway Width, 0) + Keyway Depth / Passes                              [mm]
 //     Cycle Time    = Keyways * Passes * Path per Pass / Feed Rate * 60                                         [s]
 //   Slot Milling  (the workbook's Slot Milling sheet) = Slots * ceil((Slot Length + 10 + D) / (fz * Teeth * n) * Depth Passes * 60)    [s]
@@ -48,19 +48,19 @@ const KEYWAY = {
     length_mm: 9.971, width_mm: 4.0, extents_mm: [10.005, 4.0, 2.951],
   }],
 };
-// A radial slot, 8 x 4 x 3 mm: its floor's box and measured depth. Cut by a 4 mm end mill (its width): 450 m/min holds the live tool's
-// 10 000 rpm; 0.15 x 3 x 10 000 = 4500 mm/min; depth of cut 2 mm, 2 passes of 8 + 10 + 4 = 22 mm: 44 / 4500 = 0.00978 min = 0.59 s -> 1 s
-// (plunging, 4 plunges of 13 mm, is no quicker). At 0.25 per second = 0.25, and the end mill's wear.
+// A radial slot, 8 x 4 x 3 mm: its floor's box and measured depth. Cut by a 4 mm end mill (its width): 390 m/min (Range Position 0.3) holds
+// the live tool's 10 000 rpm; 0.13 x 3 x 10 000 = 3900 mm/min; a pass as deep as the cutter is wide, 1 pass of 8 + 10 + 4 = 22 mm:
+// 22 / 3900 = 0.00564 min = 0.34 s -> 1 s (plunging, 3 plunges of 13 mm, is no quicker). At 0.25 per second = 0.25, and the end mill's wear.
 const SLOT = { id: 'Slot-radial_c1', feature_type: 'Slot', variant: 'radial', occurrences: [{ extents_mm: [8, 4, 0], depth_mm: 3, material_removed_mm3: 96 }] };
 const SLOT_SEC = 1;
 const END_MILL = 1.3375 / TEST_INR_PER_USD;
 
 const FINISHING = { toolDiameterMm: 10, teeth: 3, cuttingSpeedMPerMin: 183, feedPerToothPerDiameter: 0.008 };
 // The keyway, 9.971 x 4 x 2.951 mm: 183 000 / (pi x 4) = 14 563 rpm, held to 10 000; feed 10 000 x 3 x 0.008 x 4 = 960 mm/min;
-// ceil(2.951 / 0.8) = 4 passes of 5.971 + 2.951 / 4 = 6.70875 mm; 4 x 6.70875 / 960 x 60 = 1.6772 s. At 0.25 per second = 0.4193,
+// ceil(2.951 / 4) = 1 pass of 5.971 + 2.951 = 8.922 mm; 8.922 / 960 x 60 = 0.5576 s. At 0.25 per second = 0.1394,
 // not rounded to cents.
-const KEYWAY_SEC = 1.6772;
-const KEYWAY_COST = (4 * 6.70875 / 960) * 60 * 0.25;
+const KEYWAY_SEC = 0.5576;
+const KEYWAY_COST = (8.922 / 960) * 60 * 0.25;
 
 /** The lathe's milling of these features: the real sequencer's operations on them (the fixture's cutter row and workbook unless one is not on file). */
 const millingOf = (features: unknown[], finishing: typeof FINISHING | null = FINISHING, workbook: MachiningWorkbookInput = workbookFixture()) =>
@@ -124,7 +124,7 @@ describe('a closed keyway on a turned shaft: milled on the lathe, as a line of t
   });
 
   it('is timed by the Obround Slot Milling calculator on the keyway\'s length, width and depth, not on its volume at the bulk removal rate', () => {
-    // (A line keeps its cycle to four decimals of a minute: 0.028 min = 1.68 s.)
+    // (A line keeps its cycle to four decimals of a minute: 0.0093 min = 0.56 s.)
     expect(sec(keyway)).toBeCloseTo(KEYWAY_SEC, 2);
     expect(keyway.runCost).toBeCloseTo(KEYWAY_COST, 10);
     expect(keyway.totalCost).toBeCloseTo(KEYWAY_COST, 10);
@@ -137,16 +137,17 @@ describe('a closed keyway on a turned shaft: milled on the lathe, as a line of t
     const calculated = (field: string) => keyway.calculationTrace!.find((s) => s.fieldName === field);
     expect(calculated('Spindle Speed')).toMatchObject({ kind: 'calculated', value: 10000 });
     expect(calculated('Feed Rate')).toMatchObject({ kind: 'calculated', value: 960 });
-    expect(calculated('Passes')).toMatchObject({ kind: 'calculated', value: 4 });
-    expect(calculated('Path per Pass')).toMatchObject({ kind: 'calculated', value: 6.7088 });
+    expect(calculated('Passes')).toMatchObject({ kind: 'calculated', value: 1 });
+    expect(calculated('Path per Pass')).toMatchObject({ kind: 'calculated', value: 8.922 });
     expect(calculated('Cycle Time')).toMatchObject({ kind: 'calculated', value: KEYWAY_SEC });
     const row = { table: 'tblMillingFinishing', row: { MaterialClass: 'aluminum' } };
     expect(keyway.lookupMatches).toEqual({ 'Teeth': row, 'Cutting Speed': row, 'Feed per Tooth per Diameter': row });
   });
 
-  it('shows the depth of a pass as the engine\'s own value, not the reference data\'s', () => {
+  it('shows the depth of a pass as the calculator\'s own value, with the source of its default (the Corrax table on the workbook\'s Slot Milling sheet)', () => {
     expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Slotting Depth Ratio')).toMatchObject({
-      kind: 'input', value: 0.2, source: 'Assumption: Machining - Obround Slot Milling default value (database) — no reference source',
+      kind: 'input', value: 1, source: expect.stringMatching(/^The Uddeholm Corrax end milling table pasted on the Machining calculator workbook/),
+      ref: { kind: 'calculatorField', calculator: 'Machining - Obround Slot Milling', field: 'Slotting Depth Ratio' },
     });
   });
 
@@ -337,15 +338,15 @@ describe('the keyway is timed on the lathe\'s own live-tool spindle (timeOperati
   })).processLines, 'Obround Slot Milling')!;
 
   it('a 5000 rpm live tool: the cutter turns at half the speed of a 10 000 rpm one, so the keyway takes twice as long', () => {
-    // 4 x 6.70875 / (5000 x 3 x 0.008 x 4 = 480 mm/min) x 60 = 3.3545 s.
+    // 8.922 / (5000 x 3 x 0.008 x 4 = 480 mm/min) x 60 = 1.1153 s.
     const keyway = at(5000);
     expect(keyway.calculationTrace!.find((s) => s.fieldName === 'Max Spindle Speed')).toMatchObject({ value: 5000, source: expect.stringContaining('live_tooling_speed_rpm') });
     expect(sec(keyway)).toBeCloseTo(2 * KEYWAY_SEC, 2);
   });
 
   it('a live tool faster than the cutter needs (20 000 rpm): 183 000 / (pi x 4) = 14 563 rpm, the cutting speed\'s own', () => {
-    // feed 14 563.4 x 0.096 = 1398.1 mm/min; 4 x 6.70875 / 1398.1 x 60 = 1.1517 s.
-    expect(sec(at(20000))).toBeCloseTo(1.1517, 2);
+    // feed 14 563.4 x 0.096 = 1398.1 mm/min; 8.922 / 1398.1 x 60 = 0.3829 s.
+    expect(sec(at(20000))).toBeCloseTo(0.3829, 2);
   });
 
   it('a lathe with no live-tool speed on file cannot time the keyway: a named gap, never a stand-in 10 000 rpm', () => {

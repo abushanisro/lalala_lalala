@@ -18,9 +18,10 @@
 //                 per cavity
 //   Mold motion   the press's Euromap 6 dry cycle (time.dryCycleTimeS: mold open
 //                 and close)
-//   Pack / hold   0.35 × cooling, floor 2 s: the Menges gate-freeze rule (§6.3).
-//                 The reference data holds no hold-time value; this is the one
-//                 literature rule in the model, named in the trace.
+//   Pack / hold   0.20 × cooling, floor max(2 × fill, 1 s) (changed on purpose, with approval, 2026-11-25, migration 1161: it was
+//                 0.35 × cooling with a 2 s floor, "the Menges gate-freeze rule", which no published source gives). The floor is
+//                 Moldflow's default hold (US 7,037,452 B1); the ratio the closest published figure (Priamus US 7,931,837 B2).
+//                 The reference data holds no hold-time value.
 //   Total         (fill + pack + cool + mold motion) × cycleTimeAdjustmentFactor
 //
 // Ejector-plate travel is not modelled: its reference variables need the
@@ -119,17 +120,18 @@ export function computeFillTimeSec(input: {
   return Math.round(t * 100) / 100;
 }
 
-// Menges §6.3 gate-freeze rule (see header): the only literature constants.
-const PACK_TO_COOL_RATIO = 0.35;
-const PACK_MIN_SEC = 2.0;
+// Pack / hold (see header): 0.20 of cooling, at least the larger of 2 x fill and 1 s (migration 1161; it was 0.35 with a 2 s floor).
+const PACK_TO_COOL_RATIO = 0.2;
+const PACK_MIN_SEC = 1.0;
+const PACK_FILL_MULTIPLE = 2;
 
-function computePackTimeSec(coolingTimeSec: number): number {
-  return Math.max(PACK_MIN_SEC, Math.round(coolingTimeSec * PACK_TO_COOL_RATIO * 10) / 10);
+function computePackTimeSec(coolingTimeSec: number, fillSec: number): number {
+  return Math.max(Math.max(PACK_FILL_MULTIPLE * fillSec, PACK_MIN_SEC), Math.round(coolingTimeSec * PACK_TO_COOL_RATIO * 10) / 10);
 }
 
-// LSR cure (Arrhenius), literature constants: see header.
+// LSR cure (Arrhenius): A fitted to Dow's standard 3-5 s/mm, 5 s/mm at 180 C (migration 1161; it was 0.008, 18.1 s/mm, cited to a paper not found).
 const LSR_DEFAULT_MOLD_TEMP_C = 180;
-const LSR_A_FACTOR = 0.008;
+const LSR_A_FACTOR = 0.0022;
 const LSR_EA_OVER_R = 3500;
 const R_KELVIN_OFFSET = 273.15;
 
@@ -198,8 +200,8 @@ export function computeCycleTime(input: CycleTimeInput): CycleTimeResult {
     cavityCount: input.cavityCount, gatesPerCavity: input.gatesPerCavity, model: input.model,
   });
   trace.push(step('F-05', 'Fill Time', fillSec, `${Math.round(input.shotMeltVolumeMm3!)} mm³ shot melt / ${rate} mm³/s press injection rate × injectionTimeAdjustmentFactors (${input.cavityCount} cav, ${input.gatesPerCavity} gate/cav)`));
-  const packSec = input.isLsr ? 0 : computePackTimeSec(coolSec);
-  if (!input.isLsr) trace.push(step('F-06', 'Pack Time', packSec, '0.35 × cooling, floor 2 s: Menges gate-freeze rule (the reference data holds no hold time)'));
+  const packSec = input.isLsr ? 0 : computePackTimeSec(coolSec, fillSec);
+  if (!input.isLsr) trace.push(step('F-06', 'Pack Time', packSec, '0.20 × cooling, floor max(2 × fill, 1 s): Moldflow default hold, Priamus ratio (the reference data holds no hold time)'));
   trace.push(step('F-07', 'Mold Open/Close Time', dry!, 'Press dry cycle, Euromap 6 (machine reference record)'));
   const factor = input.model.cycleTimeAdjustmentFactor;
   const totalCycleSec = Math.round((fillSec + packSec + coolSec + dry!) * factor * 100) / 100;

@@ -22,7 +22,7 @@
 // side a tool reaches the feature from) is not assessed: the milling machine
 // is the caller's choice, disclosed on the line.
 
-import type { FeatureOp, ProcessLineCost } from '../../../dto/cost-breakdown.dto';
+import type { FeatureOp, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { MHRRateInput } from '../core/cost-engine';
 import { MACHINE_REGISTRY } from '../core/default-rates.constants';
 import { eMithranTerms, resolveSetupMinutes, type EMithranTermsArgs } from '../core/engine-kernel';
@@ -77,27 +77,35 @@ function machineClassName(machineClass: string): string {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
+/** The feature instance on the model: its feature_graph_v2 occurrence, else its faces; what its CAD values are measured on. */
+function instanceRef(inst: FeatureInstance): SourceRef | undefined {
+  if (inst.featureId) return { kind: 'features', label: inst.label, features: [{ featureId: inst.featureId, occurrenceIndex: inst.occurrenceIndex }] };
+  return inst.faceIds.length > 0 ? { kind: 'faces', label: inst.label, faceIds: [...inst.faceIds] } : undefined;
+}
+
 function seedsFor(calculator: string, inst: FeatureInstance, ctx: MachiningLookupContext): { seeds: Record<string, CalcSeed>; missing: string[] } {
   const missing: string[] = [];
   const seeds: Record<string, CalcSeed> = {};
+  const ref = instanceRef(inst);
+  const cad = (value: number, source: string): CalcSeed => ({ value, source, ...(ref ? { ref } : {}) });
   if (HOLE_CALCULATORS.has(calculator)) {
     if (inst.sizeMm == null) return { seeds, missing: ['the hole has no measured diameter'] };
     // A step of a stepped hole is the Step Drilling calculator's step; any other hole calculator's, the hole.
     const [dia, depth] = calculator === 'Step Drilling' ? ['Step Diameter', 'Step Depth'] : ['Hole Diameter', 'Hole Depth'];
-    seeds[dia] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
-    seeds['Holes'] = { value: 1, source: `CAD: ${inst.label}` };
-    if (inst.depthMm != null) seeds[depth] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
+    seeds[dia] = cad(inst.sizeMm, `CAD: ${inst.label} diameter`);
+    seeds['Holes'] = cad(1, `CAD: ${inst.label}`);
+    if (inst.depthMm != null) seeds[depth] = cad(inst.depthMm, `CAD: ${inst.label} depth`);
   } else if (calculator === 'Surface Grinding') {
     const [len, wid] = inst.extentsMm ?? [];
     if (!(len! > 0) || !(wid! > 0)) return { seeds, missing: ['the face has no measured length and width'] };
-    seeds['Grind Length'] = { value: len!, source: `CAD: ${inst.label} oriented-box length` };
-    seeds['Grind Width'] = { value: wid!, source: `CAD: ${inst.label} oriented-box width` };
-    seeds['Faces'] = { value: 1, source: `CAD: ${inst.label}` };
+    seeds['Grind Length'] = cad(len!, `CAD: ${inst.label} oriented-box length`);
+    seeds['Grind Width'] = cad(wid!, `CAD: ${inst.label} oriented-box width`);
+    seeds['Faces'] = cad(1, `CAD: ${inst.label}`);
   } else if (calculator === 'Internal Grinding') {
     if (inst.sizeMm == null || inst.depthMm == null) return { seeds, missing: ['the bore has no measured diameter and depth'] };
-    seeds['Grind Diameter'] = { value: inst.sizeMm, source: `CAD: ${inst.label} diameter` };
-    seeds['Grind Length'] = { value: inst.depthMm, source: `CAD: ${inst.label} depth` };
-    seeds['Surfaces'] = { value: 1, source: `CAD: ${inst.label}` };
+    seeds['Grind Diameter'] = cad(inst.sizeMm, `CAD: ${inst.label} diameter`);
+    seeds['Grind Length'] = cad(inst.depthMm, `CAD: ${inst.label} depth`);
+    seeds['Surfaces'] = cad(1, `CAD: ${inst.label}`);
   } else {
     return { seeds, missing: [`the ${calculator} calculator's inputs are not measured for a ${inst.featureType}`] };
   }
@@ -302,11 +310,14 @@ export function priceSecondaryMachining(input: {
     const gaps: string[] = [];
     for (const inst of machined) {
       const faces = new Set(inst.faceIds);
-      const lengthMm = edges.filter((e) => e.faceIds.some((id) => faces.has(id))).reduce((t, e) => t + e.lengthMm!, 0);
+      const touching = edges.filter((e) => e.faceIds.some((id) => faces.has(id)));
+      const lengthMm = touching.reduce((t, e) => t + e.lengthMm!, 0);
       if (lengthMm <= 0) continue;
       const lookup = machiningLookupSeeds('Deburring', input.lookupContext, {});
+      // The sharp edges' faces on the model: what the length is measured along.
+      const edgeFaces = [...new Set(touching.flatMap((e) => e.faceIds))];
       const run = runMachiningCalculator(input.calculators, 'Deburring', {
-        'Sharp Edge Length': { value: lengthMm, source: `CAD: sharp edges touching ${inst.label}` },
+        'Sharp Edge Length': { value: lengthMm, source: `CAD: sharp edges touching ${inst.label}`, ...(edgeFaces.length ? { ref: { kind: 'faces' as const, label: `sharp edges touching ${inst.label}`, faceIds: edgeFaces } } : {}) },
         ...(lookup?.seeds ?? {}),
       });
       if (run.sec == null) { gaps.push(...(lookup?.missing ?? []), ...run.missing); continue; }

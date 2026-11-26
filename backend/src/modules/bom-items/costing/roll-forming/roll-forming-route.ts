@@ -19,11 +19,12 @@ import { line } from '../casting/casting-finishing';
 import { machineChoice, type ChoiceEval } from '../casting/machine-choice';
 import { asFinishingMachine, machineText, machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { fail, routeKit, type KitRun, type RouteKit } from '../shared/calculators/route-kit';
+import { calculationRef, inputStep, resultStep, runRef, withSeedRef } from '../shared/calculators/seed-refs';
 import { noCostFeatureLine } from '../shared/core/engine-kernel';
 import { ROLL_FORMING_PROCESS_GROUP } from '../shared/core/part-family-process-group';
 
 import type { RollFormPart } from './roll-forming-part';
-import type { FeatureOp, ProcessLineCost } from '../../dto/cost-breakdown.dto';
+import type { FeatureOp, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
 import type { CostContext } from '../casting/casting-finishing';
 import type { SandReference } from '../casting/sand/sand-reference';
 import type { SeedProvider } from '../casting/sand/sand-seeds';
@@ -299,12 +300,23 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   const measuredStrip = part.stripWidthSource === 'neutral fibre'
     ? `the section's flats and bends at the neutral fibre (${r2(part.stripWidthMidMm)} mm at the mid-line)`
     : "the section's mid-line stretch-out, its area / t";
+  // Where each CAD value was measured: the cad-engine's roll forming measurement it was read from (feature_graph.summary.rollFormGeometry),
+  // as the calculation that states it; the strip with the change for any bend priced at a radius it was not modelled with.
+  const measured = (label: string, unit: string, value: number, where: string): SourceRef => calculationRef(`${label}: measured on the CAD`, [
+    inputStep(label, unit, value, `CAD: ${where} (the cad-engine's roll forming measurement, feature_graph.summary.rollFormGeometry)`),
+    resultStep(label, unit, value, `{${label}}`),
+  ]);
+  const stripRef = calculationRef('Strip width: the strip the coil is slit to', [
+    inputStep('Measured strip', 'mm', part.stripWidthMm, `CAD: ${measuredStrip} (the cad-engine's roll forming measurement)`),
+    ...(sharpChangeMm !== 0 ? [inputStep('Sharp bend change', 'mm', sharpChangeMm, `${sharp.length} sharp bend(s) formed at the ${r2(minRadius.mm!)} mm radius they are priced at (${minRadius.basis})`)] : []),
+    resultStep('Strip Width', 'mm', W, sharpChangeMm !== 0 ? '{Measured strip} + {Sharp bend change}' : '{Measured strip}'),
+  ]);
   const cad: Record<string, CalcSeed | undefined> = {
-    strip_width_mm: seed(W, sharpChangeMm !== 0
+    strip_width_mm: { ...seed(W, sharpChangeMm !== 0
       ? `the strip the coil is slit to (mm): ${r2(part.stripWidthMm)} mm measured (${measuredStrip}) ${sharpChangeMm < 0 ? '−' : '+'} ${r2(Math.abs(sharpChangeMm))} mm for ${sharp.length} sharp bend(s) formed at the ${r2(minRadius.mm!)} mm radius they are priced at`
-      : `the strip the coil is slit to: ${measuredStrip} (mm)`),
-    length_mm: seed(part.lengthMm, 'the part length along the profile (mm)'),
-    thickness_mm: seed(t, 'the sheet thickness (mm)'),
+      : `the strip the coil is slit to: ${measuredStrip} (mm)`), ref: stripRef },
+    length_mm: { ...seed(part.lengthMm, 'the part length along the profile (mm)'), ref: measured('Part length', 'mm', part.lengthMm, 'the profile length along its axis') },
+    thickness_mm: { ...seed(t, 'the sheet thickness (mm)'), ref: measured('Sheet thickness', 'mm', t, 'the sheet thickness') },
   };
   const materialProvider: SeedProvider = (column) => {
     const v = column === 'density_kg_m3' ? material.densityKgM3 : column === 'cost' ? material.costPerKgUsd : column === 'shear_strength_mpa' ? material.shearStrengthMpa : null;
@@ -341,6 +353,8 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   const plan = stationPlan(ref, priced, minRadius.mm);
   // The passes of each level on a mill of stand spacing S (its horizontal center length), and the stations they make: per spacing, once.
   const passesBySpacing = new Map<string, { levels: StationLevel[]; forming: number } | { reasons: string[] }>();
+  // Each level's passes run (Level passes), for the forming passes' calculation the stations open.
+  const levelRuns = new WeakMap<StationLevel, ReferenceCalcRun>();
   const levelPasses = (mill: SandMachine | null): { levels: StationLevel[]; forming: number } | { reasons: string[] } => {
     const spacing = mill ? machineValue(mill, 'horizontal_center_length_mm') : null;
     const key = String(spacing ?? '-');
@@ -365,7 +379,9 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
         return out;
       }
       const perPass = r.run.outputs['Degrees per Pass'] ?? plan.liftAngleDeg;
-      levels.push({ ...l, passes: Math.round(r.sec), degreesPerPass: perPass, governedBy: perPass < plan.liftAngleDeg - 1e-9 ? 'flange length' : 'lift angle' });
+      const level: StationLevel = { ...l, passes: Math.round(r.sec), degreesPerPass: perPass, governedBy: perPass < plan.liftAngleDeg - 1e-9 ? 'flange length' : 'lift angle' };
+      levelRuns.set(level, r.run);
+      levels.push(level);
     }
     const out = { levels, forming: levels.reduce((s, l) => s + l.passes, 0) };
     passesBySpacing.set(key, out);
@@ -376,9 +392,17 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     const hit = stationsByForming.get(forming);
     if (hit) return hit;
     const r = kit.run(RF_CALC.stations, null, {
-      forming_passes: seed(forming, levels.length
-        ? `${levels.map((l) => `level ${l.level}: ${l.bends} bend(s), largest ${r2(l.maxAngleDeg)}° at ${r2(l.degreesPerPass)}° a pass (${l.governedBy}) = ${l.passes}`).join('; ')} (levels ${plan.levelSource === 'cad' ? 'measured' : plan.levelSource === 'flats' ? 'from the flats, out from the widest' : 'assumed all on one'})`
-        : 'no bend across the strip'),
+      forming_passes: {
+        ...seed(forming, levels.length
+          ? `${levels.map((l) => `level ${l.level}: ${l.bends} bend(s), largest ${r2(l.maxAngleDeg)}° at ${r2(l.degreesPerPass)}° a pass (${l.governedBy}) = ${l.passes}`).join('; ')} (levels ${plan.levelSource === 'cad' ? 'measured' : plan.levelSource === 'flats' ? 'from the flats, out from the widest' : 'assumed all on one'})`
+          : 'no bend across the strip'),
+        // The passes of each level (its Level passes run), summed.
+        ref: calculationRef('Forming passes: the passes of each bend level', [
+          ...levels.map((l) => inputStep(`Level ${l.level} passes`, null, l.passes,
+            `${l.bends} bend(s), largest ${r2(l.maxAngleDeg)}° at ${r2(l.degreesPerPass)}° a pass (${l.governedBy})`, runRef(RF_CALC.levelPasses, levelRuns.get(l)))),
+          resultStep('Forming Passes', null, forming, levels.length ? levels.map((l) => `{Level ${l.level} passes}`).join(' + ') : 'no bend across the strip: none'),
+        ]),
+      },
       finishing_passes: kit.lookupSeed('toleranceThresholds', plan.toleranceRow, 'Number of Finishing Passes', ['Tolerance Type', 'Tolerance Name']),
     });
     stationsByForming.set(forming, r);
@@ -459,14 +483,25 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
   const routes = ROLL_FORMING_ROUTES.map((def): RollFormingRoute => {
     const blade = def.key === 'blade';
     const slug = blade ? ref.number('slugDieCutOffLength') ?? 0 : 0;
+    // The slug a blade cuts out between parts (slugDieCutOffLength); a scissor cut-off cuts none.
+    const slugRef: SourceRef = blade ? { kind: 'variable', domain: ROLL_FORMING_DOMAIN, name: 'slugDieCutOffLength' } : calculationRef('Slug: none on a scissor cut-off', [
+      inputStep('Cut-off', null, def.cutOff, 'The route: a scissor cut-off shears the strip with no slug'),
+      resultStep('Slug', 'mm', 0, 'no slug on a scissor cut-off'),
+    ]);
     const stripRun = kit.run(RF_CALC.strip, null, {
-      slug_mm: seed(slug, blade ? `slugDieCutOffLength ${slug} mm: the blade cuts a slug out between parts` : 'a scissor cut-off leaves no slug'),
+      slug_mm: { ...seed(slug, blade ? `slugDieCutOffLength ${slug} mm: the blade cuts a slug out between parts` : 'a scissor cut-off leaves no slug'), ref: slugRef },
     });
     const warnings = [...sharedWarnings];
     const fallbackFeed = part.lengthMm + slug;
     const stripKg = 'run' in stripRun ? stripRun.sec : (W * fallbackFeed * t * material.densityKgM3!) / 1e9;
     const feed = 'run' in stripRun ? stripRun.run.outputs['Feed Length'] ?? fallbackFeed : fallbackFeed;
-    const materialRun = kit.run(RF_CALC.material, null, { strip_mass_kg: seed(stripKg, `${RF_CALC.strip}: ${r2(W)} x ${r2(feed)} mm x ${r2(t)} mm`) });
+    // The strip a part takes (its feed length and mass): the Strip calculator's run; without one, the part length and the slug.
+    const stripRef: SourceRef = ('run' in stripRun ? runRef(RF_CALC.strip, stripRun.run) : undefined) ?? calculationRef('Feed length: the part and the slug', [
+      inputStep('Part length', 'mm', part.lengthMm, 'CAD: the profile length along its axis'),
+      inputStep('Slug', 'mm', slug, blade ? 'Roll forming variable slugDieCutOffLength' : 'a scissor cut-off leaves no slug', slugRef),
+      resultStep('Feed Length', 'mm', fallbackFeed, '{Part length} + {Slug}'),
+    ]);
+    const materialRun = kit.run(RF_CALC.material, null, { strip_mass_kg: withSeedRef(seed(stripKg, `${RF_CALC.strip}: ${r2(W)} x ${r2(feed)} mm x ${r2(t)} mm`), stripRef) });
     const materialUsd = 'run' in materialRun ? materialRun.sec : stripKg * material.costPerKgUsd!;
     const punchedArea = punch.punched.filter((f) => f.featureType !== 'Form').reduce((s, f) => s + f.areaMm2, 0);
     const partKg = Math.max(0, (W * part.lengthMm - punchedArea) * t * material.densityKgM3!) / 1e9;
@@ -622,14 +657,23 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     });
     const sharpS = 'run' in sharpRun ? sharpRun.sec : 0;
     if (!('run' in sharpRun)) warnings.push(...sharpRun.reasons);
+    // The die re-sharpening stoppage a part: the Die Sharpening calculator's run; none when it could not run (its reasons are warnings).
+    const sharpRef: SourceRef = ('run' in sharpRun ? runRef(RF_CALC.dieSharpening, sharpRun.run) : undefined) ?? calculationRef('Die sharpening: not computed', [
+      inputStep('Die sharpening', 's', 0, `${RF_CALC.dieSharpening} could not run: ${'reasons' in sharpRun ? sharpRun.reasons.join('; ') : 'no result'}`),
+      resultStep('Die Sharpening per Part', 's', 0, 'no stoppage counted'),
+    ]);
+    const sharpSeed: CalcSeed = { ...seed(sharpS, `${RF_CALC.dieSharpening}: ${r2(sharpS)} s a part`), ref: sharpRef };
     const coils = new Map<string, KitRun>();
     const coilOf = (u: SandMachine): KitRun => {
       const hit = coils.get(u.id);
       if (hit) return hit;
       const r = kit.run(RF_CALC.coilChange, u, {
-        strip_mass_kg: seed(stripKg, `${RF_CALC.strip}: ${r2(stripKg)} kg a part`),
-        setup_method: seed(setup.code, `coilSetupMethod ${setup.name}`),
-        double_mandrel: seed(flag(u, 'has_double_mandrel') ? 1 : 0, `${u.name}: ${flag(u, 'has_double_mandrel') ? 'a' : 'no'} double mandrel`),
+        strip_mass_kg: withSeedRef(seed(stripKg, `${RF_CALC.strip}: ${r2(stripKg)} kg a part`), stripRef),
+        setup_method: { ...seed(setup.code, `coilSetupMethod ${setup.name}`), ref: { kind: 'variable', domain: ROLL_FORMING_DOMAIN, name: 'coilSetupMethod' } },
+        double_mandrel: {
+          ...seed(flag(u, 'has_double_mandrel') ? 1 : 0, `${u.name}: ${flag(u, 'has_double_mandrel') ? 'a' : 'no'} double mandrel`),
+          ref: { kind: 'machine', machineId: u.id, machineName: u.name, machineClass: u.machineClass, location: u.location, column: 'has_double_mandrel' },
+        },
       });
       coils.set(u.id, r);
       return r;
@@ -641,10 +685,10 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
       const hit = cycles.get(k);
       if (hit) return hit;
       const r = kit.run(kit.calcOf(process), null, {
-        feed_length_mm: seed(feed, `${RF_CALC.strip}: ${r2(part.lengthMm)} mm part + ${r2(slug)} mm slug`),
+        feed_length_mm: withSeedRef(seed(feed, `${RF_CALC.strip}: ${r2(part.lengthMm)} mm part + ${r2(slug)} mm slug`), stripRef),
         line_speed_mm_s: seed(v, `${RF_CALC.lineSpeed}: ${r2(v)} mm/s`),
         coil_change_s: seed(coilS, RF_CALC.coilChange),
-        die_sharpening_s: seed(sharpS, `${RF_CALC.dieSharpening}: ${r2(sharpS)} s a part`),
+        die_sharpening_s: sharpSeed,
       });
       cycles.set(k, r);
       return r;
@@ -707,16 +751,43 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
     const slowestMachine = limitingCap(machineCapsList);
     const press = slowestPress(chosen);
     const speedRun = best ? kit.run(RF_CALC.lineSpeed, null, {
-      machine_line_speed_mm_s: slowestMachine ? seed(slowestMachine.mmPerS, `${slowestMachine.name}: max line speed (the slowest of the line's machines)`)
-        : tolSpeed != null ? seed(tolSpeed, 'no machine on the line limits the speed (the part-length tolerance\'s)') : undefined,
+      machine_line_speed_mm_s: slowestMachine ? {
+        ...seed(slowestMachine.mmPerS, `${slowestMachine.name}: max line speed (the slowest of the line's machines)`),
+        // Each machine of the chosen line at its max_line_speed_mm_per_s (its HR Rates record), the slowest taken.
+        ref: calculationRef("Machine line speed: the slowest of the line's machines", [
+          ...LINE_ORDER.flatMap((role) => {
+            const lm = chosen.get(role);
+            const sp = lm ? machineValue(lm.machine, 'max_line_speed_mm_per_s') : null;
+            return lm && sp != null && sp > 0 ? [inputStep(`${lm.process} ${lm.machine.name}`, 'mm/s', sp, `${lm.machine.name}: max_line_speed_mm_per_s`,
+              { kind: 'machine', machineId: lm.machine.id, machineName: lm.machine.name, machineClass: lm.machine.machineClass, location: lm.machine.location, column: 'max_line_speed_mm_per_s' })] : [];
+          }),
+          resultStep('Machine Line Speed', 'mm/s', slowestMachine.mmPerS, 'the least of the machines\' max line speeds'),
+        ]),
+      }
+        : tolSpeed != null ? withSeedRef(seed(tolSpeed, 'no machine on the line limits the speed (the part-length tolerance\'s)'),
+          kit.lookupSeed('partLengthToleranceThresholds', tolerance.row, 'Maximum Line Speed (mm / s)', ['Measurement System', 'Tolerance Name'])?.ref) : undefined,
       part_length_tolerance_speed: kit.lookupSeed('partLengthToleranceThresholds', tolerance.row, 'Maximum Line Speed (mm / s)', ['Measurement System', 'Tolerance Name']),
-      curved: seed(curved ? 1 : 0, curved ? `the profile is curved to a ${r2(part.curve!.radiusMm)} mm radius` : 'the profile is straight'),
-      press_count: seed(press ? 1 : 0, press ? 'a stationary-die press on the line' : 'no press on the line'),
+      curved: {
+        ...seed(curved ? 1 : 0, curved ? `the profile is curved to a ${r2(part.curve!.radiusMm)} mm radius` : 'the profile is straight'),
+        ref: curved ? measured('Curve radius', 'mm', part.curve!.radiusMm, "the radius the profile is curved to along its length") : calculationRef('Curved: the profile is straight', [
+          inputStep('Curve', null, 'none', "CAD: the profile's axis is straight (the cad-engine's roll forming measurement measured no curve)"),
+          resultStep('Curved', null, 0, 'straight: 0'),
+        ]),
+      },
+      press_count: {
+        ...seed(press ? 1 : 0, press ? 'a stationary-die press on the line' : 'no press on the line'),
+        ref: press
+          ? { kind: 'machine', machineId: press.machine.id, machineName: press.machine.name, machineClass: press.machine.machineClass, location: press.machine.location, column: 'strokes_per_minute' }
+          : calculationRef('Press count: no press on the line', [
+            inputStep('Presses', null, 'none', 'The chosen line has no punch or cut-off press with a stroke rate'),
+            resultStep('Press Count', null, 0, 'no stationary-die press: 0'),
+          ]),
+      },
       press_strokes_per_minute: press ? {
         ...seed(press.spm, `${press.process} ${press.machine.name}: strokes per minute (the slowest press on the line)`),
         ref: { kind: 'machine', machineId: press.machine.id, machineName: press.machine.name, machineClass: press.machine.machineClass, location: press.machine.location, column: 'strokes_per_minute' },
       } : seed(0, 'no press on the line'),
-      feed_length_mm: seed(feed, `${RF_CALC.strip}: the part length + the slug`),
+      feed_length_mm: withSeedRef(seed(feed, `${RF_CALC.strip}: the part length + the slug`), stripRef),
       line_speed_multiplier: kit.lookupSeed('toleranceThresholds', multiplierRow, 'Line Speed Multiplier', ['Tolerance Type', 'Tolerance Name']),
     }) : null;
     if (speedRun && !('run' in speedRun)) warnings.push(...speedRun.reasons);
@@ -735,7 +806,18 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
         : `${endWeld ? 'end weld (coilEndWeldTime)' : 'threading (coilThreadingTime)'} + ${finalUncoiler.name}'s coil load time`,
       setupMethod: setup.name, run: coilRun,
     } : null;
-    const coilSeed = coil ? seed(coilS, `${RF_CALC.coilChange}: ${r2(coil.changeTimeS)} s every ${coil.partsPerCoil} parts`) : seed(0, 'no uncoiler on the line');
+    // The coil change stoppage a part: the Coil Change calculator's run on the chosen uncoiler; none with no uncoiler on the line.
+    const coilSeed: CalcSeed = coil && coilRun
+      ? withSeedRef(seed(coilS, `${RF_CALC.coilChange}: ${r2(coil.changeTimeS)} s every ${coil.partsPerCoil} parts`), runRef(RF_CALC.coilChange, coilRun))
+      : {
+        ...seed(0, 'no uncoiler on the line'),
+        ref: calculationRef('Coil change: no uncoiler on the line', [
+          inputStep('Uncoiler', null, 'none', 'No uncoiler is on the chosen line'),
+          resultStep('Coil Change per Part', 's', 0, 'no coil change stoppage'),
+        ]),
+      };
+    // The line speed: the Line Speed calculator's run (the slowest of the line's machines, the part-length tolerance and the presses).
+    const speedRef = speedRun && 'run' in speedRun ? runRef(RF_CALC.lineSpeed, speedRun.run) : undefined;
     const ruleText = 'The cheapest whole line: at every speed the line\'s limits allow, the cheapest capable machine of each place that runs at least that fast '
       + '(machine rate, crew and setup); the cheapest line quoted';
     const parts = scenario.amortizationParts;
@@ -753,10 +835,10 @@ export function buildRollFormingRoutes(input: RollFormingRouteInput): { routes: 
         continue;
       }
       const step = kit.step(p.process, (m) => kit.timed(p.process, m, {
-        feed_length_mm: seed(feed, `${RF_CALC.strip}: ${r2(part.lengthMm)} mm part + ${r2(slug)} mm slug`),
-        line_speed_mm_s: seed(v, `${RF_CALC.lineSpeed}: ${r2(v)} mm/s, set by ${limiting?.name ?? 'the line'}`),
+        feed_length_mm: withSeedRef(seed(feed, `${RF_CALC.strip}: ${r2(part.lengthMm)} mm part + ${r2(slug)} mm slug`), stripRef),
+        line_speed_mm_s: withSeedRef(seed(v, `${RF_CALC.lineSpeed}: ${r2(v)} mm/s, set by ${limiting?.name ?? 'the line'}`), speedRef),
         coil_change_s: coilSeed,
-        die_sharpening_s: seed(sharpS, `${RF_CALC.dieSharpening}: ${r2(sharpS)} s a part`),
+        die_sharpening_s: sharpSeed,
       }), p.criteria, { machines: [pick.machine] });
       const sec = cycleOf(p.process, v, coilS);
       const pool = new Set(poolAt(p.role, best!.v).map((c) => c.m));

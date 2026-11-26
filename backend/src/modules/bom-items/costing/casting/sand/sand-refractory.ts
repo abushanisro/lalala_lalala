@@ -6,10 +6,13 @@
 // time neither set nor in the data is a named gap; the coating has no price in the data, so it is costed for time and drying only and says so.
 import type { CostContext } from '../casting-finishing';
 import type { CostedStep, SandRouteContext, StepOutcome } from './sand-steps';
-import { energyBasisOf, runStep, selectAndCost } from './sand-steps';
+import { cavitiesSource, coresSeed, energyBasisOf, runStep, selectAndCost } from './sand-steps';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { CalcSeed } from '../../shared/calculators/reference-calculator';
+import { batchSeed, calculatedSeed, calculationRef, costGuideSeed, inputStep, measuredRef, resultStep, seedStep } from '../casting-source-refs';
 import type { SandFinishContext } from './sand-finishing-steps';
 import { machineValue, type SandMachine } from './sand-machines';
-import { valuesProvider } from './sand-seeds';
+import { sandVariableSeed, valuesProvider } from './sand-seeds';
 import type { CoreRegion } from './sand-cores';
 
 export const REFRACTORY_COAT = 'Sand Casting - Refractory coat';
@@ -82,7 +85,7 @@ function crewed(machines: readonly SandMachine[], crew: number): SandMachine[] {
 }
 
 /** Coating the surface of the mould's cavity, or of the casting's cores. The coating used is charged at the user's price when set. */
-export function coatStep(ctx: SandFinishContext, m: SandMachine, what: 'mould' | 'cores', areaMm2: number, price: number | null): StepOutcome {
+export function coatStep(ctx: SandFinishContext, m: SandMachine, what: 'mould' | 'cores', areaMm2: number, price: number | null, areaRef?: SourceRef): StepOutcome {
   const c = coating(ctx);
   if ('missing' in c) return fail(...c.missing);
   const prepVariable = what === 'mould' ? 'defaultRefractoryCoatingMoldPreparationTime' : 'defaultRefractoryCoatingCorePreparationTime';
@@ -91,9 +94,12 @@ export function coatStep(ctx: SandFinishContext, m: SandMachine, what: 'mould' |
   const r = runStep(
     ctx, REFRACTORY_COAT, m,
     {
-      coat_area_mm2: { value: areaMm2, source: what === 'mould' ? "the part's surface (the mould's cavity; the gating channels are not counted)" : "the cores' surface, exact from their bodies (casting analysis)" },
-      prep_hr: { value: ctx.ref.number(prepVariable)!, source: `Sand casting variable ${prepVariable}` },
-      batch_size: { value: ctx.batchSize, source: 'batch size of the scenario' },
+      coat_area_mm2: {
+        value: areaMm2, source: what === 'mould' ? "the part's surface (the mould's cavity; the gating channels are not counted)" : "the cores' surface, exact from their bodies (casting analysis)",
+        ref: areaRef ?? (what === 'mould' ? { kind: 'cad', evidence: 'part_surface' } : measuredRef('Coated Area', 'mm²', areaMm2, "CAD casting analysis: the cores' surface, exact from their bodies")),
+      },
+      prep_hr: sandVariableSeed(ctx.ref, prepVariable),
+      batch_size: batchSeed(ctx.batchSize, 'batch size of the scenario'),
     },
     {
       lookup: valuesProvider({
@@ -119,7 +125,8 @@ export function coatStep(ctx: SandFinishContext, m: SandMachine, what: 'mould' |
  * Drying the coated mould or cores. One load is what the bed less racking holds of the item (the flask, or the casting's cores together); the drying time is
  * the plant's own. The oven's energy is its power over the drying time, shared by the castings a load makes, priced with the energy price when set.
  */
-export function dryStep(ctx: SandFinishContext, m: SandMachine, method: DryMethod, minutes: { value: number; source: string }, itemVolumeMm3: number, itemsPerCasting: number): StepOutcome {
+export function dryStep(ctx: SandFinishContext, m: SandMachine, method: DryMethod, minutes: CalcSeed, item: { volume: CalcSeed; perCasting: CalcSeed }): StepOutcome {
+  const [itemVolumeMm3, itemsPerCasting] = [item.volume.value, item.perCasting.value];
   const oven = method === 'oven';
   const prepVariable = oven ? 'defaultRefractoryCoatingOvenDryPreparationTime' : 'defaultRefractoryCoatingAirDryPreparationTime';
   const absent = ctx.ref.absent({ numbers: [prepVariable, ...(oven ? ['defaultRefractoryCoatOvenAvailableFactor'] : [])] });
@@ -131,11 +138,16 @@ export function dryStep(ctx: SandFinishContext, m: SandMachine, method: DryMetho
   const r = runStep(
     ctx, REFRACTORY_DRYING, m,
     {
-      item_volume_mm3: { value: itemVolumeMm3, source: itemsPerCasting < 1 ? "a flask (the mould's two halves)" : "the casting's cores together (their boxes)" },
-      items_per_casting: { value: itemsPerCasting, source: itemsPerCasting < 1 ? 'one flask makes one casting per cavity' : 'one set of cores per casting' },
-      available_factor: { value: factor, source: oven ? 'Sand casting variable defaultRefractoryCoatOvenAvailableFactor (racking space)' : 'an air-dry area has no racking factor in the data' },
-      prep_hr: { value: ctx.ref.number(prepVariable)!, source: `Sand casting variable ${prepVariable}` },
-      batch_size: { value: ctx.batchSize, source: 'batch size of the scenario' },
+      item_volume_mm3: item.volume,
+      items_per_casting: item.perCasting,
+      available_factor: oven
+        ? sandVariableSeed(ctx.ref, 'defaultRefractoryCoatOvenAvailableFactor', factor, ' (racking space)')
+        : calculatedSeed(1, 'an air-dry area has no racking factor in the data', 'Available Factor', [
+          inputStep('Racking factor', null, 'none', "The data gives an air-dry area no racking factor (defaultRefractoryCoatOvenAvailableFactor is the oven's)"),
+          resultStep('Available Factor', null, 1, 'The whole area is available: 1'),
+        ]),
+      prep_hr: sandVariableSeed(ctx.ref, prepVariable),
+      batch_size: batchSeed(ctx.batchSize, 'batch size of the scenario'),
     },
     { scenario: valuesProvider({ refractory_dry_minutes: minutes }) },
   );
@@ -151,7 +163,7 @@ export function dryStep(ctx: SandFinishContext, m: SandMachine, method: DryMetho
 export function coreAssemblyStep(ctx: SandFinishContext, m: SandMachine, cores: number): StepOutcome {
   const absent = ctx.ref.absent({ numbers: ['singleCoreAssemblyTime'] });
   if (absent.length) return fail(...absent);
-  const r = runStep(ctx, CORE_ASSEMBLY, m, { cores_per_casting: { value: cores, source: 'cores made of sand in each casting' } });
+  const r = runStep(ctx, CORE_ASSEMBLY, m, { cores_per_casting: { ...coresSeed(ctx, 'cores made of sand in each casting'), value: cores } });
   if (!('run' in r)) return fail(...r.reasons);
   return { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: ['Core gluing is costed at the plant\'s work-centre rate with one operator; the time per glue (singleCoreAssemblyTime) is read in seconds.'] };
 }
@@ -177,8 +189,22 @@ export function coreRefractoryLines(ctx: SandFinishContext, settings: Refractory
   if (coats && cores.length > 0) {
     const areas = cores.map((c) => c.areaMm2);
     const area = areas.every((a): a is number => a != null) ? areas.reduce((s, a) => s + a, 0) : null;
-    out.push(step('Core Refractory Coat', WORK_CENTRE, operators ?? 1, (m) => (area == null ? fail('a core has no measured surface (no core body): re-run the casting analysis') : coatStep(ctx, m, 'cores', area, settings.pricePerKg)), ['A work-centre rate on file', "The cores' surface is measured (casting analysis)"]));
-    out.push(dryLine(ctx, settings, step, 'cores', cores.reduce((s, c) => s + c.sizeMm[0] * c.sizeMm[1] * c.sizeMm[2], 0), 1));
+    const areaRef = area == null ? undefined : calculationRef('Coated Area', [
+      ...cores.map((c, i) => inputStep(`Core ${i + 1}`, 'mm²', c.areaMm2!, `CAD casting analysis: the surface of core ${i + 1}, exact from its body`)),
+      resultStep('Coated Area', 'mm²', area, 'The sum over the cores'),
+    ]);
+    out.push(step('Core Refractory Coat', WORK_CENTRE, operators ?? 1, (m) => (area == null ? fail('a core has no measured surface (no core body): re-run the casting analysis') : coatStep(ctx, m, 'cores', area, settings.pricePerKg, areaRef)), ['A work-centre rate on file', "The cores' surface is measured (casting analysis)"]));
+    const boxes = cores.reduce((s, c) => s + c.sizeMm[0] * c.sizeMm[1] * c.sizeMm[2], 0);
+    out.push(dryLine(ctx, settings, step, 'cores', {
+      volume: calculatedSeed(boxes, "the casting's cores together (their boxes)", 'Item Volume', [
+        ...cores.map((c, i) => inputStep(`Core ${i + 1} box`, 'mm³', c.sizeMm[0] * c.sizeMm[1] * c.sizeMm[2], `CAD casting analysis: core ${i + 1}'s box, ${c.sizeMm.map((v) => Math.round(v * 10) / 10).join(' x ')} mm`)),
+        resultStep('Item Volume', 'mm³', boxes, 'The cores of one casting dried together: the sum of their boxes'),
+      ]),
+      perCasting: calculatedSeed(1, 'one set of cores per casting', 'Items per Casting', [
+        seedStep('Cores per casting', null, coresSeed(ctx, 'the sand cores of one casting')),
+        resultStep('Items per Casting', null, 1, 'The cores of a casting are dried as one set'),
+      ]),
+    }));
   }
   if (cores.length > 1) {
     out.push(step('Core assembly', WORK_CENTRE, 1, (m) => coreAssemblyStep(ctx, m, cores.length), ['A work-centre rate on file', 'singleCoreAssemblyTime in the data']));
@@ -196,7 +222,16 @@ export function mouldRefractoryLines(ctx: SandFinishContext, settings: Refractor
   const operators = ctx.ref.number('defaultMoldRefractoryCoatingNumOperators');
   return [
     step('Mold Refractory Coat', WORK_CENTRE, operators ?? 1, (m) => coatStep(ctx, m, 'mould', ctx.surfaceAreaMm2, settings.pricePerKg), ['A work-centre rate on file', "The part's surface is measured"]),
-    dryLine(ctx, settings, step, 'mould', flaskVolumeMm3, 1 / ctx.cavities),
+    dryLine(ctx, settings, step, 'mould', {
+      volume: calculatedSeed(flaskVolumeMm3, "a flask (the mould's two halves)", 'Item Volume', [
+        inputStep('Flask', 'mm³', flaskVolumeMm3, "The moulding machine's flask: flask_length_mm x flask_width_mm x flask_height_mm"),
+        resultStep('Item Volume', 'mm³', flaskVolumeMm3, "A mould is dried as its flask (the mould's two halves)"),
+      ]),
+      perCasting: calculatedSeed(1 / ctx.cavities, 'one flask makes one casting per cavity', 'Items per Casting', [
+        seedStep('Cavities', null, cavitiesSource(ctx)),
+        resultStep('Items per Casting', null, 1 / ctx.cavities, '1 / {Cavities}: one flask makes one casting per cavity'),
+      ]),
+    }),
   ];
 }
 
@@ -206,20 +241,20 @@ type StepFn = (process: string, cls: string, crew: number | null, evaluate: (m: 
  * The drying line of an item: the chosen method, else the cheaper of the oven and air; the time is the Cost Guide's, else the plant's for that method. A
  * method with no time in either is a named gap.
  */
-function dryLine(ctx: SandFinishContext, settings: RefractorySettings, step: StepFn, what: 'mould' | 'cores', itemVolumeMm3: number, itemsPerCasting: number): CostedStep {
+function dryLine(ctx: SandFinishContext, settings: RefractorySettings, step: StepFn, what: 'mould' | 'cores', item: { volume: CalcSeed; perCasting: CalcSeed }): CostedStep {
   const lineFor = (method: DryMethod): CostedStep => {
     const oven = method === 'oven';
     const cls = oven ? CLASSES.oven : CLASSES.air;
     const crewVariable = oven ? 'defaultRefractoryOvenDryNumberLaborers' : 'defaultRefractoryAirDryNumberLaborers';
     const process = `Refractory Coat ${oven ? 'Oven' : 'Air'} Dry (${what === 'mould' ? 'mould' : 'cores'})`;
     const plant = ctx.ref.number(DRY_TIME_VARIABLE[method]);
-    const minutes = settings.dryMinutes != null
-      ? { value: settings.dryMinutes, source: 'drying time for a load, set in the Cost Guide (min)' }
-      : plant != null ? { value: plant, source: `Sand casting variable ${DRY_TIME_VARIABLE[method]} (min)` } : null;
+    const minutes: CalcSeed | null = settings.dryMinutes != null
+      ? costGuideSeed('Drying Time', 'min', settings.dryMinutes, 'sandRefractoryDryMinutes', `the plant's ${DRY_TIME_VARIABLE[method]}`, 'drying time for a load, set in the Cost Guide (min)')
+      : plant != null ? sandVariableSeed(ctx.ref, DRY_TIME_VARIABLE[method], plant) : null;
     return step(process, cls, ctx.ref.number(crewVariable) ?? 1, (m) =>
       minutes == null
         ? fail(`no drying time: none set in the Cost Guide and no ${DRY_TIME_VARIABLE[method]} in the plant data`)
-        : dryStep(ctx, m, method, minutes, itemVolumeMm3, itemsPerCasting),
+        : dryStep(ctx, m, method, minutes, item),
     ['A work-centre rate on file', 'The item fits the bed less racking', 'A drying time (Cost Guide, else the plant data)']);
   };
   if (settings.dryMethod) return lineFor(settings.dryMethod);

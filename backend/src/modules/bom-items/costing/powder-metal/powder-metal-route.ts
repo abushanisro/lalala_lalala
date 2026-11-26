@@ -14,6 +14,7 @@
 import type { ProcessLineCost } from '../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
+import { calculationRef, inputStep, resultStep, runRef, withSeedRef } from '../shared/calculators/seed-refs';
 import type { CostContext } from '../casting/casting-finishing';
 import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import type { SandReference } from '../casting/sand/sand-reference';
@@ -112,9 +113,20 @@ export function buildPowderMetalRoute(input: PowderMetalRouteInput): { route: Po
     return none(`a green density of ${asked} kg/m³ is outside ${material.name}'s range (${min ?? '?'} to ${max ?? '?'} kg/m³)`);
   }
   const greenDensity = asked ?? own;
+  const materialRef = (column: string) => ({ kind: 'material' as const, materialId: material.id, materialName: material.name, column });
+  // The engineer's green density opens the setting beside the powder's own density and the range it was checked against.
   const greenSeed: CalcSeed = asked != null
-    ? { value: greenDensity, source: 'green density, set in the Cost Guide' }
-    : { value: greenDensity, source: `${material.name}: green_density`, ref: { kind: 'material', materialId: material.id, materialName: material.name, column: 'green_density' } };
+    ? {
+      value: greenDensity, source: 'green density, set in the Cost Guide',
+      ref: calculationRef('Green density: set in the Cost Guide', [
+        inputStep('Green density (Cost Guide)', 'kg/m³', asked, "The part's Cost Guide: the green density set by the engineer over the powder's own"),
+        inputStep("The powder's green density", 'kg/m³', own, `${material.name}: green_density`, materialRef('green_density')),
+        ...(min != null ? [inputStep('Least green density', 'kg/m³', min, `${material.name}: min_green_density`, materialRef('min_green_density'))] : []),
+        ...(max != null ? [inputStep('Greatest green density', 'kg/m³', max, `${material.name}: max_green_density`, materialRef('max_green_density'))] : []),
+        resultStep('Green Density', 'kg/m³', asked, '{Green density (Cost Guide)}, within the powder\'s range'),
+      ]),
+    }
+    : { value: greenDensity, source: `${material.name}: green_density`, ref: materialRef('green_density') };
 
   // ── Calculator runs: every input seeded from its declared source ───────────────────────────────────────────────────────────────────
   const variable: SeedProvider = (name) => {
@@ -167,7 +179,7 @@ export function buildPowderMetalRoute(input: PowderMetalRouteInput): { route: Po
   if ('reasons' in pressure) return none(...pressure.reasons);
   const mpa = pressure.run.value!;
   if (!(mpa > 0)) return none(`${material.name}'s compaction curve gives no positive pressure at ${greenDensity} kg/m³`);
-  const pressureSeed: CalcSeed = { value: mpa, source: `compaction pressure at ${greenDensity} kg/m³ (Compaction pressure)` };
+  const pressureSeed: CalcSeed = withSeedRef({ value: mpa, source: `compaction pressure at ${greenDensity} kg/m³ (Compaction pressure)` }, runRef(COMPACTION_PRESSURE, pressure.run));
   const force = run(PRESS_FORCE, null, { compaction_pressure_mpa: pressureSeed }, 'Required Force');
   if ('reasons' in force) return none(...force.reasons);
   const fill = run(FILL_HEIGHT, null, {}, 'Fill Height');
@@ -195,7 +207,7 @@ export function buildPowderMetalRoute(input: PowderMetalRouteInput): { route: Po
     const outcome = timed(CALC('Sintering'), m, {
       part_length_mm: { value: part.planLengthMm, source: "the part's long side across the press direction, along the belt (mm)", ref: { kind: 'cad', evidence: 'plan_length' } },
       part_width_mm: { value: part.planWidthMm, source: "the part's short side across the press direction, across the belt (mm)", ref: { kind: 'cad', evidence: 'plan_width' } },
-      part_kg: { value: partKg, source: 'part mass: volume x green density (Powder)' },
+      part_kg: withSeedRef({ value: partKg, source: 'part mass: volume x green density (Powder)' }, runRef(POWDER, powder.run)),
     });
     if (outcome.ok && !(outcome.run!.outputs['Parts Across']! >= 1)) return fail(`its belt is ${machineValue(m, 'belt_width_mm')} mm wide: no part fits between the edge offsets`);
     return outcome;

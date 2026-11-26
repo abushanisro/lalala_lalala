@@ -11,6 +11,8 @@ import { PLASTIC_REFERENCE_DOMAIN as PLASTIC_DOMAIN, SECONDARY_PROCESS_DOMAIN as
 export interface MaterialRecord {
   id: string;
   name: string;
+  /** The columns a property was read from when the record names them (material-resolution.service.ts MaterialSourceColumns): the density's. */
+  columns?: { densityKgM3?: string | null };
 }
 
 /** The HR Rates record (mhr_records) a press's values were read from: the dialog shows it among the machines of its class and location. */

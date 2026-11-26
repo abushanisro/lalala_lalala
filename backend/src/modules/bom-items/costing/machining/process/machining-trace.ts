@@ -1,4 +1,4 @@
-import type { CalculationTraceStep } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { CalcRun } from '../../shared/calculators/reference-calculator';
 
 /**
@@ -43,9 +43,12 @@ export function traceCalc(
   return { fieldName: label, displayLabel: label, kind: 'calculated', value: round(value), unit, formula, stepType: 'physics' };
 }
 
-/** True when any input of the trace is a disclosed assumption rather than measured/looked-up data. */
+/**
+ * True when any input of the trace is a disclosed assumption rather than measured/looked-up data: one stated as such, or a calculator's own
+ * default value (a value for every part, not this part's measurement or its row of a table; calculatorField), sourced or not.
+ */
 export function traceHasAssumption(trace: CalculationTraceStep[]): boolean {
-  return trace.some((s) => s.kind === 'input' && typeof s.source === 'string' && s.source.startsWith('Assumption'));
+  return trace.some((s) => s.kind === 'input' && ((typeof s.source === 'string' && s.source.startsWith('Assumption')) || s.ref?.kind === 'calculatorField'));
 }
 
 /** Prefixes every label of a sub-trace so several occurrences can share one line's trace. */
@@ -102,14 +105,14 @@ export function sumRuns(runs: readonly { label: string; run: CalcRun }[], total:
 export function groupedRunsTrace(
   process: string,
   groups: readonly { label: string; trace: CalculationTraceStep[] }[],
-  allowance: { label: string; sec: number; source: string },
+  allowance: { label: string; sec: number; source: string; ref?: SourceRef },
   totalSec: number,
 ): CalculationTraceStep[] {
   if (groups.length === 0) return [];
   const multi = groups.length > 1;
   return [
     ...groups.flatMap((g) => (multi ? prefixTrace(`${g.label} ·`, g.trace) : g.trace)),
-    traceInput(allowance.label, allowance.sec, 's', allowance.source),
+    { ...traceInput(allowance.label, allowance.sec, 's', allowance.source), ...(allowance.ref ? { ref: allowance.ref } : {}) },
     traceCalc(`${process} cycle time`, totalSec, 's', `Sum over the groups of (Tool Change Time + No of Uses × Time per Use) + ${allowance.label}`),
   ];
 }

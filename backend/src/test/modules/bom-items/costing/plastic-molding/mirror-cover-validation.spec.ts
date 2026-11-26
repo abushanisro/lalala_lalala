@@ -193,12 +193,14 @@ describe('Part B3: the differences that remain, pinned, each with its cause', ()
   const r = replay();
   const wb = oracle('workbook (2 x 3.142)');
 
-  it('CYCLE TIME (method): ours is fill + pack + cooling + the press dry cycle = 9.3 s; the workbook adds a 5 s hold, 4 s slide, 1 s ejection and 5 s insert handling and divides the fill by 75 % = 26.2 s', () => {
-    expect(r.injectionMolding.cycleTimeSec).toBeCloseTo(9.29, 1);
-    expect(trace(r, 'Pack Time')).toBe(2);                         // the staged minimum; the workbook's holding time is a fixed 5 s
+  it('CYCLE TIME (method): ours is fill + pack + cooling + the press dry cycle = 12.67 s; the workbook adds a 5 s hold, 4 s slide, 1 s ejection and 5 s insert handling and divides the fill by 75 % = 26.2 s', () => {
+    // fill 2.69 + pack 5.38 + cooling 1.6 + dry cycle 3 = 12.67 s. The pack is Moldflow's default hold, 2 x the 2.69 s fill (F-06 version 2,
+    // migration 1161): close to the workbook's fixed 5 s holding time. It was the 2 s floor of version 1, a 9.29 s cycle.
+    expect(r.injectionMolding.cycleTimeSec).toBeCloseTo(12.67, 2);
+    expect(trace(r, 'Pack Time')).toBe(5.38);
     const fixedExtras = WB_IN.slideLifterS + WB_IN.ejectionS + WB_IN.insertPickPlaceS;
     expect(fixedExtras).toBe(10);                                   // 38 % of the workbook's cycle: slides, ejection and inserts are not in our calculator (G-03, G-07 are UNSUPPORTED)
-    expect(r.injectionMolding.cycleTimeSec / WB_OUT.cycleS).toBeLessThan(0.4);
+    expect(r.injectionMolding.cycleTimeSec / WB_OUT.cycleS).toBeLessThan(0.5);
     expect(wb.cycle).toBeCloseTo(WB_OUT.cycleS, 9);
   });
 

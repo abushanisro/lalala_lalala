@@ -3,7 +3,7 @@ import {
   normalizeFieldName,
   type CalculatorFieldRow,
 } from '../../../../calculators/calculator-formula-evaluator';
-import type { CalculationTraceStep, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
+import type { CalculationTraceStep, CalculatorFieldDefault, ProcessLineCost, SourceRef } from '../../../dto/cost-breakdown.dto';
 
 /**
  * Reference-data calculators (Machining, Die Casting, ...) are computed BY the
@@ -26,6 +26,11 @@ export interface ReferenceCalculatorField {
   data_source?: string | null;
   source_table?: string | null;
   source_field?: string | null;
+  /**
+   * Where the field's default value comes from (a workbook sheet, a published source), named: the calculator spec's `note` for the field,
+   * laid over the database row by whoever loads the calculator (the database has no column for it). Null or absent: not yet sourced.
+   */
+  note?: string | null;
 }
 
 export interface ReferenceCalculatorDef {
@@ -59,6 +64,31 @@ export function withFieldOverrides(calculators: ReferenceCalculators | null | un
 }
 
 const overrideSource = (o: FieldOverride, was: string) => `Engineer's value for this part: ${o.reason} (instead of ${was})`;
+
+/**
+ * Where a field the part overrides takes its value: the engineer's value set on this part (calculator_field_overrides, with its reason), and the
+ * value it replaces with that value's own source (the seed's ref, else the calculator's table of defaults); the value in use is the engineer's.
+ */
+function overrideRef(def: ReferenceCalculatorDef, f: ReferenceCalculatorField, own: FieldOverride, seeded: CalcSeed | undefined): SourceRef {
+  const unit = f.unit ?? null;
+  const label = (name: string) => (unit ? `${name} (${unit})` : name);
+  const replaced: CalculationTraceStep | null = seeded && Number.isFinite(seeded.value)
+    ? { fieldName: 'Value it replaces', displayLabel: label('Value it replaces'), kind: 'input', value: round(seeded.value), unit, source: seeded.source, ...(seeded.ref ? { ref: seeded.ref } : {}) }
+    : hasValue(f.default_value) && Number.isFinite(Number(f.default_value))
+      ? {
+        fieldName: 'Value it replaces', displayLabel: label('Value it replaces'), kind: 'input', value: Number(f.default_value), unit,
+        source: calculatorDefaultSource(def.name, f.note), ref: calculatorFieldRef(def, f.field_name),
+      }
+      : null;
+  return {
+    kind: 'calculation', name: `${f.field_name}: set by the engineer on this part`, evidence: null,
+    steps: [
+      { fieldName: 'Set for this part', displayLabel: label('Set for this part'), kind: 'input', value: round(own.value), unit, source: `The engineer's value for this part (calculator field override): ${own.reason}` },
+      ...(replaced ? [replaced] : []),
+      { fieldName: f.field_name, displayLabel: label(f.field_name), kind: 'calculated', value: round(own.value), unit, formula: 'The engineer\'s value for this part, used instead of the value it replaces' },
+    ],
+  };
+}
 
 /** Calculator per operation / calculator key ("Drilling", "High Pressure Die Casting", ...). */
 export type ReferenceCalculators = Record<string, ReferenceCalculatorDef>;
@@ -110,6 +140,57 @@ export const CYCLE_TIME_FIELD = 'Cycle Time';
 
 const hasValue = (v: unknown) => v !== undefined && v !== null && v !== '';
 
+/** The step source of a field that takes its calculator's default: where that value comes from, or that it is not yet sourced. */
+export function calculatorDefaultSource(calculator: string, note: string | null | undefined): string {
+  return note?.trim() ? note.trim() : `${calculator}'s own value for this field — not yet sourced`;
+}
+
+const defaultsCache = new WeakMap<object, CalculatorFieldDefault[]>();
+
+/** A number written as a formula: a value the calculator states itself (a riser's feed efficiency, a molding's pack ratio), not a calculation. */
+const NUMBER_LITERAL = /^\s*-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
+
+/** A calculated field whose formula is a plain number: a constant the calculator states, a default in all but name. */
+export function isConstantField(f: Pick<ReferenceCalculatorField, 'field_type' | 'default_value'>): boolean {
+  return f.field_type === 'calculated' && NUMBER_LITERAL.test(String(f.default_value ?? ''));
+}
+
+/**
+ * A calculator's fields that have a default value, each with that value, its unit and where it comes from (calculatorField's table): the inputs with
+ * a default, and the constants the calculator states as formulas (a plain number).
+ */
+export function calculatorFieldDefaults(def: Pick<ReferenceCalculatorDef, 'fields'>): CalculatorFieldDefault[] {
+  const cached = defaultsCache.get(def.fields);
+  if (cached) return cached;
+  const rows = [...def.fields]
+    .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
+    .filter((f) => (f.field_type !== 'calculated' || isConstantField(f)) && hasValue(f.default_value))
+    .map((f) => ({
+      field: f.field_name,
+      value: Number.isFinite(Number(f.default_value)) ? Number(f.default_value) : String(f.default_value),
+      unit: f.unit ?? null,
+      source: f.note?.trim() ? f.note.trim() : null,
+    }));
+  defaultsCache.set(def.fields, rows);
+  return rows;
+}
+
+/** The ref of a value that is the calculator's own default for the field: its table of defaults, that field's row outlined. */
+export function calculatorFieldRef(def: Pick<ReferenceCalculatorDef, 'name' | 'fields'>, field: string): SourceRef {
+  return { kind: 'calculatorField', calculator: def.name, field, defaults: calculatorFieldDefaults(def) };
+}
+
+/**
+ * A field's default as a seed, for an engine that states the default itself (a turning calculator's approach allowance): its value, where it
+ * comes from, and the calculator's table of defaults to open. Null when the calculator has no such field or it has no numeric default.
+ */
+export function calculatorDefaultSeed(calculators: ReferenceCalculators | null | undefined, operation: string, field: string): CalcSeed | null {
+  const def = calculators?.[operation];
+  const f = def?.fields.find((x) => x.field_name === field && x.field_type !== 'calculated');
+  if (!def || !f || !hasValue(f.default_value) || !Number.isFinite(Number(f.default_value))) return null;
+  return { value: Number(f.default_value), source: calculatorDefaultSource(def.name, f.note), ref: calculatorFieldRef(def, field) };
+}
+
 export function runReferenceCalculator(
   calculators: ReferenceCalculators | null | undefined,
   operation: string,
@@ -144,16 +225,19 @@ export function runReferenceCalculator(
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'input',
         value: round(seed.value), unit: f.unit ?? null, source: seed.source,
         ...(seed.lookup ? { stepType: 'lookup' as const } : {}),
-        // A value the part's own override replaced was not read from the seed's source: no ref then.
+        // A value the part's own override replaced was not read from the seed's source: its eye opens the override instead, and the value it replaces.
         ...(seed.ref && !own ? { ref: seed.ref, ...(evidenceOf(seed.ref) ? { evidence: evidenceOf(seed.ref)! } : {}) } : {}),
+        ...(own ? { ref: overrideRef(def, f, own, seeded) } : {}),
         ...(own ? { override: { original: seeded && Number.isFinite(seeded.value) ? round(seeded.value) : null, reason: own.reason } } : {}),
       });
     } else if (hasValue(f.default_value) && Number.isFinite(Number(f.default_value))) {
       scope[f.field_name] = Number(f.default_value);
+      // The calculator's own value: where it comes from (the spec's note), and its table of defaults for the eye.
       inputs.push({
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'input',
         value: Number(f.default_value), unit: f.unit ?? null,
-        source: `Assumption: ${def.name} default value (database) — no reference source`,
+        source: calculatorDefaultSource(def.name, f.note),
+        ref: calculatorFieldRef(def, f.field_name),
       });
     } else {
       missingInputs.push(f.field_name);
@@ -194,6 +278,8 @@ export function runReferenceCalculator(
         fieldName: f.field_name, displayLabel: f.display_label ?? f.field_name, kind: 'calculated' as const,
         value: finite ? round(v as number) : null,
         unit: f.unit ?? null, formula: String(f.default_value ?? ''), stepType: 'physics' as const,
+        // A constant the calculator states, with a note on where it comes from: that source, and the calculator's table of defaults for the eye.
+        ...(!own && f.note?.trim() && isConstantField(f) ? { source: f.note.trim(), ref: calculatorFieldRef(def, f.field_name) } : {}),
         ...(own ? { source: overrideSource(own, 'the formula'), override: { original: typeof was === 'number' && Number.isFinite(was) ? round(was) : null, reason: own.reason } } : {}),
       };
     });

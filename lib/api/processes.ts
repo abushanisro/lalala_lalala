@@ -210,6 +210,9 @@ export const processesApi = {
     return apiClient.get<ReferenceTable>('/processes/stroke-rate-factor-table');
   },
 
+  /** Every press brake of the machine library with its bend cycle time (the Press Brake calculator's time per stroke for that machine). */
+  getPressBrakeMachinesTable: async (): Promise<ReferenceTable> => apiClient.get<ReferenceTable>('/processes/press-brake-machines-table'),
+
   getSmLookupTableByName: async (table: string): Promise<ReferenceTable> => {
     return apiClient.get<ReferenceTable>(`/processes/sm-lookup-tables/by-name/${encodeURIComponent(table)}`);
   },

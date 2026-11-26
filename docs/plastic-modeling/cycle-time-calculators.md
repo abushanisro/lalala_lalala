@@ -12,7 +12,7 @@ Each of the four molding processes has one cycle-time calculator, stored in the 
 
 Calculator **Injection Molding - Cycle Time**, mapped to the catalog operation `Injection Molding` (22 fields).
 
-Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 35 % of cooling with a 2 s floor, the Menges gate-freeze rule (F-06, ASSUMED: the reference holds no hold time). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s.
+Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 20 % of cooling, at least the larger of 2 x the fill time and 1 s (F-06 version 2, ASSUMED: the reference holds no hold time; closest published basis for the 20 %: the Priamus patent US 7,931,837 B2, hold 10 % and cooling 50 % of the cycle; the floor is Moldflow's default hold, US 7,037,452 B1, "the greater of 2 times injection time and one second"). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s. (Version 4, migration 1161: the pack was 35 % of cooling with a 2 s floor.)
 
 ### Feature lookup table
 
@@ -52,9 +52,9 @@ Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Ad
 | 16 | Thermal Diffusivity | mm²/s | `{Thermal Conductivity of Melt} / ({Melt Density} * {Specific Heat of Melt} * 1000) * 1000000` |  |
 | 17 | Cooling Time | s | `floor({Nominal Wall Thickness} * {Nominal Wall Thickness} / (pi * pi * {Thermal Diffusivity}) * LN(4 / pi * ({Melt Temperature} - {Mold Wall Temperature}) / ({Ejection Temperature} - {Mold Wall Temperature})) * 10 + 0.5) / 10` | F-04 v1, ASSUMED |
 | 18 | Fill Time | s | `floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100` | F-05 v1, VALIDATED |
-| 19 | Pack to Cooling Ratio |  | `0.35` |  |
-| 20 | Pack Time Minimum | s | `2` |  |
-| 21 | Pack Time | s | `max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)` | F-06 v1, ASSUMED |
+| 19 | Pack to Cooling Ratio |  | `0.2` |  |
+| 20 | Pack Time Minimum | s | `max(2 * {Fill Time}, 1)` |  |
+| 21 | Pack Time | s | `max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)` | F-06 v2, ASSUMED |
 | 22 | Cycle Time | s | `floor(({Fill Time} + {Pack Time} + {Cooling Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100` | F-08 v1, ASSUMED |
 
 Lookup table behind the two fill factors, `injectionTimeAdjustmentFactors` (the first row whose Number is at least the value is used; the last row covers the rest):
@@ -83,10 +83,10 @@ For a liquid silicone rubber the engine uses **Injection Molding - LSR Cycle Tim
 | 6 | Press Dry Cycle Time | s | Machine record: time.dryCycleTimeS (Euromap 6: mold open and close, no material) | F-07 v1, VALIDATED |
 | 7 | Cycle Time Adjustment Factor |  | Reference variable: cycleTimeAdjustmentFactor |  |
 | 8 | LSR Mold Temperature | °C | `180` |  |
-| 9 | LSR Pre-exponential Factor |  | `0.008` |  |
+| 9 | LSR Pre-exponential Factor |  | `0.0022` |  |
 | 10 | LSR Activation Energy over R | K | `3500` |  |
 | 11 | Kelvin Offset | K | `273.15` |  |
-| 12 | Cure Time | s | `floor({LSR Pre-exponential Factor} * exp({LSR Activation Energy over R} / ({LSR Mold Temperature} + {Kelvin Offset})) * {Nominal Wall Thickness} * 10 + 0.5) / 10` | F-09 v1, ASSUMED |
+| 12 | Cure Time | s | `floor({LSR Pre-exponential Factor} * exp({LSR Activation Energy over R} / ({LSR Mold Temperature} + {Kelvin Offset})) * {Nominal Wall Thickness} * 10 + 0.5) / 10` | F-09 v2, ASSUMED |
 | 13 | Fill Time | s | `floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100` | F-05 v1, VALIDATED |
 | 14 | Cycle Time | s | `floor(({Fill Time} + {Cure Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100` | F-08 v1, ASSUMED |
 
@@ -94,7 +94,7 @@ For a liquid silicone rubber the engine uses **Injection Molding - LSR Cycle Tim
 
 Calculator **Structural Foam Molding - Cycle Time**, mapped to the catalog operation `Structural foam molding` (22 fields).
 
-Structural foam uses the injection cycle model unchanged (the cost engine reuses it with a foam press): the reference holds no foam-specific cooling or fill formula, so foaming, which lengthens cooling, is NOT modelled and the cycle is understated for foam parts until a validated formula is supplied. Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 35 % of cooling with a 2 s floor, the Menges gate-freeze rule (F-06, ASSUMED: the reference holds no hold time). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s.
+Structural foam uses the injection cycle model unchanged (the cost engine reuses it with a foam press): the reference holds no foam-specific cooling or fill formula, so foaming, which lengthens cooling, is NOT modelled and the cycle is understated for foam parts until a validated formula is supplied. Injection cycle time = (Fill + Pack + Cooling + Mold open/close) x Cycle Time Adjustment Factor (formula registry F-08, ASSUMED). Cooling is the Menges plate-cooling equation, t = s^2 / (pi^2 alpha) x ln((4/pi)(Tm - Tw)/(Te - Tw)), alpha = k / (rho cp) (F-04, ASSUMED: memory/ holds no cooling formula). Fill = shot melt volume / the press injection rate x the injectionTimeAdjustmentFactors for cavities and gates (F-05, VALIDATED). Pack = 20 % of cooling, at least the larger of 2 x the fill time and 1 s (F-06 version 2, ASSUMED: the reference holds no hold time; closest published basis for the 20 %: the Priamus patent US 7,931,837 B2, hold 10 % and cooling 50 % of the cycle; the floor is Moldflow's default hold, US 7,037,452 B1, "the greater of 2 times injection time and one second"). Mold open/close = the press Euromap 6 dry cycle (F-07, VALIDATED). Not modelled, because the reference has no formula or press data: ejector travel, plasticizing, part and material handling, slides and lifters. Rounded as the engine does: cooling and pack to 0.1 s, fill and the total to 0.01 s. (Version 4, migration 1161: the pack was 35 % of cooling with a 2 s floor.)
 
 ### Feature lookup table
 
@@ -134,9 +134,9 @@ Structural foam uses the injection cycle model unchanged (the cost engine reuses
 | 16 | Thermal Diffusivity | mm²/s | `{Thermal Conductivity of Melt} / ({Melt Density} * {Specific Heat of Melt} * 1000) * 1000000` |  |
 | 17 | Cooling Time | s | `floor({Nominal Wall Thickness} * {Nominal Wall Thickness} / (pi * pi * {Thermal Diffusivity}) * LN(4 / pi * ({Melt Temperature} - {Mold Wall Temperature}) / ({Ejection Temperature} - {Mold Wall Temperature})) * 10 + 0.5) / 10` | F-04 v1, ASSUMED |
 | 18 | Fill Time | s | `floor({Shot Melt Volume} / {Press Injection Rate} * {Fill Factor for Cavities} * {Fill Factor for Gates} * 100 + 0.5) / 100` | F-05 v1, VALIDATED |
-| 19 | Pack to Cooling Ratio |  | `0.35` |  |
-| 20 | Pack Time Minimum | s | `2` |  |
-| 21 | Pack Time | s | `max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)` | F-06 v1, ASSUMED |
+| 19 | Pack to Cooling Ratio |  | `0.2` |  |
+| 20 | Pack Time Minimum | s | `max(2 * {Fill Time}, 1)` |  |
+| 21 | Pack Time | s | `max({Pack Time Minimum}, floor({Cooling Time} * {Pack to Cooling Ratio} * 10 + 0.5) / 10)` | F-06 v2, ASSUMED |
 | 22 | Cycle Time | s | `floor(({Fill Time} + {Pack Time} + {Cooling Time} + {Press Dry Cycle Time}) * {Cycle Time Adjustment Factor} * 100 + 0.5) / 100` | F-08 v1, ASSUMED |
 
 Lookup table behind the two fill factors, `injectionTimeAdjustmentFactors` (the first row whose Number is at least the value is used; the last row covers the rest):

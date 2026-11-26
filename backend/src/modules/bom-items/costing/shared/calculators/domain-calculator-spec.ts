@@ -42,6 +42,13 @@ export interface DomainSpecField {
   dataSource?: string;
   sourceTable?: string;
   sourceField?: string;
+  /**
+   * Where a value the calculator states itself comes from (a constant formula such as a riser's feed efficiency or a molding's pack ratio): the
+   * workbook cell, memory file or published source, named. The database has no column for it and the migration writes none (domainFieldToRow), so
+   * the migrations generated from a spec do not change when a note is added; whoever loads the calculator lays it over the field (withDomainSpecNotes),
+   * for the trace step's source and the calculator's table of defaults (calculatorField).
+   */
+  note?: string;
 }
 
 export interface DomainSpecCalculator {
@@ -146,11 +153,16 @@ export function domainFieldToRow(f: DomainSpecField, order: number): ReferenceCa
   };
 }
 
+/** A spec field as the field an engine receives: its calculator_fields row, with the spec's note on where its value comes from. */
+function domainFieldAsReference(f: DomainSpecField, order: number): ReferenceCalculatorField {
+  return { ...domainFieldToRow(f, order), ...(f.note ? { note: f.note } : {}) };
+}
+
 /** The spec as the per-operation calculator set an engine receives (ids are the calculator names). */
 export function domainCalculatorsAsReference(spec: DomainCalculatorSpec): ReferenceCalculators {
   const out: ReferenceCalculators = {};
   for (const c of spec.calculators) {
-    const def = { calculatorId: c.name, name: c.name, version: c.version ?? 1, fields: c.fields.map((f, i) => domainFieldToRow(f, i + 1)) };
+    const def = { calculatorId: c.name, name: c.name, version: c.version ?? 1, fields: c.fields.map((f, i) => domainFieldAsReference(f, i + 1)) };
     for (const op of c.operations) out[op] = def;
   }
   return out;
@@ -160,7 +172,19 @@ export function domainCalculatorsAsReference(spec: DomainCalculatorSpec): Refere
 export function domainCalculatorsByName(spec: DomainCalculatorSpec): Record<string, ReferenceCalculatorDef> {
   const out: Record<string, ReferenceCalculatorDef> = {};
   for (const c of spec.calculators) {
-    out[c.name] = { calculatorId: c.name, name: c.name, version: c.version ?? 1, fields: c.fields.map((f, i) => domainFieldToRow(f, i + 1)) };
+    out[c.name] = { calculatorId: c.name, name: c.name, version: c.version ?? 1, fields: c.fields.map((f, i) => domainFieldAsReference(f, i + 1)) };
   }
   return out;
+}
+
+/**
+ * A domain calculator's database fields with the spec's note on each field that has one (the database has no column for it): where the value the
+ * calculator states itself comes from, for the trace and the calculator's table of defaults. A calculator not in the spec: its fields as they are.
+ */
+export function withDomainSpecNotes<F extends ReferenceCalculatorField>(spec: DomainCalculatorSpec, calculatorName: string, fields: readonly F[]): (F & { note?: string | null })[] {
+  const notes = new Map((spec.calculators.find((c) => c.name === calculatorName)?.fields ?? []).flatMap((f) => (f.note ? [[f.name, f.note] as const] : [])));
+  return fields.map((f) => {
+    const note = notes.get(f.field_name);
+    return note ? { ...f, note } : f;
+  });
 }

@@ -10,6 +10,7 @@ import {
 } from '../lookup/machining-material-hardness';
 import type { MachiningCapabilityRules } from '../capability-rules';
 import type { CalcSeed } from './machining-calculator';
+import type { SourceRef } from '../../../dto/cost-breakdown.dto';
 import type { SpecField } from './machining-calculator-spec';
 import { ETCH_MATERIAL_TYPE } from '../../chemical-milling/chemical-milling-engine';
 import { calculationRef, lookupSeed, MACHINING_REFERENCE_DOMAIN, resultStep, rowKeys, seedStep, variableSeed } from './machining-source-refs';
@@ -26,6 +27,8 @@ import { calculationRef, lookupSeed, MACHINING_REFERENCE_DOMAIN, resultStep, row
  */
 export interface MachiningLookupContext {
   matClass: MaterialClass;
+  /** The groove being plunged, on the model (its faces): what an insert as wide as the groove is measured on. */
+  grooveRef?: SourceRef;
   /** The machining workbook's cutting data (migration 1137): what Drilling, Reaming and Tapping read. */
   workbook?: MachiningWorkbookInput | null;
   /** tblBoringV2 "Finish Boring" rows. */
@@ -173,12 +176,10 @@ export function groovingLookupSeeds(ctx: MachiningLookupContext, keys: Record<st
   const match = { table: 'tblGrooving', row: { 'Material Cut Code Name': p.materialCutCode, 'Length (mm)': p.rowWidthsMm[0]! } };
   const src = `tblGrooving: material code ${p.materialCutCode} (${p.hardnessHb} HB)`;
   out.seeds = {
-    'Insert Width': {
-      value: p.insertWidthMm,
-      source: p.insertWidthMm < width
-        ? `tblGrooving: the widest insert, ${p.insertWidthMm} mm (the groove is ${width} mm wide: it takes several plunges)`
-        : `CAD: the groove's width, ${width} mm: an insert as wide as the groove`,
-    },
+    // The widest insert is its tblGrooving row; an insert as wide as the groove is the groove's CAD width (the caller lights the groove).
+    'Insert Width': p.insertWidthMm < width
+      ? lookupSeed(p.insertWidthMm, `tblGrooving: the widest insert, ${p.insertWidthMm} mm (the groove is ${width} mm wide: it takes several plunges)`, { table: 'tblGrooving', row: { 'Material Cut Code Name': p.materialCutCode, 'Length (mm)': p.insertWidthMm } }, 'Length (mm)')
+      : { value: p.insertWidthMm, source: `CAD: the groove's width, ${width} mm: an insert as wide as the groove`, ...(ctx.grooveRef ? { ref: ctx.grooveRef } : {}) },
     'Cutting Speed': lookupSeed(p.cuttingSpeedMPerMin, src, match, 'Cutting Speed (m / min)'),
     'Feed': lookupSeed(p.feedMmPerRev, `${src}, ${p.feedBasis}`, match, 'Feed (mm / rev)'),
   };
@@ -639,7 +640,7 @@ export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupDa
     if (f.table === 'variables') {
       const v = data.variables[f.column];
       if (typeof v === 'number' && Number.isFinite(v)) {
-        out.seeds[f.name] = { value: v, source: `variables: ${f.column}`, lookup: true, match: { table: 'variables', row: { key: f.column } } };
+        out.seeds[f.name] = variableSeed(v, f.column);
       } else out.missing.push(`${f.name}: variables ${f.column} is not staged`);
       continue;
     }
@@ -670,7 +671,7 @@ export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupDa
       const v = Number(row?.[f.column]);
       if (!Number.isFinite(v)) { out.missing.push(`${f.name}: ${f.table} has no row for ${how}`); continue; }
       const keyCol = f.materialType ?? f.band!.column;
-      out.seeds[f.name] = { value: v, lookup: true, source: `${f.table}: ${how}`, match: { table: f.table, row: { [keyCol]: row[keyCol] } } };
+      out.seeds[f.name] = lookupSeed(v, `${f.table}: ${how}`, { table: f.table, row: { [keyCol]: row[keyCol] } }, f.column);
       continue;
     }
     // The material's rows: by hardness inside its cut-code family, or by its cut code when the table has no hardness.
@@ -688,11 +689,12 @@ export function specLookupSeeds(fields: readonly SpecField[], data: SpecLookupDa
     }
     const value = Number(candidates[0]?.[f.column]);
     if (!Number.isFinite(value)) { out.missing.push(`${f.name}: ${f.table} has no row for ${data.matClass}`); continue; }
-    out.seeds[f.name] = {
-      value, lookup: true,
-      source: `${f.table}: material code ${code}${Object.entries(key).map(([c, v]) => `, ${c} ${v}`).join('')}`,
-      match: { table: f.table, row: { MaterialCutCodeName: code as number, ...key } },
-    };
+    out.seeds[f.name] = lookupSeed(
+      value,
+      `${f.table}: material code ${code}${Object.entries(key).map(([c, v]) => `, ${c} ${v}`).join('')}`,
+      { table: f.table, row: { MaterialCutCodeName: code as number, ...key } },
+      f.column,
+    );
   }
   return out;
 }

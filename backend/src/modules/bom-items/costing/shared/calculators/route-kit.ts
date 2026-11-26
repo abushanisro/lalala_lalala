@@ -2,6 +2,7 @@
 // its lookup rows, the step's machine and the route's own values, each with where it came from; the calculator run; and a step priced on
 // the cheapest capable machine of its class (selectAndCost). One kit, so every domain built on it traces its inputs the same way. Pure.
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from './reference-calculator';
+import { batchSizeSeed } from './seed-refs';
 import { machineValue, type SandMachine } from '../../casting/sand/sand-machines';
 import { seedsFor, type SeedProvider, type SeedProviders } from '../../casting/sand/sand-seeds';
 import { selectAndCost, type CostedStep, type StepOutcome } from '../../casting/sand/sand-steps';
@@ -80,7 +81,7 @@ export function routeKit(inp: RouteKitInput): RouteKit {
     const calc = inp.spec.calculators.find((c) => c.name === calculator);
     if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
     const providers: SeedProviders = {
-      variable, engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: { value: batchSize, source: 'batch size' } }),
+      variable, engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: batchSizeSeed(batchSize) }),
       ...(inp.cad ? { cad: named(inp.cad) } : {}),
       ...(inp.material ? { material: inp.material } : {}),
       machine: (key) => {

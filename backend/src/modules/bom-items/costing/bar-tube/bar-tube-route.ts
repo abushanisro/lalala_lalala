@@ -21,6 +21,7 @@ import type { SandReference } from '../casting/sand/sand-reference';
 import { seedsFor, type SeedProvider, type SeedProviders } from '../casting/sand/sand-seeds';
 import { selectAndCost, type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
 import type { CadEvidenceKey } from '../shared/cad-evidence';
+import { batchSizeSeed, derivedSeed, inputStep, resultStep, runRef, seedStep, withSeedRef } from '../shared/calculators/seed-refs';
 import { noCostFeatureLine } from '../shared/core/engine-kernel';
 import { sawBundle } from '../stock/band-saw';
 import { LASER_SPEED_SOURCE, extrusionDieUsd, laserChartOf, laserMaterialFactor, rotaryDrawDieSetUsd } from './bar-tube-research';
@@ -245,7 +246,7 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     const calc = input.spec.calculators.find((c) => c.name === calculator);
     if (!calc) return { reasons: [`${calculator} is not in the calculator spec`] };
     const providers: SeedProviders = {
-      variable, cad: named(cad), engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: { value: scenario.batchSize, source: 'batch size' } }),
+      variable, cad: named(cad), engine: named(engine), lookup: named(lookups), scenario: named({ batch_size: batchSizeSeed(scenario.batchSize) }),
       material: materialProvider,
       machine: (key) => {
         const value = machine ? machineValue(machine, key) : null;
@@ -261,6 +262,14 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     return result.value == null ? { reasons: result.missing } : { run: result };
   };
   const seed = (value: number, source: string): CalcSeed => ({ value, source });
+  // A count or length the engine reads off the measured part (its bends, openings, ends): each item it counted, with the rule it applied.
+  const CAD_BT = 'CAD: the part measured along its centreline (cad-engine bar and tube measurements)';
+  const listSeed = (value: number, source: string, name: string, items: ReadonlyArray<readonly [string, string | number, (string | null)?]>, formula: string, unit: string | null = null): CalcSeed =>
+    derivedSeed(value, source, name, [...items.map(([l, v, u]) => inputStep(l, u ?? null, v, CAD_BT)), resultStep(name, unit, value, formula)]);
+  const bendItem = (b: BarTubeBend, i: number) => [`Bend ${i + 1}`, `CLR ${r2(b.clrMm)} mm, ${r2(b.angleDeg)} degrees${b.clockAngleDeg ? `, its plane rotated ${r2(b.clockAngleDeg)} degrees` : ''}`] as const;
+  const endItem = (e: { end: string; variant: string; cutAngleDeg?: number | null }) => [`The ${e.end} end`, `${e.variant}${(e.cutAngleDeg ?? 0) > 0.5 ? `, cut at ${r2(e.cutAngleDeg!)} degrees` : ''}`] as const;
+  const machineRef = (m: SandMachine, column: string) => ({ kind: 'machine' as const, machineId: m.id, machineName: m.name, machineClass: m.machineClass, location: m.location, column });
+  const variableStep = (label: string, name: string) => inputStep(label, ref.unit(name) ?? null, num(name) ?? 'not set', `Bar and tube variable ${name}`, { kind: 'variable', domain: BAR_TUBE_DOMAIN, name });
   const lookupSeed = (table: string, row: Row | undefined, column: string, identity: readonly string[]): CalcSeed | undefined => {
     if (!row || row[column] == null || !Number.isFinite(Number(row[column]))) return undefined;
     const id = Object.fromEntries(identity.map((c) => [c, row[c] as string | number]));
@@ -327,11 +336,23 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
   const unknownForms = part.forms.filter((f) => !FORM_PROCESS[f.variant]).map((f) => f.variant);
 
   /** The stock per part for a cut of `kerfMm` (Bar and Tube - Stock per part); the material cost needs the stock form's price. */
-  const stockFor = (kerfMm: number, kerfSource: string): { run: ReferenceCalcRun | null; reasons: string[] } => {
+  // The stock form's price (material_stock_prices at the location: a table no viewer serves, so its row is shown as what it is).
+  const stockPriceSeed = (): CalcSeed => {
     const price = material.stockPricePerKgUsd;
+    return derivedSeed(price ?? 0, price != null ? `${material.stockPriceSource ?? 'material_stock_prices'} (USD/kg)` : 'no stock price on file', 'Stock price', [
+      inputStep('Material', null, material.name, `${material.name}: its Raw Materials record`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'name' }),
+      inputStep('Stock form', null, part.stockForm.toLowerCase().replace(/_/g, ' '), 'the form the part is cut from'),
+      inputStep('Price', 'USD/kg', price ?? 'none on file', material.stockPriceSource ?? 'material_stock_prices: no row for the form at the location'),
+      resultStep('Price per kg', 'USD/kg', price ?? 0, price != null ? 'the location\'s price of the form' : 'not priced'),
+    ]);
+  };
+  /** The stock per part for a cut whose kerf is a variable (a saw's) or none (a laser, a shear). */
+  const stockFor = (kerfMm: number, kerfSource: string, kerfVariable: string | null = null): { run: ReferenceCalcRun | null; reasons: string[] } => {
     const r = run(BAR_TUBE_CALC.stock, null, {
-      price_per_kg: seed(price ?? 0, price != null ? `${material.stockPriceSource ?? 'material_stock_prices'} (USD/kg)` : 'no stock price on file'),
-      kerf_mm: seed(kerfMm, kerfSource),
+      price_per_kg: stockPriceSeed(),
+      kerf_mm: kerfVariable
+        ? { value: kerfMm, source: kerfSource, ref: { kind: 'variable', domain: BAR_TUBE_DOMAIN, name: kerfVariable } }
+        : derivedSeed(kerfMm, kerfSource, 'Kerf', [inputStep('Cut', null, kerfSource, kerfSource), resultStep('Kerf', 'mm', kerfMm, 'no kerf')]),
     });
     return 'run' in r ? { run: r.run, reasons: [] } : { run: null, reasons: r.reasons };
   };
@@ -343,7 +364,9 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     return [...byProcess].map(([process, ends]) => step(process, (m) => {
       const fit = fitsStock(m);
       if (fit) return fail(fit);
-      return timed(BAR_TUBE_CALC.endForming, m, { ends: seed(ends, `${ends} end(s) ${process.toLowerCase()} (the cad-engine's end forms)`) });
+      return timed(BAR_TUBE_CALC.endForming, m, {
+        ends: listSeed(ends, `${ends} end(s) ${process.toLowerCase()} (the cad-engine's end forms)`, 'Ends', forms.filter((f) => FORM_PROCESS[f.variant] === process).map(endItem), `the ends whose form is ${process.toLowerCase()}`),
+      });
     }, ['The stock fits its diameter range']));
   };
 
@@ -391,8 +414,14 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     const keys = bends.map(toolKeyOf);
     const maxAngle = Math.max(...bends.map((b) => b.angleDeg));
     const arc = bends.reduce((s, b) => s + arcOf(b), 0);
-    const bendsSeed = seed(n, `${n} bend(s)`);
-    const rotations = seed(rotationsOf(bends), 'bends after a plane rotation (clock angle not 0)');
+    const bendsSeed = listSeed(n, `${n} bend(s)`, 'Bends', bends.map(bendItem), 'the bends counted');
+    const rotations = listSeed(rotationsOf(bends), 'bends after a plane rotation (clock angle not 0)', 'Rotations', bends.map(bendItem), 'the bends after the first whose plane is rotated (clock angle not 0)');
+    const strengthSteps = () => [
+      inputStep('UTS', 'MPa', material.utsMpa ?? 'not on file', `${material.name}: uts_mpa`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'uts_mpa' }),
+      variableStep('Reference tensile strength', 'referenceTensileStrength'),
+    ];
+    const passesSeed = (passes: number, source: string, extra: ReturnType<typeof inputStep>[] = [], formula = 'ceil({UTS} / {Reference tensile strength}) when the UTS is above it, else 1') =>
+      derivedSeed(passes, source, 'Passes', [...strengthSteps(), ...extra, resultStep('Passes', null, passes, formula)]);
     const angleOk = (m: SandMachine) => {
       const a = machineValue(m, 'max_bend_angle_deg');
       return a != null && maxAngle > a + 1e-6 ? `bends up to ${a} degrees, a bend is ${r2(maxAngle)}` : null;
@@ -411,7 +440,11 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
         const mandrels = keys.filter((k) => needsMandrel(k.key)).length;
         return timed(BAR_TUBE_CALC.rotaryDraw, m, {
           bends: bendsSeed, rotations,
-          mandrel_bends: seed(mandrels, mandrels ? `bends whose tool key (bending_difficulty_factor: ${[...new Set(keys.map((k) => k.key))].join(', ')}) needs a mandrel` : 'no bend needs a mandrel'),
+          mandrel_bends: derivedSeed(mandrels, mandrels ? `bends whose tool key (bending_difficulty_factor: ${[...new Set(keys.map((k) => k.key))].join(', ')}) needs a mandrel` : 'no bend needs a mandrel', 'Mandrel bends', [
+            ...keys.map((k, i) => inputStep(`Bend ${i + 1} tool key`, null, k.key ?? 'none', 'bending_difficulty_factor: the row at the wall factor (OD / wall, rounded up) and D of bend (CLR / OD, rounded down)',
+              k.key ? { kind: 'lookup', domain: BAR_TUBE_DOMAIN, table: 'bending_difficulty_factor', column: 'Tool Key', row: { 'Tool Key': k.key } } : undefined)),
+            resultStep('Mandrel Bends', null, mandrels, 'the bends whose tool key is not x0 (a mandrel is needed)'),
+          ]),
         });
       }, ['Its tube capacity (machine name) takes the section', 'Its max bend angle', 'bending_difficulty_factor lists the wall factor and D of bend']);
       case 'Compression Bending': return step(process, (m) => {
@@ -448,10 +481,18 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
           if (!single && !multi) return fail(`rolls ${v('max_multi_pass_thickness_mm')} mm thick to ${v('min_multi_pass_diameter_mm')} mm at most and least, the bend is ${r2(d)} mm across, ${r2(thickness)} mm thick`);
           if (!single) passes = Math.max(2, passes);
         }
+        const multi = passes > strengthPasses;
         return timed(BAR_TUBE_CALC.roll, m, {
-          arc_mm: seed(r2(arc), 'the bends rolled, along the centreline (mm)'),
-          passes: seed(passes, passes > 1 ? `${passes} passes (a multi-pass bend, or a UTS above referenceTensileStrength)` : 'one pass'),
-          speed_factor: seed(speedFactor, speedFactor !== 1 ? 'rollingSpeedAdjustmentFactor: the yield is within 10 % of the UTS' : 'full speed'),
+          arc_mm: listSeed(r2(arc), 'the bends rolled, along the centreline (mm)', 'Arc', bends.map((b, i) => [`Bend ${i + 1} arc`, r2(arcOf(b)), 'mm'] as const), 'the sum of the bends\' arcs (CLR x angle)', 'mm'),
+          passes: passesSeed(passes, passes > 1 ? `${passes} passes (a multi-pass bend, or a UTS above referenceTensileStrength)` : 'one pass',
+            multi ? [inputStep('Single pass', null, 'no', `machine ${m.name}: the bend (${r2(d)} mm across, ${r2(thickness)} mm thick) is outside its single-pass diameter and thickness`, machineRef(m, 'min_single_pass_diameter_mm'))] : [],
+            multi ? 'at least 2: the bend is outside the single-pass range' : undefined),
+          speed_factor: derivedSeed(speedFactor, speedFactor !== 1 ? 'rollingSpeedAdjustmentFactor: the yield is within 10 % of the UTS' : 'full speed', 'Speed factor', [
+            inputStep('UTS', 'MPa', material.utsMpa ?? 'not on file', `${material.name}: uts_mpa`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'uts_mpa' }),
+            inputStep('Yield strength', 'MPa', material.yieldMpa ?? 'not on file', `${material.name}: yield_strength_mpa`, { kind: 'material', materialId: material.id, materialName: material.name, column: 'yield_strength_mpa' }),
+            variableStep('Rolling speed adjustment', 'rollingSpeedAdjustmentFactor'),
+            resultStep('Speed Factor', null, speedFactor, '{Rolling speed adjustment} when the yield is within 10 % of the UTS, else 1'),
+          ]),
         }, handling(process));
       }, ['Its rolls take the section width and thickness', 'The bend diameter within its single- or multi-pass range']);
       case 'Bar Bend Brake': return step(process, (m) => {
@@ -480,7 +521,8 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
         const h = machineValue(m, 'roller_max_height_separation_mm');
         if (h != null && Math.min(sec.widthMm, sec.heightMm) > h + 1e-6) return fail(`its rollers open to ${h} mm, the section is ${r2(Math.min(sec.widthMm, sec.heightMm))} mm`);
         return timed(BAR_TUBE_CALC.profileRoll, m, {
-          arc_mm: seed(r2(arc), 'the bends rolled (mm)'), passes: seed(strengthPasses, strengthPasses > 1 ? `${strengthPasses} passes: the UTS is above referenceTensileStrength` : 'one pass'),
+          arc_mm: listSeed(r2(arc), 'the bends rolled (mm)', 'Arc', bends.map((b, i) => [`Bend ${i + 1} arc`, r2(arcOf(b)), 'mm'] as const), 'the sum of the bends\' arcs (CLR x angle)', 'mm'),
+          passes: passesSeed(strengthPasses, strengthPasses > 1 ? `${strengthPasses} passes: the UTS is above referenceTensileStrength` : 'one pass'),
         }, handling(process));
       }, ['Its rollers open to the section']);
     }
@@ -535,16 +577,32 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     );
     const row = rows.find((r) => Number(r['Material Width (mm)']) >= bundle.widthMm - 1e-6) ?? rows[rows.length - 1]!;
     return timed(BAR_TUBE_CALC.saw, m, {
-      cut_area_mm2: seed(r2(cutArea), maxCutAngle > 0.5 ? `the section's metal area over cos ${r2(maxCutAngle)} degrees (mm²)` : "the section's metal area (mm²)"),
-      parts_per_bundle: seed(bundle.bars, `${bundle.bars} per bundle, ${r2(bundle.widthMm)} mm wide in the cut: the saw's stock width and height hold ${bundle.fits}, ${SAW_BUNDLE[saw]} ${num(SAW_BUNDLE[saw]) ?? 'unset'}, the batch needs ${bundle.barsForBatch}`),
-      cuts_per_part: seed(cutsPerPart, cutsPerPart === 2 ? 'both ends cut at an angle' : 'one cut per part'),
+      cut_area_mm2: maxCutAngle > 0.5
+        ? derivedSeed(r2(cutArea), `the section's metal area over cos ${r2(maxCutAngle)} degrees (mm²)`, 'Cut area: the section cut at an angle', [
+          seedStep('Section area', 'mm²', cad.section_area!), ...angled.map((e) => inputStep(`The ${e.end} end's cut angle`, 'deg', e.cutAngleDeg!, CAD_BT)),
+          resultStep('Cut Area', 'mm²', r2(cutArea), '{Section area} / cos(the steepest cut angle)'),
+        ])
+        : { ...cad.section_area!, value: r2(cutArea), source: "the section's metal area (mm²)" },
+      parts_per_bundle: derivedSeed(bundle.bars, `${bundle.bars} per bundle, ${r2(bundle.widthMm)} mm wide in the cut: the saw's stock width and height hold ${bundle.fits}, ${SAW_BUNDLE[saw]} ${num(SAW_BUNDLE[saw]) ?? 'unset'}, the batch needs ${bundle.barsForBatch}`, 'Parts per bundle', [
+        inputStep('Section width', 'mm', r2(outsideSize), CAD_BT, cad.section_area!.ref), inputStep('Section height', 'mm', r2(Math.min(sec.widthMm, sec.heightMm)), CAD_BT, cad.section_area!.ref),
+        inputStep("Saw's stock width", 'mm', machineValue(m, 'max_stock_width_mm') ?? 'not listed', `machine ${m.name}: max_stock_width_mm`, machineRef(m, 'max_stock_width_mm')),
+        inputStep("Saw's stock height", 'mm', machineValue(m, 'max_stock_height_mm') ?? 'not listed', `machine ${m.name}: max_stock_height_mm`, machineRef(m, 'max_stock_height_mm')),
+        resultStep('Held in the saw', null, bundle.fits, 'floor({Saw\'s stock width} / {Section width}) * floor({Saw\'s stock height} / {Section height})'),
+        variableStep('Bundle limit', SAW_BUNDLE[saw]),
+        seedStep('Batch', null, batchSizeSeed(scenario.batchSize)),
+        inputStep('Parts per stock length', null, partsPerStock ?? 1, 'Bar and Tube - Stock per part at the saw\'s kerf'),
+        resultStep('Lengths the batch needs', null, bundle.barsForBatch, 'ceil({Batch} / {Parts per stock length})'),
+        resultStep('Parts per Bundle', null, bundle.bars, 'min({Held in the saw}, {Bundle limit}, {Lengths the batch needs})'),
+      ]),
+      cuts_per_part: listSeed(cutsPerPart, cutsPerPart === 2 ? 'both ends cut at an angle' : 'one cut per part', 'Cuts per part', part.ends.map(endItem),
+        'two when both ends are cut at an angle (each its own cut), else one: a square cut parts two lengths'),
     }, {
       'saw_cut_rate.Cutting Rate (mm^2 / min)': lookupSeed('saw_cut_rate', row, 'Cutting Rate (mm^2 / min)', ['Process Name', 'Material Cut Code Family', 'Material Width (mm)']),
     });
   }, ['The stock fits its height, width and diameter', 'Its max cut angle takes the end cuts', 'saw_cut_rate lists the material at the section width']);
   /** The parts one bought length makes when `saw` cuts it (Bar and Tube - Stock per part at the saw's kerf); null when the stock is not sized. */
   const partsPerLength = (saw: Saw): number | null =>
-    stockFor(num(SAW_KERF[saw]) ?? 0, `${SAW_KERF[saw]}: the ${saw.toLowerCase()}'s kerf (mm)`).run?.outputs['Parts per Stock'] ?? null;
+    stockFor(num(SAW_KERF[saw]) ?? 0, `${SAW_KERF[saw]}: the ${saw.toLowerCase()}'s kerf (mm)`, SAW_KERF[saw]).run?.outputs['Parts per Stock'] ?? null;
   /** A shear cuts a bar or profile its capacity for the stock form holds (memory machines_shear capacity columns); never a round tube or bar. */
   const shearStep = (): CostedStep => step('Shear', (m) => {
     if (maxCutAngle > 0.5) return fail('a shear cuts square: an end is cut at an angle');
@@ -578,18 +636,29 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     const punch = machineValue(m, punchKey);
     if (punch == null) return fail(`machine ${m.name}: ${punchKey}`);
     return timed(BAR_TUBE_CALC.punching, m, {
-      hits: seed(openings, `${roundHoles.length} hole(s), ${part.complexHoles.length} complex hole(s), ${part.cutouts.length} cutout(s): one hit each`),
-      punch_time_s: seed(punch, `machine ${m.name}: ${punchKey}${tube ? ' (a tube is punched over a mandrel)' : ''}`),
-      index_mm: seed(r2(indexMm), 'from the first opening to the last along the length (mm)'),
+      hits: listSeed(openings, `${roundHoles.length} hole(s), ${part.complexHoles.length} complex hole(s), ${part.cutouts.length} cutout(s): one hit each`, 'Hits', openingItems(), 'one hit an opening'),
+      punch_time_s: { value: punch, source: `machine ${m.name}: ${punchKey}${tube ? ' (a tube is punched over a mandrel)' : ''}`, ref: machineRef(m, punchKey) },
+      index_mm: listSeed(r2(indexMm), 'from the first opening to the last along the length (mm)', 'Index length', openingItems(), 'the last opening\'s station less the first\'s', 'mm'),
     });
   }, ['The stock fits it', 'The wall within its thickness', 'The holes within its diameter and dia-to-thickness ratio']);
+  /** Each opening the part has, with its station along the length. */
+  function openingItems() {
+    const at = (s: number | null) => (s != null ? ` at ${r2(s)} mm` : '');
+    return [
+      ...roundHoles.map((h, i) => [`Hole ${i + 1}`, `Ø${r2(h.diameterMm)} mm${at(h.stationMm)}`] as const),
+      ...part.complexHoles.map((o, i) => [`Complex hole ${i + 1}`, `${r2(o.perimeterMm)} mm round${at(o.stationMm)}`] as const),
+      ...part.cutouts.map((o, i) => [`Cutout ${i + 1}`, `${r2(o.perimeterMm)} mm round${at(o.stationMm)}`] as const),
+    ];
+  }
   const endCutSteps = (): CostedStep[] => {
     const byProcess = new Map<string, number>();
     for (const e of endCuts) byProcess.set(END_CUT_PROCESS[e.variant]!, (byProcess.get(END_CUT_PROCESS[e.variant]!) ?? 0) + 1);
     return [...byProcess].map(([process, ends]) => step(process, (m) => {
       const fit = fitsStock(m);
       if (fit) return fail(fit);
-      return timed(BAR_TUBE_CALC.endForming, m, { ends: seed(ends, `${ends} end(s) ${process === 'Notching' ? 'notched' : 'slotted'}`) });
+      return timed(BAR_TUBE_CALC.endForming, m, {
+        ends: listSeed(ends, `${ends} end(s) ${process === 'Notching' ? 'notched' : 'slotted'}`, 'Ends', endCuts.filter((e) => END_CUT_PROCESS[e.variant] === process).map(endItem), `the ends ${process === 'Notching' ? 'notched' : 'slotted'}`),
+      });
     }, ['The stock fits its diameter range']));
   };
 
@@ -645,7 +714,7 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     + endCuts.length * sec.outerPerimeterMm + part.complexHoles.reduce((s, o) => s + o.perimeterMm, 0) + part.cutouts.reduce((s, o) => s + o.perimeterMm, 0);
   const smallCut = roundHoles.reduce((s, h) => s + Math.PI * h.diameterMm, 0);
   const pierces = openings + 1 + endCuts.length;
-  const laserStep = (partsPerStock: number): CostedStep => step('Tube Laser', (m) => {
+  const laserStep = (partsPerStock: number, stockRun: ReferenceCalcRun | null): CostedStep => step('Tube Laser', (m) => {
     const fit = fitsStock(m);
     if (fit) return fail(fit);
     const maxLen = machineValue(m, 'max_stock_length_mm');
@@ -653,10 +722,16 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
     const rate = cutRate('Tube Laser', thickness, machineValue(m, 'power_watts'));
     if ('reason' in rate) return fail(rate.reason);
     return timed(BAR_TUBE_CALC.tubeLaser, m, {
-      large_cut_mm: seed(r2(largeCut), 'end cuts (half of each end, a cut parts two lengths), notches, slots, complex holes and cutouts (mm)'),
-      small_cut_mm: seed(r2(smallCut), `${roundHoles.length} round hole(s), π × diameter each (mm)`),
-      pierces: seed(pierces, 'one per contour'),
-      parts_per_stock: seed(partsPerStock, `${partsPerStock} parts per stock length (Bar and Tube - Stock per part)`),
+      large_cut_mm: listSeed(r2(largeCut), 'end cuts (half of each end, a cut parts two lengths), notches, slots, complex holes and cutouts (mm)', 'Large feature length', [
+        ...part.ends.map((e, i) => [`The ${e.end} end's cut`, r2(endPerimeters[i]!), 'mm'] as const),
+        ...endCuts.map((e) => [`The ${e.end} end's ${e.variant}`, r2(sec.outerPerimeterMm), 'mm'] as const),
+        ...part.complexHoles.map((o, i) => [`Complex hole ${i + 1}`, r2(o.perimeterMm), 'mm'] as const),
+        ...part.cutouts.map((o, i) => [`Cutout ${i + 1}`, r2(o.perimeterMm), 'mm'] as const),
+      ], 'half the end cuts (a cut parts two lengths) + each notch or slot\'s section outline + the complex holes and cutouts', 'mm'),
+      small_cut_mm: listSeed(r2(smallCut), `${roundHoles.length} round hole(s), π × diameter each (mm)`, 'Small feature length',
+        roundHoles.map((h, i) => [`Hole ${i + 1} diameter`, r2(h.diameterMm), 'mm'] as const), 'π x each hole\'s diameter, summed', 'mm'),
+      pierces: listSeed(pierces, 'one per contour', 'Pierces', [['The cut-off', 1], ...openingItems(), ...endCuts.map(endItem)], 'one pierce a contour: the cut-off, each opening, each notch or slot'),
+      parts_per_stock: withSeedRef(seed(partsPerStock, `${partsPerStock} parts per stock length (Bar and Tube - Stock per part)`), runRef(BAR_TUBE_CALC.stock, stockRun)),
     }, {
       'process_cut_rate.Feed Rate Large Features (mm / min)': lookupSeed('process_cut_rate', rate.row, 'Feed Rate Large Features (mm / min)', cutIdOf(rate.row)),
       'process_cut_rate.Feed Rate Small Features (mm / min)': lookupSeed('process_cut_rate', rate.row, 'Feed Rate Small Features (mm / min)', cutIdOf(rate.row)),
@@ -738,10 +813,15 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
   if (part.stockForm === 'PLATE') {
     const p = part.plate;
     if (!p) return none('the plate measurements: press Refresh analysis');
+    // The flat part as the cad-engine's plate measurements give it (no face evidence is kept for them): each value with what it measures.
+    const plateSeed = (value: number, source: string, label: string, unit: string): CalcSeed => derivedSeed(value, source, label, [
+      inputStep(label, unit, value, `CAD: ${source} (cad-engine plate measurements)`), resultStep(label, unit, value, 'as measured'),
+    ]);
     const plateRun = run(BAR_TUBE_CALC.plate, null, {
-      blank_length_mm: seed(p.blankLengthMm, "the flat part's smallest rectangle, long side (mm)"), blank_width_mm: seed(p.blankWidthMm, "the flat part's smallest rectangle, short side (mm)"),
-      thickness_mm: seed(p.thicknessMm, 'the plate (mm)'), face_area_mm2: seed(p.faceAreaMm2, "the flat part's face (mm²)"),
-      price_per_kg: seed(material.stockPricePerKgUsd ?? 0, material.stockPricePerKgUsd != null ? `${material.stockPriceSource ?? 'material_stock_prices'} (USD/kg)` : 'no plate price on file'),
+      blank_length_mm: plateSeed(p.blankLengthMm, "the flat part's smallest rectangle, long side (mm)", 'Blank Length', 'mm'),
+      blank_width_mm: plateSeed(p.blankWidthMm, "the flat part's smallest rectangle, short side (mm)", 'Blank Width', 'mm'),
+      thickness_mm: plateSeed(p.thicknessMm, 'the plate (mm)', 'Thickness', 'mm'), face_area_mm2: plateSeed(p.faceAreaMm2, "the flat part's face (mm²)", 'Face Area', 'mm²'),
+      price_per_kg: stockPriceSeed(),
     });
     const plateStock = 'run' in plateRun ? { run: plateRun.run, reasons: [] } : { run: null, reasons: plateRun.reasons };
     const perSheet = plateStock.run?.outputs['Parts per Sheet'] ?? 1;
@@ -755,8 +835,13 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
         const rate = cutRate(c.machineType, p.thicknessMm, machineValue(m, 'power_watts'));
         if ('reason' in rate) return fail(rate.reason);
         return timed(BAR_TUBE_CALC.plateCut, m, {
-          cut_mm: seed(p.cutLengthMm, "the flat part's outline and openings (mm)"), pierces: seed(p.pierces, 'one per contour'),
-          parts_per_sheet: seed(perSheet, `${perSheet} parts per ${num('standardSheetLength')} x ${num('standardSheetWidth')} mm sheet (Bar and Tube - Plate per part)`),
+          cut_mm: derivedSeed(p.cutLengthMm, "the flat part's outline and openings (mm)", 'Cut length', [
+            inputStep('Outline and openings', 'mm', p.cutLengthMm, 'CAD: the flat part measured (cad-engine plate measurements)'), resultStep('Cut Length', 'mm', p.cutLengthMm, 'the outline and every opening'),
+          ]),
+          pierces: derivedSeed(p.pierces, 'one per contour', 'Pierces', [
+            inputStep('Contours', null, p.pierces, 'CAD: the flat part\'s outline and openings (cad-engine plate measurements)'), resultStep('Pierces', null, p.pierces, 'one pierce a contour'),
+          ]),
+          parts_per_sheet: withSeedRef(seed(perSheet, `${perSheet} parts per ${num('standardSheetLength')} x ${num('standardSheetWidth')} mm sheet (Bar and Tube - Plate per part)`), runRef(BAR_TUBE_CALC.plate, plateStock.run)),
         }, {
           'process_cut_rate.Feed Rate Large Features (mm / min)': lookupSeed('process_cut_rate', rate.row, 'Feed Rate Large Features (mm / min)', cutIdOf(rate.row)),
           'process_cut_rate.Pierce Time (s)': lookupSeed('process_cut_rate', rate.row, 'Pierce Time (s)', cutIdOf(rate.row)),
@@ -784,9 +869,9 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
       const b = run(BAR_TUBE_CALC.billet, m, {});
       if ('reasons' in b) return fail(...b.reasons);
       return timed(BAR_TUBE_CALC.extrusion, m, {
-        extruded_mm: seed(r2(b.run.outputs['Extruded Length']!), 'the length one billet extrudes (Bar and Tube - Extrusion billet, mm)'),
-        parts_per_billet: seed(b.run.outputs['Parts per Billet']!, 'parts per billet (Bar and Tube - Extrusion billet)'),
-        extrusion_ratio: seed(r2(b.run.outputs['Extrusion Ratio']!), 'billet area over section area (Bar and Tube - Extrusion billet)'),
+        extruded_mm: withSeedRef(seed(r2(b.run.outputs['Extruded Length']!), 'the length one billet extrudes (Bar and Tube - Extrusion billet, mm)'), runRef(`${BAR_TUBE_CALC.billet} on ${m.name}`, b.run)),
+        parts_per_billet: withSeedRef(seed(b.run.outputs['Parts per Billet']!, 'parts per billet (Bar and Tube - Extrusion billet)'), runRef(`${BAR_TUBE_CALC.billet} on ${m.name}`, b.run)),
+        extrusion_ratio: withSeedRef(seed(r2(b.run.outputs['Extrusion Ratio']!), 'billet area over section area (Bar and Tube - Extrusion billet)'), runRef(`${BAR_TUBE_CALC.billet} on ${m.name}`, b.run)),
       }, {}, { billet: b.run });
     }, ['Its billet takes the profile', 'The alloy extrudes (an exit speed)']);
     const out = extrude.outcome as (Extract<StepOutcome, { ok: true }> & { billet?: ReferenceCalcRun }) | null;
@@ -800,8 +885,12 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
       const bd = press ? machineValue(press, 'billet_diameter_mm') : null;
       if (d != null && bd != null && bd > d + 1e-6) return fail(`heats billets up to ${d} mm, the press takes ${bd} mm`);
       return timed(BAR_TUBE_CALC.billetPreheat, m, {
-        billet_kg: seed(r3(billetKg), `the billet (Bar and Tube - Extrusion billet on ${press?.name ?? 'the press'}, kg)`),
-        billet_temp_c: seed(BILLET_TEMP_C, 'aluminium is extruded at 480 °C'), parts_per_billet: seed(perBillet, 'parts per billet'),
+        billet_kg: withSeedRef(seed(r3(billetKg), `the billet (Bar and Tube - Extrusion billet on ${press?.name ?? 'the press'}, kg)`), runRef(BAR_TUBE_CALC.billet, billet)),
+        billet_temp_c: derivedSeed(BILLET_TEMP_C, 'aluminium is extruded at 480 °C', 'Billet temperature', [
+          inputStep('Alloy', null, material.name, 'the profile is extruded from an aluminium alloy (an exit speed on file)', { kind: 'material', materialId: material.id, materialName: material.name, column: 'extrusion_exit_speed_max_mm_s' }),
+          resultStep('Billet Temperature', '°C', BILLET_TEMP_C, 'aluminium is extruded at 480 °C (the Billet preheat calculator\'s billet_temp_c)'),
+        ]),
+        parts_per_billet: withSeedRef(seed(perBillet, 'parts per billet'), runRef(BAR_TUBE_CALC.billet, billet)),
       });
     }, ['It heats the press\'s billet diameter']);
     const die = step('Die Preheat', (m) => timed(BAR_TUBE_CALC.diePreheat, m, {}), ['Any die oven: heated before the run, charged as its setup']);
@@ -824,7 +913,8 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
   const bends = bendLines([...STOCK_BENDING]);
   const cut = cheapest([...allowedSaws.map((saw) => sawStep(saw, partsPerLength(saw))), shearStep()]);
   const sawKerf = SAWS.includes(cut.line.process as Saw) ? num(SAW_KERF[cut.line.process as Saw]) ?? 0 : 0;
-  const sawStock = stockFor(sawKerf, SAWS.includes(cut.line.process as Saw) ? `${SAW_KERF[cut.line.process as Saw]}: the ${cut.line.process.toLowerCase()}'s kerf (mm)` : 'a shear leaves no kerf');
+  const sawStock = stockFor(sawKerf, SAWS.includes(cut.line.process as Saw) ? `${SAW_KERF[cut.line.process as Saw]}: the ${cut.line.process.toLowerCase()}'s kerf (mm)` : 'a shear leaves no kerf',
+    SAWS.includes(cut.line.process as Saw) ? SAW_KERF[cut.line.process as Saw] : null);
   finish('saw', [cut, ...(openings > 0 ? [punchStep()] : []), ...endCutSteps(), ...formSteps(), ...bends.steps], sawStock, {
     lines: bends.gaps, plan: bends.plan,
     warnings: allowedSaws.length === 0 ? [`saw_routing_evaluation allows no saw for ${part.stockForm}: only a shear can cut it.`] : [],
@@ -836,7 +926,7 @@ export function buildBarTubeRoutes(input: BarTubeRouteInput): { routes: BarTubeR
   } else {
     const laserStock = stockFor(0, 'a laser leaves no kerf to speak of');
     const perStock = laserStock.run?.outputs['Parts per Stock'] ?? 1;
-    finish('laser', [laserStep(perStock), ...formSteps(), ...bends.steps], laserStock, { lines: bends.gaps, plan: bends.plan });
+    finish('laser', [laserStep(perStock, laserStock.run), ...formSteps(), ...bends.steps], laserStock, { lines: bends.gaps, plan: bends.plan });
   }
   return { routes, gaps, missing: [] };
 }

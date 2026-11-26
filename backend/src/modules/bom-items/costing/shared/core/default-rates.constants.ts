@@ -129,7 +129,14 @@ export const PRESS_BRAKE_SEC_PER_BEND: Record<number, number> = {
 // the calculator's 'Shoulder Width' field). The cost engine, machine
 // selection and the calculator popup all size a brake against this one
 // formula, so the tonnage the engineer sees is the tonnage the machine was
-// chosen for.
+// chosen for. Source: the "rule of 8" (Bystronic, "Rules of press brake tool
+// selection": the V-die opening is 8 times the material thickness); MISUMI
+// names the die opening the die shoulder width L and gives the coefficient
+// 1.33 at L = 8t, the Bending Coefficient below (the Sheet Metal workbook's
+// TPP!D80 "Constant" 1.33). The workbook's own example, TPP!D79, is 15 mm for
+// a 2 mm sheet (7.5 t), "to be captured from part drawing".
+export const BEND_SHOULDER_RULE_SOURCE =
+  'The rule of 8: the V-die opening is 8 times the sheet thickness (Bystronic, "Rules of press brake tool selection"); MISUMI calls it the die shoulder width and gives the bending coefficient 1.33 at 8 t, the coefficient the calculator uses (Sheet Metal workbook TPP!D80)';
 export const BEND_COEFFICIENT = 1.33;
 export const BEND_RECOMMENDED_FORCE_FACTOR = 1.25;
 export const bendShoulderWidthMm = (thicknessMm: number) => 8 * thicknessMm;
@@ -371,34 +378,66 @@ export function isoCoarsePitchMm(nominalDiameterMm: number): number | null {
 
 // The two values used when even the standard series cannot answer. Named, so
 // they read as assumptions at every use site instead of as bare literals, and
-// so resolveTapPhysicsInputs can flag when it fell back to them.
+// so resolveTapPhysicsInputs can flag when it fell back to them. The assumed
+// tap is an M4, and its pitch is M4's own: ISO 262 (selected sizes) gives M4
+// a coarse pitch of 0.7 mm (fine 0.5). It was 1.0, which is no M4 thread.
+// No source names a "most common" tap; M4 is kept as the assumption.
 const ASSUMED_TAP_DIAMETER_MM = 4;
-const ASSUMED_THREAD_PITCH_MM = 1.0;
+const ASSUMED_THREAD_PITCH_MM = 0.7;
 
-// Real HSS (M2 grade) tapping surface speed by material family — cross-verified
-// from two independent published tap-vendor references:
-//   - Viking Drill & Tool / Norseman Drill & Tool "Recommended Feeds and
-//     Speeds" tap tech data (SFM; converted here at 1 SFM = 0.3048 m/min):
-//     http://www.vikingdrill.com/viking-Tap-FeedandSpeed.php
-//     http://www.norsemandrill.com/feeds-speeds-tap.php
-//   - Slugger Tools Tap Speed Chart (m/min, M2 HSS tier):
-//     https://www.sluggertool.com/resources/tap-speed-chart/
-// Value used is the midpoint of the two sources' overlapping range:
-//   mild/carbon steel: Viking 30-50 SFM (9.1-15.2 m/min) vs Slugger 8-14 m/min -> 10
-//   stainless (300-series): Viking 10-20 SFM (3.0-6.1 m/min) vs Slugger 304/316 3-6 m/min -> 4.5
-//   aluminum (wrought): Viking 80 SFM (24.4 m/min) vs Slugger 6061/5052 20-40 m/min -> 25
+// HSS tapping surface speed by material family: the Machining calculator
+// workbook (memory/Machining - Calculator Database (1).xlsx), Tapping sheet's
+// HSS hole-making speeds, Tapping column, the middle of each range (the user's
+// own workbook wins over the tap vendors' charts these were taken from before:
+// Viking/Norseman and Slugger gave 10, 4.5 and 25 m/min):
+//   mild/carbon steel: Tapping!D39 "Mild steels" 11 - 12 m/min -> 11.5
+//   stainless:         Tapping!D47 "Stainless steels" 8 - 9 m/min -> 8.5
+//   aluminium:         Tapping!D51 "Aluminium alloys" 14 - 18 m/min -> 16
 // classifyMaterialFamily()'s 'unknown' case keeps the mild-steel baseline --
 // same fallback convention LASER_MATERIAL_SPEED_FACTOR above already uses.
 const TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL: Record<string, number> = {
-  carbon_steel: 10,
-  stainless: 4.5,
-  aluminum: 25,
-  __default__: 10,
+  carbon_steel: 11.5,
+  stainless: 8.5,
+  aluminum: 16,
+  __default__: 11.5,
+};
+/** Where each family's tapping speed comes from, for the line's source. */
+export const TAP_SURFACE_SPEED_SOURCE: Record<string, string> = {
+  carbon_steel: 'the Machining calculator workbook, Tapping sheet D39: Mild steels, HSS tapping 11 - 12 m/min (the middle, 11.5)',
+  stainless: 'the Machining calculator workbook, Tapping sheet D47: Stainless steels, HSS tapping 8 - 9 m/min (the middle, 8.5)',
+  aluminum: 'the Machining calculator workbook, Tapping sheet D51: Aluminium alloys, HSS tapping 14 - 18 m/min (the middle, 16)',
+  __default__: 'the Machining calculator workbook, Tapping sheet D39: Mild steels, HSS tapping 11 - 12 m/min (the middle, 11.5), the baseline for a material of no known family',
 };
 
-const TAP_APPROACH_SEC = 1;    // rapid traverse + engage, fixed allowance
-const TAP_TOOL_CHANGE_SEC = 3; // once per thread-size group (switch tap/holder)
-const TAP_UNLOAD_SEC = 2;      // once per tapping operation (final clear/unload)
+// The tapping cycle's fixed motions. No tool maker publishes a per-hole
+// approach or unload time; the closest published basis is the spindle's
+// start/stop (a tap reverses its spindle at the bottom of every hole and stops
+// it at the end): Numeryx An-101 (numeryx.com/cnc/drilling51.htm) "at 2000 rpm
+// the accel time is 1 sec" on a general-purpose machining centre (a dedicated
+// tapping centre, Brother SPEEDIO S1000X1, states a 0.15 s spindle start/stop).
+// The rapid moves themselves take ~0.01 s. Tool change: a vertical machining
+// centre's average tool-to-tool time, Haas VF-2 specification
+// (haas.co.uk/machines/vf-2): "Tool-to-Tool (avg) 4.2 sec".
+const TAP_APPROACH_SEC = 1;             // per hole: rapid in and spindle start (Numeryx: 1 s at 2000 rpm)
+const TAP_TOOL_CHANGE_SEC = 4.2;        // once per thread-size group (Haas VF-2 tool-to-tool 4.2 s)
+const TAP_UNLOAD_SEC = 1;               // once per tapping operation: spindle stop and clear (Numeryx: 1 s); was 2 s, unsourced
+/** The tapping cycle's fixed motions, with where each comes from (the line's source). */
+export const TAP_MOTION_SOURCES = {
+  approach: 'Closest published basis: the spindle start of a general-purpose machining centre, Numeryx An-101 (numeryx.com/cnc/drilling51.htm): "at 2000 rpm the accel time is 1 sec" (a tapping centre: 0.15 s, Brother SPEEDIO S1000X1)',
+  toolChange: 'A vertical machining centre\'s average tool-to-tool time: Haas VF-2 specification (haas.co.uk/machines/vf-2), "Tool-to-Tool (avg) 4.2 sec"',
+  unload: 'Closest published basis: the spindle stop of a general-purpose machining centre, Numeryx An-101 (numeryx.com/cnc/drilling51.htm): "at 2000 rpm the accel time is 1 sec" (a tapping centre: 0.15 s, Brother SPEEDIO S1000X1)',
+} as const;
+
+/**
+ * The tapped length of a thread with no measured depth in solid stock: its full thread engagement, 1 x the nominal diameter in steel and
+ * 2 x in aluminium (Nord-Lock, "The experts: thread engagement in a tapped hole", nord-lock.com/insights/bolting-tips/2015: "approximately
+ * 1 times the nominal diameter in steel" and "2 times the nominal diameter in aluminum"). It was a flat 3 mm, unsourced.
+ */
+export function tapEngagementDepthMm(diameterMm: number, materialFamily: string): number {
+  return (materialFamily === 'aluminum' ? 2 : 1) * diameterMm;
+}
+export const TAP_ENGAGEMENT_SOURCE =
+  'Thread engagement: 1 x the nominal diameter in steel, 2 x in aluminium (Nord-Lock, "The experts: thread engagement in a tapped hole": "approximately 1 times the nominal diameter in steel", "2 times the nominal diameter in aluminum")';
 
 interface TapPhysicsResult {
   rpm: number;
@@ -459,11 +498,11 @@ interface TapCycleBreakdown {
  * rapid-retract synchronization assumed; that's a CNC-specific option this
  * shop-floor-agnostic formula doesn't model).
  *
- * fallbackDepthMm is supplied by the caller (not hardcoded here) because the
- * right assumption differs by context: a sheet-metal tapped hole runs through
- * the sheet thickness (shallow), while a CNC-machined blind tapped hole in
- * solid stock is conventionally ~1.5-2x the nominal diameter for full thread
- * engagement — this function has no way to know which applies.
+ * fallbackDepthMm is supplied by the caller because the right depth differs by
+ * context: a sheet-metal tapped hole runs through the sheet thickness, while a
+ * hole tapped in solid stock (the caller passes null) is tapped for its full
+ * thread engagement, 1 x the nominal diameter in steel and 2 x in aluminium
+ * (tapEngagementDepthMm).
  */
 interface TapPhysicsInputs {
   diameterMm: number;
@@ -491,7 +530,8 @@ export function resolveTapPhysicsInputs(
   sizeStr: string,
   pitchMmIn: number | null | undefined,
   depthMmIn: number | null | undefined,
-  fallbackDepthMm: number,
+  /** The depth when none is measured: the sheet's thickness for a sheet tapped through; null in solid stock (the thread engagement). */
+  fallbackDepthMm: number | null,
   materialGrade?: string | null,
 ): TapPhysicsInputs {
   const diaMatch = sizeStr.match(/M\s*(\d+(?:\.\d+)?)/i);
@@ -510,8 +550,9 @@ export function resolveTapPhysicsInputs(
   const pitchIsAssumed = pitchMmIn == null && tablePitch == null;
   const pitchMm = pitchMmIn ?? tablePitch ?? ASSUMED_THREAD_PITCH_MM;
   const depthIsAssumed = depthMmIn == null || depthMmIn <= 0;
-  const depthMm = depthIsAssumed ? Math.max(fallbackDepthMm, 0.1) : depthMmIn!;
   const materialFamily = classifyMaterialFamily(materialGrade);
+  const fallback = fallbackDepthMm != null && fallbackDepthMm > 0 ? fallbackDepthMm : tapEngagementDepthMm(diameterMm, materialFamily);
+  const depthMm = depthIsAssumed ? Math.max(fallback, 0.1) : depthMmIn!;
   const surfaceSpeedMMin = TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL[materialFamily] ?? TAP_SURFACE_SPEED_M_MIN_BY_MATERIAL['__default__']!;
   return { diameterMm, diameterIsAssumed, pitchMm, pitchIsAssumed, depthMm, depthIsAssumed, surfaceSpeedMMin, materialFamily };
 }
@@ -521,7 +562,7 @@ export function computeTapCycleSec(
   count: number,
   pitchMmIn: number | null | undefined,
   depthMmIn: number | null | undefined,
-  fallbackDepthMm: number,
+  fallbackDepthMm: number | null,
   materialGrade?: string | null,
 ): TapCycleBreakdown {
   const { diameterMm, pitchMm, pitchIsAssumed, depthMm, depthIsAssumed, surfaceSpeedMMin, materialFamily } =
