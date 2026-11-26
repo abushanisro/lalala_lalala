@@ -111,6 +111,11 @@ describe('the sequencer mills away the stock around the part', () => {
     expect(ops.slice(0, 2).map((o) => o.name)).toEqual(['Facing', 'Bulk Milling']);
     expect(named(ops, 'Bulk Milling')[0]!.timeSec).toBeCloseTo(12.1716, 6);
     expect(named(ops, 'Facing')[0]!.plan).toEqual([expect.objectContaining({ operation: 'Facing' })]);
+    // The caption names every volume the value is worked out from, so it adds up: 100 000 - 67 785.04 - 16 000 - 5 630.96 = 10 584.
+    expect(named(ops, 'Bulk Milling')[0]!.trace!.find((s) => s.fieldName === 'Removed Volume')).toMatchObject({
+      value: 10584,
+      source: 'Stock around the part: the piece 100000 mm^3 less the part 67785.04 mm^3, the 16000 mm^3 Facing takes off the piece and the 5630.96 mm^3 its features remove',
+    });
   });
 
   it('the removal rate carries the material\'s machinability, as the roughing of a pocket does', () => {
@@ -222,6 +227,38 @@ describe('on the mill line, the Bulk Milling of the stock around the part', () =
     expect(step('Cycle Time')).toMatchObject({ value: 30.5716 });
     expect(line.physicsGap).toBeUndefined();
     expect(without.calculationTrace!.some((s) => s.fieldName.startsWith('Bulk Milling ·'))).toBe(false);
+  });
+
+  it('is listed under the time it counts toward, with each pocket\'s roughing: the operations add up to that time, and each has its steps', () => {
+    const summed = input('Rough Milling Time').sumOf!;
+    // The bulk milling, then the two pockets (30 x 20 x 5 in 6 s, 30 x 10 x 5 in 3 s): two operations of one name, told apart by their number.
+    expect(summed.map((o) => [o.name, o.seconds])).toEqual([['Bulk Milling', 30.5716], ['Rough Milling', 6], ['Rough Milling', 3]]);
+    expect(summed.reduce((t, o) => t + o.seconds, 0)).toBeCloseTo(input('Rough Milling Time').value as number, 4);
+    const stepsOf = (operation: number) => line.calculationTrace!.filter((s) => s.operation === operation);
+    for (const o of summed) {
+      const steps = stepsOf(o.operation);
+      expect(new Set(steps.map((s) => s.group))).toEqual(new Set([o.name]));
+      expect(steps.find((s) => s.kind === 'calculated' && s.groupField === 'Cycle Time')!.value).toBe(o.seconds);
+    }
+    const [, wide, narrow] = summed;
+    expect(stepsOf(wide!.operation).find((s) => s.groupField === 'Cut Width')!.value).toBe(20);
+    expect(stepsOf(narrow!.operation).find((s) => s.groupField === 'Cut Width')!.value).toBe(10);
+    // The line's own steps are of no operation; every operation step is listed under exactly one time.
+    const listed = line.calculationTrace!.filter((s) => s.kind === 'input').flatMap((s) => s.sumOf ?? []).map((o) => o.operation);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect(new Set(line.calculationTrace!.flatMap((s) => (s.operation == null ? [] : [s.operation])))).toEqual(new Set(listed));
+    expect(input('Rough Milling Time').operation).toBeUndefined();
+    // A time nothing counts toward lists nothing.
+    expect(input('Contouring Time').sumOf).toBeUndefined();
+  });
+
+  it('an operation the drawing puts a factor on is listed at its time on the line, with the factor', () => {
+    // A fine surface finish on the drawing makes the wide pocket's roughing 1.3 times as long: 6 s -> 7.8 s.
+    const ops = sequence(FEATURES, AROUND);
+    const wide = ops.findIndex((o) => o.name === 'Rough Milling');
+    const factored = millLineOf(milled(ops.map((o, i) => (i === wide ? { ...o, timeFactor: 1.3 } : o))));
+    const summed = factored.calculationTrace!.find((s) => s.fieldName === 'Rough Milling Time')!.sumOf!;
+    expect(summed.map((o) => [o.name, o.seconds, o.factor])).toEqual([['Bulk Milling', 30.5716, undefined], ['Rough Milling', 7.8, 1.3], ['Rough Milling', 3, undefined]]);
   });
 
   it('is a row of the line\'s feature breakdown, first: named, timed, and tied to no feature', () => {

@@ -1,4 +1,4 @@
-import { runReferenceCalculator, withFieldOverrides, type ReferenceCalculators } from '../../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
+import { forPart, runReferenceCalculator, withFieldOverrides, type ReferenceCalculators } from '../../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
 
 // A part's own value for one field of a stored calculator (migration 1011): an engineer who knows better sets it, with the reason. An input's value replaces
 // the seeded one; a calculated field's value replaces the formula's result, and every later formula uses it. The trace keeps what the calculator would
@@ -48,5 +48,73 @@ describe('a part\'s own value for a calculator field', () => {
     withFieldOverrides(CALC, { 'Injection Molding - Cycle Time': { Wall: { value: 9, reason: 'x' } } });
     expect(JSON.stringify(CALC)).toBe(before);
     expect(withFieldOverrides(CALC, null)).toBe(CALC);
+  });
+});
+
+// Where the costing lays a part's values over the calculators (forPart), every run says which of its steps the part can set: a parameter (the
+// calculator's own value, a reference-table row, a variable, a machine or material record), never a measurement of the part or a result worked
+// out from other values. The Cost panel offers the pencil on exactly those steps.
+const MILL: ReferenceCalculators = {
+  'Rough Milling': {
+    calculatorId: 'm1', name: 'Machining - Rough Milling', version: 2,
+    fields: [
+      { field_name: 'Cut Depth', field_type: 'number', unit: 'mm', display_order: 1 },
+      { field_name: 'Cutter Diameter', field_type: 'number', unit: 'mm', display_order: 2 },
+      { field_name: 'Max Spindle Speed', field_type: 'number', unit: 'rpm', display_order: 3 },
+      { field_name: 'Operations Time', field_type: 'number', unit: 's', display_order: 4 },
+      { field_name: 'Depth of Cut', field_type: 'number', unit: 'mm', default_value: 2, note: 'End Milling sheet: 2 mm', display_order: 5 },
+      { field_name: 'Allowance', field_type: 'calculated', unit: 's', default_value: '1.5', display_order: 6 },
+      { field_name: 'Depth Passes', field_type: 'calculated', default_value: 'ceil({Cut Depth} / {Depth of Cut})', display_order: 7 },
+      { field_name: 'Cycle Time', field_type: 'calculated', unit: 's', default_value: '{Depth Passes} * 3 + {Allowance} + {Operations Time}', display_order: 8 },
+    ],
+  },
+};
+const millSeeds = {
+  'Cut Depth': { value: 19, source: 'CAD: depth', ref: { kind: 'features' as const, label: 'Pocket', features: [{ featureId: 'PocketV2-1' }] } },
+  'Cutter Diameter': { value: 10, source: 'tblMillingFinishing: mild_steel ToolDiameterMm', lookup: true },
+  'Max Spindle Speed': { value: 8000, source: 'Machine: test mill', ref: { kind: 'machine' as const, machineId: 'mhr-1', machineName: 'Test mill', column: 'specs.spindle_speed_rpm' } },
+  'Operations Time': { value: 4, source: 'CAD features: Drilling (operation sequence)', sumOf: [{ operation: 0, name: 'Drilling', seconds: 4, count: 2 }] },
+};
+const SET = { calculator: 'Machining - Rough Milling' };
+
+describe('the steps a part can set, where the costing lays its values over the calculators', () => {
+  const r = runReferenceCalculator(forPart(MILL, null), 'Rough Milling', millSeeds);
+
+  it('a parameter can be set: a table row, a machine value, the calculator\'s own value, a constant it states', () => {
+    expect(step(r, 'Cutter Diameter').settable).toEqual({ ...SET, field: 'Cutter Diameter' });
+    expect(step(r, 'Max Spindle Speed').settable).toEqual({ ...SET, field: 'Max Spindle Speed' });
+    expect(step(r, 'Depth of Cut').settable).toEqual({ ...SET, field: 'Depth of Cut' });
+    expect(step(r, 'Allowance').settable).toEqual({ ...SET, field: 'Allowance' });
+  });
+
+  it('a measurement of the part, a sum of other operations and a result cannot', () => {
+    expect(step(r, 'Cut Depth').settable).toBeUndefined();
+    expect(step(r, 'Operations Time').settable).toBeUndefined();
+    expect(step(r, 'Depth Passes').settable).toBeUndefined();
+    expect(step(r, 'Cycle Time').settable).toBeUndefined();
+  });
+
+  it('an input that adds up other operations keeps their list', () => {
+    expect(step(r, 'Operations Time').sumOf).toEqual([{ operation: 0, name: 'Drilling', seconds: 4, count: 2 }]);
+  });
+
+  it('the part\'s own value is used, and the step it replaced can be set back', () => {
+    const own = runReferenceCalculator(forPart(MILL, { 'Machining - Rough Milling': { 'Depth of Cut': { value: 4, reason: 'rigid setup' } } }), 'Rough Milling', millSeeds);
+    // 19 mm in 4 mm passes: 5 passes (10 at the calculator's 2 mm).
+    expect(step(own, 'Depth Passes').value).toBe(5);
+    expect(step(r, 'Depth Passes').value).toBe(10);
+    expect(step(own, 'Depth of Cut')).toMatchObject({ value: 4, override: { original: 2, reason: 'rigid setup' }, settable: { ...SET, field: 'Depth of Cut' } });
+  });
+
+  it('calculators the costing does not lay a part\'s values over name no step as settable', () => {
+    expect(runReferenceCalculator(MILL, 'Rough Milling', millSeeds).trace.some((s) => s.settable)).toBe(false);
+    expect(runReferenceCalculator(withFieldOverrides(MILL, { 'Machining - Rough Milling': { 'Depth of Cut': { value: 4, reason: 'x' } } }), 'Rough Milling', millSeeds).trace.some((s) => s.settable)).toBe(false);
+  });
+
+  it('never edits the stored calculators it is given', () => {
+    const before = JSON.stringify(MILL);
+    forPart(MILL, { 'Machining - Rough Milling': { 'Depth of Cut': { value: 4, reason: 'x' } } });
+    expect(JSON.stringify(MILL)).toBe(before);
+    expect(forPart(null, null)).toBeNull();
   });
 });

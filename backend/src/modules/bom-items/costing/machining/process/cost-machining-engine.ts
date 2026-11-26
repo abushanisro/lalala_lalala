@@ -515,6 +515,14 @@ function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>,
   const groupSeeds = Object.fromEntries([...groups].map(([field, g]) => [field, {
     value: g.sec,
     source: g.ops.size > 0 ? `CAD features: ${[...g.ops].join(', ')} (operation sequence)` : 'CAD features: none of this group on the part',
+    // The operations the time adds up, by their place in the sequence: their own steps follow the line's (sequencedSteps).
+    sumOf: sequenced.flatMap((o, operation) => ((MILLING_TIME_INPUT[o.name] ?? 'Other Operations Time') === field
+      ? [{
+        operation, name: o.name, seconds: Math.round(o.timeSec * 1e4) / 1e4,
+        ...(o.count != null ? { count: o.count } : {}),
+        ...(o.timeFactor != null && o.timeFactor !== 1 ? { factor: o.timeFactor } : {}),
+      }]
+      : [])),
     // The features the time was computed on: the calculator input shows them on the model. A group of no feature (nothing of it on the
     // part, or an operation on the stock): the sequence its time is summed from.
     ref: g.featureIds.size > 0 ? { kind: 'features' as const, label: field, features: [...g.featureIds].map((featureId) => ({ featureId })) } : sequenceRef(field),
@@ -547,6 +555,15 @@ function millingSeeds(featureOps: NonNullable<MachiningCostInput['featureOps']>,
       ? { 'Rapid Transfer Distance Factor': variableSeed(moves.rapidTransferDistanceFactor, 'rapidTransferDistanceFactor') } : {}),
     ...rapidTraverseSeed(moves.mhrRate, moves.location),
   };
+}
+
+/**
+ * The calculator steps of the operations a station line adds up, after the line's own: each under its operation's name and numbered by
+ * its place in the sequence, as the line's time inputs list them (millingSeeds' sumOf). Two pockets rough milled are two operations.
+ */
+function sequencedSteps(ops: NonNullable<MachiningCostInput['featureOps']>): CalculationTraceStep[] {
+  return ops.filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name))
+    .flatMap((o, operation) => prefixTrace(`${o.name} ·`, o.trace ?? []).map((s) => ({ ...s, operation })));
 }
 
 // ── Drill cycle time (real, material-aware physics) ──────────────────────────
@@ -2105,7 +2122,7 @@ export function computeMillingCostSummary(
     if (drillOps.length > 0) {
       drillingRun = runMachiningCalculator(input.machiningCalculators, realProcessName(machineClass), millingSeeds(drillOps, moves));
       drillingLineMin = (drillingRun.sec ?? 0) / 60;
-      drillingSteps = drillOps.flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
+      drillingSteps = sequencedSteps(drillOps);
       drillingLacks = [...new Set(drillOps.filter((o) => o.missing).map((o) => o.missing!))];
       drillingToolInr = drillOps.reduce((t, o) => t + (o.toolCostInr ?? 0), 0);
     }
@@ -2200,9 +2217,7 @@ export function computeMillingCostSummary(
     );
     if (millRun?.missing.length) warnings.push(`${millLine.process} not priced — missing real input: ${millRun.missing.join('; ')}.`);
     // The line's own steps (the operation groups), then each sequenced operation's calculator steps under its name.
-    const operationSteps = (input.featureOps ?? [])
-      .filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && !MILLING_DRILLING_OPERATIONS.has(o.name))
-      .flatMap((o) => prefixTrace(`${o.name} ·`, o.trace ?? []));
+    const operationSteps = sequencedSteps((input.featureOps ?? []).filter((o) => !MILLING_DRILLING_OPERATIONS.has(o.name)));
     // The tool wear of the operations the mill line times (the workbook's drills, step drills and boring bars), on the mill line.
     const millToolInr = millRun
       ? (input.featureOps ?? []).filter((o) => !MILLING_DOUBLE_BILLED_ELSEWHERE.has(o.name) && !MILLING_DRILLING_OPERATIONS.has(o.name))

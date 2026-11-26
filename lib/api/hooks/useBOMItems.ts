@@ -822,6 +822,30 @@ export interface CalculationTraceStep {
   /** A line that ran one calculator per group: the group ("M2") and the calculator's own field name (fieldName carries the prefix). */
   group?: string;
   groupField?: string;
+  /**
+   * An 'input' step that adds up the times of operations timed by calculators of their own (a mill line's sequenced operations), in the
+   * line's order. An operation's own steps are the line's steps whose `operation` is its number (backend SummedOperation).
+   */
+  sumOf?: SummedOperation[];
+  /** A step of one operation of the line's sequence (see `sumOf`): which one. */
+  operation?: number;
+  /**
+   * The part can be given its own value for this step (calculator field overrides): the stored calculator and its field. Set by the engine
+   * where it lays the part's values over the calculator, on a parameter (not a measurement of the part or a result).
+   */
+  settable?: { calculator: string; field: string };
+}
+
+/** One operation a line input adds up (CalculationTraceStep.sumOf). */
+export interface SummedOperation {
+  operation: number;
+  name: string;
+  /** Its time on this line's machine (s), as the input adds it. */
+  seconds: number;
+  /** The features (or holes) it cuts, when the sequence counts them. */
+  count?: number;
+  /** A factor the drawing put on its calculated time, already in `seconds`. */
+  factor?: number;
 }
 
 export type LookupPolicyType = 'EXACT_MATCH' | 'INTERPOLATE' | 'RANGE' | 'FORMULA';
