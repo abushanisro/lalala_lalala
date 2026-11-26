@@ -89,7 +89,7 @@ export function ForgingSection({ forging, overrides, onChange }: Props) {
                 placeholder={String(forging.hits)}
                 parse={parseBlows}
                 onCommit={set(FORGING_SCENARIO_KEYS.hits)}
-                title="Blows of the screw press and the hammer. Empty: the data's (baseNumberOfHits, less the stages the plant disables). A mechanical press strikes once per station."
+                title="Strokes of the hydraulic press and blows of the hammer. Empty: the data's (baseNumberOfHits, less the stages the plant disables). A mechanical press strikes once per station."
               />
               <div className={rowClass} title="The force (or, on a hammer, the blow energy) the forming step needs, from the settings above.">
                 <span className={labelClass}>Forming</span>
