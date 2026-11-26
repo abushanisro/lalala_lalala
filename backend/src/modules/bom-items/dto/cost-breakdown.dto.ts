@@ -188,6 +188,33 @@ export interface CalculationTraceStep {
   state?: 'VALIDATED' | 'ASSUMED' | 'UNSUPPORTED';
   /** The part's own value replaced this step (calculator_field_overrides, migration 1011): what the calculator would have used, and why it was changed. */
   override?: { original: number | null; reason: string };
+  /**
+   * An 'input' step that adds up the times of operations timed by calculators of their own (a mill line's sequenced operations): each
+   * operation in the line's order, with its time on the line and the features it cuts. An operation's own steps are the line's steps
+   * whose `operation` is its number here.
+   */
+  sumOf?: SummedOperation[];
+  /** A step of one operation of the line's sequence (see `sumOf`): which one. Two pockets rough milled are two operations of one name. */
+  operation?: number;
+  /**
+   * The part can be given its own value for this step (calculator_field_overrides, migration 1011): the stored calculator and its field.
+   * Set where the costing lays the part's values over the calculator, on a value that is a parameter (the calculator's own value, a
+   * reference-table row, a variable, a machine or material record), not a measurement of the part or a result worked out from others.
+   */
+  settable?: { calculator: string; field: string };
+}
+
+/** One operation a line input adds up (CalculationTraceStep.sumOf). */
+export interface SummedOperation {
+  /** The operation's place in the line's sequence: its steps carry the same number (CalculationTraceStep.operation). */
+  operation: number;
+  name: string;
+  /** Its time on this line's machine (s), as the input adds it. */
+  seconds: number;
+  /** The features (or holes) it cuts, when the sequence counts them. */
+  count?: number;
+  /** A factor the drawing put on its calculated time (a fine surface finish), already in `seconds`; absent when there is none. */
+  factor?: number;
 }
 
 // Every lookup table declares exactly one policy (lookup_table_policy,
