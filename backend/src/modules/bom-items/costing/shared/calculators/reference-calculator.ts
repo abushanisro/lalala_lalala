@@ -40,6 +40,8 @@ export interface ReferenceCalculatorDef {
   fields: ReferenceCalculatorField[];
   /** A part's own values for some of its fields, by field name (calculator_field_overrides, migration 1011): set with withFieldOverrides. */
   overrides?: Readonly<Record<string, FieldOverride>>;
+  /** The costing lays a part's own values over this calculator (forPart): its runs say which of their steps the part can set (CalculationTraceStep.settable). */
+  settable?: boolean;
 }
 
 /** A part's own value for one calculator field, with the reason (calculator_field_overrides). */
@@ -61,6 +63,30 @@ export function withFieldOverrides(calculators: ReferenceCalculators | null | un
     const own = overrides[def.name];
     return [key, own && Object.keys(own).length > 0 ? { ...def, overrides: own } : def];
   }));
+}
+
+/**
+ * The calculators as one part is costed with them, where the part can be given its own field values: its values laid over them
+ * (withFieldOverrides), and every calculator marked so that its runs say which steps can be set (a parameter, not a measurement of the part).
+ */
+export function forPart<T extends ReferenceCalculators | null | undefined>(calculators: T, overrides: CalculatorFieldOverrides | null | undefined): T {
+  if (!calculators) return calculators;
+  return Object.fromEntries(Object.entries(calculators).map(([key, def]) => {
+    const own = overrides?.[def.name];
+    return [key, { ...def, settable: true, ...(own && Object.keys(own).length > 0 ? { overrides: own } : {}) }];
+  })) as T;
+}
+
+/**
+ * The sources a parameter is read from: a value for every part (the calculator's own, a reference-table row, a variable) or of the machine or
+ * material chosen for it. The part may be given its own value in its place. A measurement of the part's CAD, a costing input or a value worked
+ * out from others is not one: it changes with what it is taken from.
+ */
+const PARAMETER_SOURCES: ReadonlySet<SourceRef['kind']> = new Set(['calculatorField', 'lookup', 'smTable', 'variable', 'machine', 'material']);
+
+/** The step's `settable`, for a calculator the costing lays a part's values over, on a field that is a parameter (or that the part has already set). */
+function settableStep(def: ReferenceCalculatorDef, field: string, parameter: boolean): Pick<CalculationTraceStep, 'settable'> {
+  return def.settable && parameter ? { settable: { calculator: def.name, field } } : {};
 }
 
 const overrideSource = (o: FieldOverride, was: string) => `Engineer's value for this part: ${o.reason} (instead of ${was})`;
@@ -103,6 +129,8 @@ export interface CalcSeed {
   match?: LookupMatch;
   /** Where the value was read, structured, so the calculator dialog can open and highlight it (SourceRef). */
   ref?: SourceRef;
+  /** The value adds up the times of operations timed by calculators of their own: each of them (CalculationTraceStep.sumOf). */
+  sumOf?: CalculationTraceStep['sumOf'];
 }
 
 /** The lookup-table row(s) an input came from, for highlighting in the table viewer. */
@@ -215,8 +243,14 @@ export function runReferenceCalculator(
     if (f.field_type === 'calculated') continue;
     const own = def.overrides?.[f.field_name];
     const seeded = seeds[f.field_name];
+    // What the part's own value replaces: the seeded value, else the calculator's own value for the field.
+    const replaced = seeded && Number.isFinite(seeded.value)
+      ? { value: seeded.value, source: seeded.source }
+      : hasValue(f.default_value) && Number.isFinite(Number(f.default_value))
+        ? { value: Number(f.default_value), source: calculatorDefaultSource(def.name, f.note) }
+        : null;
     const seed: CalcSeed | undefined = own
-      ? { value: own.value, source: overrideSource(own, seeded ? `${round(seeded.value)}, ${seeded.source}` : 'no seeded value') }
+      ? { value: own.value, source: overrideSource(own, replaced ? `${round(replaced.value)}, ${replaced.source}` : 'no seeded value') }
       : seeded;
     if (seed && Number.isFinite(seed.value)) {
       scope[f.field_name] = seed.value;
@@ -228,7 +262,9 @@ export function runReferenceCalculator(
         // A value the part's own override replaced was not read from the seed's source: its eye opens the override instead, and the value it replaces.
         ...(seed.ref && !own ? { ref: seed.ref, ...(evidenceOf(seed.ref) ? { evidence: evidenceOf(seed.ref)! } : {}) } : {}),
         ...(own ? { ref: overrideRef(def, f, own, seeded) } : {}),
-        ...(own ? { override: { original: seeded && Number.isFinite(seeded.value) ? round(seeded.value) : null, reason: own.reason } } : {}),
+        ...(own ? { override: { original: replaced ? round(replaced.value) : null, reason: own.reason } } : {}),
+        ...(seed.sumOf?.length ? { sumOf: seed.sumOf } : {}),
+        ...settableStep(def, f.field_name, !!own || !!seed.lookup || (!!seed.ref && PARAMETER_SOURCES.has(seed.ref.kind))),
       });
     } else if (hasValue(f.default_value) && Number.isFinite(Number(f.default_value))) {
       scope[f.field_name] = Number(f.default_value);
@@ -238,6 +274,7 @@ export function runReferenceCalculator(
         value: Number(f.default_value), unit: f.unit ?? null,
         source: calculatorDefaultSource(def.name, f.note),
         ref: calculatorFieldRef(def, f.field_name),
+        ...settableStep(def, f.field_name, true),
       });
     } else {
       missingInputs.push(f.field_name);
@@ -281,6 +318,8 @@ export function runReferenceCalculator(
         // A constant the calculator states, with a note on where it comes from: that source, and the calculator's table of defaults for the eye.
         ...(!own && f.note?.trim() && isConstantField(f) ? { source: f.note.trim(), ref: calculatorFieldRef(def, f.field_name) } : {}),
         ...(own ? { source: overrideSource(own, 'the formula'), override: { original: typeof was === 'number' && Number.isFinite(was) ? round(was) : null, reason: own.reason } } : {}),
+        // A constant the calculator states is a parameter; any other result changes with the values it is worked out from.
+        ...settableStep(def, f.field_name, !!own || isConstantField(f)),
       };
     });
 

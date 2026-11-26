@@ -230,7 +230,7 @@ import { buildCastingCostSummary, castingProcessOfFamily } from './costing/casti
 import { FeatureToleranceService } from './services/feature-tolerance.service';
 import { priceSecondaryMachining } from './costing/shared/tolerance/secondary-machining-cost';
 import { selectCastingOperations, topLevelCatalogRows } from './costing/casting/casting-feature-operations';
-import { calculatorDefaultSource, calculatorFieldRef, runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
+import { calculatorDefaultSource, calculatorFieldRef, forPart, runReferenceCalculator, type ReferenceCalculators } from './costing/shared/calculators/reference-calculator';
 import { castingSeed } from './costing/casting/casting-calculator-seeds';
 import { cleaningLine, meltingLine, partingLineGrindingLine, trimLine, visualInspectionLine } from './costing/casting/casting-finishing';
 import { computeDieTooling, type DieToolingResult } from './costing/casting/die-tooling';
@@ -1692,7 +1692,7 @@ export class BomItemCostingService {
       this.machiningWorkbookTables(),
       this.machiningLookup.getKeywayBroachReference(),
       this.machiningLookup.getOperationSizeRanges(),
-      this.resolveMachiningCalculators(accessToken),
+      this.resolveMachiningCalculators(accessToken, item.id),
     ]);
     const deepHoleRules = resolveDeepHoleRules(operationSizeRanges);
     if (deepHoleRules.missing.length > 0) {
@@ -2597,7 +2597,7 @@ export class BomItemCostingService {
         this.machiningLookup.getOperationSizeRanges(),
         this.machiningLookup.getCapabilityRules(),
       ]);
-      const machiningCalculators = await this.resolveMachiningCalculators(accessToken);
+      const machiningCalculators = await this.resolveMachiningCalculators(accessToken, id);
       // A milled part is milled from the sawn piece, whatever mill makes it: its plan mills away the stock around the part (and, for a
       // plate part under Perimeter Milling with Drop-off, cuts round its outline first). A turned part's routes here are lathes, which turn
       // the stock off.
@@ -3306,7 +3306,7 @@ export class BomItemCostingService {
           this.machiningLookup.getSurfaceGrindingParams(matClass),
           this.machiningLookup.getInternalGrindingParams(matClass),
           this.machiningLookup.getCapabilityRules(),
-          this.resolveMachiningCalculators(accessToken),
+          this.resolveMachiningCalculators(accessToken, id),
           this.machiningLookup.getDeburrParams(matClass),
           this.rates.resolveProcessIdentities(accessToken, machiningClasses, 'milled'),
         ]);
@@ -8090,7 +8090,7 @@ export class BomItemCostingService {
         holeCount: (summary.holeCount ?? item.holeCount ?? 0) as number,
         materialCostPerKg, materialDensityKgM3, materialSource, batchSize, mhrRates, location,
         stockAllowancePerSideMm: milledAllowance.allowancePerSideMm,
-        machiningCalculators: await this.resolveMachiningCalculators(accessToken),
+        machiningCalculators: await this.resolveMachiningCalculators(accessToken, id),
         // The alternative is costed with no grade: the engine's default material class.
         millingRemovalRateMm3PerMin: await this.machiningLookup.getMillingRemovalRate(detectMaterialClass(null)),
       });
@@ -8372,7 +8372,11 @@ export class BomItemCostingService {
    * that carries a calculator, with that calculator's fields (the stored
    * formulas the machining engine evaluates — migration 804).
    */
-  private async resolveMachiningCalculators(accessToken: string): Promise<MachiningCalculators> {
+  private async resolveMachiningCalculators(
+    accessToken: string,
+    /** The part being costed: its own field values (calculator_field_overrides) are laid over the calculators, which then say which of their steps the part can set. */
+    bomItemId?: string,
+  ): Promise<MachiningCalculators> {
     const catalog = await this.loadCalculatorCatalog(accessToken);
     const out: MachiningCalculators = {};
     // Only rows on a machining station class (the calculators migration 804
@@ -8393,7 +8397,8 @@ export class BomItemCostingService {
       // Each field with where its default comes from (the spec's note; the database has no column for it).
       out[m.operation] = { calculatorId: calc.id, name: calc.name, version: calc.version ?? 1, fields: withSpecNotes(calc.name, fields) };
     }
-    return out;
+    if (!bomItemId) return out;
+    return forPart(out, overridesByCalculator(await CalculatorFieldOverridesService.rows(this.databaseService.getClient(accessToken), bomItemId)));
   }
 
   /**
@@ -9214,7 +9219,7 @@ export class BomItemCostingService {
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,
       deburrMatch: (await this.machiningLookup.getDeburrParams(detectMaterialClass(grade))).match ?? null,
       workbook,
-      machiningCalculators: await this.resolveMachiningCalculators(accessToken),
+      machiningCalculators: await this.resolveMachiningCalculators(accessToken, id),
       workholderTable: await this.machiningLookup.getWorkholderTable(),
       jigBoreTable: jigBoreTable ?? null,
       jigBoreRate: mhrRates.jigBore,
@@ -9745,7 +9750,7 @@ export class BomItemCostingService {
       location,
       deburrLinearSpeedMmPerSec: deburrLinearSpeedMmPerSec ?? null,
       deburrMatch: (await this.machiningLookup.getDeburrParams(detectMaterialClass(grade))).match ?? null,
-      machiningCalculators: await this.resolveMachiningCalculators(accessToken),
+      machiningCalculators: await this.resolveMachiningCalculators(accessToken, id),
       workholderTable: await this.machiningLookup.getWorkholderTable(),
       // Same real Ra signal + real grinding physics getCostSummary resolves
       // — must match line for line.
