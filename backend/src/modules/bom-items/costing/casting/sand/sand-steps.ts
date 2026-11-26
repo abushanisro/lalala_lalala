@@ -299,6 +299,9 @@ export function coolStep(ctx: SandRouteContext, machine: SandMachine, pit: boole
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
 }
 
+/** Ranks a capable machine outside the preferred ones after every preferred machine, whatever it costs. */
+const NOT_PREFERRED_RANK = 1e12;
+
 export interface CostedStep {
   line: ProcessLineCost;
   machine: SandMachine | null;
@@ -312,8 +315,9 @@ export function energyBasisOf(ctx: Pick<SandRouteContext, 'energyPricePerKwh' | 
 }
 
 /**
- * The cheapest capable machine for a step, costed as a casting line. Preferred machines come first when the data's
- * usePreferredMachines says so. With no capable machine the line is a named gap carrying every machine's reason.
+ * The machine of a step, chosen technically first and then by cost, and costed as a casting line: only the machines `evaluate` finds capable
+ * (each technical criterion the step states) are compared; of them the plant's preferred machines when one is capable and the data's
+ * usePreferredMachines says so; then the cheapest cost per part. With no capable machine the line is a named gap carrying every machine's reason.
  */
 export function selectAndCost(input: {
   process: string;
@@ -359,13 +363,18 @@ export function selectAndCost(input: {
   // kept finer, decides between them before the name does.
   const fine = (c: ProcessLineCost) => (c.machineCostPerPart ?? 0) + (c.laborCostPerPart ?? 0);
   const best = [...pool].sort((a, b) => a.costed!.totalCost - b.costed!.totalCost || fine(a.costed!) - fine(b.costed!) || a.m.name.localeCompare(b.m.name))[0];
-  const evals: ChoiceEval[] = evaluated.map((e) => ({
-    name: e.m.name,
-    reasons: e.outcome.ok ? (preferOnly && !e.m.preferred ? ['not a preferred machine (usePreferredMachines)'] : []) : e.outcome.reasons,
-    cost: e.costed?.totalCost ?? null,
-  }));
+  // A capable machine that is not preferred, when the choice is among the preferred ones: it stays counted as capable (it met every
+  // technical criterion), listed after the preferred machines and said to be outside them.
+  const evals: ChoiceEval[] = evaluated.map((e) => {
+    if (!e.outcome.ok || !e.costed) return { name: e.m.name, reasons: e.outcome.ok ? [] : e.outcome.reasons, cost: null };
+    const outside = preferOnly && !e.m.preferred;
+    return {
+      name: e.m.name, reasons: [], cost: e.costed.totalCost,
+      ...(outside ? { note: 'capable, not a preferred machine (usePreferredMachines)', rank: NOT_PREFERRED_RANK + e.costed.totalCost } : {}),
+    };
+  });
   const choice: MachineChoiceDto = machineChoice({
-    rule: 'Cheapest cost per part among the capable machines (machine rate, crew, setup and energy)',
+    rule: `Technical first, then cost: only the machines that meet every criterion below${preferOnly ? ", of them the plant's preferred machines (usePreferredMachines)," : ','} then the cheapest cost per part (machine rate, crew, setup and energy)`,
     criteria: input.criteria,
     evals,
     chosen: best?.m.name ?? null,

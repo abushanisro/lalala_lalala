@@ -5,6 +5,7 @@ import { buildForgingCostSummary } from '../../../../../modules/bom-items/costin
 import { forgingRouteFor } from '../../../../../modules/bom-items/costing/forging/forging-route-comparison';
 import { routeToolingItems } from '../../../../../modules/bom-items/costing/shared/route-tooling';
 import { findRouteDataGaps } from '../../../../../modules/bom-items/costing/shared/core/engine-kernel';
+import { FORGING_CLASS } from '../../../../../modules/bom-items/costing/forging/forging-route';
 import { allForgingMachines, forgingMaterial, realForgingReference } from './forging-test-data';
 
 // The forging routes on the real memory/Forging data. The part: 150 cm³ of AISI 4140 (1.17 kg), 6,000 mm² in outline along the die direction
@@ -37,7 +38,7 @@ const complexity = (c: number) => ({ scenario: { ...input().scenario, complexity
 const lineOf = (route: ForgingRoute, process: string) => route.lines.find((l) => l.process === process)!;
 const processes = (route: ForgingRoute) => route.lines.map((l) => l.process);
 
-describe('closed-die forging on a screw press: the metal', () => {
+describe('closed-die forging on a hydraulic press: the metal', () => {
   const route = routeOf('closed_die_press');
 
   it('forges the part with the flash of its complexity and the scale of induction heating', () => {
@@ -69,7 +70,7 @@ describe('closed-die forging on a screw press: the metal', () => {
   });
 });
 
-describe('closed-die forging on a screw press: the steps and dies', () => {
+describe('closed-die forging on a hydraulic press: the steps and dies', () => {
   const route = routeOf('closed_die_press');
 
   it('is complete, in process order, every step on a real machine', () => {
@@ -142,7 +143,7 @@ describe('the other closed-die routes', () => {
     expect(route.complete).toBe(true);
     expect(processes(route)).toEqual(['Band Saw', 'Conveyor Induction Heat', 'Mechanical Press', 'Trim']);
     expect(route.hits).toBe(3);
-    // Same finishing blow as the screw press: the force reduction is on the machine's side.
+    // Same finishing blow as the hydraulic press: the force reduction is on the machine's side.
     expect(route.forming.value).toBeCloseTo(routeOf('closed_die_press').forming.value, 2);
   });
 
@@ -238,10 +239,100 @@ describe("the engineer's settings over the engine's (Cost Guide)", () => {
     expect(route.forming.value).toBeGreaterThan(auto.forming.value);
   });
 
-  it('blows set by the engineer are the screw press and hammer blows; the mechanical press keeps one per station', () => {
+  it('blows set by the engineer are the hydraulic press strokes and hammer blows; the mechanical press keeps one per station', () => {
     expect(routeOf('closed_die_press', set({ hits: 5 })).hits).toBe(5);
     expect(routeOf('closed_die_hammer', set({ hits: 5 })).hits).toBe(5);
     expect(routeOf('closed_die_mechanical_press', set({ hits: 5 })).hits).toBe(3);
+  });
+});
+
+// Technical first, then cost: a step compares only the machines that meet every technical requirement the forging data gives a limit for,
+// each requirement stated with the number the part needs; the forming machine's kind is then the cheapest of the routes that are complete.
+describe('machines are chosen technically first, then by cost', () => {
+  const specsOf = (machineClass: string, name: string) => allForgingMachines()[machineClass]!.find((m) => m.name === name)!.specs as Record<string, unknown>;
+  const without = (machineClass: string, spec: string) => ({
+    machinesByClass: { ...allForgingMachines(), [machineClass]: allForgingMachines()[machineClass]!.map((m) => ({ ...m, specs: { ...m.specs, [spec]: null } })) },
+  });
+
+  it('the route is called a hydraulic press, the kind of the press machines the forging data lists', () => {
+    expect(routeOf('closed_die_press').label).toBe('Closed-die forging · hydraulic press');
+  });
+
+  it('each step states what the machine must have, with the number the part needs', () => {
+    const press = routeOf('closed_die_press');
+    expect(lineOf(press, 'Press').machineChoice!.criteria).toEqual([`A press force of at least ${press.forming.value} kN, the finishing blow`]);
+    expect(lineOf(press, 'Trim').machineChoice!.criteria).toEqual([`A press force of at least ${press.trimForceKn} kN, to shear the flash`]);
+    expect(lineOf(press, 'Band Saw').machineChoice!.criteria[0]).toBe(`It takes the ${press.barDiameterMm} mm bar`);
+    const hammer = routeOf('closed_die_hammer');
+    expect(lineOf(hammer, 'Hammer').machineChoice!.criteria[0]).toBe(`A blow energy of at least ${Math.round(hammer.forming.value)} J`);
+    expect(lineOf(hammer, 'Hammer').machineChoice!.criteria[1]).toMatch(/^A table that takes the \d+ x \d+ mm die block$/);
+    expect(lineOf(press, 'Press').machineChoice!.rule).toMatch(/^Technical first, then cost: only the machines that meet every criterion below/);
+  });
+
+  it('every machine that meets the requirements counts as capable; the preferred ones are chosen from, cheapest first', () => {
+    const route = routeOf('closed_die_press');
+    const choice = lineOf(route, 'Press').machineChoice!;
+    const presses = allForgingMachines()[FORGING_CLASS.press]!;
+    // Capable: every press of the data with the force, preferred or not.
+    expect(choice.capableCount).toBe(presses.filter((m) => Number(m.specs['press_force_kn']) >= route.forming.value).length);
+    expect(choice.capableCount).toBeGreaterThan(presses.filter((m) => m.preferred).length);
+    expect(choice.rule).toContain("of them the plant's preferred machines (usePreferredMachines)");
+    // Chosen from the preferred ones, the cheapest first; no machine below the force is listed.
+    const listed = choice.candidates.map((c) => presses.find((m) => m.name === c.name)!);
+    expect(listed.every((m) => m.preferred && Number(m.specs['press_force_kn']) >= route.forming.value)).toBe(true);
+    expect(choice.candidates[0]).toMatchObject({ name: choice.chosen, status: 'chosen' });
+    const costs = choice.candidates.map((c) => c.perPartCost!);
+    expect(costs).toEqual([...costs].sort((a, b) => a - b));
+  });
+
+  it('with preferred machines switched off, the cheapest of all the capable presses is chosen', () => {
+    const off = { ref: realForgingReference().withOverrides(new Map([['usePreferredMachines', 'false']])) };
+    const route = routeOf('closed_die_press', off);
+    const choice = lineOf(route, 'Press').machineChoice!;
+    expect(choice.rule).not.toContain('preferred');
+    expect(lineOf(route, 'Press').totalCost).toBeLessThanOrEqual(lineOf(routeOf('closed_die_press'), 'Press').totalCost);
+    expect(Number(specsOf(FORGING_CLASS.press, choice.chosen!)['press_force_kn'])).toBeGreaterThanOrEqual(route.forming.value);
+  });
+
+  it("a mechanical press must open for the part and its transfer: the part's depth plus mechanicalPressPartTransferHeightAllowance", () => {
+    // 40 mm deep + 152.4 mm: every press of the data has the stroke (300 mm and more).
+    const shallow = lineOf(routeOf('closed_die_mechanical_press'), 'Mechanical Press').machineChoice!;
+    expect(shallow.criteria[2]).toBe("A stroke of at least 192.4 mm: the part's depth and the height its transfer needs (mechanicalPressPartTransferHeightAllowance)");
+    expect(shallow.capableCount).toBe(shallow.checkedCount);
+    // 200 mm deep needs 352.4 mm: the presses with a 300 mm stroke (Schuler PK1250, PK2000) are out, whatever their force.
+    const deep = routeOf('closed_die_mechanical_press', { part: { ...BLOCK, dieDepthMm: 200 } });
+    const choice = lineOf(deep, 'Mechanical Press').machineChoice!;
+    expect(deep.complete).toBe(true);
+    expect(Number(specsOf(FORGING_CLASS.mechanicalPress, choice.chosen!)['max_stroke_length_mm'])).toBeGreaterThanOrEqual(352.4);
+    expect(choice.capableCount).toBe(allForgingMachines()[FORGING_CLASS.mechanicalPress]!.filter((m) => Number(m.specs['max_stroke_length_mm']) >= 352.4).length);
+    expect(choice.capableCount).toBeLessThan(choice.checkedCount);
+    // The shut height is in the data but has no die block height to be checked against: said, not guessed.
+    expect(deep.warnings.join(' ')).toMatch(/shut height is not checked/);
+  });
+
+  it('a part too deep for every mechanical press leaves that route incomplete, and the quote goes to a kind that can make it', () => {
+    // 400 mm deep needs a 552.4 mm stroke; the longest in the data is 540 mm (Sumitomo FPA-10000, whose table does take the die blocks).
+    const deep = { part: { ...BLOCK, dieDepthMm: 400 } };
+    const { routes, gaps } = routesOf(deep);
+    const mech = routes.find((r) => r.key === 'closed_die_mechanical_press')!;
+    expect(mech.complete).toBe(false);
+    expect(lineOf(mech, 'Mechanical Press').machineChoice!.capableCount).toBe(0);
+    const longest = { machinesByClass: { ...allForgingMachines(), [FORGING_CLASS.mechanicalPress]: allForgingMachines()[FORGING_CLASS.mechanicalPress]!.filter((m) => m.name === 'Sumitomo FPA-10000') } };
+    expect((lineOf(routeOf('closed_die_mechanical_press', { ...deep, ...longest }), 'Mechanical Press').physicsGap as { reason: string }).reason)
+      .toMatch(/its stroke is 540 mm, the part and its transfer need 552\.4 mm/);
+    const { route, note } = chooseForgingRoute(routes, gaps, null);
+    expect(route!.complete).toBe(true);
+    expect(route!.key).not.toBe('closed_die_mechanical_press');
+    expect(note).toContain('whose every step has a technically capable machine');
+    expect(note).toContain('Closed-die forging · mechanical press incomplete (Mechanical Press)');
+  });
+
+  it('a machine with no limit on file is not shown capable: the missing limit is named', () => {
+    const reason = (route: ForgingRoute, process: string) => (lineOf(route, process).physicsGap as { reason: string }).reason;
+    expect(reason(routeOf('closed_die_press', without(FORGING_CLASS.bandSaw, 'max_stock_diameter_mm')), 'Band Saw')).toMatch(/max_stock_diameter_mm/);
+    expect(reason(routeOf('closed_die_press', without(FORGING_CLASS.induction, 'maximum_coil_diameter_mm')), 'Conveyor Induction Heat')).toMatch(/maximum_coil_diameter_mm/);
+    expect(reason(routeOf('closed_die_hammer', without(FORGING_CLASS.hammer, 'table_length_mm')), 'Hammer')).toMatch(/table size/);
+    expect(reason(routeOf('closed_die_mechanical_press', without(FORGING_CLASS.mechanicalPress, 'max_stroke_length_mm')), 'Mechanical Press')).toMatch(/max_stroke_length_mm/);
   });
 });
 

@@ -5115,7 +5115,7 @@ export class BomItemCostingService {
   }
 
   /**
-   * A forged part's route comparison: every forging route (screw press, hammer, mechanical press, open die, ring rolling), each the full Cost
+   * A forged part's route comparison: every forging route (hydraulic press, hammer, mechanical press, open die, ring rolling), each the full Cost
    * Summary priced on that route, as the die-casting processes are. The recommended one is the route the quote chose, so they cannot disagree.
    */
   private async forgingRouteComparison(

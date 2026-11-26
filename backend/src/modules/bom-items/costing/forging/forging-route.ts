@@ -1,7 +1,7 @@
 // The routes of a hot forging, built from memory/Forging, each priced in full so the cheapest complete one is quoted (or the one the engineer
 // chose in the Cost Guide):
 //
-//   closed die, screw press      bar sawn into mults, heated, forged on the press (upset, block, finish blows), flash trimmed
+//   closed die, hydraulic press  bar sawn into mults, heated, forged on the press (upset, block, finish strokes), flash trimmed
 //   closed die, die hammer       the same, forged on a hammer that delivers the blow energy
 //   closed die, mechanical press the same, on a multi-station mechanical press with a transfer system (every station strikes each stroke)
 //   open die                     a flashless shape upset between flat dies on an open die press; no part-specific dies
@@ -11,6 +11,16 @@
 // calculators, the machines and the part's measurements (cad-engine forging/feature_extractor.py). Every number is computed by a calculator
 // of calculators/forging-calculators.json. Nothing is substituted: what the data or the measurements lack is named, and a step no machine
 // can do is a named gap line, which makes its route incomplete.
+//
+// Machines are chosen technically first, then by cost. A step keeps only the machines that meet every technical requirement the forging data
+// gives a limit for (press force, blow energy, table, stroke, coil, oven), each requirement stated with the number the part needs; a machine
+// with no such limit on file is not shown capable, and is named. Of the capable machines the plant's preferred ones come first
+// (usePreferredMachines), then the cheapest cost per part. The forming machine's kind (hammer, mechanical or hydraulic press) is chosen the
+// same way: only the routes whose every step has a capable machine are compared, and the cheapest of them is quoted. memory/Forging gives
+// no rule that prefers one kind for a material or a volume, so none is applied: volume acts through the setup and the dies it is spread over.
+//
+// The data's Press class (forging_machines_press.csv: machines rated by their press force, with a cycle time per stroke) is the hydraulic
+// press; its Mechanical Press class is the crank press with a transfer system, rated by force, stroke, shut height and table.
 import type { CalculationTraceStep, ProcessLineCost, SourceRef } from '../../dto/cost-breakdown.dto';
 import type { DomainCalculatorSpec } from '../shared/calculators/domain-calculator-spec';
 import { runReferenceCalculator, type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
@@ -56,7 +66,7 @@ export const FORGING_CLASS = {
 export const FORGING_ROUTE_CLASSES: readonly string[] = Object.values(FORGING_CLASS);
 
 export const FORGING_ROUTES = [
-  { key: 'closed_die_press', label: 'Closed-die forging · screw press' },
+  { key: 'closed_die_press', label: 'Closed-die forging · hydraulic press' },
   { key: 'closed_die_hammer', label: 'Closed-die forging · die hammer' },
   { key: 'closed_die_mechanical_press', label: 'Closed-die forging · mechanical press' },
   { key: 'open_die', label: 'Open-die forging' },
@@ -121,7 +131,7 @@ export interface ForgingOverrides {
   /** The round bar the mults are sawn from (mm); the mult length follows. */
   barDiameterMm?: number | null;
   heating?: 'induction' | 'furnace' | null;
-  /** Blows of the screw press and the hammer (the mechanical press strikes once per station). */
+  /** Strokes of the hydraulic press and blows of the hammer (the mechanical press strikes once per station). */
   hits?: number | null;
   /** The flash land (mm): its width adds to the area the press force acts on, its thickness is what the trim shears. */
   flashThicknessMm?: number | null;
@@ -349,7 +359,8 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     const saw = step('Band Saw', FORGING_CLASS.bandSaw, (mc) => {
       if (!sawRow) return fail(`bandSawCutting has no row for cut code ${cutCode ?? '(none)'} of ${material.name}`);
       const takes = machineValue(mc, 'max_stock_diameter_mm');
-      if (takes != null && bar! > takes) return fail(`takes bar up to ${takes} mm, the bar is ${bar} mm`);
+      if (takes == null) return fail(`machine ${mc.name}: max_stock_diameter_mm`);
+      if (bar! > takes) return fail(`takes bar up to ${takes} mm, the bar is ${bar} mm`);
       const unload = handling('bandSawHandling', multKg, 'Unload Time (s)');
       const load = handling('bandSawHandling', barKg, 'Load Time (s)');
       if (!unload || !load) return fail('forging lookup bandSawHandling (not staged)');
@@ -357,17 +368,21 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
         bar_diameter_mm: barSeed, mult_unload_s: unload, bar_load_s: load,
         mults_per_bar: withSeedRef({ value: stock.run.outputs['Mults per Bar']!, source: 'mults a standard bar gives (Bar stock)' }, stockRef),
       }, { 'forging_bandSawCutting.Cutting Rate (mm^2 / min)': rowSeed('bandSawCutting', sawRow, 'Cutting Rate (mm^2 / min)', ['Material Cut Code Family', 'Material Width (mm)']) });
-    }, ['It takes the bar diameter', "A cutting rate for the material's cut code family"]);
+    }, [`It takes the ${bar} mm bar`, "A cutting rate for the material's cut code family"]);
 
     const coilRow = table('inductionHeating').find((r) => String(r['Material Type Name']) === material.materialType);
+    // The temperature a furnace must reach, for the requirement the furnaces are checked against (the step names what is missing).
+    const [forgeTemp, ovenOffset] = [material.columns['forging_temperature'], num('ovenTemperatureOffset')];
+    const furnaceC = forgeTemp != null && ovenOffset != null ? forgeTemp + ovenOffset : null;
     const heat = induction
       ? step('Conveyor Induction Heat', FORGING_CLASS.induction, (mc) => {
         if (!coilRow) return fail(`inductionHeating has no row for material type ${material.materialType ?? '(none)'}`);
         const coil = machineValue(mc, 'maximum_coil_diameter_mm');
-        if (coil != null && bar! > coil) return fail(`coil takes ${coil} mm, the bar is ${bar} mm`);
+        if (coil == null) return fail(`machine ${mc.name}: maximum_coil_diameter_mm`);
+        if (bar! > coil) return fail(`coil takes ${coil} mm, the bar is ${bar} mm`);
         return timed(CALC('Induction heating'), mc, { bar_diameter_mm: barSeed, mult_length_mm: multLengthSeed },
           { 'forging_inductionHeating.Heat Time Coefficient (s / mm^2)': rowSeed('inductionHeating', coilRow, 'Heat Time Coefficient (s / mm^2)', ['Material Type Name']) });
-      }, ['The coil takes the bar diameter', 'A heat time coefficient for the material type'])
+      }, [`The coil takes the ${bar} mm bar`, 'A heat time coefficient for the material type'])
       : step('Preheat', FORGING_CLASS.furnace, (mc) => {
         // The furnace must run hotter than the forging temperature by ovenTemperatureOffset; its floor holds the mults standing on end,
         // each with the spacing ovenPartSpacingFactor of its diameter around it.
@@ -398,7 +413,10 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
             ]),
           },
         });
-      }, ['It reaches the forging temperature plus ovenTemperatureOffset', 'The oven takes the mult standing'], input.machinesByClass[FORGING_CLASS.furnace] ?? []);
+      }, [
+        furnaceC != null ? `It reaches ${furnaceC} °C: the forging temperature plus ovenTemperatureOffset` : 'It reaches the forging temperature plus ovenTemperatureOffset',
+        `The oven takes the ${r2(multLength)} mm mult standing`,
+      ], input.machinesByClass[FORGING_CLASS.furnace] ?? []);
     const notes = [...setNotes, ...(induction || forced != null ? [] : ['The mult is heated in a gas furnace (too thick or short for an induction coil): its time is the heat the load takes at the furnace\'s rated power, a lower bound, as the reference gives no furnace efficiency.'])];
     return { bar, barSeed, multLength, multLengthSeed, multKg, induction, volumeMm3: m.volumeMm3, metalRun: m.run, stock, saw, heat, notes };
   };
@@ -529,12 +547,12 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     if (capacity < trimKn) return fail(`delivers ${capacity} kN, trimming needs ${r2(trimKn)} kN`);
     if (!load || !unload) return fail('forging lookup materialHandling (not staged)');
     return timed(CALC('Trim'), m, { load_s: load, unload_s: unload });
-  }, ['It delivers the force to shear the flash']);
+  }, [`A press force of at least ${r2(trimKn)} kN, to shear the flash`]);
   const trimSteps = flashPct > 0 ? [trim] : [];
   const closedRuns = { forgedVolume: closedMult.metalRun, flashLand: flash.run, pressForce: pressForce.run, trimForce: trimForce.run };
   const closedNotes = [
     ...(overrides.flashThicknessMm != null || overrides.flashWidthMm != null ? [`The flash land is ${r2(flashThickness)} x ${r2(flashWidth)} mm as set in the Cost Guide (Vieregge's rule gives ${r2(flash.run.value!)} x ${r2(flash.run.outputs['Flash Width']!)} mm).`] : []),
-    ...(overrides.hits != null ? [`The screw press and the hammer strike ${hits} blow${hits === 1 ? '' : 's'}, as set in the Cost Guide (the data gives ${dataHits}).`] : []),
+    ...(overrides.hits != null ? [`The hydraulic press makes ${hits} stroke${hits === 1 ? '' : 's'} and the hammer strikes ${hits} blow${hits === 1 ? '' : 's'}, as set in the Cost Guide (the data gives ${dataHits}).`] : []),
     `The finishing blow needs ${r2(pressKn)} kN: the hot flow stress (strength coefficient x strain rate ^ sensitivity) over the part and its flash land, times the pressure-multiplying factor of complexity ${complexity}.`,
     ...(flashPct === 0 ? [`Complexity ${complexity} forges without flash (partComplexityBasedData): no trim step.`] : []),
   ];
@@ -547,7 +565,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     })()
     : null;
 
-  // Screw press: the cheapest that delivers the finishing blow; its crew by the forged weight (numberOperatorsPress).
+  // Hydraulic press: the cheapest that delivers the finishing blow; its crew by the forged weight (numberOperatorsPress).
   const crewRow = bandRow(table('numberOperatorsPress'), 'Weight (kg)', forgedKg);
   const crew = crewRow ? Number(crewRow['Num Operators']) : null;
   const press = step('Press', FORGING_CLASS.press, (m) => {
@@ -556,7 +574,7 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
     if (capacity < pressKn) return fail(`delivers ${capacity} kN, the finishing blow needs ${r2(pressKn)} kN`);
     if (!load || !unload) return fail('forging lookup materialHandling (not staged)');
     return timed(CALC('Press'), m, { hits: hitsSeed, load_s: load, unload_s: unload });
-  }, ['It delivers the force of the finishing blow'], (input.machinesByClass[FORGING_CLASS.press] ?? []).map((m) => (crew != null ? { ...m, operators: crew } : m)));
+  }, [`A press force of at least ${r2(pressKn)} kN, the finishing blow`], (input.machinesByClass[FORGING_CLASS.press] ?? []).map((m) => (crew != null ? { ...m, operators: crew } : m)));
   finish({
     key: 'closed_die_press', mult: closedMult, forgedKg, steps: [closedMult.saw, closedMult.heat, press, ...trimSteps], hits,
     forming: { quantity: 'force_kn', value: pressKn }, trimForceKn: flashPct > 0 ? trimKn : null, flash: flashFacts, runs: closedRuns,
@@ -586,7 +604,8 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
       if (capacity == null) return fail(`machine ${m.name}: impact_energy_j`);
       if (capacity < needJ) return fail(`delivers ${capacity} J, the blow needs ${Math.round(needJ)} J`);
       const [tl, tw] = [machineValue(m, 'table_length_mm'), machineValue(m, 'table_width_mm')];
-      if (block && tl != null && tw != null && (Math.max(block.lengthMm, block.widthMm) > Math.max(tl, tw) || Math.min(block.lengthMm, block.widthMm) > Math.min(tl, tw))) {
+      if (block && (tl == null || tw == null)) return fail(`machine ${m.name}: table size`);
+      if (block && (Math.max(block.lengthMm, block.widthMm) > Math.max(tl!, tw!) || Math.min(block.lengthMm, block.widthMm) > Math.min(tl!, tw!))) {
         return fail(`the die block is ${Math.round(block.lengthMm)} x ${Math.round(block.widthMm)} mm, the table ${tl} x ${tw} mm`);
       }
       return timed(CALC('Hammer'), m, {
@@ -594,7 +613,10 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
         upset_enabled: enabledSeed('enableUpset'),
         block_enabled: enabledSeed('enableBlock'),
       });
-    }, ['It delivers the blow energy', 'Its table takes the die block']);
+    }, [
+      `A blow energy of at least ${Math.round(needJ)} J`,
+      block ? `A table that takes the ${Math.round(block.lengthMm)} x ${Math.round(block.widthMm)} mm die block` : 'A table that takes the die block (not checked: the die block could not be sized)',
+    ]);
     finish({
       key: 'closed_die_hammer', mult: closedMult, forgedKg, steps: [closedMult.saw, closedMult.heat, hammer, ...trimSteps], hits,
       forming: { quantity: 'energy_j', value: needJ }, trimForceKn: flashPct > 0 ? trimKn : null, flash: flashFacts, runs: { ...closedRuns, hammerEnergy: energy.run },
@@ -604,24 +626,42 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
   } else gaps.push({ key: 'closed_die_hammer', label: labelOf('closed_die_hammer'), reason: energy.reasons.join('; ') });
 
   // Mechanical press with a transfer system: each station's die block side by side on the table, at the press's multi-station force.
-  const [stations, interDie, addendum, reduction] = ['mechanicalPressNumberOfStations', 'mechanicalPressInterDieBlockSpacing', 'mechanicalPressBolsterPlateAddendumThickness', 'mechanicalPressForceReductionFactorMultiStation'].map(num);
+  const [stations, interDie, addendum, reduction, transferHeight] = [
+    'mechanicalPressNumberOfStations', 'mechanicalPressInterDieBlockSpacing', 'mechanicalPressBolsterPlateAddendumThickness',
+    'mechanicalPressForceReductionFactorMultiStation', 'mechanicalPressPartTransferHeightAllowance',
+  ].map(num);
+  // What the press must have, the same for every press: the table for a die block per station, and the stroke that opens for the part and
+  // the height its transfer between the stations needs (mechanicalPressPartTransferHeightAllowance).
+  const mechTable = block && stations != null && interDie != null && addendum != null
+    ? { lengthMm: stations * block.lengthMm + (stations - 1) * interDie + 2 * addendum, widthMm: block.widthMm + 2 * addendum }
+    : null;
+  const mechStroke = part.dieDepthMm != null && transferHeight != null ? part.dieDepthMm + transferHeight : null;
   const mech = step('Mechanical Press', FORGING_CLASS.mechanicalPress, (m) => {
-    if (stations == null || interDie == null || addendum == null || reduction == null) return fail('forging variables mechanicalPressNumberOfStations, InterDieBlockSpacing, BolsterPlateAddendumThickness, ForceReductionFactorMultiStation');
+    if (stations == null || interDie == null || addendum == null || reduction == null || transferHeight == null) return fail('forging variables mechanicalPressNumberOfStations, InterDieBlockSpacing, BolsterPlateAddendumThickness, ForceReductionFactorMultiStation, PartTransferHeightAllowance');
     const maxKn = machineValue(m, 'max_press_force_kn');
     if (maxKn == null) return fail(`machine ${m.name}: max_press_force_kn`);
     if (maxKn * reduction < pressKn) return fail(`delivers ${Math.round(maxKn * reduction)} kN over ${stations} stations (x ${reduction}), the finishing blow needs ${r2(pressKn)} kN`);
-    if (!block) return fail("the die block could not be sized: the part's plan or depth is not measured");
+    if (!mechTable || mechStroke == null) return fail("the die block could not be sized: the part's plan or depth is not measured");
     const [tl, tw] = [machineValue(m, 'press_table_length_mm'), machineValue(m, 'press_table_width_mm')];
     if (tl == null || tw == null) return fail(`machine ${m.name}: press table size`);
-    const needL = stations * block.lengthMm + (stations - 1) * interDie + 2 * addendum;
-    if (needL > tl || block.widthMm + 2 * addendum > tw) return fail(`${stations} die blocks need ${Math.round(needL)} x ${Math.round(block.widthMm + 2 * addendum)} mm, the table is ${tl} x ${tw} mm`);
+    if (mechTable.lengthMm > tl || mechTable.widthMm > tw) return fail(`${stations} die blocks need ${Math.round(mechTable.lengthMm)} x ${Math.round(mechTable.widthMm)} mm, the table is ${tl} x ${tw} mm`);
+    const stroke = machineValue(m, 'max_stroke_length_mm');
+    if (stroke == null) return fail(`machine ${m.name}: max_stroke_length_mm`);
+    if (stroke < mechStroke) return fail(`its stroke is ${stroke} mm, the part and its transfer need ${r2(mechStroke)} mm (the part's ${part.dieDepthMm} mm depth + ${transferHeight} mm, mechanicalPressPartTransferHeightAllowance)`);
     return timed(CALC('Mechanical press'), m, {}, { 'forging_partComplexityBasedData.SPM-Mechanical Press with Transfer System-High Production Volume': spmLookup });
-  }, ['It delivers the finishing blow at its multi-station force', 'Its table takes a die block per station']);
+  }, [
+    reduction != null ? `A press force of at least ${Math.round(pressKn / reduction)} kN: the ${r2(pressKn)} kN finishing blow at the multi-station force (x ${reduction})` : 'It delivers the finishing blow at its multi-station force',
+    mechTable ? `A table that takes ${stations} die blocks side by side: ${Math.round(mechTable.lengthMm)} x ${Math.round(mechTable.widthMm)} mm` : 'Its table takes a die block per station',
+    mechStroke != null ? `A stroke of at least ${r2(mechStroke)} mm: the part's depth and the height its transfer needs (mechanicalPressPartTransferHeightAllowance)` : "Its stroke opens for the part and its transfer",
+  ]);
   finish({
     key: 'closed_die_mechanical_press', mult: closedMult, forgedKg, steps: [closedMult.saw, closedMult.heat, mech, ...trimSteps], hits: stations ?? hits,
     forming: { quantity: 'force_kn', value: pressKn }, trimForceKn: flashPct > 0 ? trimKn : null, flash: flashFacts, runs: closedRuns,
     dies: { forgedVolumeMm3: forgedVolume, toolLifeVariable: 'mechanicalPressToolLifeNumberOfParts' },
-    warnings: [...closedNotes, `Every station strikes on each stroke: the stroke rate is the reference's for complexity ${complexity} (partComplexityBasedData), the press's own rate at most.`],
+    warnings: [
+      ...closedNotes, `Every station strikes on each stroke: the stroke rate is the reference's for complexity ${complexity} (partComplexityBasedData), the press's own rate at most.`,
+      "The mechanical press's shut height is not checked: the forging data gives each press's shut height and plate thicknesses, but no die block height to set against them.",
+    ],
   });
 
   // ── Open die: a flashless shape upset between flat dies ────────────────────────────────────────────────────────────────────────────
@@ -716,7 +756,9 @@ export function buildForgingRoutes(input: ForgingRouteInput): { routes: ForgingR
 
 /**
  * The route to quote: the engineer's when it was built, else the cheapest complete one (material + process + dies per part), else the one with the
- * fewest gaps. The note says how it was chosen and what each of the others came to.
+ * fewest gaps. Technical first, then cost: a route is complete only when every step has a machine that meets its technical requirements, so the
+ * hammer, the mechanical press and the hydraulic press are compared on cost only where each can make the part. The note says how the route was
+ * chosen and what each of the others came to.
  */
 export function chooseForgingRoute(routes: readonly ForgingRoute[], gaps: readonly ForgingRouteGap[], chosen: ForgingRouteKey | null): { route: ForgingRoute | null; note: string | null } {
   if (routes.length === 0) return { route: null, note: null };
@@ -729,7 +771,9 @@ export function chooseForgingRoute(routes: readonly ForgingRoute[], gaps: readon
   if (user) return { route: user, note: `Forging: ${user.label} is set in the Cost Guide. ${others(user)}.` };
   const complete = routes.filter((r) => r.complete).sort((a, b) => a.totalUsd! - b.totalUsd!);
   const pick = complete[0] ?? [...routes].sort((a, b) => a.lines.filter(isGap).length - b.lines.filter(isGap).length)[0]!;
-  const why = complete[0] ? 'the cheapest complete forging route (material, process and dies per part)' : 'no forging route is complete: the one with the fewest gaps';
+  const why = complete[0]
+    ? 'the cheapest of the forging routes whose every step has a technically capable machine (material, process and dies per part)'
+    : 'no forging route is complete (each has a step with no capable machine): the one with the fewest gaps';
   const pre = chosen && !user ? `The Cost Guide's ${labelOf(chosen)} is not a route for this part. ` : '';
   const own = pick.complete ? ` (${money(pick.totalUsd!)} per part)` : '';
   return { route: pick, note: `${pre}Forging: ${pick.label} is quoted${own}, ${why}. ${others(pick)}.` };
