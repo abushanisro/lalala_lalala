@@ -111,6 +111,11 @@ describe('the sequencer mills away the stock around the part', () => {
     expect(ops.slice(0, 2).map((o) => o.name)).toEqual(['Facing', 'Bulk Milling']);
     expect(named(ops, 'Bulk Milling')[0]!.timeSec).toBeCloseTo(12.1716, 6);
     expect(named(ops, 'Facing')[0]!.plan).toEqual([expect.objectContaining({ operation: 'Facing' })]);
+    // The caption names every volume the value is worked out from, so it adds up: 100 000 - 67 785.04 - 16 000 - 5 630.96 = 10 584.
+    expect(named(ops, 'Bulk Milling')[0]!.trace!.find((s) => s.fieldName === 'Removed Volume')).toMatchObject({
+      value: 10584,
+      source: 'Stock around the part: the piece 100000 mm^3 less the part 67785.04 mm^3, the 16000 mm^3 Facing takes off the piece and the 5630.96 mm^3 its features remove',
+    });
   });
 
   it('the removal rate carries the material\'s machinability, as the roughing of a pocket does', () => {

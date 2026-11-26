@@ -768,7 +768,8 @@ export function buildOperationSequence(fgv2Features: unknown[] | null | undefine
       ...calcOp(calculators, 'Bulk Milling', {
         'Removed Volume': {
           value: stockAround.excessMm3,
-          source: `Stock around the part: the piece ${mm3(stockAround.pieceMm3)} mm^3 less the part ${mm3(stockAround.partMm3)} mm^3 and the ${mm3(stockAround.featureRemovedMm3)} mm^3 its features remove`,
+          // Every volume the value is worked out from is named, so the caption adds up to it: what Facing takes off the piece too.
+          source: `Stock around the part: the piece ${mm3(stockAround.pieceMm3)} mm^3 less the part ${mm3(stockAround.partMm3)} mm^3${stockAround.facedMm3 ? `, the ${mm3(stockAround.facedMm3)} mm^3 Facing takes off the piece` : ''} and the ${mm3(stockAround.featureRemovedMm3)} mm^3 its features remove`,
           ref: calculationRef('Stock around the part', [
             inputStep('Stock piece volume', 'mm^3', stockAround.pieceMm3, 'The stock chosen for the part (the stock model)'),
             inputStep('Part volume', 'mm^3', stockAround.partMm3, 'CAD: the part\'s volume'),
