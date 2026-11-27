@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { BomCost, CostAnalytics, PartCostRow } from "@/lib/api/cost-analytics";
 import {
-  basisOf, concentration, decades, driverRows, elementRows, gapRows, kg, money, pareto, plural, ratios, savingsBridge, utilisationRows, weeklyCosted, weightRows,
+  basisOf, concentration, decades, driverRows, elementRows, gapRows, kg, money, parseAskPrice, pareto, plural, ratios, savingsBridge, utilisationRows, weeklyCosted,
+  weightRows,
 } from "@/lib/dashboard/cost-analytics";
 
 const part = (name: string, unitCost: number, over: Partial<PartCostRow> = {}): PartCostRow => ({
   id: name, name, partNumber: null, bomId: "bom", bomName: "BOM", projectId: "p", unitCost,
   elements: { rawMaterial: unitCost * 0.6, process: unitCost * 0.4, tooling: 0, packagingLogistics: 0, procuredParts: 0 },
-  annualVolume: 100, annualSpend: unitCost * 100, weightKg: null, cycleTimeS: 0, costedAt: null, askPrice: null, gap: null, annualGap: null, ...over,
+  annualVolume: 100, annualSpend: unitCost * 100, weightKg: null, cycleTimeS: 0, costedAt: null, askPrice: null, askEntered: null, askCurrency: "USD", gap: null,
+  annualGap: null, ...over,
 });
 const bom = (name: string, askAnnual: number, askShouldCostAnnual: number): BomCost => ({
   id: name, name, projectId: "p", projectName: "P", parts: 1, costed: 1, unitCost: 0, annualSpend: 0,
@@ -110,6 +112,12 @@ describe("pareto", () => {
 });
 
 describe("the gap to the ask price", () => {
+  it("reads a typed price, an empty box as no price, and refuses what is not a price", () => {
+    expect([parseAskPrice("12.5"), parseAskPrice(" 1,250 "), parseAskPrice("0"), parseAskPrice(".75"), parseAskPrice("40.")]).toEqual([12.5, 1250, 0, 0.75, 40]);
+    expect([parseAskPrice(""), parseAskPrice("   ")]).toEqual([null, null]);
+    expect([parseAskPrice("-3"), parseAskPrice("abc"), parseAskPrice("1e9"), parseAskPrice("12.5.1"), parseAskPrice(".")]).toEqual(["invalid", "invalid", "invalid", "invalid", "invalid"]);
+  });
+
   it("lists the priced parts by the money at stake in a year, largest first", () => {
     const rows = gapRows([
       part("unpriced", 50),

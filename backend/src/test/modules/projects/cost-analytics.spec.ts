@@ -123,10 +123,18 @@ describe('summariseCosts', () => {
     expect(out.parts.find(p => p.id === 'high')).toMatchObject({ askPrice: 150, gap: 50, annualGap: 50_000 });
     expect(out.parts.find(p => p.id === 'low')).toMatchObject({ askPrice: 80, gap: -20, annualGap: -10_000 });
     expect(out.parts.find(p => p.id === 'unpriced')).toMatchObject({ askPrice: null, gap: null, annualGap: null });
+    // What the entry list shows: the number as entered, in the currency this part's prices are entered in.
+    expect(out.parts.find(p => p.id === 'low')).toMatchObject({ askEntered: 1, askCurrency: 'USD' });
+    expect(out.parts.find(p => p.id === 'unpriced')).toMatchObject({ askEntered: null, askCurrency: 'USD' });
     expect(out.savings).toEqual({ parts: 2, askAnnual: 190_000, shouldCostAnnual: 150_000, opportunityAnnual: 50_000, partsAboveShouldCost: 1,
       partsBelowShouldCost: 1, shortfallAnnual: 10_000 });
     expect(out.coverage).toMatchObject({ withAskPrice: 2, askPriceUnconverted: 1 });
     expect(out.boms[0]).toMatchObject({ askAnnual: 190_000, askShouldCostAnnual: 150_000 });
+  });
+
+  it('enters a price for a part in the scenario currency chosen on the part, as its Scenario panel does', () => {
+    const out = run([item('rupees', { scenarioOverrides: { scenarioCurrency: 'INR' } }), item('default')], [record('rupees', 'process', 100), record('default', 'process', 100)]);
+    expect(out.parts.map(p => [p.id, p.askCurrency, p.askEntered])).toEqual(expect.arrayContaining([['rupees', 'INR', null], ['default', 'USD', null]]));
   });
 
   it('groups process cost by process and by machine, with the machine hours a year of running', () => {

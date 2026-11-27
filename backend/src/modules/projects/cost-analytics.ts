@@ -8,7 +8,7 @@
  * estimated, and none is partial without saying how many parts it covers.
  */
 import { ROLLUP_REPORTING_CURRENCY } from '../bom-items/costing/shared/core/persisted-currency-contract';
-import { resolveScenarioAskPrice } from '../bom-items/costing/shared/physics/scenario-overrides';
+import { resolveScenarioAskPrice, resolveScenarioCurrency } from '../bom-items/costing/shared/physics/scenario-overrides';
 import { computeCurrencyAwareRollup, type RollupInputKind, type RollupSourceAmount } from '../bom-items/services/bom-item-rollup';
 
 /** The cost elements of a part's own cost, in the order they are shown, with the rollup kind each one is. */
@@ -85,6 +85,12 @@ export interface PartCostRow {
   /** The first cost record of the part: when it was costed. */
   costedAt: string | null;
   askPrice: number | null;
+  /**
+   * The ask price as it was entered, and the currency a price for this part is entered in: the part's own scenario currency (USD when
+   * none was chosen), as its Scenario panel does. The dashboard's entry list reads and writes these, so both show the same number.
+   */
+  askEntered: number | null;
+  askCurrency: string;
   /** Ask price less should-cost, per part; positive is what the price is above the should-cost. */
   gap: number | null;
   annualGap: number | null;
@@ -316,7 +322,8 @@ export function summariseCosts(input: {
       id: item.id, name: item.name, partNumber: item.partNumber, bomId: item.bomId, bomName: bomById.get(item.bomId)?.name ?? '',
       projectId: bomById.get(item.bomId)?.projectId ?? null, unitCost, elements, annualVolume: volume,
       annualSpend: volume == null ? null : unitCost * volume, weightKg: positive(item.weightKg), cycleTimeS, costedAt,
-      askPrice, gap, annualGap: gap == null || volume == null ? null : gap * volume,
+      askPrice, askEntered: asked?.amount ?? null, askCurrency: asked?.currency ?? resolveScenarioCurrency(item.scenarioOverrides) ?? ROLLUP_REPORTING_CURRENCY,
+      gap, annualGap: gap == null || volume == null ? null : gap * volume,
     });
   }
 
