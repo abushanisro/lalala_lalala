@@ -52,6 +52,7 @@ export function buildAssemblyCostSummary(input: {
         cycleSec: r?.cycleSec ?? null, consumablesCost: r ? r2(r.consumablesUsd) : null, reason: r?.reason ?? null,
       };
     }),
+    ...(input.assembly.operationTimes ? { operationTimes: input.assembly.operationTimes } : {}),
     consumablesCost: route ? r2(route.consumablesUsd) : 0,
     adhesiveKg: route?.adhesiveKg ?? 0,
     options: [

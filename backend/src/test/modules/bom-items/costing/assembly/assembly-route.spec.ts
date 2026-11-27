@@ -3,7 +3,7 @@ import { buildAssemblyCostSummary } from '../../../../../modules/bom-items/costi
 import { finishedAssembly } from '../../../../../modules/bom-items/costing/assembly/assembly-cost.service';
 import { componentOf, deriveJoints, mergeJoints, threadedHolesOf, type AssemblyComponent, type AssemblyJoint } from '../../../../../modules/bom-items/costing/assembly/assembly-joints';
 import {
-  buildAssemblyRoutes, chooseAssemblyRoute, loadRow, migRow, passesRow, type AssemblyRoute, type AssemblyRouteInput,
+  buildAssemblyRoutes, chooseAssemblyRoute, loadRow, mechanicalOperationTimes, migRow, passesRow, type AssemblyRoute, type AssemblyRouteInput,
 } from '../../../../../modules/bom-items/costing/assembly/assembly-route';
 import { assemblyRouteFor } from '../../../../../modules/bom-items/costing/assembly/assembly-route-comparison';
 import { assemblyCalculatorsByName, loadAssemblyCalculatorSpec } from '../../../../../modules/bom-items/costing/assembly/calculators/assembly-calculator-spec';
@@ -38,6 +38,11 @@ const routeOf = (key: string, over: Partial<AssemblyRouteInput> = {}): AssemblyR
 };
 const sec = (l: ProcessLineCost) => l.cycleTimeMin * 60;
 const gapsOf = (r: AssemblyRoute) => r.lines.filter((l) => l.physicsGap).map((l) => `${l.process}: ${(l.physicsGap as { reason?: string }).reason}`);
+const mechanicalLine = (r: AssemblyRoute): ProcessLineCost => {
+  const line = r.lines.find((l) => l.process === 'Mechanical Assembly');
+  if (!line) throw new Error('no Mechanical Assembly line');
+  return line;
+};
 
 describe('the assembly\'s components and joints', () => {
   it('reads a child\'s threaded holes from its feature graph, at the root or under machining_features', () => {
@@ -119,6 +124,49 @@ describe('an assembly\'s routes', () => {
     expect(sec(mech)).toBeCloseTo(4 * 9.8, 1);
     expect(mech.featureBreakdown![0]).toMatchObject({ featureType: 'AssemblyJointDerived', count: 4, featureIds: ['SimpleHole-threaded_d3.2_c4'] });
     expect(mech.calculationTrace).toBeDefined();
+  });
+
+  it('names every Mechanical Assembly operation of memory/Assembly with the time the fastening table gives it, and none where it has none', () => {
+    const times = Object.fromEntries(mechanicalOperationTimes(ref).map((t) => [t.operation, t.timeS]));
+    expect(times).toEqual({
+      'Screw Tighten - Manual': 9.8, 'Nut Insert': 9.13, 'Snap Fit': 6.95,
+      'Screw Tighten - Power': null, 'Press Fit': null, Rivet: null, 'Tab Bend': null, 'User-Defined Operation': null,
+    });
+    expect(mechanicalOperationTimes(null).every((t) => t.timeS === null)).toBe(true);
+  });
+
+  it('a press fit is costed by the time set on it: three bushes at 12 s each on the assembly bench', () => {
+    const joints = mergeJoints([], [{ id: 'p', process: 'Mechanical Assembly', operation: 'Press Fit', count: 3, timeS: 12, label: 'Bush into housing' }]).joints;
+    const r = routeOf('manual', { joints });
+    const line = mechanicalLine(r);
+    expect(sec(line)).toBeCloseTo(3 * 12, 1);
+    expect(line.featureBreakdown?.[0]).toMatchObject({ name: 'Bush into housing', featureType: 'AssemblyJoint', count: 3 });
+    expect(r.complete).toBe(true);
+  });
+
+  it('a press fit with no time is a named gap (the table has none for it), never a guessed time', () => {
+    const joints = mergeJoints([], [{ id: 'p', process: 'Mechanical Assembly', operation: 'Press Fit', count: 3 }]).joints;
+    const r = routeOf('manual', { joints });
+    expect(r.complete).toBe(false);
+    expect(gapsOf(r)).toEqual(['Mechanical Assembly: Press Fit 1: Press Fit has no verified DFA time in assembly_tblDfaOperationTimes: enter its time per joint']);
+  });
+
+  it('a plant\'s own staged press fit time is used when the joint sets none', () => {
+    // The same reference with one more row in the fastening time table, as a plant's own time study would stage it.
+    const staged = Object.assign(Object.create(ref) as typeof ref, {
+      table: (name: string) => (name === 'assembly_tblDfaOperationTimes' ? [...ref.table(name), { Operation: 'Press Fit', 'Total Time (s)': 7 }] : ref.table(name)),
+    });
+    const joints = mergeJoints([], [{ id: 'p', process: 'Mechanical Assembly', operation: 'Press Fit', count: 3 }]).joints;
+    expect(sec(mechanicalLine(routeOf('manual', { ref: staged, joints })))).toBeCloseTo(3 * 7, 1);
+    expect(mechanicalOperationTimes(staged).find((t) => t.operation === 'Press Fit')?.timeS).toBe(7);
+  });
+
+  it('the engineer\'s own operation (memory\'s User-Defined Operation) is read from the joint table and costed by its time', () => {
+    const own = mergeJoints([], [{ id: 'u', process: 'Mechanical Assembly', operation: 'User-Defined Operation', count: 2, timeS: 30 }]).joints;
+    expect(own[0]).toMatchObject({ operation: 'User-Defined Operation', label: 'User-Defined Operation 1' });
+    expect(sec(mechanicalLine(routeOf('manual', { joints: own })))).toBeCloseTo(60, 1);
+    const untimed = mergeJoints([], [{ id: 'u', process: 'Mechanical Assembly', operation: 'User-Defined Operation', count: 2 }]).joints;
+    expect(gapsOf(routeOf('manual', { joints: untimed }))[0]).toContain('its time per joint');
   });
 
   it('a manual MIG weld, worked by hand: 500 mm, 4 mm throat, steel in argon (one pass at 3.95 mm/s), over the 0.45 efficiency, with its consumables', () => {

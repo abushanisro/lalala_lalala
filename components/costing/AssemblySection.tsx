@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 import { TableRowDialog } from '@/components/costing/TableRowDialog';
 import {
-  ASSEMBLY_JOINTS, ASSEMBLY_SCENARIO_KEYS, jointMeasures, withDerivedEnabled,
+  ASSEMBLY_SCENARIO_KEYS, jointMeasures, jointVocabulary, withDerivedEnabled,
   type AssemblySummary, type AssemblyJointView, type JointField, type JointRow,
 } from '@/lib/costing/assembly-view';
 import { newRowId, tableOf, tablePatch, withRow, withoutRow } from '@/lib/costing/joint-table';
@@ -35,8 +35,8 @@ function rowOf(table: readonly JointRow[], j: AssemblyJointView): JointRow {
 
 /**
  * The Cost Guide's assembly inputs: the components (BOM children, or the part itself when it has none) and the joints. Screws are derived
- * from the threaded holes; every other joint is added here. The route is chosen where every process's is, in Process Routing (Workflow
- * Builder); this panel only says which one is quoted.
+ * from the threaded holes; every other joint (a press fit, a weld, a rivet, sealing, bonding) is added here. The route is chosen where every
+ * process's is, in Process Routing (Workflow Builder); this panel only says which one is quoted.
  */
 export function AssemblySection({ assembly: a, overrides, onChange, hrefOf }: Props) {
   const table = tableOf<JointField>(ASSEMBLY_SCENARIO_KEYS.joints, overrides);
@@ -77,7 +77,7 @@ export function AssemblySection({ assembly: a, overrides, onChange, hrefOf }: Pr
           <h4 className={headClass}>Joints</h4>
           <button type="button" className={linkButton} onClick={() => { setEditing({ row: { id: newRowId(table, 'joint'), process: 'MIG Welding', count: 1 }, isNew: true }); }}>+ Add joint</button>
         </div>
-        {a.joints.length === 0 && <p className="text-muted-foreground">None yet: screws come from threaded holes; add welds, rivets, sealing or bonding with Add joint.</p>}
+        {a.joints.length === 0 && <p className="text-muted-foreground">None yet: screws come from threaded holes; add press fits, welds, rivets, sealing or bonding with Add joint.</p>}
         <ul className="divide-y divide-border rounded-md border border-border">
           {a.joints.map((j) => {
             const edited = table.some((r) => r.id === j.id && r.enabled !== false);
@@ -118,11 +118,11 @@ export function AssemblySection({ assembly: a, overrides, onChange, hrefOf }: Pr
 
       {editing && (
         <TableRowDialog
-          key={editing.row.id} vocabulary={ASSEMBLY_JOINTS} initial={editing.row} isNew={editing.isNew}
+          // A joint found in the part's threaded holes stays a mechanical fastening: only those types are offered for it.
+          key={editing.row.id} vocabulary={jointVocabulary(a.operationTimes, !editing.isNew && editing.row.id.startsWith('screw:'))}
+          initial={editing.row} isNew={editing.isNew}
           noun="joint" kindLabel="Joint type" namePlaceholder="Optional, e.g. Bracket to frame"
           description="Each joint is costed by its Assembly process on the route's machine."
-          // A joint found in the part's threaded holes stays a screw joint: its kind is the hole's.
-          kindLocked={!editing.isNew && editing.row.id.startsWith('screw:')}
           onClose={() => { setEditing(null); }}
           onSave={(row) => { save(withRow(table, row)); setEditing(null); }}
         />

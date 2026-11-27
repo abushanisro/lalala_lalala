@@ -6,6 +6,7 @@
 // Two routes: Manual (every weld by hand) and Robotic (the MIG, TIG and spot welds on a robot). Fastening, sealing, bonding and the beam
 // processes are the same on both. Each line runs on the cheapest capable machine of the location; a machine's setup is charged once per batch,
 // on its first line.
+import { MECHANICAL_OPERATIONS, USER_DEFINED_OPERATION } from './assembly-joints';
 import { gap, type CostContext } from '../casting/casting-finishing';
 import { machineText, machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
@@ -135,6 +136,15 @@ export function tigRow(ref: SandReference, material: string, passThroatMm: numbe
   return [...rows].sort((a, b) => n(a, 'Max Throat Thickness (mm)')! - n(b, 'Max Throat Thickness (mm)')!)[0] ?? null;
 }
 
+/**
+ * The time the fastening time table gives each Mechanical Assembly operation (s per joint); null where it has none (memory/Assembly names the
+ * operations and times none, and the staged DFA baseline holds only the verified ones): such a joint is costed by the time set on it.
+ */
+export function mechanicalOperationTimes(ref: SandReference | null): { operation: string; timeS: number | null }[] {
+  const rows = ref?.table(DFA_TABLE) ?? [];
+  return MECHANICAL_OPERATIONS.map((operation) => ({ operation, timeS: n(rows.find((r) => r.Operation === operation), 'Total Time (s)') ?? null }));
+}
+
 /** Every route of the assembly (each complete or with its gaps), the routes it cannot take and why, and what keeps any route from being built. */
 export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: AssemblyRoute[]; gaps: AssemblyRouteGap[]; missing: string[] } {
   const { ref, components, batchSize } = input;
@@ -262,7 +272,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         const op = j.operation ?? 'Screw Tighten - Manual';
         const row = dfa(op);
         const time = j.timeS != null ? onJoint('Operation Time', 's', j.timeS, `${op}: the time set on the joint (s)`, 'Time per joint') : lookupSeed(DFA_TABLE, row, 'Total Time (s)', ['Operation']);
-        if (!time) problems.push(`${j.label}: ${op} has no verified DFA time in ${DFA_TABLE}: enter its time per joint`);
+        if (!time) problems.push(op === USER_DEFINED_OPERATION ? `${j.label}: its time per joint (an operation of your own has no table time)` : `${j.label}: ${op} has no verified DFA time in ${DFA_TABLE}: enter its time per joint`);
         else evaluate = (m) => timed(process, m, { joint_count: count, operation_time_s: time });
         criteria.push('Any assembly bench');
       } else if (j.process === 'Threaded Insert' || j.process === 'Cap Sealing') {

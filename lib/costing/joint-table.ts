@@ -9,8 +9,10 @@ export type TableRow<F extends string = string> = { id: string; process: string;
 export interface RowVocabulary<F extends string> {
   /** Every measure a row can carry. */
   fields: readonly F[];
-  /** The kinds a row can be, as the kind select offers them. */
-  kinds: readonly { process: string; label: string }[];
+  /** The kinds a row can be, as the kind select offers them. A kind that is a process and one of its operations has its own `key`. */
+  kinds: readonly { process: string; label: string; key?: string }[];
+  /** The kind a row is, where kinds carry keys; its process when absent. */
+  kindOf?: (row: TableRow<F>) => string;
   /** The measures a row needs to be costed, and the ones it can also take, for its kind and what is already set on it. */
   required: (row: TableRow<F>) => readonly F[];
   optional: (row: TableRow<F>) => readonly F[];
@@ -22,8 +24,8 @@ export interface RowVocabulary<F extends string> {
   placeholder?: (field: F, row: TableRow<F>) => string | undefined;
   /** The measures shown as checkboxes. */
   flags: ReadonlySet<F>;
-  /** The row when its kind is changed: what it keeps of the old one. */
-  rekind: (row: TableRow<F>, process: string) => TableRow<F>;
+  /** The row when its kind is changed (to a kind's key, else its process): what it keeps of the old one. */
+  rekind: (row: TableRow<F>, kind: string) => TableRow<F>;
 }
 
 const isRow = (r: unknown): r is TableRow => !!r && typeof r === 'object' && typeof (r as TableRow).id === 'string' && typeof (r as TableRow).process === 'string';
