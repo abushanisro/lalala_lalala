@@ -23,6 +23,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useProjects, useVendors, useRawMaterials, useMHRRecords, useLHRCount } from '@/lib/api/hooks';
+import { useCostAnalytics } from '@/lib/api/hooks/useCostAnalytics';
 import { formatProjectMoney, projectCostCurrency, projectSavings, summarizeProjectCosts } from '@/lib/costing/project-costs';
 
 // Lazy load heavy chart components
@@ -47,6 +48,11 @@ const ProjectTrendChart = dynamic(() => import('@/components/features/dashboard/
 });
 
 const CostSavingsChart = dynamic(() => import('@/components/features/dashboard/charts').then(mod => ({ default: mod.CostSavingsChart })), {
+  loading: () => <ChartSkeleton />,
+  ssr: false,
+});
+
+const CostAnalyticsSection = dynamic(() => import('@/components/features/dashboard/cost-analytics').then(mod => ({ default: mod.CostAnalyticsSection })), {
   loading: () => <ChartSkeleton />,
   ssr: false,
 });
@@ -145,6 +151,8 @@ export default function DashboardPage() {
   const { data: mhrData } = useMHRRecords({ limit: 1 });
   // Likewise only whether any labour rate is on file.
   const { data: lhrCount = 0 } = useLHRCount();
+  // The should-cost of the costed parts, totalled from their saved cost records (workspace currency).
+  const costAnalytics = useCostAnalytics();
 
   const projects = projectsData?.projects || [];
   const vendors = vendorsData?.vendors || [];
@@ -343,6 +351,9 @@ export default function DashboardPage() {
         </div>
       </div>
       </Card>
+
+      {/* Should-cost analytics: headline figures and charts from the saved cost records */}
+      <CostAnalyticsSection data={costAnalytics.data} isLoading={costAnalytics.isPending} isError={costAnalytics.isError} />
 
       {/* Row 2: one performance card, Semrush-style source tabs over the charts */}
       <Card className="rounded-xl shadow-sm">
