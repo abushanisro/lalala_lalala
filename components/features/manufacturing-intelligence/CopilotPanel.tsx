@@ -3,10 +3,14 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Bot, Send, RotateCcw, Loader2 } from '@/components/ui/icons';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Bot, ChevronDown, Send, RotateCcw, Loader2, Mic } from '@/components/ui/icons';
 import { Mark } from '@/components/ui/status-mark';
 import { notifyAiUsage } from "@/lib/ai/usage-events";
 import { apiClient } from "@/lib/api/client";
+import { COPILOT_MODES, copilotModeFrom, copilotModeOf, type CopilotMode } from "@/lib/copilot/modes";
+import { useDictation } from "@/lib/hooks/useDictation";
+import { withDictation } from "@/lib/intake/dictation";
 import { cn } from "@/lib/utils";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -111,6 +115,8 @@ const AI_CODE_TEXT: Record<string, string> = {
 };
 
 const CONVERSATION_KEY = (id: string) => `copilot_conversation_${id}`;
+/** The answer mode last chosen, kept for the next part and the next visit. */
+const MODE_KEY = "copilot_mode";
 
 /** The id this panel's conversation is known by on the server (a memory proposal is bound to it); new after a reset. */
 function conversationIdFor(bomItemId: string): string {
@@ -131,7 +137,7 @@ interface CopilotScenario {
   location: string;
 }
 
-function useCopilotChat(bomItemId: string, scenario: CopilotScenario) {
+function useCopilotChat(bomItemId: string, scenario: CopilotScenario, mode: CopilotMode) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY(bomItemId));
@@ -249,6 +255,7 @@ function useCopilotChat(bomItemId: string, scenario: CopilotScenario) {
         location: scenario.location,
         batchSize: scenario.batchSize,
         productionLifeYears: scenario.productionLife,
+        mode,
         messages: history,
       };
 
@@ -325,7 +332,7 @@ function useCopilotChat(bomItemId: string, scenario: CopilotScenario) {
       );
       setIsStreaming(false);
     },
-    [bomItemId, conversationId, isStreaming, messages, scenario.batchSize, scenario.productionLife, scenario.location],
+    [bomItemId, conversationId, isStreaming, messages, mode, scenario.batchSize, scenario.productionLife, scenario.location],
   );
 
   return { messages, isStreaming, error, send, reset, confirmProposal, dismissProposal };
@@ -555,11 +562,33 @@ export function CopilotPanel({ itemId, batchSize, productionLife, factory }: Cop
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const [mode, setMode] = useState<CopilotMode>(() => {
+    try {
+      return copilotModeFrom(localStorage.getItem(MODE_KEY));
+    } catch {
+      return copilotModeFrom(null);
+    }
+  });
+  const chooseMode = useCallback((next: string) => {
+    const chosen = copilotModeFrom(next);
+    setMode(chosen);
+    try {
+      localStorage.setItem(MODE_KEY, chosen);
+    } catch { /* not remembered: the mode still applies to this visit */ }
+  }, []);
+
   const { messages, isStreaming, error, send, reset, confirmProposal, dismissProposal } = useCopilotChat(itemId, {
     batchSize,
     productionLife,
     location: factory,
-  });
+  }, mode);
+
+  // Dictation: what is heard goes after what the box already said when the microphone was pressed.
+  const saidBefore = useRef("");
+  const dictation = useDictation(useCallback((heard: string) => {
+    setInput(withDictation(saidBefore.current, heard).slice(0, MAX_QUESTION_CHARS));
+  }, []));
+  const cancelDictation = dictation.cancel;
 
   // Auto-scroll to bottom on new tokens
   useEffect(() => {
@@ -569,9 +598,11 @@ export function CopilotPanel({ itemId, batchSize, productionLife, factory }: Cop
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
+    // The box is emptied now: what the microphone has not handed over yet must not fill it again.
+    cancelDictation();
     setInput("");
     await send(text);
-  }, [input, isStreaming, send]);
+  }, [input, isStreaming, send, cancelDictation]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -586,10 +617,11 @@ export function CopilotPanel({ itemId, batchSize, productionLife, factory }: Cop
   const handleAction = useCallback(
     async (prompt: string) => {
       if (isStreaming) return;
+      cancelDictation();
       setInput("");
       await send(prompt);
     },
-    [isStreaming, send],
+    [isStreaming, send, cancelDictation],
   );
 
   return (
@@ -679,34 +711,81 @@ export function CopilotPanel({ itemId, batchSize, productionLife, factory }: Cop
       </div>
 
       {/* ── Input area ─────────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t p-2 flex gap-2 items-end">
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => { setInput(e.target.value); }}
-          onKeyDown={handleKeyDown}
-          disabled={isStreaming}
-          maxLength={MAX_QUESTION_CHARS}
-          placeholder="Ask anything… (Enter to send, Shift+Enter for new line)"
-          rows={2}
-          className={cn(
-            "flex-1 resize-none rounded border bg-background text-[11px] px-2.5 py-1.5 placeholder:text-muted-foreground/50",
-            "focus:outline-hidden focus:ring-1 focus:ring-primary/40",
-            isStreaming && "opacity-50",
-          )}
-        />
-        <Button
-          size="sm"
-          onClick={() => void handleSend()}
-          disabled={isStreaming || !input.trim()}
-          className="h-8 w-8 p-0 shrink-0 bg-brand-600 hover:bg-brand-700"
-        >
-          {isStreaming ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Send className="w-3.5 h-3.5" />
-          )}
-        </Button>
+      <div className="shrink-0 border-t p-2">
+        <div className={cn("rounded border bg-background focus-within:ring-1 focus-within:ring-primary/40", isStreaming && "opacity-50")}>
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => { setInput(e.target.value); }}
+            onKeyDown={handleKeyDown}
+            disabled={isStreaming}
+            maxLength={MAX_QUESTION_CHARS}
+            placeholder={copilotModeOf(mode).placeholder}
+            aria-label="Ask the copilot"
+            rows={2}
+            className="block w-full resize-none bg-transparent px-2.5 pt-1.5 pb-1 text-[11px] placeholder:text-muted-foreground/50 focus:outline-hidden"
+          />
+          <div className="flex items-center gap-1 px-1.5 pb-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Answer mode: ${copilotModeOf(mode).label}`}
+                  title="How the copilot answers"
+                  className="flex h-7 items-center gap-1 rounded px-2 text-[10px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
+                >
+                  {copilotModeOf(mode).label}
+                  <ChevronDown className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-64">
+                <DropdownMenuRadioGroup value={mode} onValueChange={chooseMode}>
+                  {COPILOT_MODES.map((m) => (
+                    <DropdownMenuRadioItem key={m.key} value={m.key} className="items-start">
+                      <span>
+                        <span className="block text-xs font-medium">{m.label}</span>
+                        <span className="block text-[11px] text-muted-foreground">{m.hint}</span>
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="flex-1" />
+            {dictation.available && (
+              <Button
+                type="button"
+                size="sm"
+                variant={dictation.listening ? "default" : "ghost"}
+                aria-pressed={dictation.listening}
+                aria-label={dictation.listening ? "Stop dictating" : "Dictate"}
+                title={dictation.listening ? "Listening. Press to stop." : "Dictate the question (the browser's speech recognition)"}
+                disabled={isStreaming}
+                onClick={() => {
+                  if (dictation.listening) dictation.stop();
+                  else { saidBefore.current = input; dictation.start(); }
+                }}
+                className={cn("h-7 w-7 p-0 shrink-0", dictation.listening ? "animate-pulse" : "text-muted-foreground")}
+              >
+                <Mic className="w-3.5 h-3.5" />
+              </Button>
+            )}
+            <Button
+              size="sm"
+              aria-label="Send"
+              onClick={() => void handleSend()}
+              disabled={isStreaming || !input.trim()}
+              className="h-7 w-7 p-0 shrink-0 bg-brand-600 hover:bg-brand-700"
+            >
+              {isStreaming ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Send className="w-3.5 h-3.5" />
+              )}
+            </Button>
+          </div>
+        </div>
+        {dictation.problem && <p className="mt-1 text-[10px] text-destructive" role="alert">{dictation.problem}</p>}
       </div>
 
       {/* ── Footer attribution ─────────────────────────────────────────────── */}

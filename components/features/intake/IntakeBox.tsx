@@ -16,8 +16,9 @@ import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculat
 import { useRawMaterials } from '@/lib/api/hooks/useRawMaterials';
 import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-picker-query';
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
+import { useDictation } from '@/lib/hooks/useDictation';
 import { intakeApi } from '@/lib/intake/api';
-import { dictationProblem, transcriptOf, withDictation, type HeardResults } from '@/lib/intake/dictation';
+import { withDictation } from '@/lib/intake/dictation';
 import { pastedNames, pasteIsOfFiles } from '@/lib/intake/paste';
 import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
 import {
@@ -336,52 +337,6 @@ function usePastedFiles(taking: boolean, onFiles: (files: File[]) => void) {
     window.addEventListener('paste', paste);
     return () => { window.removeEventListener('paste', paste); };
   }, [taking, onFiles]);
-}
-
-/** The browser's speech recognition, as far as dictation uses it (it is not in TypeScript's DOM types, and Chrome and Safari prefix it). */
-interface Recognizer {
-  lang: string; continuous: boolean; interimResults: boolean;
-  onresult: ((event: { results: HeardResults }) => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void; stop: () => void; abort: () => void;
-}
-type RecognizerClass = new () => Recognizer;
-function recognizerClass(): RecognizerClass | null {
-  const w = window as unknown as { SpeechRecognition?: RecognizerClass; webkitSpeechRecognition?: RecognizerClass };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
-const never = () => () => undefined;
-
-/**
- * Dictation into the prompt with the browser's own speech recognition, where it has one (`available`; the browser decides where the
- * audio is recognised). While it listens, everything heard so far is handed to `onHeard` each time it firms up. It stops on `stop`, when
- * the browser ends it, or on a failure, which `problem` says in plain words.
- */
-function useDictation(onHeard: (heard: string) => void) {
-  // Known only in the browser: the server renders the prompt without the microphone, and the page adds it once it runs.
-  const available = useSyncExternalStore(never, () => recognizerClass() !== null, () => false);
-  const [listening, setListening] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const recognizer = useRef<Recognizer | null>(null);
-  useEffect(() => () => { recognizer.current?.abort(); }, []);
-  const stop = useCallback(() => { recognizer.current?.stop(); }, []);
-  const start = useCallback(() => {
-    const Recognition = recognizerClass();
-    if (!Recognition || recognizer.current) return;
-    const r = new Recognition();
-    r.lang = navigator.language;
-    r.continuous = true;
-    r.interimResults = true;
-    r.onresult = (event) => { onHeard(transcriptOf(event.results)); };
-    r.onerror = (event) => { setProblem(dictationProblem(event.error)); };
-    r.onend = () => { recognizer.current = null; setListening(false); };
-    recognizer.current = r;
-    setProblem(null);
-    setListening(true);
-    try { r.start(); } catch { recognizer.current = null; setListening(false); setProblem(dictationProblem('audio-capture')); }
-  }, [onHeard]);
-  return { available, listening, problem, start, stop };
 }
 
 /**

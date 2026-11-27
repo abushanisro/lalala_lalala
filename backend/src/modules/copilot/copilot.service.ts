@@ -5,7 +5,7 @@ import { BOMItemsService } from '../bom-items/bom-items.service';
 import { BomItemCostingService } from '../bom-items/bom-item-costing.service';
 import { CopilotMemoryService, type MemoryProposal } from './copilot-memory.service';
 import type { BOMItemResponseDto } from '../bom-items/dto/bom-item-response.dto';
-import { COPILOT_SYSTEM_PROMPT } from './copilot.prompt';
+import { COPILOT_MODE_INSTRUCTIONS, COPILOT_SYSTEM_PROMPT } from './copilot.prompt';
 import { CostAggregationService } from '../costing/cost-aggregation.service';
 import { CopilotToolRunner, ResultCache, copilotTools, type ToolContext } from './copilot.tools';
 import { asksToChangeMemory, latestUserText } from './copilot-intent';
@@ -75,7 +75,8 @@ export class CopilotService {
       // Saved preferences are a convenience: if they cannot be read (already logged by the memory service) the chat still answers.
       this.memory.load(caller.userId, caller.accessToken).catch((): string[] => []),
     ]);
-    const session = await this.ai.open(caller, 'copilot');
+    // A deep dive or a plan is written out in full, so it gets the larger output backstop.
+    const session = await this.ai.open(caller, dto.mode === 'deep_dive' || dto.mode === 'plan' ? 'copilot_detailed' : 'copilot');
     return { item, preferences, session };
   }
 
@@ -105,6 +106,7 @@ export class CopilotService {
     };
     const tools = new CopilotToolRunner(toolCtx, this.costing, this.memory, this.costAggregation, this.results);
     const messages = this.conversation(dto);
+    const modeInstruction = dto.mode === 'deep_dive' || dto.mode === 'plan' ? COPILOT_MODE_INSTRUCTIONS[dto.mode] : null;
     const usage: CopilotUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, iterations: 0 };
     const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
 
@@ -119,6 +121,7 @@ export class CopilotService {
             system: [
               { type: 'text', text: COPILOT_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
               { type: 'text', text: copilotPartCard(prepared.item, dto, prepared.preferences) },
+              ...(modeInstruction ? [{ type: 'text' as const, text: modeInstruction }] : []),
             ],
             tools: copilotTools(memoryWritesAllowed),
             messages,
