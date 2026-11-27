@@ -8105,6 +8105,7 @@ function GeometricCostDriversPanel({
 
 // The fill simulation workspace is its own chunk: its 3D code loads when it is first opened.
 const FlowSimulationDialog = dynamic(() => import('@/components/features/flow-simulation/FlowSimulationDialog').then((m) => m.FlowSimulationDialog), { ssr: false });
+const AssemblyViewer = dynamic(() => import('@/components/features/bom/AssemblyViewer').then((m) => m.AssemblyViewer), { ssr: false });
 
 export default function ManufacturingIntelligencePage() {
   const params = useParams();
@@ -9857,6 +9858,9 @@ export default function ManufacturingIntelligencePage() {
                             className="w-full h-full border-0"
                             title="2D Drawing"
                           />
+                        ) : !item.file3dPath && item.itemType !== 'child_part' ? (
+                          // An assembly has no model of its own: it is shown from the models of its parts, with explode and selection.
+                          <AssemblyViewer bomId={item.bomId} assemblyId={item.id} />
                         ) : (
                           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
                             <AlertCircle className="h-8 w-8 opacity-30" />
