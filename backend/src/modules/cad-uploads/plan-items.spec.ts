@@ -27,22 +27,58 @@ describe('planItems', () => {
   });
 
   it('gives every line a distinct part number, whatever the names', () => {
-    const items = planItems(report([node('a', 'Bolt', 'part', 1, [], 'a.step'), node('b', 'Bolt', 'part', 1, [], 'b.step'), node('c', '###', 'part', 1, [], 'c.step')]), 'ab12');
-    expect(new Set(items.map((i) => i.partNumber)).size).toBe(3);
-    expect(items[2]!.partNumber).toMatch(/^PART-ab12-3$/);
+    const bolts = [node('a', 'Bolt', 'part'), node('b', 'Bolt', 'part'), node('c', '###', 'part')];
+    const items = planItems(report([node('0:1', 'Top', 'assembly', 1, bolts)]), 'ab12');
+    expect(new Set(items.map((i) => i.partNumber)).size).toBe(4);
+    expect(items[3]!.partNumber).toBe('PART-ab12-4');
   });
 
   it('attaches a file only to a part whose own file is that single part', () => {
     const inFile = node('0:3', 'Box', 'part', 1, [], 'assembly.step');
     const loose = node('1:1', 'Washer', 'part', 1, [], 'washer.step');
     const items = planItems(report([node('0:1', 'Top', 'assembly', 1, [inFile], 'assembly.step'), loose]), 't');
-    expect(Object.fromEntries(items.map((i) => [i.name, i.ownFile]))).toEqual({ Top: null, Box: null, Washer: 'washer.step' });
+    expect(Object.fromEntries(items.map((i) => [i.name, i.ownFile]))).toEqual({ Top: null, Box: null, washer: 'washer.step' });
+  });
+
+  it("names a part that is a whole file after the file, not after the CAD tool's product name", () => {
+    const items = planItems(report([node('0:1', 'Chamfer', 'part', 1, [], 'EMUSKI_2/2.chamberModule/exports/2_6_chamberDoor_B.step')]), 't');
+    expect(items.map((i) => i.name)).toEqual(['2_6_chamberDoor_B']);
+  });
+
+  it('keeps the product name of a part inside an assembly file', () => {
+    const items = planItems(report([node('0:1', 'Top', 'assembly', 1, [node('0:2', 'Body', 'part'), node('0:3', 'Lid', 'part')])]), 't');
+    expect(items.map((i) => i.name)).toEqual(['Top', 'Body', 'Lid']);
   });
 
   it('plans a lone part file as one top-level part', () => {
     const items = planItems(report([node('0:1', 'Gear', 'part', 1, [], 'gear.step')]), 't');
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ parentKey: null, itemType: BOMItemType.CHILD_PART, ownFile: 'gear.step' });
+  });
+});
+
+describe('planItems file wrappers', () => {
+  const wrapper = (child: AssemblyNode, name = 'piston', file = 'a/piston.step') => node('0:1', name, 'assembly', 1, [child], file);
+
+  it('stands the part of an assembly named after its file on its own, as that file', () => {
+    const items = planItems(report([wrapper(node('0:2', 'Body', 'part', 1, [], 'a/piston.step'))]), 't');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: 'piston', parentKey: null, itemType: BOMItemType.CHILD_PART, ownFile: 'a/piston.step', definition: '0:2' });
+  });
+
+  it('keeps an assembly that holds one part under any other name', () => {
+    const items = planItems(report([wrapper(node('0:2', 'Body', 'part', 1, [], 'a/piston.step'), 'Piston assembly')]), 't');
+    expect(items.map((i) => [i.name, i.itemType])).toEqual([['Piston assembly', BOMItemType.ASSEMBLY], ['Body', BOMItemType.CHILD_PART]]);
+  });
+
+  it('keeps an assembly named after its file when its one part is there more than once', () => {
+    const twice = planItems(report([wrapper(node('0:2', 'Body', 'part', 2, [], 'a/piston.step'))]), 't');
+    expect(twice.map((i) => i.itemType)).toEqual([BOMItemType.ASSEMBLY, BOMItemType.CHILD_PART]);
+  });
+
+  it('keeps the product names when a file holds several parts, so they cannot all take the file name', () => {
+    const items = planItems(report([node('0:1', 'Gear', 'part', 1, [], 'a/gears.step'), node('0:2', 'Shaft', 'part', 1, [], 'a/gears.step')]), 't');
+    expect(items.map((i) => i.name)).toEqual(['Gear', 'Shaft']);
   });
 });
 
@@ -74,6 +110,7 @@ describe('parseAssemblyReport', () => {
 
 describe('withPackRoot', () => {
   const loose = (name: string) => node(name, name, 'part', 1, [], `${name}.step`);
+  const inFolder = (folder: string, name: string) => node(name, name, 'part', 1, [], `${folder}/exports/${name}.step`);
 
   it('hangs a pack of loose parts from one main assembly named after the upload', () => {
     const packed = withPackRoot(report([loose('Gear'), loose('Shaft')]), 'liner.zip');
@@ -84,6 +121,24 @@ describe('withPackRoot', () => {
       ['0.0', '0', 'Gear', BOMItemType.CHILD_PART],
       ['0.1', '0', 'Shaft', BOMItemType.CHILD_PART],
     ]);
+  });
+
+  it('makes a sub-assembly of each folder when the zip keeps all its parts in folders', () => {
+    const packed = withPackRoot(report([inFolder('1.build', 'Gear'), inFolder('2.chamber', 'Wall'), inFolder('1.build', 'Shaft')]), 'asm.zip');
+    expect(planItems(packed, 't').map((i) => [i.key, i.parentKey, i.name, i.itemType])).toEqual([
+      ['0', null, 'asm', BOMItemType.ASSEMBLY],
+      ['0.0', '0', '1.build', BOMItemType.SUB_ASSEMBLY],
+      ['0.0.0', '0.0', 'Gear', BOMItemType.CHILD_PART],
+      ['0.0.1', '0.0', 'Shaft', BOMItemType.CHILD_PART],
+      ['0.1', '0', '2.chamber', BOMItemType.SUB_ASSEMBLY],
+      ['0.1.0', '0.1', 'Wall', BOMItemType.CHILD_PART],
+    ]);
+  });
+
+  it('keeps parts flat when only one folder, or some parts at the top, would make the grouping a guess', () => {
+    const names = (r: AssemblyReport) => planItems(withPackRoot(r, 'asm.zip'), 't').map((i) => i.name);
+    expect(names(report([inFolder('1.build', 'Gear'), inFolder('1.build', 'Shaft')]))).toEqual(['asm', 'Gear', 'Shaft']);
+    expect(names(report([inFolder('1.build', 'Gear'), loose('Nut')]))).toEqual(['asm', 'Gear', 'Nut']);
   });
 
   it('still gives each loose part its own file, and an assembly beside them keeps its sub-assemblies', () => {
