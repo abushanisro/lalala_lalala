@@ -9,7 +9,7 @@ import { buildRotoBlowCostSummary } from '../../../../../modules/bom-items/costi
 import { rotoBlowRouteFor } from '../../../../../modules/bom-items/costing/roto-blow/roto-blow-route-comparison';
 import { featureOperations } from '../../../../../modules/bom-items/costing/roto-blow/roto-blow-features';
 import {
-  ROTO_BLOW_CALC, ROTO_BLOW_CLASS, buildRotoBlowRoutes, chooseRotoBlowRoute, type RotoBlowPart, type RotoBlowRoute, type RotoBlowRouteInput,
+  ROTO_BLOW_CALC, ROTO_BLOW_CLASS, buildRotoBlowRoutes, chooseRotoBlowRoute, rotoBlowRouteCostWithTooling, type RotoBlowPart, type RotoBlowRoute, type RotoBlowRouteInput,
 } from '../../../../../modules/bom-items/costing/roto-blow/roto-blow-route';
 import { runReferenceCalculator } from '../../../../../modules/bom-items/costing/shared/calculators/reference-calculator';
 import { machineValue } from '../../../../../modules/bom-items/costing/casting/sand/sand-machines';
@@ -225,3 +225,31 @@ describe('the Roto & Blow Molding calculators', () => {
     expect(readFileSync(file, 'utf8')).toBe(buildRotoBlowCalculatorsMigrationSql());
   });
 });
+
+// A blow mold and a rotational mold cost very differently: the routes are compared with their molds spread over the parts.
+describe('the route to quote counts its molds', () => {
+  const route = (key: 'blow' | 'roto', totalUsd: number, moldsPerPart: Array<number | null>): RotoBlowRoute => ({
+    key, label: key === 'blow' ? 'Blow molding' : 'Rotational molding', complete: true, totalUsd, lines: [],
+    tooling: moldsPerPart.map((perPartUsd, i) => ({ key: `mold-${i}`, description: 'mold', detail: '', costUsd: perPartUsd == null ? null : perPartUsd * 500, perPartUsd })),
+  }) as unknown as RotoBlowRoute;
+
+  it('blow molding is cheaper a part, but over a short run its mold makes rotational molding the cheaper route', () => {
+    const blow = route('blow', 1.2, [6.0, 0.8]);   // 8.00 with its molds
+    const roto = route('roto', 3.5, [1.0]);        // 4.50 with its mold
+    expect(rotoBlowRouteCostWithTooling(blow)).toBeCloseTo(8, 6);
+    const { route: quoted, note } = chooseRotoBlowRoute([blow, roto], [], null);
+    expect(quoted).toBe(roto);
+    expect(note).toBe('Roto & Blow Molding: Rotational molding is quoted (3.50 USD per part), the cheapest complete route with its molds spread over the parts (4.50 USD per part with them; the quoted figure is material and process, the molds shown apart). Blow molding 1.20 USD (8.00 USD with its molds).');
+  });
+
+  it('over a long run the blow mold is spread thin and blow molding wins', () => {
+    expect(chooseRotoBlowRoute([route('blow', 1.2, [0.06, 0.008]), route('roto', 3.5, [0.01])], [], null).route!.key).toBe('blow');
+  });
+
+  it('with no parts to spread the molds over, the routes are compared on the piece cost, and the note says so', () => {
+    const { route: quoted, note } = chooseRotoBlowRoute([route('blow', 1.2, [null]), route('roto', 3.5, [null])], [], null);
+    expect(quoted!.key).toBe('blow');
+    expect(note).toContain('its molds are shown apart and not compared: they have no price or no parts to be spread over');
+  });
+});
+

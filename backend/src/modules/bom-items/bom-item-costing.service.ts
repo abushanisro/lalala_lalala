@@ -3504,17 +3504,20 @@ export class BomItemCostingService {
           partWeight: netRun?.value != null ? castingSeed.calculator(netRun.value, 'Net Material Usage', netRun, 'part_volume') : null,
           partDimsMm: [((item as any).maxLength ?? 0) as number, ((item as any).maxWidth ?? 0) as number, ((item as any).maxHeight ?? 0) as number],
           batchSize, processGroup: 'Die Casting', machineClass: 'die_casting_cleaning', costContext: zeroCtx,
+          usePreferredMachines: refSet.reference?.usePreferredMachines,
         });
         const v = visualInspectionLine({
           machines: local(inspectors), calculators: castingCalcs, rows: refSet.reference?.visualInspection ?? [], partMassKg,
           surfaceAreaMm2: ((item.surfaceArea ?? 0) as number) || null,
           batchSize, processGroup: 'Die Casting', machineClass: 'die_casting_visual_inspection', costContext: zeroCtx,
+          usePreferredMachines: refSet.reference?.usePreferredMachines,
         });
         const t = trimLine({
           machines: local(trimPresses), calculators: castingCalcs, alloy: castingAlloy, partsPerStroke: refSet.reference?.variables.defaultNumberOfTrimmedParts ?? null,
           partingPerimeterMm: (summary.castingPartingPerimeterMm as number | null) ?? null, partMassKg,
           dimensions: refSet.reference?.grindingDimensions ?? [], shearStrengthMpa: castingAlloy?.shearStrengthMpa ?? null,
           batchSize, processGroup: 'Die Casting', machineClass: 'die_casting_trim', costContext: zeroCtx,
+          usePreferredMachines: refSet.reference?.usePreferredMachines,
         });
         const cutCode = castingAlloy?.cutCode ?? null;
         const speedFactor = cutCode != null ? refSet.reference?.grindingSpeedFactorByCutCode.get(cutCode) ?? null : null;
@@ -3539,6 +3542,7 @@ export class BomItemCostingService {
             ingateAreaToRunnerArea: gateVars?.ingateAreaToRunnerArea ?? NaN, ingateGap: gateVars?.ingateGap ?? NaN,
           },
           batchSize, processGroup: 'Die Casting', machineClass: 'die_casting_finishing', costContext: zeroCtx,
+          usePreferredMachines: refSet.reference?.usePreferredMachines,
         });
         // Melting and grinding are priced per process route, below.
         finishing = {

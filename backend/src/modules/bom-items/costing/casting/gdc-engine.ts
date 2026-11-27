@@ -28,7 +28,7 @@
 import type { FeatureOp } from '../../dto/cost-breakdown.dto';
 import { eMithranTerms, type EMithranTermsArgs } from '../shared/core/engine-kernel';
 import type { CastingMaterial, CastingReference } from './casting-reference';
-import { selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-machine';
+import { preferredFirst, selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-machine';
 import type { MachineChoiceDto } from '../../dto/cost-breakdown.dto';
 import { machineChoice, type ChoiceEval } from './machine-choice';
 import { resolveHpdcCavities, type CastingGeometry, type HpdcCavities, type HpdcResult, type TraceStep } from './hpdc-engine';
@@ -113,15 +113,19 @@ export function computeGdc(input: {
     `Tie bars clear the ${cav.cavities.lengthWise} × ${cav.cavities.widthWise} cavity layout of ${g.footprintMm.map(r2).join(' × ')} mm parts (either way round); a gravity machine has no clamp to check`,
     'Machine hour rate, labour rate, crew, Dry Cycle Time and Mold Efficiency on file',
   ];
-  const gdcChoice = (priced: ReadonlyArray<{ m: HpdcMachine; shotS: number; terms: { total: number } }> | null, chosen: string | null) => machineChoice({
-    rule: 'Cheapest cost per part among the capable machines (each with its own dry cycle and Mold Efficiency, machine + crew rate and setup over the batch)',
+  // `chosenFrom`: the preferred machines the cheapest was taken from, when the folder's usePreferredMachines narrowed the capable ones.
+  const gdcChoice = (priced: ReadonlyArray<{ m: HpdcMachine; shotS: number; terms: { total: number } }> | null, chosen: string | null, chosenFrom: readonly HpdcMachine[] | null = null) => machineChoice({
+    rule: `Technical first, then cost: only the machines that meet every criterion below${chosenFrom ? ", of them the plant's preferred machines (usePreferredMachines)," : ','} then the cheapest cost per part (each with its own dry cycle and Mold Efficiency, machine + crew rate and setup over the batch)`,
     criteria,
     evals: selection.checks.map((c): ChoiceEval => {
       if (!c.capable) return { name: c.machine.name, reasons: c.reasons };
       if (!priced) return { name: c.machine.name, reasons: [], cost: null };
       const p = priced.find((x) => x.m === c.machine);
       if (!p) return { name: c.machine.name, reasons: [c.machine.dryCycleTimeS == null ? 'no Dry Cycle Time on file' : 'no Mold Efficiency on file'] };
-      return { name: c.machine.name, reasons: [], cost: p.terms.total, note: `dry cycle ${c.machine.dryCycleTimeS} s, Mold Efficiency ${c.machine.moldEfficiency}, shot ${r2(p.shotS)} s` };
+      // A capable machine outside the preferred ones stays counted as capable, listed after them and said to be outside.
+      return chosenFrom != null && !chosenFrom.includes(c.machine)
+        ? { name: c.machine.name, reasons: [], cost: p.terms.total, note: 'capable, not a preferred machine (usePreferredMachines)', rank: 1e12 + p.terms.total }
+        : { name: c.machine.name, reasons: [], cost: p.terms.total, note: `dry cycle ${c.machine.dryCycleTimeS} s, Mold Efficiency ${c.machine.moldEfficiency}, shot ${r2(p.shotS)} s` };
     }),
     chosen,
   });
@@ -179,12 +183,17 @@ export function computeGdc(input: {
     })
     .sort((a, b) => a.terms.total - b.terms.total);
   if (priced.length === 0) return gapLine('No capable Gravity Die Casting machine has a Dry Cycle Time and a Mold Efficiency on file.', selection.capable[0]);
-  const best = priced[0]!;
-  choice = gdcChoice(priced, best.m.name);
+  // Technical first (the capable machines), then the reference data's order (its preferred machines first), then the cheapest per part.
+  const { pool, narrowed } = preferredFirst(priced, ref.usePreferredMachines);
+  const best = pool[0]!;
+  choice = gdcChoice(priced, best.m.name, narrowed ? pool.map((p) => p.m) : null);
   if (best.m.setupTimeHr == null) warnings.push(`${best.m.name} has no setup time on file: setup not costed.`);
   const o = best.run.outputs;
   const shotVolumeMm3 = o['Shot Volume']!;
-  trace.push({ label: 'Machine', value: `${best.m.name}: dry cycle ${best.m.dryCycleTimeS} s, cheapest per part of ${priced.length} capable` });
+  trace.push({
+    label: 'Machine',
+    value: `${best.m.name}: dry cycle ${best.m.dryCycleTimeS} s, cheapest per part of ${narrowed ? `the ${pool.length} preferred machines among ${priced.length} capable (usePreferredMachines)` : `${priced.length} capable`}`,
+  });
   trace.push({ label: 'Shot', value: `${r2(best.shotS)} s; per part ${r2(best.run.value!)} s; metal yield ${r3(o['Metal Yield']!)}, shot ${r2(shotVolumeMm3)} mm³ (Gravity Die Casting calculator)` });
 
   const suffix = n === 1 ? '' : ` (shot ÷ ${n} cavities)`;

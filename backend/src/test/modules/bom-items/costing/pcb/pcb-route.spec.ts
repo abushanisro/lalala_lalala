@@ -7,7 +7,7 @@ import { buildPcbCalculatorsMigrationSql, PCB_CALCULATORS_MIGRATION } from '../.
 import { buildPcbCostSummary } from '../../../../../modules/bom-items/costing/pcb/pcb-cost-summary';
 import { pcbMeasuredFrom, pcbOverridesFrom } from '../../../../../modules/bom-items/costing/pcb/pcb-cost.service';
 import { resolvePcbPart, type PcbMeasured, type PcbOverrides } from '../../../../../modules/bom-items/costing/pcb/pcb-part';
-import { buildPcbRoutes, choosePcbRoute, PCB_CLASS, type PcbBuild, type PcbRoute } from '../../../../../modules/bom-items/costing/pcb/pcb-route';
+import { buildPcbRoutes, choosePcbRoute, pcbRouteCostWithTooling, PCB_CLASS, type PcbBuild, type PcbRoute } from '../../../../../modules/bom-items/costing/pcb/pcb-route';
 import { pcbRouteFor } from '../../../../../modules/bom-items/costing/pcb/pcb-route-comparison';
 import { machineValue } from '../../../../../modules/bom-items/costing/casting/sand/sand-machines';
 import type { CostSummaryResponseDto } from '../../../../../modules/bom-items/dto/cost-breakdown.dto';
@@ -194,3 +194,42 @@ describe('the summary and the route comparison', () => {
     expect(pcbRouteFor(other.key, summary as CostSummaryResponseDto)).toMatchObject({ isFeasible: false, totalCost: null });
   });
 });
+
+// A stamping die or a bed of nails fixture is part of what a route costs: the routes are compared with their tooling spread over the boards.
+describe('the route to quote counts its tooling', () => {
+  const route = (key: string, totalUsd: number, toolingPerBoard: Array<number | null>): PcbRoute => ({
+    key, label: key, complete: true, totalUsd, lines: [],
+    tooling: toolingPerBoard.map((perPartUsd, i) => ({ key: `tool-${i}`, description: 'tool', detail: '', costUsd: perPartUsd == null ? null : perPartUsd * 1000, perPartUsd, amortizationParts: perPartUsd == null ? null : 1000 })),
+  }) as unknown as PcbRoute;
+
+  it('a route cheaper a board but with a dear die loses to the route that costs less with its tooling', () => {
+    const stamped = route('stamp_bed_of_nails', 2.0, [1.5, 0.4]);   // 3.90 with tooling
+    const routed = route('router_flying_probe', 2.6, [0.2]);        // 2.80 with tooling
+    expect(pcbRouteCostWithTooling(stamped)).toBeCloseTo(3.9, 6);
+    const { route: quoted, note } = choosePcbRoute([stamped, routed], [], null);
+    expect(quoted).toBe(routed);
+    expect(note).toBe('PCB: router_flying_probe is quoted (2.60 USD per board), the cheapest complete route with its tooling spread over the boards (2.80 USD per board with tooling; the quoted figure is material, process and consumables, the tooling shown apart). stamp_bed_of_nails 2.00 USD (3.90 USD with tooling).');
+  });
+
+  it('at a volume that spreads the die thin, the stamped route wins again', () => {
+    const stamped = route('stamp_bed_of_nails', 2.0, [0.015, 0.004]);
+    const routed = route('router_flying_probe', 2.6, [0.002]);
+    expect(choosePcbRoute([stamped, routed], [], null).route).toBe(stamped);
+  });
+
+  it('when a tool has no price or no boards to be spread over, the routes are compared on the piece cost, and the note says so', () => {
+    const stamped = route('stamp_bed_of_nails', 2.0, [null, 0.4]);
+    const routed = route('router_flying_probe', 2.6, [0.2]);
+    expect(pcbRouteCostWithTooling(stamped)).toBeNull();
+    const { route: quoted, note } = choosePcbRoute([stamped, routed], [], null);
+    expect(quoted).toBe(stamped);
+    expect(note).toContain('its tooling is shown apart and not compared: it has no price or no boards to be spread over');
+  });
+
+  it('the route set in the Cost Guide stands, whatever the tooling', () => {
+    const stamped = route('stamp_bed_of_nails', 2.0, [1.5]);
+    const routed = route('router_flying_probe', 2.6, [0.2]);
+    expect(choosePcbRoute([stamped, routed], [], 'stamp_bed_of_nails' as never).route).toBe(stamped);
+  });
+});
+

@@ -5,6 +5,7 @@ import {
   CASTING_LOOKUP_KEYS,
   CASTING_MATERIAL_PROPERTY_KEYS,
   CASTING_REFERENCE_SOURCE_VERSION,
+  CASTING_SWITCH_KEYS,
   CASTING_VARIABLE_KEYS,
   SAND_CASTABILITY_LOOKUP_KEYS,
   SAND_CASTING_REFERENCE_SOURCE_VERSION,
@@ -61,7 +62,7 @@ export class CastingReferenceService {
     const [vars, lookups] = await Promise.all([
       db.from('machining_reference_data').select('key, value')
         .eq('category', 'variable').eq('source_version', CASTING_REFERENCE_SOURCE_VERSION)
-        .in('key', [...CASTING_VARIABLE_KEYS]),
+        .in('key', [...CASTING_VARIABLE_KEYS, ...CASTING_SWITCH_KEYS]),
       db.from('machining_reference_data').select('key, raw')
         .eq('category', 'lookup_table').eq('source_version', CASTING_REFERENCE_SOURCE_VERSION)
         .in('key', [...CASTING_LOOKUP_KEYS]),
@@ -226,6 +227,7 @@ export class CastingReferenceService {
       maxMoldHeightMm: num(r.specs?.max_mold_height_mm),
       dryCycleTimeS: num(r.specs?.dry_cycle_time_s),
       moldEfficiency: num(r.specs?.mold_efficiency),
+      preferred: String(r.specs?.is_preferred ?? '').trim().toLowerCase() === 'true',
     }));
   }
 }

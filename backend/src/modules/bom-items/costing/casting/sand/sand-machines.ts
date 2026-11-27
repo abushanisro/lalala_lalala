@@ -18,6 +18,8 @@ export interface SandMachine {
   operators: number | null;
   setupTimeHr: number | null;
   preferred: boolean;
+  /** The machine file's Is Virtual Machine (specs is_virtual_machine): where the folder prefers virtual machines, they are chosen from first. */
+  virtual: boolean;
   powerKw: number | null;
   specs: Readonly<Record<string, unknown>>;
   /** The HR Rates location the record is priced for (the dialog shows the class's machines there); null when the row has none. */
@@ -25,6 +27,8 @@ export interface SandMachine {
 }
 
 const num = (v: unknown): number | null => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+/** A flag of a machine's specs as its file writes it: true / false, or 1 / 0 (the Assembly machine files). Anything else is false. */
+const specFlag = (v: unknown): boolean => v === true || v === 1 || ['true', '1'].includes(String(v ?? '').trim().toLowerCase());
 
 /**
  * The mhr_records columns a sand machine is read from (the whole row goes to the engine for a machine with no stored rate). `typedColumns`:
@@ -51,7 +55,8 @@ export function sandMachineFromRow(
     labourRatePerHr: num(row.usd_labor_rate_per_hr),
     operators: num(row.operators),
     setupTimeHr: num(row.setup_time_hr),
-    preferred: specs['is_preferred'] === true || String(specs['is_preferred']).toLowerCase() === 'true',
+    preferred: specFlag(specs['is_preferred']),
+    virtual: specFlag(specs['is_virtual_machine']),
     powerKw: num(row.machine_power_kw),
     specs,
     location: row.location == null ? null : String(row.location),

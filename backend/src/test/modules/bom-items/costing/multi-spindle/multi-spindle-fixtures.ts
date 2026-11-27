@@ -40,7 +40,7 @@ export function multiSpindleMachinesFromMemory(): SandMachine[] {
       machineRatePerHr: num(r['accounting.direct_overhead_rate_usd_per_hr']) + num(r['accounting.indirect_overhead_rate_usd_per_hr']),
       rateSource: 'stored', assumedDefaults: [],
       labourRatePerHr: num(r['accounting.labor_rate_usd_per_hr']), operators: num(r['accounting.number_of_operators']),
-      setupTimeHr: num(r['time.setup_time_hr']), preferred: false, powerKw: num(r['limits.spindle_power_kW']), location: 'USA',
+      setupTimeHr: num(r['time.setup_time_hr']), preferred: false, virtual: false, powerKw: num(r['limits.spindle_power_kW']), location: 'USA',
       specs: {
         number_spindles: num(r['slide_configuration.number_spindles']),
         max_diameter_mm: num(r['limits.max_diameter_mm']), max_length_mm: num(r['limits.max_length_mm']),

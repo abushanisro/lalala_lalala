@@ -5,7 +5,8 @@
 //   2. Enrich      — DB capability columns → seed-registry by name → class defaults
 //   3. Filter      — process-specific physical eligibility (tonnage/thickness/envelope/…): only capable machines go on
 //   4. Narrow      — the reference data's own order (selection-policy.ts): virtual machines first where the family prefers them,
-//                    then the preferred machines, each only when one of them is capable
+//                    then the preferred machines, each only when one of them is capable; then, among real machining machines,
+//                    the family's spindle power and speed biases
 //   5. Cost        — the lowest machine hour rate of those (cost per part where a line's machines run at different speeds)
 //   6. Absence     — no capable machine is reported as that, with no rate; never priced from anywhere else
 //
@@ -77,6 +78,8 @@ const BASE_COLUMNS =
   // The machine file's own flags (every family's seed; migration 1164 for machining and sheet metal): the reference data chooses a virtual
   // and a preferred machine first (selection-policy.ts).
   'is_preferred:specs->is_preferred, is_virtual_machine:specs->is_virtual_machine, ' +
+  // The main spindle's power (migration 1165): the machining variables' spindlePowerBias compares it (selection-policy.ts).
+  'spindle_power_kw:specs->spindle_power_kw, ' +
   // The two components the canonical MHR is DEFINED as (migration 581:
   // MHR = Direct Overhead + Indirect Overhead). Carried so the benchmark
   // override guard can tell a real, self-consistent machine rate apart from
@@ -142,6 +145,7 @@ interface RawMachineRow {
   rapid_traverse_mm_per_min?: number | string | null;
   is_preferred?: boolean | string | null;
   is_virtual_machine?: boolean | string | null;
+  spindle_power_kw?: number | string | null;
   setup_time_hr?: number | string | null;
   machine_power_kw?: number | string | null;
   direct_overhead_rate?: number | string | null;
@@ -486,6 +490,7 @@ export async function fetchMachinePool(
       machinePowerKw: num(raw.machine_power_kw),
       preferred: flag(raw.is_preferred),
       virtual: flag(raw.is_virtual_machine),
+      spindlePowerKw: num(raw.spindle_power_kw),
       directOverheadRate: num(raw.direct_overhead_rate),
       indirectOverheadRate: num(raw.indirect_overhead_rate),
     });
@@ -1136,6 +1141,7 @@ function makeNoMachineCandidate(cls: MachineClass): MachineCandidate {
     machinePowerKw: null,
     preferred: null,
     virtual: null,
+    spindlePowerKw: null,
     directOverheadRate: null,
     indirectOverheadRate: null,
   };

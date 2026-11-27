@@ -256,3 +256,77 @@ describe('the assembly\'s Cost Summary and route comparison', () => {
     expect(manual.capability.warnings[0]).toContain('Pick and Place: the load time of Nut cap: its weight');
   });
 });
+
+// Technical first: a machine must be able to hold the assembly before its cost is compared. The limits are the machines' own
+// (memory/Assembly/Machines: the electron beam welders' working chamber and load, the ultrasonic welders' tables).
+describe('the assembly must fit the machine that welds it', () => {
+  const sized = (maxDimensionMm: number | null, massKg: number | null = 1) => ({ assembly: { massKg, maxDimensionMm, sizeSource: 'test' } });
+  const lineOf = (r: AssemblyRoute, process: string) => r.lines.find((l) => l.process === process)!;
+  const ebwJoint = mergeJoints([], [{ id: 'e', process: 'Electron Beam Welding', lengthMm: 200, depthMm: 5 }]).joints;
+  const usJoint = mergeJoints([], [{ id: 'u', process: 'Ultrasonic Welding', count: 2 }]).joints;
+  const welders = machines['electron_beam_welding']!;
+  const longest = (m: (typeof welders)[number]) => Math.max(...['working_length_mm', 'working_width_mm', 'working_height_mm'].map((k) => machineValue(m, k)!));
+
+  it('an electron beam weld is made in a chamber that takes the assembly: the smaller chambers are not capable', () => {
+    const small = lineOf(routeOf('manual', { joints: ebwJoint, ...sized(200) }), 'Electron Beam Welding').machineChoice!;
+    expect(small.criteria).toContain('A chamber that takes the 200 mm assembly and carries its 1 kg');
+    expect(small.capableCount).toBe(welders.filter((m) => longest(m) >= 200).length);
+    const big = lineOf(routeOf('manual', { joints: ebwJoint, ...sized(1500) }), 'Electron Beam Welding');
+    const chosen = welders.find((m) => m.name === big.machineName)!;
+    expect(longest(chosen)).toBeGreaterThanOrEqual(1500);
+    expect(big.machineChoice!.capableCount).toBe(welders.filter((m) => longest(m) >= 1500).length);
+    expect(big.machineChoice!.capableCount).toBeLessThan(small.capableCount);
+  });
+
+  it('an assembly longer than every chamber, or heavier than every welder carries, is a named gap', () => {
+    const tooLong = lineOf(routeOf('manual', { joints: ebwJoint, ...sized(Math.max(...welders.map(longest)) + 1) }), 'Electron Beam Welding');
+    expect((tooLong.physicsGap as { reason: string }).reason).toMatch(/the assembly is \d+ mm long, its chamber takes \d+ mm/);
+    const tooHeavy = lineOf(routeOf('manual', { joints: ebwJoint, ...sized(100, 1e6) }), 'Electron Beam Welding');
+    expect((tooHeavy.physicsGap as { reason: string }).reason).toMatch(/the assembly weighs 1000000 kg, it carries \d+ kg/);
+  });
+
+  it('with no size on file the chamber is not checked, and the line says so', () => {
+    const line = lineOf(routeOf('manual', { joints: ebwJoint, ...sized(null, null) }), 'Electron Beam Welding');
+    expect(line.physicsGap).toBeUndefined();
+    expect(line.machineChoice!.criteria).toContain('Its chamber is not checked: the size of the assembly is not known');
+  });
+
+  it('an ultrasonic welder must take the assembly on its table: a bench table by its longer side, a rotary one by its diameter', () => {
+    const us = machines['assembly_ultrasonic_welding']!;
+    const table = (m: (typeof us)[number]) => (String(m.specs['table_configuration']).toLowerCase() === 'rotary'
+      ? machineValue(m, 'max_table_diameter_mm')! : Math.max(machineValue(m, 'max_bench_table_length_mm') ?? 0, machineValue(m, 'max_bench_table_width_mm') ?? 0));
+    const fits = (size: number) => us.filter((m) => table(m) >= size).length;
+    const small = lineOf(routeOf('manual', { joints: usJoint, ...sized(100) }), 'Ultrasonic Welding').machineChoice!;
+    expect(small.capableCount).toBe(fits(100));
+    // 600 mm: no bench table takes it (the longest is under 400 mm), the larger rotary tables do.
+    const wide = lineOf(routeOf('manual', { joints: usJoint, ...sized(600) }), 'Ultrasonic Welding');
+    expect(wide.machineChoice!.capableCount).toBe(fits(600));
+    expect(fits(600)).toBeLessThan(fits(100));
+    expect(String(us.find((m) => m.name === wide.machineName)!.specs['table_configuration']).toLowerCase()).toBe('rotary');
+    const none = lineOf(routeOf('manual', { joints: usJoint, ...sized(5000) }), 'Ultrasonic Welding');
+    expect((none.physicsGap as { reason: string }).reason).toMatch(/the assembly is 5000 mm long, its (rotary|bench) table takes \d+ mm/);
+  });
+});
+
+// The Assembly folder's own order (variables preferVirtualMachines = true: "first try to select a virtual machine, if present and
+// feasible"): each welding class has one virtual machine, the "Default" one, beside the named welders.
+describe('of the machines that can do a joint, the virtual one comes first', () => {
+  const mig = (over: Partial<AssemblyRouteInput> = {}) => routeOf('manual', { joints: [weld()], ...over }).lines.find((l) => l.process === 'Manual MIG Welding')!;
+
+  it('a manual MIG weld is costed on the virtual welder, though a named welder costs less an hour; every capable welder stays counted', () => {
+    expect(ref.flag('preferVirtualMachines')).toBe(true);
+    const line = mig();
+    expect(line.machineName).toBe('Default Mig Weld');
+    const choice = line.machineChoice!;
+    expect(choice.rule).toContain('of them the virtual machines (preferVirtualMachines)');
+    expect(choice.capableCount).toBe(machines['manual_mig_welding']!.length);
+    expect(choice.candidates[1]!.reasons).toEqual(['capable, not a virtual machine (preferVirtualMachines)']);
+  });
+
+  it('with the switch off the cheapest capable welder is taken', () => {
+    const off = mig({ ref: ref.withOverrides(new Map([['preferVirtualMachines', 'false']])) });
+    expect(off.machineChoice!.rule).not.toContain('virtual');
+    expect(off.totalCost).toBeLessThanOrEqual(mig().totalCost);
+  });
+});
+
