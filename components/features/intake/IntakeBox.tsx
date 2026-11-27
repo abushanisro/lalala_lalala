@@ -6,7 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertTriangle, ArrowUp, Box, CheckCircle2, FileText, Image as ImageIcon, Loader2, Mic, Plus, Upload, X } from '@/components/ui/icons';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { AlertTriangle, ArrowUp, Box, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, Loader2, Mic, Plus, Upload, X } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { drawingReadingsApi, type DrawingReading } from '@/lib/api/drawing-readings';
@@ -29,7 +30,22 @@ type Read = { state: 'reading' } | { state: 'read'; reading: DrawingReading } | 
 
 const SELECT = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground disabled:opacity-60';
 const LOCATION_KEY = 'intake.location';
+const LOCATION_EVENT = 'intake-location';
 const remembered = (): string => { try { return localStorage.getItem(LOCATION_KEY) ?? ''; } catch { return ''; } };
+/** Where the parts are made, as chosen in this session; until then, what the browser remembers from the last one. */
+let chosenLocation: string | null = null;
+const madeInNow = (): string => chosenLocation ?? remembered();
+/** Chooses where the parts are made, for the prompt's menu and the plan alike, and remembers it for next time. */
+function chooseMadeIn(location: string) {
+  chosenLocation = location;
+  try { localStorage.setItem(LOCATION_KEY, location); } catch { /* the choice is simply not remembered */ }
+  window.dispatchEvent(new Event(LOCATION_EVENT));
+}
+function onMadeInChange(notify: () => void) {
+  window.addEventListener(LOCATION_EVENT, notify);
+  window.addEventListener('storage', notify);
+  return () => { window.removeEventListener(LOCATION_EVENT, notify); window.removeEventListener('storage', notify); };
+}
 const messageOf = (error: unknown): string => (error instanceof Error && error.message ? error.message : 'The server did not answer.');
 const wholeNumber = (text: string): number | null => { const n = Number(text.replace(/,/g, '')); return text.trim() !== '' && Number.isInteger(n) && n > 0 ? n : null; };
 
@@ -54,6 +70,8 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   useTypedPlaceholder(textarea, phase === 'compose' && note === '');
 
   const { data: factories } = useFactories();
+  // Known only in the browser (its storage): the server renders the menu with no choice, and the page shows the remembered one.
+  const madeIn = useSyncExternalStore(onMadeInChange, madeInNow, () => '');
   const { data: catalog } = useProcessCalculatorMappings({ limit: 1000 });
   const groups = useMemo(() => processGroupOptionsFrom(catalog?.mappings), [catalog]);
 
@@ -97,7 +115,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
     setPlan({
       projectName: firstLine.length > 0 && firstLine.length <= 60 ? firstLine : parts[0]?.name ?? files[0]?.name.replace(/\.[^.]+$/, '') ?? '',
       bomName: parts.length > 0 ? 'Parts from drawings' : 'Imported parts',
-      location: remembered(), annualVolume: null, batchSize: null, parts,
+      location: madeInNow(), annualVolume: null, batchSize: null, parts,
       cadFiles: files.filter(file => intakeFileKind(file.name) === 'cad').map(file => file.name),
     });
     setPhase('plan');
@@ -105,7 +123,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
 
   const create = async () => {
     if (!plan) return;
-    try { if (plan.location) localStorage.setItem(LOCATION_KEY, plan.location); } catch { /* the choice is simply not remembered */ }
+    if (plan.location) chooseMadeIn(plan.location);
     setPhase('creating');
     setEvents([]);
     setFatal(null);
@@ -167,11 +185,29 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           <div className="flex items-center justify-between gap-2 p-3">
             <input ref={picker} type="file" multiple accept={INTAKE_ACCEPT} className="hidden"
               onChange={event => { if (event.target.files) add(event.target.files); event.target.value = ''; }} />
-            <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={phase !== 'compose'}
-              className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
-              <Plus className="h-5 w-5" />
-            </Button>
-            {phase === 'compose' && <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:block">Drag files anywhere onto this page, or add them with +</p>}
+            <div className="flex shrink-0 items-center gap-1">
+              <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={phase !== 'compose'}
+                className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
+                <Plus className="h-5 w-5" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="ghost" size="sm" disabled={phase !== 'compose' || !factories?.length}
+                    aria-label={madeIn ? `Where the parts are made: ${madeIn}` : 'Where the parts are made'} title="Where the parts are made"
+                    className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
+                    {madeIn || 'Made in'}
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+                  <DropdownMenuLabel>Where the parts are made</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={madeIn} onValueChange={chooseMadeIn}>
+                    {(factories ?? []).map(f => <DropdownMenuRadioItem key={f.location} value={f.location}>{f.location} ({f.code})</DropdownMenuRadioItem>)}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            {phase === 'compose' && <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">Drag files anywhere onto this page, or add them with +</p>}
             <div className="flex shrink-0 items-center gap-1">
               {dictation.available && (
                 <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={phase !== 'compose'}
