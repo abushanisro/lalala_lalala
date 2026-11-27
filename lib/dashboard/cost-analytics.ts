@@ -127,6 +127,15 @@ export function concentration(a: CostAnalytics, basis: Basis): { parts: number; 
   return { parts: top, share: carried / total };
 }
 
+/** What was typed in an ask-price box: an amount, nothing (clear the price), or not a price. Thousands separators are accepted. */
+export function parseAskPrice(text: string): number | null | "invalid" {
+  const trimmed = text.trim().replace(/,/g, "");
+  if (trimmed === "") return null;
+  if (!/^\d*\.?\d+$/.test(trimmed) && !/^\d+\.$/.test(trimmed)) return "invalid";
+  const amount = Number(trimmed);
+  return Number.isFinite(amount) ? amount : "invalid";
+}
+
 export interface GapRow { id: string; name: string; askPrice: number; unitCost: number; gap: number; gapShare: number | null; annualGap: number | null }
 
 /** The parts with an ask price, the largest gap to should-cost first (by the year when volumes are known). */

@@ -1,17 +1,21 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
+import { useState } from 'react';
 import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Activity, Clock, Coins, Factory, Layers, Package, Percent, PiggyBank, Target } from '@/components/ui/icons';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { CostAnalytics, CostElement } from '@/lib/api/cost-analytics';
+import type { CostAnalytics, CostElement, PartCostRow } from '@/lib/api/cost-analytics';
+import { usePatchScenarioOverrides } from '@/lib/api/hooks/useBOMItems';
 import {
-  basisLabel, basisOf, concentration, count, decades, driverRows, ELEMENT_LABEL, elementRows, gapRows, kg, money, pareto, percent, plural, ratios,
-  savingsBridge, utilisationRows, weeklyCosted, weightRows, type Basis,
+  basisLabel, basisOf, concentration, count, decades, driverRows, ELEMENT_LABEL, elementRows, gapRows, kg, money, parseAskPrice, pareto, percent, plural,
+  ratios, savingsBridge, utilisationRows, weeklyCosted, weightRows, type Basis,
 } from '@/lib/dashboard/cost-analytics';
 
 import { AXIS_TICK, TOOLTIP_STYLE } from './charts';
@@ -31,6 +35,7 @@ const ASKED = 'hsl(var(--chart-4))';
 const SAVING = 'hsl(var(--success))';
 const INCREASE = 'hsl(var(--destructive))';
 const LABEL = { fill: 'hsl(var(--foreground))', fontSize: 12 };
+const ENTRY_ROWS = 8;                                                 // parts in the ask-price list before "Show all"
 
 interface Props {
   data: CostAnalytics | undefined;
@@ -42,6 +47,7 @@ interface Props {
 
 /** The workspace's should-cost: headline figures and the charts a buyer or a cost consultant reads them from. */
 export function CostAnalyticsSection({ data, isLoading, isError, now }: Props) {
+  const [entering, setEntering] = useState(false);
   if (isLoading) {
     return (
       <Card className="rounded-xl shadow-sm">
@@ -96,7 +102,6 @@ export function CostAnalyticsSection({ data, isLoading, isError, now }: Props) {
   const weeks = weeklyCosted(a.parts, now ?? new Date());
   const machines = perYear ? a.machines : [...a.machines].sort((x, y) => y.unitCost - x.unitCost);
   const converted = Object.entries(a.fxRates).map(([from, rate]) => `1 ${from} = ${money(rate, a.currency)}`).join(', ');
-  const askHint = 'Enter the price asked for a part on its Scenario panel (Currency and Ask Price). The gap to its should-cost then shows here.';
 
   return (
     <section aria-label="Should-cost analytics" className="space-y-6">
@@ -164,16 +169,36 @@ export function CostAnalyticsSection({ data, isLoading, isError, now }: Props) {
             title: `${p.name}: ${exact(p.value)}, ${percent(p.share, 1)} of the should-cost (${percent(p.cumulativeShare, 1)} with the parts above it)` }))} />
         </ChartCard>
 
-        <ChartCard title="Ask price against should-cost" question="The parts with the most money a year between the price asked and the should-cost."
-          missing={gaps.length === 0 ? askHint : undefined} legend={[{ label: 'Ask price', colour: ASKED }, { label: 'Should-cost', colour: SERIES }]}>
-          <GapBars rows={gaps} exact={exact} />
+        {/*
+          One card in both states, so the entry list keeps its place (and what is being typed) when the first price turns the card from an
+          entry form across the row into a chart with the bridge beside it.
+        */}
+        <ChartCard className={gaps.length === 0 ? 'xl:col-span-2' : ''} title="Ask price against should-cost"
+          question={gaps.length === 0
+            ? 'Enter the price asked for each part. Its gap to the should-cost, and the savings a year, then show here and in the figures above.'
+            : 'The parts with the most money a year between the price asked and the should-cost.'}
+          legend={gaps.length === 0 ? [] : [{ label: 'Ask price', colour: ASKED }, { label: 'Should-cost', colour: SERIES }]}>
+          {gaps.length > 0 ? <GapBars rows={gaps} exact={exact} /> : null}
+          <div className={gaps.length > 0 ? 'mt-5 border-t border-border pt-4' : ''}>
+            {gaps.length > 0 && (
+              <Button variant="outline" size="sm" aria-expanded={entering} onClick={() => { setEntering(open => !open); }}>
+                {entering ? 'Hide the ask prices' : 'Enter or change ask prices'}
+              </Button>
+            )}
+            {(gaps.length === 0 || entering) && (
+              <div className={gaps.length > 0 ? 'mt-4' : ''}>
+                <AskPriceEntry parts={a.parts} currency={a.currency} exact={exact} onSaved={() => { setEntering(true); }} />
+              </div>
+            )}
+          </div>
         </ChartCard>
 
-        <ChartCard title="From ask price to should-cost" question="What is asked a year for the priced parts, the gap in each BOM, and what those parts should cost."
-          missing={bridge.length === 0 ? askHint : undefined}
-          legend={[{ label: 'Total', colour: ASKED }, { label: 'Above should-cost', colour: SAVING }, ...(bridge.some(s => s.kind === 'increase') ? [{ label: 'Below should-cost', colour: INCREASE }] : [])]}>
-          <Bridge steps={bridge} money={m} exact={exact} />
-        </ChartCard>
+        {gaps.length > 0 && (
+          <ChartCard title="From ask price to should-cost" question="What is asked a year for the priced parts, the gap in each BOM, and what those parts should cost."
+            legend={[{ label: 'Total', colour: ASKED }, { label: 'Above should-cost', colour: SAVING }, ...(bridge.some(step => step.kind === 'increase') ? [{ label: 'Below should-cost', colour: INCREASE }] : [])]}>
+            <Bridge steps={bridge} money={m} exact={exact} />
+          </ChartCard>
+        )}
 
         <ChartCard title="Cost by process" question={`Process cost ${basisLabel(basis)}, by process group.`} missing={a.processGroups.length === 0 ? 'No process cost is saved on the costed parts.' : undefined}>
           <BarList rows={a.processGroups.slice(0, 8).map(g => ({ key: g.name, name: g.name, value: spend(g), label: m(spend(g)), detail: plural(g.parts, 'part'),
@@ -258,11 +283,11 @@ function Tile({ icon: Icon, label, value, note, tone }: { icon: typeof Coins; la
 const Swatch = ({ colour }: { colour: string }) => <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: colour }} aria-hidden="true" />;
 
 /** A chart with its title and the question it answers. With `missing`, it says what data is not there, and where to enter it. */
-function ChartCard({ title, question, missing, legend, children }: {
-  title: string; question: string; missing?: string | undefined; legend?: { label: string; colour: string }[]; children: ReactNode;
+function ChartCard({ title, question, missing, legend, className, children }: {
+  title: string; question: string; missing?: string | undefined; legend?: { label: string; colour: string }[]; className?: string; children: ReactNode;
 }) {
   return (
-    <Card className="rounded-xl shadow-sm">
+    <Card className={`rounded-xl shadow-sm ${className ?? ''}`}>
       <CardHeader className="border-b border-border p-6 pb-4">
         <CardTitle className="text-base font-semibold">{title}</CardTitle>
         <p className="text-sm text-muted-foreground">{question}</p>
@@ -336,6 +361,77 @@ function BomBars({ a, basis, money: m, exact }: { a: CostAnalytics; basis: Basis
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The costed parts, the costliest first, each with a box for the price asked for it. A price is saved on the part's scenario, where its
+ * Scenario panel shows it too, in that part's scenario currency; an emptied box clears it. Saving reloads the figures and charts.
+ */
+function AskPriceEntry({ parts, currency, exact, onSaved }: { parts: PartCostRow[]; currency: string; exact: (v: number) => string; onSaved: () => void }) {
+  const queryClient = useQueryClient();
+  const save = usePatchScenarioOverrides();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
+  const shown = all ? parts : parts.slice(0, ENTRY_ROWS);
+  const drop = (id: string) => { setDrafts(({ [id]: _dropped, ...rest }) => rest); };
+
+  const commit = (part: PartCostRow) => {
+    const text = drafts[part.id];
+    if (text === undefined) return;
+    const amount = parseAskPrice(text);
+    if (amount === 'invalid') return;                                // stays in the box, marked, until it is a price
+    if (amount === part.askEntered) { drop(part.id); return; }
+    setSavingId(part.id);
+    save.mutate({ id: part.id, patch: { askPrice: amount == null ? null : { amount, currency: part.askCurrency } } }, {
+      onSuccess: () => {
+        onSaved();
+        void queryClient.invalidateQueries({ queryKey: ['cost-analytics'] }).then(() => { drop(part.id); });   // the box keeps what was typed until the figures are back
+      },
+      onSettled: () => { setSavingId(null); },
+    });
+  };
+
+  return (
+    <div>
+      {parts.some(part => part.askCurrency !== currency) && (
+        <p className="mb-3 text-xs text-muted-foreground">Each price is entered in its part's scenario currency and converted to {currency} for the figures and charts.</p>
+      )}
+      <ul className="divide-y divide-border">
+        {shown.map(part => {
+          const text = drafts[part.id] ?? (part.askEntered == null ? '' : String(part.askEntered));
+          const invalid = drafts[part.id] !== undefined && parseAskPrice(drafts[part.id] ?? '') === 'invalid';
+          return (
+            <li key={part.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2.5">
+              <div className="min-w-0 flex-1 basis-56">
+                <p className="break-words text-sm font-medium text-foreground">{part.name}</p>
+                <p className="text-xs tabular-nums text-muted-foreground">
+                  Should-cost {exact(part.unitCost)}
+                  {part.gap != null && <span className={part.gap >= 0 ? 'text-success' : 'text-destructive'}> · asked {exact(Math.abs(part.gap))} {part.gap >= 0 ? 'above' : 'below'} it</span>}
+                </p>
+              </div>
+              <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <span className="sr-only">Ask price for {part.name}, in {part.askCurrency}</span>
+                <Input
+                  inputMode="decimal" placeholder="Ask price" value={text} aria-invalid={invalid} disabled={savingId === part.id}
+                  onChange={event => { setDrafts(current => ({ ...current, [part.id]: event.target.value })); }}
+                  onBlur={() => { commit(part); }}
+                  onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') drop(part.id); }}
+                  className={`h-8 w-32 text-right text-sm tabular-nums text-foreground ${invalid ? 'border-destructive focus-visible:ring-destructive' : ''}`}
+                />
+                <span className="w-8 font-medium">{part.askCurrency}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {parts.length > ENTRY_ROWS && (
+        <Button variant="ghost" size="sm" className="mt-2 text-xs text-muted-foreground" onClick={() => { setAll(open => !open); }}>
+          {all ? `Show the ${ENTRY_ROWS} costliest parts` : `Show all ${count(parts.length)} parts`}
+        </Button>
+      )}
+    </div>
   );
 }
 

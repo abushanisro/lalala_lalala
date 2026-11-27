@@ -25,6 +25,9 @@ export interface PartCostRow {
   /** The first cost record of the part: when it was costed. */
   costedAt: string | null;
   askPrice: number | null;
+  /** The ask price as entered, and the currency a price for this part is entered in (its scenario currency; USD when none was chosen). */
+  askEntered: number | null;
+  askCurrency: string;
   /** Ask price less should-cost, per part. */
   gap: number | null;
   annualGap: number | null;
