@@ -299,7 +299,7 @@ export function coolStep(ctx: SandRouteContext, machine: SandMachine, pit: boole
   return 'run' in r ? { ok: true, sec: r.run.value!, run: r.run, energyCostUsd: 0, notes: [] } : fail(...r.reasons);
 }
 
-/** Ranks a capable machine outside the preferred ones after every preferred machine, whatever it costs. */
+/** Ranks a capable machine outside the ones chosen from (the virtual, the preferred) after every one of those, whatever it costs. */
 const NOT_PREFERRED_RANK = 1e12;
 
 export interface CostedStep {
@@ -316,8 +316,10 @@ export function energyBasisOf(ctx: Pick<SandRouteContext, 'energyPricePerKwh' | 
 
 /**
  * The machine of a step, chosen technically first and then by cost, and costed as a casting line: only the machines `evaluate` finds capable
- * (each technical criterion the step states) are compared; of them the plant's preferred machines when one is capable and the data's
- * usePreferredMachines says so; then the cheapest cost per part. With no capable machine the line is a named gap carrying every machine's reason.
+ * (each technical criterion the step states) are compared; of them the virtual machines when one is capable and the data's
+ * preferVirtualMachines says so (Assembly: "first try to select a virtual machine, if present and feasible"), then the plant's preferred
+ * machines when one is capable and usePreferredMachines says so; then the cheapest cost per part. With no capable machine the line is a
+ * named gap carrying every machine's reason.
  */
 export function selectAndCost(input: {
   process: string;
@@ -357,8 +359,10 @@ export function selectAndCost(input: {
   });
   const capable = evaluated.filter((e) => e.costed);
   // The data writes the switch as true/false (every memory domain: true), so it is read as a flag: read as a number it was never on.
-  const preferOnly = input.ref.flag('usePreferredMachines') === true && capable.some((e) => e.m.preferred);
-  const pool = preferOnly ? capable.filter((e) => e.m.preferred) : capable;
+  const virtualOnly = input.ref.flag('preferVirtualMachines') === true && capable.some((e) => e.m.virtual);
+  const afterVirtual = virtualOnly ? capable.filter((e) => e.m.virtual) : capable;
+  const preferOnly = input.ref.flag('usePreferredMachines') === true && afterVirtual.some((e) => e.m.preferred);
+  const pool = preferOnly ? afterVirtual.filter((e) => e.m.preferred) : afterVirtual;
   // The line's cost is rounded to the cent, so two machines can tie on it while one costs less: the cycle's machine and labour cost per part,
   // kept finer, decides between them before the name does.
   const fine = (c: ProcessLineCost) => (c.machineCostPerPart ?? 0) + (c.laborCostPerPart ?? 0);
@@ -367,14 +371,15 @@ export function selectAndCost(input: {
   // technical criterion), listed after the preferred machines and said to be outside them.
   const evals: ChoiceEval[] = evaluated.map((e) => {
     if (!e.outcome.ok || !e.costed) return { name: e.m.name, reasons: e.outcome.ok ? [] : e.outcome.reasons, cost: null };
-    const outside = preferOnly && !e.m.preferred;
+    const note = virtualOnly && !e.m.virtual ? 'capable, not a virtual machine (preferVirtualMachines)'
+      : preferOnly && !e.m.preferred ? 'capable, not a preferred machine (usePreferredMachines)' : null;
     return {
       name: e.m.name, reasons: [], cost: e.costed.totalCost,
-      ...(outside ? { note: 'capable, not a preferred machine (usePreferredMachines)', rank: NOT_PREFERRED_RANK + e.costed.totalCost } : {}),
+      ...(note ? { note, rank: NOT_PREFERRED_RANK + e.costed.totalCost } : {}),
     };
   });
   const choice: MachineChoiceDto = machineChoice({
-    rule: `Technical first, then cost: only the machines that meet every criterion below${preferOnly ? ", of them the plant's preferred machines (usePreferredMachines)," : ','} then the cheapest cost per part (machine rate, crew, setup and energy)`,
+    rule: `Technical first, then cost: only the machines that meet every criterion below,${virtualOnly ? ' of them the virtual machines (preferVirtualMachines),' : ''}${preferOnly ? ` of ${virtualOnly ? 'those' : 'them'} the plant's preferred machines (usePreferredMachines),` : ''} then the cheapest cost per part (machine rate, crew, setup and energy)`,
     criteria: input.criteria,
     evals,
     chosen: best?.m.name ?? null,

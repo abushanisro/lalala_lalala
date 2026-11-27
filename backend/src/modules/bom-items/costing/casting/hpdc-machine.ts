@@ -35,6 +35,19 @@ export interface HpdcMachine {
   dryCycleTimeS: number | null;
   /** Mold Efficiency (fraction of a shot cycle that is productive); gravity machines carry it. */
   moldEfficiency?: number | null;
+  /** The machine file's Is Preferred (specs is_preferred): where the folder uses preferred machines, they are chosen from first. */
+  preferred?: boolean;
+}
+
+/**
+ * The machines the cheapest is taken from, of the capable ones priced: the preferred machines when the folder uses them
+ * (usePreferredMachines: "the model will first try to select a preferred machine") and one of them is capable; all of them otherwise.
+ * Technical first, then the reference data's order, then cost.
+ */
+export function preferredFirst<T extends { m: HpdcMachine }>(priced: readonly T[], usePreferredMachines: boolean): { pool: T[]; narrowed: boolean } {
+  const preferred = usePreferredMachines ? priced.filter((p) => p.m.preferred === true) : [];
+  const narrowed = preferred.length > 0 && preferred.length < priced.length;
+  return { pool: narrowed ? preferred : [...priced], narrowed };
 }
 
 export interface MachineCheck {

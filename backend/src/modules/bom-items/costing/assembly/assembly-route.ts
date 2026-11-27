@@ -7,7 +7,7 @@
 // processes are the same on both. Each line runs on the cheapest capable machine of the location; a machine's setup is charged once per batch,
 // on its first line.
 import { gap, type CostContext } from '../casting/casting-finishing';
-import { machineValue, type SandMachine } from '../casting/sand/sand-machines';
+import { machineText, machineValue, type SandMachine } from '../casting/sand/sand-machines';
 import { type CostedStep, type StepOutcome } from '../casting/sand/sand-steps';
 import { type CalcSeed, type ReferenceCalcRun, type ReferenceCalculatorDef } from '../shared/calculators/reference-calculator';
 import { cell as n, fail, routeKit } from '../shared/calculators/route-kit';
@@ -350,11 +350,24 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         if (need('weld length', j.lengthMm) && need('penetration (weld depth)', j.depthMm)) {
           if (maxDepth != null && j.depthMm! > maxDepth) problems.push(`${j.label}: a ${j.depthMm} mm penetration is deeper than ${ebw ? 'EBWMaximumWeldDepth' : 'LWMaximumWeldDepth'} (${maxDepth} mm)`);
           else {
-            evaluate = (m) => timed(process, m, {
-              weld_length_mm: perJoint('Weld Length', 'mm', j.lengthMm!, `${j.count} x ${j.lengthMm} mm of weld`, 'Length per weld'),
-              weld_depth_mm: onJoint('Weld Depth', 'mm', j.depthMm!, 'the penetration set on the joint (mm)', 'Penetration'), weld_count: count,
-            });
+            // An electron beam weld is made inside the machine's vacuum chamber: the assembly must fit its working space and its table load.
+            const { maxDimensionMm: size, massKg: mass } = inp.assembly;
+            evaluate = (m) => {
+              if (ebw) {
+                const chamber = ['working_length_mm', 'working_width_mm', 'working_height_mm'].map((k) => machineValue(m, k));
+                if (chamber.some((d) => d == null || !(d > 0))) return fail(`machine ${m.name}: working chamber size`);
+                const longest = Math.max(...(chamber as number[]));
+                if (size != null && size > longest) return fail(`the assembly is ${size} mm long, its chamber takes ${longest} mm`);
+                const maxKg = machineValue(m, 'max_weight_kg');
+                if (mass != null && maxKg != null && maxKg > 0 && mass > maxKg) return fail(`the assembly weighs ${mass} kg, it carries ${maxKg} kg`);
+              }
+              return timed(process, m, {
+                weld_length_mm: perJoint('Weld Length', 'mm', j.lengthMm!, `${j.count} x ${j.lengthMm} mm of weld`, 'Length per weld'),
+                weld_depth_mm: onJoint('Weld Depth', 'mm', j.depthMm!, 'the penetration set on the joint (mm)', 'Penetration'), weld_count: count,
+              });
+            };
             criteria.push(`A beam power and maximum speed${ebw ? ', pump and vent times' : ''}`);
+            if (ebw) criteria.push(size != null ? `A chamber that takes the ${size} mm assembly${mass != null ? ` and carries its ${mass} kg` : ''}` : 'Its chamber is not checked: the size of the assembly is not known');
             warnings.push(`${j.label}: the ${ebw ? 'electron beam' : 'laser'} weld speed rule is unverified (memory/Assembly gives the factors, not how they combine).`);
           }
         }
@@ -365,7 +378,18 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
         const time = variable(variableName);
         if (j.lengthMm != null && maxLength != null && j.lengthMm > maxLength) problems.push(`${j.label}: a ${j.lengthMm} mm joint is longer than maxUltrasonicAllowableLength (${maxLength} mm)`);
         else if (!time) problems.push(`${j.label}: Assembly variable ${variableName}`);
-        else evaluate = (m) => timed(process, m, { joint_count: count, ultrasonic_time_s: time });
+        else {
+          // The assembly sits on the welder's table: a rotary table by its diameter, a bench table by its longer side.
+          const size = inp.assembly.maxDimensionMm;
+          evaluate = (m) => {
+            const rotary = machineText(m, 'table_configuration') === 'rotary';
+            const table = rotary ? machineValue(m, 'max_table_diameter_mm') : Math.max(machineValue(m, 'max_bench_table_length_mm') ?? 0, machineValue(m, 'max_bench_table_width_mm') ?? 0);
+            if (table == null || !(table > 0)) return fail(`machine ${m.name}: table size`);
+            if (size != null && size > table) return fail(`the assembly is ${size} mm long, its ${rotary ? 'rotary' : 'bench'} table takes ${table} mm`);
+            return timed(process, m, { joint_count: count, ultrasonic_time_s: time });
+          };
+          criteria.push(size != null ? `A table that takes the ${size} mm assembly (a rotary table's diameter, a bench table's longer side)` : 'Its table is not checked: the size of the assembly is not known');
+        }
         criteria.push('An ultrasonic welder');
       } else if (j.process === 'Adhesive Bonding' || j.process === 'Fay Sealing') {
         if (need('bonded or sealed area', j.areaMm2)) {

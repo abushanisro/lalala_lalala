@@ -49,7 +49,7 @@ import { runReferenceCalculator, type ReferenceCalculators, runOnLine } from '..
 import type { CastingMaterial, CastingReference } from './casting-reference';
 import { castingSeed, DIE_CASTING_DOMAIN, runView, SeedSet } from './casting-calculator-seeds';
 import { machineChoice, type ChoiceEval } from './machine-choice';
-import { selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-machine';
+import { preferredFirst, selectHpdcMachines, type HpdcMachine, type MachineCheck } from './hpdc-machine';
 
 export const HPDC_PROCESS = 'High Pressure Die Casting';
 export const HPDC_MACHINE_CLASS_ID = 'die_casting_high_pressure_die_casting';
@@ -367,10 +367,15 @@ export function computeHpdc(input: {
     })
     .sort((a, b) => a.terms.total - b.terms.total);
   if (priced.length === 0) return gapLine('No capable HPDC machine has a Dry Cycle Time on file.', selection.capable[0]);
-  const best = priced[0]!;
-  choice = castingChoice({ criteria, checks: selection.checks, priced, chosen: best.m.name });
+  // Technical first (the capable machines), then the reference data's order (its preferred machines first), then the cheapest per part.
+  const { pool, narrowed } = preferredFirst(priced, input.reference.usePreferredMachines);
+  const best = pool[0]!;
+  choice = castingChoice({ criteria, checks: selection.checks, priced, chosen: best.m.name, chosenFrom: narrowed ? pool.map((p) => p.m) : null });
   if (best.m.setupTimeHr == null) warnings.push(`${best.m.name} has no setup time on file: setup not costed.`);
-  trace.push({ label: 'Machine', value: `${best.m.name}: dry cycle ${best.m.dryCycleTimeS} s, cheapest per part of ${priced.length} capable` });
+  trace.push({
+    label: 'Machine',
+    value: `${best.m.name}: dry cycle ${best.m.dryCycleTimeS} s, cheapest per part of ${narrowed ? `the ${pool.length} preferred machines among ${priced.length} capable (usePreferredMachines)` : `${priced.length} capable`}`,
+  });
   trace.push({ label: 'Shot', value: `${r2(best.shotS)} s; per part ${r2(best.run.value!)} s (High Pressure Die Casting calculator)` });
 
   // Shot components per part: each shot second is shared by the n parts it casts.
@@ -446,16 +451,22 @@ function castingChoice(input: {
   checks: readonly MachineCheck[];
   priced: ReadonlyArray<{ m: HpdcMachine; shotS: number; terms: { total: number } }> | null;
   chosen: string | null;
+  /** The preferred machines the cheapest was taken from, when the folder's usePreferredMachines narrowed the capable ones; null otherwise. */
+  chosenFrom?: readonly HpdcMachine[] | null;
 }): MachineChoiceDto {
+  const outside = (m: HpdcMachine) => input.chosenFrom != null && !input.chosenFrom.includes(m);
   return machineChoice({
-    rule: 'Cheapest cost per part among the capable machines (each with its own dry cycle, machine + crew rate and setup over the batch)',
+    rule: `Technical first, then cost: only the machines that meet every criterion below${input.chosenFrom ? ", of them the plant's preferred machines (usePreferredMachines)," : ','} then the cheapest cost per part (each with its own dry cycle, machine + crew rate and setup over the batch)`,
     criteria: input.criteria,
     evals: input.checks.map((c): ChoiceEval => {
       if (!c.capable) return { name: c.machine.name, reasons: c.reasons };
       if (!input.priced) return { name: c.machine.name, reasons: [], cost: null };
       const p = input.priced.find((x) => x.m === c.machine);
       if (!p) return { name: c.machine.name, reasons: ['no Dry Cycle Time on file'] };
-      return { name: c.machine.name, reasons: [], cost: p.terms.total, note: `dry cycle ${c.machine.dryCycleTimeS} s, shot ${Math.round(p.shotS * 100) / 100} s` };
+      // A capable machine outside the preferred ones stays counted as capable, listed after them and said to be outside.
+      return outside(c.machine)
+        ? { name: c.machine.name, reasons: [], cost: p.terms.total, note: 'capable, not a preferred machine (usePreferredMachines)', rank: 1e12 + p.terms.total }
+        : { name: c.machine.name, reasons: [], cost: p.terms.total, note: `dry cycle ${c.machine.dryCycleTimeS} s, shot ${Math.round(p.shotS * 100) / 100} s` };
     }),
     chosen: input.chosen,
   });

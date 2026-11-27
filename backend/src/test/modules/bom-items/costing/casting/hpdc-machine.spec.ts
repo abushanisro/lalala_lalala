@@ -7,6 +7,7 @@ import {
 } from '../../../../../modules/bom-items/costing/casting/casting-reference';
 import {
   crewedHourlyRate,
+  preferredFirst,
   selectHpdcMachines,
   type HpdcMachine,
 } from '../../../../../modules/bom-items/costing/casting/hpdc-machine';
@@ -425,3 +426,53 @@ describe('casting Cost Summary', () => {
     expect(s.warnings.join(' ')).toMatch(/Sand Casting has no cost engine/);
   });
 });
+
+// The folder's own order (variables usePreferredMachines = true; each machine's Is Preferred): of the machines that can make the part, the
+// preferred ones are chosen from first, then the cheapest per part.
+describe('HPDC machine choice: technical first, then the preferred machines, then cost', () => {
+  const { reference } = resolveCastingReference(rows);
+  const al380 = alloy('Aluminum, AA 380.0');
+  const costContext = { qairPerHr: 0, inspTimeMin: 0, samplingRate: 0, yieldPct: 1, netMatCost: 0, netWeightKg: 0, scrapPricePerKg: 0 };
+  const geometry = { projectedAreaMm2: 10_000, footprintMm: [100, 80] as [number, number], wallNominalMm: 3, wallMaxMm: 6, partVolumeMm3: 30_000, partLengthMm: 100 };
+  const flagged: HpdcMachine[] = csv('Machine/high_pressure_die_casting_machines.csv')
+    .map((r, i) => ({ ...machines[i]!, preferred: String(r['Is Preferred']).toLowerCase() === 'true' }));
+  const run = (ref: typeof reference, pool: HpdcMachine[]) => computeHpdc({
+    reference: ref, referenceMissing: [], calculators, material: al380.material, materialGrade: al380.material.name, geometry, machines: pool, batchSize: 1000, costContext,
+  }).processLines[0]!;
+
+  it('the folder uses preferred machines, and its machine file marks them: the "High Pressure Machine" sizes', () => {
+    expect(reference!.usePreferredMachines).toBe(true);
+    expect(flagged.filter((m) => m.preferred).length).toBeGreaterThan(0);
+    expect(flagged.filter((m) => m.preferred).every((m) => m.name.startsWith('High Pressure Machine - '))).toBe(true);
+    expect(resolveCastingReference({ ...rows, variables: rows.variables.filter((v) => v.key !== 'usePreferredMachines') }).reference!.usePreferredMachines).toBe(false);
+  });
+
+  it('takes the cheapest preferred machine that can make the part, and still counts every capable machine', () => {
+    const line = run(reference, flagged);
+    const chosen = flagged.find((m) => m.name === line.machineName)!;
+    expect(chosen.preferred).toBe(true);
+    const choice = line.machineChoice!;
+    expect(choice.rule).toContain("of them the plant's preferred machines (usePreferredMachines)");
+    // A cheaper machine that is not preferred is capable too: counted, not chosen.
+    const anyCapable = run({ ...reference!, usePreferredMachines: false }, flagged);
+    expect(anyCapable.totalCost).toBeLessThanOrEqual(line.totalCost);
+    expect(choice.capableCount).toBe(anyCapable.machineChoice!.capableCount);
+    expect(choice.candidates.every((c) => flagged.find((m) => m.name === c.name)!.preferred)).toBe(true);
+  });
+
+  it('with the switch off, or no preferred machine capable, the cheapest capable machine', () => {
+    const off = run({ ...reference!, usePreferredMachines: false }, flagged);
+    expect(off.machineChoice!.rule).not.toContain('preferred');
+    const noneCapablePreferred = run(reference, flagged.map((m) => (m.preferred ? { ...m, clampingForceKn: 1 } : m)));
+    expect(noneCapablePreferred.machineName).toBe(off.machineName);
+    expect(noneCapablePreferred.machineChoice!.rule).not.toContain('preferred');
+  });
+
+  it('preferredFirst leaves the machines as they are when all or none are preferred', () => {
+    const priced = flagged.slice(0, 3).map((m) => ({ m: { ...m, preferred: true } }));
+    expect(preferredFirst(priced, true)).toEqual({ pool: priced, narrowed: false });
+    expect(preferredFirst(priced.map((p) => ({ m: { ...p.m, preferred: false } })), true).narrowed).toBe(false);
+    expect(preferredFirst([{ m: { ...flagged[0]!, preferred: true } }, { m: { ...flagged[1]!, preferred: false } }], true).pool).toHaveLength(1);
+  });
+});
+

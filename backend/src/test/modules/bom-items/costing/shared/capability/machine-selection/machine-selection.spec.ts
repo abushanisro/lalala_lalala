@@ -13,7 +13,7 @@ import {
   rollBendingRequirement,
 } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/physics';
 import { classifyMachineRecord, fitScore, isCapable, selectMachine } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selector';
-import { NO_SELECTION_POLICY, selectionPolicyOf } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selection-policy';
+import { NO_SELECTION_POLICY, biasFloor, selectionPolicyOf } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/selection-policy';
 import type { MachineCandidate } from '../../../../../../../modules/bom-items/dto/machine-selection.dto';
 import { EMPTY_CAPABILITY, lookupSeedCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
 import type { MachineCapability } from '../../../../../../../modules/bom-items/costing/shared/capability/machine-selection/seed-registry';
@@ -43,6 +43,8 @@ function candidate(overrides: {
   processGroup?: string | null;
   preferred?: boolean | null;
   virtual?: boolean | null;
+  spindlePowerKw?: number | null;
+  maxSpindleRpm?: number | null;
 }): MachineCandidate {
   return {
     machineId: overrides.machineId ?? 'id-' + Math.random().toString(36).slice(2),
@@ -74,7 +76,7 @@ function candidate(overrides: {
     transferTimeS: null,
     stockFeedTimeS: null,
     speedSynchronizationTimeS: null,
-    maxSpindleRpm: null,
+    maxSpindleRpm: overrides.maxSpindleRpm ?? null,
     liveToolingMaxRpm: null, rapidTraverseMmPerMin: null,
     setupTimeHr: null,
     machinePowerKw: null,
@@ -82,6 +84,7 @@ function candidate(overrides: {
   indirectOverheadRate: null,
     preferred: overrides.preferred ?? null,
     virtual: overrides.virtual ?? null,
+    spindlePowerKw: overrides.spindlePowerKw ?? null,
   };
 }
 
@@ -1291,12 +1294,13 @@ describe('selectMachine — technical first, then the reference data\'s order, t
   });
 
   it('reads each family\'s policy from its own variables', () => {
-    expect(machining('Machining')).toEqual({ usePreferredMachines: true, preferVirtualMachines: true });
-    expect(machining('Sheet Metal')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
-    expect(machining('Forging')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
+    expect(machining('Machining')).toMatchObject({ usePreferredMachines: true, preferVirtualMachines: true });
+    expect(machining('Sheet Metal')).toMatchObject({ usePreferredMachines: true, preferVirtualMachines: false });
+    expect(machining('Forging')).toMatchObject({ usePreferredMachines: true, preferVirtualMachines: false });
     // The stretch forming folder spells the variable usePreferedMachines.
-    expect(machining('Sheet Metal Stretch Forming')).toEqual({ usePreferredMachines: true, preferVirtualMachines: false });
+    expect(machining('Sheet Metal Stretch Forming')).toMatchObject({ usePreferredMachines: true, preferVirtualMachines: false });
     expect(machining('Powder Metal')).toEqual(NO_SELECTION_POLICY);
+    expect(machining('Machining')).toMatchObject({ spindlePowerBias: null, spindleSpeedBias: null }); // not staged in these rows
     expect(machining(null)).toEqual(NO_SELECTION_POLICY);
     const off = selectionPolicyOf([{ source_version: '2026-03', key: 'usePreferredMachines', value: 'false' }], []);
     expect(off('Machining')).toEqual(NO_SELECTION_POLICY);
@@ -1308,6 +1312,106 @@ describe('selectMachine — technical first, then the reference data\'s order, t
     expect(r.balanced.candidate.machineName).toBe('Makino V22');
     expect(r.overridden).toBe(true);
     expect(r.decision!.decidingFactor).toBe('override');
+  });
+});
+
+// The machining variables' spindle biases (memory/Machining/variables.csv: spindlePowerBias 0.5, spindleSpeedBias 0.5, "0 selects the
+// cheapest hourly machine. 0.5 selects only machines more powerful / faster than the average"), put to real machines only. The drill
+// presses and gun drills are memory/Machining/machine's own (spindle power kW, top speed rpm); the hour rates are the drill presses'.
+describe('selectMachine — the spindle power and speed biases among real machines', () => {
+  const spindle = (cls: MachineCandidate['machineClass'], name: string, rate: number, kw: number | null, rpm: number | null, flags: { preferred?: boolean; virtual?: boolean } = {}) => candidate({
+    machineId: name, machineName: name, machineClass: cls, hourlyRate: rate, processGroup: 'Machining', spindlePowerKw: kw, maxSpindleRpm: rpm,
+    preferred: flags.preferred ?? false, virtual: flags.virtual ?? false,
+  });
+  const policy = (power: string | null, speed: string | null) => selectionPolicyOf([
+    { source_version: '2026-03', key: 'usePreferredMachines', value: 'true' },
+    { source_version: '2026-03', key: 'preferVirtualMachines', value: 'true' },
+    ...(power != null ? [{ source_version: '2026-03', key: 'spindlePowerBias', value: power }] : []),
+    ...(speed != null ? [{ source_version: '2026-03', key: 'spindleSpeedBias', value: speed }] : []),
+  ], []);
+  const half = policy('0.5', '0.5');
+  const drillPresses = [
+    spindle('drill_press', 'Carlton 5 ft X 13 in', 17.28, 7.46, 1200), spindle('drill_press', 'Cincinnati HD 8 X 20', 18.05, 11.19, 2180),
+    spindle('drill_press', 'Delta 15-331', 14.91, 2.24, 4700), spindle('drill_press', 'Delta 15-344', 15.03, 2.24, 4700),
+    spindle('drill_press', 'Jet JDP- 20Vs', 14.7, 1.49, 3630), spindle('drill_press', 'Knuth R100', 19.75, 15, 1000),
+    spindle('drill_press', 'Rigid', 15.79, 0.75, 3100), spindle('drill_press', 'Syderic SRD 350', 15.56, 0.82, 1500),
+    spindle('drill_press', 'Weiler Vo75', 16.94, 7.5, 2000),
+  ];
+  const pick = (pool: MachineCandidate[], cls: MachineCandidate['machineClass'], policyOf = half) => selectMachine({ pool, location: 'USA', machineClass: cls, requirement: { kind: 'generic' }, policyOf });
+
+  it('a bias sets a floor between the least and the most: the least at 0, the average at 0.5, the most at 1', () => {
+    expect(biasFloor(0, [2, 4, 12])).toBe(2);
+    expect(biasFloor(0.5, [2, 4, 12])).toBe(6);
+    expect(biasFloor(1, [2, 4, 12])).toBe(12);
+    expect(biasFloor(0.25, [2, 4, 12])).toBe(4);
+    expect(half('Machining')).toMatchObject({ spindlePowerBias: 0.5, spindleSpeedBias: 0.5 });
+    expect(policy('2', 'fast')('Machining')).toMatchObject({ spindlePowerBias: null, spindleSpeedBias: null }); // not a bias: no spindle step
+  });
+
+  it('keeps the machines at or above both averages, whatever the cheaper ones cost', () => {
+    // Gun drills: average 9.47 kW and 6,250 rpm. Only the TechniDrill HS 375 CR (15 kW, 21,000 rpm) is at or above both.
+    const gunDrills = [
+      spindle('gun_drill', 'Honge XE 1200-CNC', 20, 4, 6000), spindle('gun_drill', 'Honge XL 10000', 30, 15, 4000), spindle('gun_drill', 'Honge XL 9999', 25, 7.4, 4000),
+      spindle('gun_drill', 'Honge Xt 2500-CNC', 22, 6, 6000), spindle('gun_drill', 'TechniDrill HS 375 CR', 40, 15, 21000), spindle('gun_drill', 'TechniDrill TDS 100', 21, 7.46, 3000),
+      spindle('gun_drill', 'TechniDrill TDS 200', 35, 18.64, 3000), spindle('gun_drill', 'TechniDrill TDS 50', 18, 2.24, 3000),
+    ];
+    const r = pick(gunDrills, 'gun_drill');
+    expect(r.balanced.candidate.machineName).toBe('TechniDrill HS 375 CR');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 8], ['spindle', 1], ['cheapest', 1]]);
+    expect(r.steps![1]!.text).toBe('1 of them is at or above 9.5 kW of spindle power (spindlePowerBias 0.5) and 6,250 rpm (spindleSpeedBias 0.5)');
+    expect(r.cheapest.candidate.machineName).toBe('TechniDrill TDS 50');
+    expect(r.decision!.decidingFactor).toBe('only_in_pool');
+  });
+
+  it('when no machine is above both (no drill press of the data is), the machines at or above either are kept, then the cheapest', () => {
+    // Average 5.41 kW and 2,668 rpm: four are more powerful, four faster, none both; the Syderic SRD 350 (0.82 kW, 1,500 rpm) is neither.
+    const r = pick(drillPresses, 'drill_press');
+    expect(r.steps!.map((x) => [x.rule, x.count])).toEqual([['capable', 9], ['spindle', 8], ['cheapest', 1]]);
+    expect(r.steps![1]!.text).toBe('none of them is at or above both 5.4 kW of spindle power (spindlePowerBias 0.5) and 2,668 rpm (spindleSpeedBias 0.5): the 8 at or above either are kept');
+    expect(r.balanced.candidate.machineName).toBe('Jet JDP- 20Vs');
+    expect(r.ranking!.filter((x) => !x.inPool).map((x) => x.machineName)).toEqual(['Syderic SRD 350']);
+  });
+
+  it('one bias alone is its own floor: the power bias keeps the four more powerful drill presses', () => {
+    const r = pick(drillPresses, 'drill_press', policy('0.5', '0'));
+    expect(r.ranking!.filter((x) => x.inPool).map((x) => x.machineName)).toEqual(['Weiler Vo75', 'Carlton 5 ft X 13 in', 'Cincinnati HD 8 X 20', 'Knuth R100']);
+    expect(r.balanced.candidate.machineName).toBe('Weiler Vo75');
+    expect(r.steps![1]!.text).toBe('4 of them are at or above 5.4 kW of spindle power (spindlePowerBias 0.5)');
+    // Bias 0 on both, or no bias on file: the cheapest hourly machine.
+    expect(pick(drillPresses, 'drill_press', policy('0', '0')).balanced.candidate.machineName).toBe('Jet JDP- 20Vs');
+    expect(pick(drillPresses, 'drill_press', policy(null, null)).steps!.map((x) => x.rule)).toEqual(['capable', 'cheapest']);
+  });
+
+  it('a machine with no spindle power on file is not at or above the floor', () => {
+    const r = pick([spindle('drill_press', 'No power on file', 5, null, 9000), ...drillPresses], 'drill_press', policy('0.5', '0'));
+    expect(r.ranking!.find((x) => x.machineName === 'No power on file')!.inPool).toBe(false);
+    expect(r.balanced.candidate.machineName).toBe('Weiler Vo75');
+  });
+
+  it('the biases are not put to virtual machines: the smallest virtual mill the part fits is still chosen', () => {
+    const mill = (name: string, x: number, y: number, z: number, rate: number, kw: number, rpm: number, virtual: boolean) => candidate({
+      machineId: name, machineName: name, machineClass: '3_axis_mill', hourlyRate: rate, processGroup: 'Machining', capability: { maxXMm: x, maxYMm: y, maxZMm: z },
+      spindlePowerKw: kw, maxSpindleRpm: rpm, preferred: virtual, virtual,
+    });
+    const mills = [
+      mill('Makino V22', 320, 280, 300, 25.24, 8.4, 40000, false),
+      mill('Virtual 3 Axis Mill - Small', 584.2, 406.4, 431.8, 27.8, 18.64, 10000, true),
+      mill('Virtual 3 Axis Mill - Medium', 1016, 541.78, 635, 30, 18.64, 12000, true),
+      mill('Virtual 3 Axis Mill - Large', 2032, 800.1, 764.54, 50.89, 22.4, 18000, true),
+      mill('Giddings & Lewis H70F', 6096, 2438, 1524, 37.53, 37.29, 2500, false),
+      mill('Haas VF10/50', 3048, 813, 762, 38.35, 22.4, 7500, false),
+      mill('Mazak FH 12800', 2040, 1560, 1500, 86.86, 37.3, 7000, false),
+    ];
+    const part = (x: number, y: number, z: number) => vmcRequirement({ bboxXMm: x, bboxYMm: y, bboxZMm: z, finishedWeightKg: 1, materialMrrCm3PerMin: 0 });
+    const small = selectMachine({ pool: mills, location: 'USA', machineClass: '3_axis_mill', requirement: part(80, 60, 30), policyOf: half });
+    expect(small.balanced.candidate.machineName).toBe('Virtual 3 Axis Mill - Small');
+    expect(small.steps!.map((x) => x.rule)).toEqual(['capable', 'virtual', 'cheapest']);
+    // A part no virtual mill takes: among the real mills that do, the biases apply. H70F 37.29 kW / 2,500 rpm, Mazak 37.3 kW / 7,000 rpm:
+    // average 37.3 kW and 4,750 rpm, so only the Mazak is at or above both, though the H70F costs less an hour.
+    const big = selectMachine({ pool: mills, location: 'USA', machineClass: '3_axis_mill', requirement: part(1650, 1000, 400), policyOf: half });
+    expect(big.ranking!.map((x) => x.machineName).sort()).toEqual(['Giddings & Lewis H70F', 'Mazak FH 12800']);
+    expect(big.balanced.candidate.machineName).toBe('Mazak FH 12800');
+    expect(big.steps!.map((x) => x.rule)).toEqual(['capable', 'spindle', 'cheapest']);
   });
 });
 

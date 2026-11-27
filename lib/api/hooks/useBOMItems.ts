@@ -724,8 +724,8 @@ export interface MachineSelectionResult {
   ranking?: MachineRankEntry[];
   /** Machines of this class that failed the part's capability check. */
   rejected?: Array<{ machineId: string | null; machineName: string | null; reasons: string[] }>;
-  /** How the machine was chosen, step by step: the capable machines, the virtual and preferred steps taken, the lowest cost. */
-  steps?: Array<{ rule: 'capable' | 'virtual' | 'preferred' | 'cheapest'; count: number; text: string }>;
+  /** How the machine was chosen, step by step: the capable machines, the virtual, preferred and spindle steps taken, the lowest cost. */
+  steps?: Array<{ rule: 'capable' | 'virtual' | 'preferred' | 'spindle' | 'cheapest'; count: number; text: string }>;
   decision?: {
     winnerId: string | null;
     runnerUpId: string | null;

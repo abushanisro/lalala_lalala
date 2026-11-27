@@ -86,7 +86,15 @@ export interface CastingMaterial {
   shearStrengthMpa: number | null;
 }
 
+/**
+ * Switches of the die casting variables, staged as text (true / false), read beside the numbers. usePreferredMachines: "If true the model
+ * will first try to select a preferred machine": of the machines that can make the part, the preferred ones are chosen from first.
+ */
+export const CASTING_SWITCH_KEYS = ['usePreferredMachines'] as const;
+
 export interface CastingReference {
+  /** variables usePreferredMachines: the preferred machines come first among the capable ones. False when not staged. */
+  usePreferredMachines: boolean;
   clampForceSafetyFactor: number;
   /** variables partSurfaceQuality -> tblPercentSolids row. */
   defaultSurfaceQuality: { index: number; label: string; percentSolids: number } | null;
@@ -242,6 +250,7 @@ export function resolveCastingReference(rows: CastingReferenceRows): { reference
   })).sort((a, b) => a.count - b.count);
 
   const reference: CastingReference = {
+    usePreferredMachines: rows.variables.some((v) => v.key === 'usePreferredMachines' && String(v.value ?? '').trim().toLowerCase() === 'true'),
     clampForceSafetyFactor: variables.clampForceSafetyFactor,
     defaultSurfaceQuality,
     percentSolids,

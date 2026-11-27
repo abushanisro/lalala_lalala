@@ -103,6 +103,9 @@ export interface MachineCandidate {
    */
   preferred: boolean | null;
   virtual: boolean | null;
+  /** mhr_records.specs spindle_power_kw (migration 1165): the main spindle's power, kW, which the machining variables' spindlePowerBias
+   *  compares among real machines (selection-policy.ts). null when the machine file gives none. */
+  spindlePowerKw: number | null;
 }
 
 // Structured version of the material/thickness-vs-capacity check — lets the
@@ -145,7 +148,7 @@ export interface MachineRankEntry {
 
 /** One step of the choice, in the order taken (selection-policy.ts SelectionStep). */
 export interface MachineSelectionStep {
-  rule: 'capable' | 'virtual' | 'preferred' | 'cheapest';
+  rule: 'capable' | 'virtual' | 'preferred' | 'spindle' | 'cheapest';
   /** Machines left after the step. */
   count: number;
   text: string;

@@ -81,7 +81,27 @@ export function line(args: {
 }
 
 const crewed = (m: FinishingMachine) => m.machineRatePerHr! + (m.operators != null ? (m.labourRatePerHr ?? 0) * m.operators : 0);
-const RUN_RULE = 'Cheapest run cost per part among the capable machines (machine + crew rate x time per part)';
+const NOT_PREFERRED = 'capable, not a preferred machine (usePreferredMachines)';
+/** The machine file's Is Preferred (specs is_preferred). */
+const isPreferred = (m: FinishingMachine) => String(m.specs['is_preferred'] ?? '').trim().toLowerCase() === 'true';
+
+/**
+ * Technical first, then the reference data's order, then cost: of the capable machines (cheapest first), the ones the cheapest is taken
+ * from. Where the folder uses preferred machines (usePreferredMachines: "the model will first try to select a preferred machine") and one of
+ * them is capable, those; all the capable ones otherwise. `rule` says which, and `outside` marks a capable machine left outside the
+ * preferred ones (it stays counted as capable, listed after them).
+ */
+function chooseFrom<E extends { m: FinishingMachine; cost: number }>(capable: readonly E[], usePreferredMachines: boolean | undefined) {
+  const preferred = usePreferredMachines ? capable.filter((e) => isPreferred(e.m)) : [];
+  const narrowed = preferred.length > 0 && preferred.length < capable.length;
+  const pool = narrowed ? preferred : [...capable];
+  return {
+    pool,
+    rule: `Technical first, then cost: only the machines that meet every criterion below${narrowed ? ", of them the plant's preferred machines (usePreferredMachines)," : ','} then the cheapest run cost per part (machine + crew rate x time per part)`,
+    /** The note and rank of a capable machine: outside the preferred ones it is said so and listed after them. */
+    outside: (e: E): Pick<ChoiceEval, 'note' | 'rank'> => (narrowed && !pool.includes(e) ? { note: NOT_PREFERRED, rank: 1e12 + e.cost } : {}),
+  };
+}
 
 /** A named, uncosted casting line. */
 export const gap = (process: string, processGroup: string, machineClass: string, reason: string): ProcessLineCost => ({
@@ -106,6 +126,8 @@ export function cleaningLine(input: {
   processGroup: string;
   machineClass: string;
   costContext: CostContext;
+  /** The folder's usePreferredMachines: of the capable machines the preferred ones are chosen from first. Absent or false: all of them. */
+  usePreferredMachines?: boolean;
 }): { line: ProcessLineCost; warnings: string[] } {
   const warnings: string[] = [];
   const P = 'Cleaning';
@@ -133,9 +155,10 @@ export function cleaningLine(input: {
     if (!(run.outputs['Parts per Load']! >= 1)) return { m, reasons: [`part ${r2(kg)} kg over the ${cap} kg load capacity`], run: null, sec: 0, cost: Infinity };
     return { m, reasons, run, sec: run.value, cost: (crewed(m) * run.value) / 3600 };
   });
-  const best = evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost)[0];
+  const from = chooseFrom(evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost), input.usePreferredMachines);
+  const best = from.pool[0];
   const choice = machineChoice({
-    rule: RUN_RULE,
+    rule: from.rule,
     criteria: [
       `Part ${r2(a ?? 0)} x ${r2(b ?? 0)} mm fits the machine's max width x height (either way round)`,
       `At least one ${r2(kg)} kg part per load (Weight Capacity); parts per load capped by Max Batch Size`,
@@ -144,6 +167,7 @@ export function cleaningLine(input: {
     evals: evals.map((e): ChoiceEval => ({
       name: e.m.name, reasons: e.reasons, cost: e.reasons.length ? null : e.cost,
       note: e.run ? `${e.run.outputs['Parts per Load']} parts per ${num(e.m.specs['time_per_load_min'])} min load` : undefined,
+      ...(e.reasons.length ? {} : from.outside(e)),
     })),
     chosen: best?.m.name ?? null,
   });
@@ -171,6 +195,8 @@ export function visualInspectionLine(input: {
   processGroup: string;
   machineClass: string;
   costContext: CostContext;
+  /** The folder's usePreferredMachines: of the capable machines the preferred ones are chosen from first. Absent or false: all of them. */
+  usePreferredMachines?: boolean;
 }): { line: ProcessLineCost; warnings: string[] } {
   const warnings: string[] = [];
   const P = 'Visual Inspection';
@@ -184,13 +210,17 @@ export function visualInspectionLine(input: {
   });
   if (run.value == null) return { line: gap(P, input.processGroup, input.machineClass, run.missing.join('; ')), warnings };
   const sec = run.value;
+  const from = chooseFrom(
+    input.machines.filter((m) => m.machineRatePerHr != null).map((m) => ({ m, cost: (crewed(m) * sec) / 3600 })).sort((x, y) => x.cost - y.cost),
+    input.usePreferredMachines,
+  );
+  const machine = from.pool[0]?.m;
   const evals: ChoiceEval[] = input.machines.map((m) => m.machineRatePerHr == null
     ? { name: m.name, reasons: ['no machine hour rate on file'] }
-    : { name: m.name, reasons: [], cost: (crewed(m) * sec) / 3600 });
-  const machine = input.machines.filter((m) => m.machineRatePerHr != null).sort((x, y) => crewed(x) - crewed(y))[0];
+    : { name: m.name, reasons: [], cost: (crewed(m) * sec) / 3600, ...(from.pool.some((e) => e.m === m) || from.pool.length === 0 ? {} : { note: NOT_PREFERRED, rank: 1e12 + (crewed(m) * sec) / 3600 }) });
   const m2 = input.surfaceAreaMm2 / 1e6;
   const choice = machineChoice({
-    rule: RUN_RULE,
+    rule: from.rule,
     criteria: [`Inspection time is the same on every station (${r3(m2)} m² x ${row.externalMinPerM2} min/m²), so the cheapest crewed rate wins`, 'Machine hour rate on file'],
     evals, chosen: machine?.name ?? null,
   });
@@ -230,6 +260,8 @@ export function trimLine(input: {
   processGroup: string;
   machineClass: string;
   costContext: CostContext;
+  /** The folder's usePreferredMachines: of the capable machines the preferred ones are chosen from first. Absent or false: all of them. */
+  usePreferredMachines?: boolean;
 }): { line: ProcessLineCost; warnings: string[]; forceRun: CalculatorRunDto | null } {
   const warnings: string[] = [];
   const P = 'Trim';
@@ -262,9 +294,10 @@ export function trimLine(input: {
     if (run.value == null) return { m, reasons: run.missing, run: null, sec: 0, cycle: 0, cost: Infinity };
     return { m, reasons, run, sec: run.value, cycle: cycle!, cost: (crewed(m) * run.value) / 3600 };
   });
-  const best = evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost)[0];
+  const from = chooseFrom(evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost), input.usePreferredMachines);
+  const best = from.pool[0];
   const choice = machineChoice({
-    rule: RUN_RULE,
+    rule: from.rule,
     criteria: [
       `Per part = press Cycle Time / ${input.partsPerStroke} part${input.partsPerStroke === 1 ? '' : 's'} per stroke (defaultNumberOfTrimmedParts)`,
       'Machine hour rate and Cycle Time on file',
@@ -272,7 +305,7 @@ export function trimLine(input: {
         ? `Press Force at least ${r2(requiredKn)} kN (parting line ${r2(input.partingPerimeterMm!)} mm x ${flash!.partingLineThicknessMm} mm flash x ${input.shearStrengthMpa} MPa shear strength)`
         : `Press force not checked: ${forceGap}`,
     ],
-    evals: evals.map((e): ChoiceEval => ({ name: e.m.name, reasons: e.reasons, cost: e.reasons.length ? null : e.cost, note: e.reasons.length ? undefined : `${e.cycle} s per stroke` })),
+    evals: evals.map((e): ChoiceEval => ({ name: e.m.name, reasons: e.reasons, cost: e.reasons.length ? null : e.cost, note: e.reasons.length ? undefined : `${e.cycle} s per stroke`, ...(e.reasons.length ? {} : from.outside(e)) })),
     chosen: best?.m.name ?? null,
   });
   if (!best) return { line: { ...gap(P, input.processGroup, input.machineClass, requiredKn != null ? `no trim press in HR Rates with a cycle time, a rate and ${r2(requiredKn)} kN press force` : 'no trim press in HR Rates with a cycle time and a rate'), machineChoice: choice }, warnings, forceRun };
@@ -321,6 +354,8 @@ export function partingLineGrindingLine(input: {
   processGroup: string;
   machineClass: string;
   costContext: CostContext;
+  /** The folder's usePreferredMachines: of the capable machines the preferred ones are chosen from first. Absent or false: all of them. */
+  usePreferredMachines?: boolean;
 }): { line: ProcessLineCost; warnings: string[] } {
   const warnings: string[] = input.gates.ground ? [] : [`Finishing: gate stubs are not ground on this line (${input.gates.reason}).`];
   const P = 'Finishing';
@@ -368,15 +403,16 @@ export function partingLineGrindingLine(input: {
     if (run.value == null) return { m, reasons: run.missing, run: null, sec: 0, speed: 0, gateSpeed: 0, cost: Infinity };
     return { m, reasons, run, sec: run.value, speed: speed!, gateSpeed: gateSpeed!, cost: (crewed(m) * run.value) / 3600 };
   });
-  const best = evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost)[0];
+  const from = chooseFrom(evals.filter((e) => e.reasons.length === 0).sort((x, y) => x.cost - y.cost), input.usePreferredMachines);
+  const best = from.pool[0];
   const choice = machineChoice({
-    rule: RUN_RULE,
+    rule: from.rule,
     criteria: [
       `Carries the ${r2(input.partMassKg)} kg part (Max Weight)`,
       `Per part = flash / (Grinding Speed Parting Line x ${input.speedFactor} Cut Code factor)${input.gates.ground ? ' + gate stubs / (Grinding Speed Gating x the same factor)' : ''}`,
       'Machine hour rate and grinding speeds on file',
     ],
-    evals: evals.map((e): ChoiceEval => ({ name: e.m.name, reasons: e.reasons, cost: e.reasons.length ? null : e.cost, note: e.reasons.length ? undefined : `${e.speed} mm³/s` })),
+    evals: evals.map((e): ChoiceEval => ({ name: e.m.name, reasons: e.reasons, cost: e.reasons.length ? null : e.cost, note: e.reasons.length ? undefined : `${e.speed} mm³/s`, ...(e.reasons.length ? {} : from.outside(e)) })),
     chosen: best?.m.name ?? null,
   });
   if (!best) return { line: { ...gap(P, input.processGroup, input.machineClass, `no finishing machine in HR Rates carries a ${r2(input.partMassKg)} kg part with grinding speeds and a rate`), machineChoice: choice }, warnings };

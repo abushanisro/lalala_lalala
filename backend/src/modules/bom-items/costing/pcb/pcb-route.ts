@@ -820,16 +820,39 @@ function boardMaterial(input: PcbRouteInput, stackup: PcbStackup, run: (calculat
   return { costUsd: r.run.value!, run: r.run, uses, warnings };
 }
 
-/** The route to quote: the one set in the Cost Guide when it is a route for the board, else the cheapest complete one; and a note saying which and why. */
+/**
+ * What a board costs on a route with its tooling (die, fixture, test program) spread over the boards it is made for: the piece cost plus
+ * each tool's share. Null when a tool has no price or the scenario gives no boards to spread it over: the tooling cannot be compared then.
+ */
+export function pcbRouteCostWithTooling(route: PcbRoute): number | null {
+  if (route.totalUsd == null || route.tooling.some((t) => t.perPartUsd == null)) return null;
+  return route.totalUsd + route.tooling.reduce((s, t) => s + t.perPartUsd!, 0);
+}
+
+/**
+ * The route to quote: the one set in the Cost Guide when it is a route for the board, else the cheapest complete one; and a note saying
+ * which and why. Cheapest counts the tooling: a stamping die or a bed of nails fixture is part of what a route costs, so the routes are
+ * compared on the piece cost plus the tooling spread over the boards, whenever every complete route's tooling can be spread. The quoted
+ * figure stays the piece cost, the tooling shown apart.
+ */
 export function choosePcbRoute(routes: readonly PcbRoute[], gaps: readonly PcbRouteGap[], chosen: PcbRouteKey | null): { route: PcbRoute | null; note: string | null } {
   if (routes.length === 0) return { route: null, note: null };
   const money = (n: number) => `${n.toFixed(2)} USD`;
-  const said = (r: PcbRoute) => (r.complete ? `${r.label} ${money(r.totalUsd!)}` : `${r.label} incomplete (${r.lines.filter(isGap).map((l) => l.process).join(', ') || 'material'})`);
+  const said = (r: PcbRoute) => {
+    if (!r.complete) return `${r.label} incomplete (${r.lines.filter(isGap).map((l) => l.process).join(', ') || 'material'})`;
+    const withTooling = pcbRouteCostWithTooling(r);
+    return `${r.label} ${money(r.totalUsd!)}${withTooling != null && withTooling !== r.totalUsd ? ` (${money(withTooling)} with tooling)` : ''}`;
+  };
   const others = (pick: PcbRoute) => [...routes.filter((r) => r !== pick).map(said), ...gaps.map((g) => `${g.label} not a route for this board (${g.reason})`)].join('; ');
   const user = chosen ? routes.find((r) => r.key === chosen) : undefined;
   if (user) return { route: user, note: `PCB: ${user.label} is set in the Cost Guide. ${others(user)}.` };
-  const complete = routes.filter((r) => r.complete).sort((a, b) => a.totalUsd! - b.totalUsd!);
+  const finished = routes.filter((r) => r.complete);
+  const spread = finished.length > 0 && finished.every((r) => pcbRouteCostWithTooling(r) != null);
+  const compared = (r: PcbRoute) => (spread ? pcbRouteCostWithTooling(r)! : r.totalUsd!);
+  const complete = [...finished].sort((a, b) => compared(a) - compared(b) || a.totalUsd! - b.totalUsd!);
   const pick = complete[0] ?? [...routes].sort((a, b) => a.lines.filter(isGap).length - b.lines.filter(isGap).length)[0]!;
-  const why = complete[0] ? 'the cheapest complete route (material, process and consumables per board; its tooling is shown apart)' : 'no route is complete: the one with the fewest gaps';
+  const why = !complete[0] ? 'no route is complete: the one with the fewest gaps'
+    : spread ? `the cheapest complete route with its tooling spread over the boards (${money(compared(pick))} per board with tooling; the quoted figure is material, process and consumables, the tooling shown apart)`
+      : 'the cheapest complete route (material, process and consumables per board; its tooling is shown apart and not compared: it has no price or no boards to be spread over)';
   return { route: pick, note: `PCB: ${pick.label} is quoted${pick.complete ? ` (${money(pick.totalUsd!)} per board)` : ''}, ${why}.${others(pick) ? ` ${others(pick)}.` : ''}` };
 }

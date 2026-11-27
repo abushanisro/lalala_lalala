@@ -100,6 +100,21 @@ describe('trim (press cycle time, press force)', () => {
     const r = trimLine({ ...base, partingPerimeterMm: null, partMassKg: 0.404, shearStrengthMpa: shear });
     expect(r.warnings.join(' ')).toMatch(/press force not checked.*perimeter not measured/);
   });
+  it('where the folder uses preferred machines, the cheapest preferred press that can trim the part is taken; every capable press stays counted', () => {
+    const args = { ...base, partingPerimeterMm: 336.36, partMassKg: 0.404, shearStrengthMpa: shear };
+    const any = trimLine(args);
+    // The dearest capable press is the one the plant prefers: it is chosen over the cheaper ones.
+    const dearest = [...presses].sort((a, b) => Number(b.machineRatePerHr) - Number(a.machineRatePerHr))[0]!;
+    const flagged = presses.map((m) => ({ ...m, specs: { ...m.specs, is_preferred: m === dearest } }));
+    const preferred = trimLine({ ...args, machines: flagged, usePreferredMachines: true });
+    expect(preferred.line.machineName).toBe(dearest.name);
+    expect(preferred.line.machineChoice!.rule).toContain("of them the plant's preferred machines (usePreferredMachines)");
+    expect(preferred.line.machineChoice!.capableCount).toBe(any.line.machineChoice!.capableCount);
+    // The switch off, or no flag: the cheapest capable press, as before.
+    expect(trimLine({ ...args, machines: flagged, usePreferredMachines: false }).line.machineName).toBe(any.line.machineName);
+    expect(trimLine({ ...args, usePreferredMachines: true }).line.machineName).toBe(any.line.machineName);
+    expect(any.line.machineChoice!.rule).toMatch(/^Technical first, then cost: only the machines that meet every criterion below, then the cheapest run cost per part/);
+  });
 });
 
 describe('finishing (parting-line grinding)', () => {

@@ -460,16 +460,36 @@ export function buildRotoBlowRoutes(input: RotoBlowRouteInput): { routes: RotoBl
   return { routes, gaps, missing: [] };
 }
 
+/**
+ * What a part costs on a route with its molds (and a blow mold's trim tooling) spread over the parts they are made for: the piece cost plus
+ * each tool's share. Null when a tool has no price or the scenario gives no parts to spread it over: the molds cannot be compared then.
+ */
+export function rotoBlowRouteCostWithTooling(route: RotoBlowRoute): number | null {
+  if (route.totalUsd == null || route.tooling.some((t) => t.perPartUsd == null)) return null;
+  return route.totalUsd + route.tooling.reduce((s, t) => s + t.perPartUsd!, 0);
+}
+
 /** The route to quote: the one set in the Cost Guide when it is a route for the part, else the cheapest complete one; and a note saying which and why. */
 export function chooseRotoBlowRoute(routes: readonly RotoBlowRoute[], gaps: readonly RotoBlowRouteGap[], chosen: RotoBlowRouteKey | null): { route: RotoBlowRoute | null; note: string | null } {
   if (routes.length === 0) return { route: null, note: null };
   const money = (n: number) => `${n.toFixed(2)} USD`;
-  const said = (r: RotoBlowRoute) => (r.complete ? `${r.label} ${money(r.totalUsd!)}` : `${r.label} incomplete (${r.lines.filter(isGap).map((l) => l.process).join(', ') || 'material'})`);
+  const said = (r: RotoBlowRoute) => {
+    if (!r.complete) return `${r.label} incomplete (${r.lines.filter(isGap).map((l) => l.process).join(', ') || 'material'})`;
+    const withTooling = rotoBlowRouteCostWithTooling(r);
+    return `${r.label} ${money(r.totalUsd!)}${withTooling != null && withTooling !== r.totalUsd ? ` (${money(withTooling)} with its molds)` : ''}`;
+  };
   const others = (pick: RotoBlowRoute) => [...routes.filter((r) => r !== pick).map(said), ...gaps.map((g) => `${g.label} not a route for this part (${g.reason})`)].join('; ');
   const user = chosen ? routes.find((r) => r.key === chosen) : undefined;
   if (user) return { route: user, note: `Roto & Blow Molding: ${user.label} is set in the Cost Guide. ${others(user)}.` };
-  const complete = routes.filter((r) => r.complete).sort((a, b) => a.totalUsd! - b.totalUsd!);
+  // A blow mold and a rotational mold cost very differently, so the routes are compared with their molds spread over the parts, whenever
+  // every complete route's molds can be spread. The quoted figure stays the piece cost, the molds shown apart.
+  const finished = routes.filter((r) => r.complete);
+  const spread = finished.length > 0 && finished.every((r) => rotoBlowRouteCostWithTooling(r) != null);
+  const compared = (r: RotoBlowRoute) => (spread ? rotoBlowRouteCostWithTooling(r)! : r.totalUsd!);
+  const complete = [...finished].sort((a, b) => compared(a) - compared(b) || a.totalUsd! - b.totalUsd!);
   const pick = complete[0] ?? [...routes].sort((a, b) => a.lines.filter(isGap).length - b.lines.filter(isGap).length)[0]!;
-  const why = complete[0] ? 'the cheapest complete route (material and process per part)' : 'no route is complete: the one with the fewest gaps';
+  const why = !complete[0] ? 'no route is complete: the one with the fewest gaps'
+    : spread ? `the cheapest complete route with its molds spread over the parts (${money(compared(pick))} per part with them; the quoted figure is material and process, the molds shown apart)`
+      : 'the cheapest complete route (material and process per part; its molds are shown apart and not compared: they have no price or no parts to be spread over)';
   return { route: pick, note: `Roto & Blow Molding: ${pick.label} is quoted${pick.complete ? ` (${money(pick.totalUsd!)} per part)` : ''}, ${why}.${others(pick) ? ` ${others(pick)}.` : ''}` };
 }
