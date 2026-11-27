@@ -25,6 +25,11 @@ export type Project = {
   bomItemCount?: number;
   actualCost?: number | null;
   actualCostCurrency?: string;
+  /** Who created the project, and the name to show for them. */
+  ownerId?: string;
+  ownerName?: string;
+  /** A picture of the project (a data URL): its main assembly's, else a sub-assembly's, else a part's. Absent until one has been drawn. */
+  thumbnailUrl?: string;
 };
 
 export type CreateProjectData = {
