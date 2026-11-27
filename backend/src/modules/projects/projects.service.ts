@@ -9,6 +9,7 @@ import { Logger as CustomLogger } from '@/common/logger/logger.service';
 import { ExchangeRateService } from '../../common/exchange-rate/exchange-rate.service';
 import { ROLLUP_REPORTING_CURRENCY } from '../bom-items/costing/shared/core/persisted-currency-contract';
 import { loadBomTotals, readAllRows } from '../boms/bom-totals';
+import { pickMainBoms } from './project-main-bom';
 import { pickThumbnailItems } from './project-thumbnail';
 
 // One answer for an unknown account and for an account of another organization, so adding a member reveals nobody's account.
@@ -76,8 +77,12 @@ export class ProjectsService {
             p.actualCost = stats.actualCost;
           }
         }
-        const [owners, thumbnails] = await Promise.all([this.ownerNames(projects.map(p => p.ownerId)), this.projectThumbnails(client, projectIds)]);
+        const [owners, thumbnails, mainBoms] = await Promise.all([
+          this.ownerNames(projects.map(p => p.ownerId)), this.projectThumbnails(client, projectIds), this.projectMainBoms(client, projectIds),
+        ]);
         for (const p of projects) {
+          const mainBom = mainBoms.get(p.id);
+          if (mainBom) p.mainBomId = mainBom;
           const owner = p.ownerId ? owners.get(p.ownerId) : undefined;
           if (owner) p.ownerName = owner;
           const thumbnail = thumbnails.get(p.id);
@@ -382,6 +387,26 @@ export class ProjectsService {
       }
       
       throw new InternalServerErrorException('Unable to retrieve cost analysis. Please try again or contact support if the problem persists.');
+    }
+  }
+
+  /** The BOM to open for each project (project-main-bom.ts). A read that fails leaves the project without one; it never fails the list. */
+  private async projectMainBoms(client: ReturnType<DatabaseService['getUserClient']>, projectIds: string[]): Promise<Map<string, string>> {
+    try {
+      const boms = await readAllRows<{ id: string; project_id: string; created_at: string; bom_items: Array<{ count: number }> | null }>((from, to) => client.from('boms')
+        .select('id, project_id, created_at, bom_items(count)', { count: 'exact' }).in('project_id', projectIds).order('id').range(from, to));
+      const withAssembly = new Set<string>();
+      for (let start = 0; start < boms.length; start += 200) {
+        const rows = await readAllRows<{ id: string; bom_id: string }>((from, to) => client.from('bom_items')
+          .select('id, bom_id', { count: 'exact' }).in('bom_id', boms.slice(start, start + 200).map(bom => bom.id)).eq('item_type', 'assembly').order('id').range(from, to));
+        rows.forEach(row => withAssembly.add(row.bom_id));
+      }
+      return pickMainBoms(boms.map(bom => ({
+        id: bom.id, projectId: bom.project_id, createdAt: bom.created_at, itemCount: bom.bom_items?.[0]?.count ?? 0, hasAssembly: withAssembly.has(bom.id),
+      })));
+    } catch (error) {
+      this.logger.warn(`Project main BOMs not read: ${error instanceof Error ? error.message : String(error)}`);
+      return new Map();
     }
   }
 

@@ -10,6 +10,7 @@ import { ArrowRight } from '@/components/ui/icons';
 import { useProfile } from '@/lib/api/hooks/useProfile';
 import { useProjects } from '@/lib/api/hooks/useProjects';
 import { formatProjectMoney, projectCostCurrency } from '@/lib/costing/project-costs';
+import { projectEntryHref } from '@/lib/projects/entry-href';
 
 /**
  * New: the generative way in. Drop drawings, pictures of parts, STEP files or a zip and say what the job is; the plan is shown to
@@ -40,7 +41,7 @@ export default function NewPage() {
           <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {projects.map(project => (
               <li key={project.id}>
-                <Link href={`/projects/${project.id}`} className="block h-full overflow-hidden rounded-xl border border-border bg-background transition-colors hover:border-primary/60 hover:bg-accent">
+                <Link href={projectEntryHref(project)} className="block h-full overflow-hidden rounded-xl border border-border bg-background transition-colors hover:border-primary/60 hover:bg-accent">
                   <div className="flex aspect-[16/9] items-center justify-center border-b border-border bg-gradient-to-br from-muted/70 to-muted/20">
                     <ProjectPicture thumbnailUrl={project.thumbnailUrl} className="p-3" />
                   </div>
