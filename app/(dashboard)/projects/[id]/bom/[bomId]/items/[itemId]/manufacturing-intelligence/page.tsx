@@ -9218,6 +9218,17 @@ export default function ManufacturingIntelligencePage() {
     }
   }, [fg, faceMap]);
 
+  // A click on the empty space around the model takes the selection back: the row in the Manufacturing Process tree, a feature picked in
+  // the Features tab, on a cost row or on the model, and with them the highlight on the model and what is shown about it.
+  const clearSelection = useCallback(() => {
+    setSelectedNodeId(null);
+    setOperationVisual(null);
+    setVizLabel(null);
+    setSelectedMachiningFeatureKey(null);
+    setSelectedDirectV2Feature(null);
+    setSelectedOccurrenceIndex(null);
+  }, []);
+
   // Click on the part in 3D -> select the feature occurrence that owns the picked B-Rep face (face_map). A machined part selects it in the
   // feature tree; every other part (a casting, a forging, a powder metal or sheet metal part) selects the occurrence's own row in the
   // Manufacturing Process tree, revealed and highlighted as a click on the row does. Faces no feature owns select nothing.
@@ -9630,6 +9641,7 @@ export default function ManufacturingIntelligencePage() {
                       heatmapNormalization={heatmapNorm}
                       onHeatmapInspect={handleHeatmapInspect}
                       {...(faceMap?.length ? { onBrepFacePick: handleBrepFacePick } : {})}
+                      onEmptySpaceClick={clearSelection}
                       nestQuantity={batchSize}
                       nestSheetWidthMm={costForHeatmap?.blankSpec?.sheetWidthMm}
                       nestSheetLengthMm={costForHeatmap?.blankSpec?.sheetLengthMm}
@@ -9809,6 +9821,7 @@ export default function ManufacturingIntelligencePage() {
                             heatmapNormalization={heatmapNorm}
                             onHeatmapInspect={handleHeatmapInspect}
                             {...(faceMap?.length ? { onBrepFacePick: handleBrepFacePick } : {})}
+                            onEmptySpaceClick={clearSelection}
                             nestQuantity={batchSize}
                             nestSheetWidthMm={costForHeatmap?.blankSpec?.sheetWidthMm}
                             nestSheetLengthMm={costForHeatmap?.blankSpec?.sheetLengthMm}

@@ -135,6 +135,8 @@ interface ModelViewerProps {
   highlightOccurrences?: FeatureNodeV2HL | null;
   selectedOccurrenceIndex?: number | null;
   onOccurrenceSelect?: (index: number | null) => void;
+  /** A plain click on the empty space around the model (forwarded to EDrawingsViewer). */
+  onEmptySpaceClick?: () => void;
   faceMap?: FaceMapEntry[] | null;
   /** The part's stored feature graph, for the diameter / radius callouts (needs faceMap). */
   annotationSource?: AnnotationSource | null;
@@ -201,6 +203,7 @@ export function ModelViewer({
   highlightOccurrences,
   selectedOccurrenceIndex,
   onOccurrenceSelect,
+  onEmptySpaceClick,
   faceMap,
   annotationSource,
   pmiReview,
@@ -366,6 +369,7 @@ export function ModelViewer({
               {...(highlightOccurrences !== undefined ? { highlightOccurrences } : {})}
               {...(selectedOccurrenceIndex !== undefined ? { selectedOccurrenceIndex } : {})}
               {...(onOccurrenceSelect ? { onOccurrenceSelect } : {})}
+              {...(onEmptySpaceClick ? { onEmptySpaceClick } : {})}
               {...(faceMap !== undefined ? { faceMap } : {})}
               {...(annotationSource !== undefined ? { annotationSource } : {})}
               {...(pmiReview ? { pmiReview } : {})}
@@ -532,6 +536,7 @@ export function ModelViewer({
               {...(highlightOccurrences !== undefined ? { highlightOccurrences } : {})}
               {...(selectedOccurrenceIndex !== undefined ? { selectedOccurrenceIndex } : {})}
               {...(onOccurrenceSelect ? { onOccurrenceSelect } : {})}
+              {...(onEmptySpaceClick ? { onEmptySpaceClick } : {})}
               {...(faceMap !== undefined ? { faceMap } : {})}
               {...(annotationSource !== undefined ? { annotationSource } : {})}
               {...(pmiReview ? { pmiReview } : {})}

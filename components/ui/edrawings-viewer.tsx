@@ -148,6 +148,8 @@ interface EDrawingsViewerProps {
   onHeatmapInspect?: (worldPos: [number, number, number], triangleIndex: number, riskValue: number) => void;
   /** Called with the B-Rep face id (face_map) under a plain click on the model — requires faceMap. */
   onBrepFacePick?: (faceId: number) => void;
+  /** A plain click on the empty space around the model (not a drag that turns the view): the host clears what it has selected. */
+  onEmptySpaceClick?: () => void;
   /** Override the amber group-face highlight color — used for operation-specific visualization */
   highlightColor?: string;
   /** Real setup-axis directions to draw as arrows (both ends, pointing at the part). */
@@ -3107,6 +3109,7 @@ export const EDrawingsViewer = React.memo(function EDrawingsViewer({
   heatmapNormalization = 'absolute',
   onHeatmapInspect,
   onBrepFacePick,
+  onEmptySpaceClick,
   highlightColor,
   setupAxes,
   bomItemId, nestQuantity = 1, nestSheetWidthMm, nestSheetLengthMm, nestKerfMm, nestKerfSource, nestEdgeMarginMm, nestSheetSource, nestCandidateSheets, nestMaterialLabel, nestGradeLabel, processConflict,
@@ -4077,6 +4080,11 @@ const [projectedFaceIndices, setProjectedFaceIndices] = useState<number[]>([]);
               failIfMajorPerformanceCaveat: false,
             }}
             key={canvasGeneration}
+            // A click that lands on nothing in the scene. Only a plain click on the canvas itself counts: not a right click or a double
+            // click, not a click on a label drawn over the view, and not one made while measuring (it belongs to the measurement).
+            onPointerMissed={(e) => {
+              if (e.type === 'click' && e.target instanceof HTMLCanvasElement && measureMode === 'IDLE') onEmptySpaceClick?.();
+            }}
             onCreated={(state) => {
               state.gl.localClippingEnabled = true;
               const canvas = state.gl.domElement;
