@@ -1,3 +1,5 @@
+import { spendingAi } from '@/lib/ai/usage-events';
+
 import { apiClient } from './client';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -288,17 +290,17 @@ export const vaveApi = {
   // AI analyses: the backend builds every prompt from the project's own data and charges the caller's AI budget. Not retried: a
   // 429 means the daily allowance is used up (the error message says so), and a retry would only spend more.
   aiCostAnalysis: (projectId: string) =>
-    apiClient.post<CostAnalysisResult>(`/vave-projects/${projectId}/ai/cost-analysis`, {}, AI_REQUEST),
+    spendingAi(apiClient.post<CostAnalysisResult>(`/vave-projects/${projectId}/ai/cost-analysis`, {}, AI_REQUEST)),
 
   aiIdeation: (projectId: string) =>
-    apiClient.post<CreateVaveIdea[]>(`/vave-projects/${projectId}/ai/ideation`, {}, AI_REQUEST),
+    spendingAi(apiClient.post<CreateVaveIdea[]>(`/vave-projects/${projectId}/ai/ideation`, {}, AI_REQUEST)),
 
   aiShouldCost: (projectId: string, itemId: string) =>
-    apiClient.post<ShouldCostResult>(`/vave-projects/${projectId}/should-cost-estimates/${itemId}`, {}, AI_REQUEST),
+    spendingAi(apiClient.post<ShouldCostResult>(`/vave-projects/${projectId}/should-cost-estimates/${itemId}`, {}, AI_REQUEST)),
 
   /** VAVE insights for one benchmark BOM, from structured metrics only (at most 50 items, bounded text). */
   aiBomAnalysis: <T>(bom: VaveBomAnalysisInput) =>
-    apiClient.post<T>('/vave-bom-analyses', bom, AI_REQUEST),
+    spendingAi(apiClient.post<T>('/vave-bom-analyses', bom, AI_REQUEST)),
 };
 
 export interface VaveBomAnalysisInput {

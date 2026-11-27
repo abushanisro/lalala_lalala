@@ -1,6 +1,6 @@
 import { ForbiddenException, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
 
-import { AI_MAX_TOKENS, AiBudgetExceededException, AiBudgetService, type AiCaller } from './ai-budget.service';
+import { AI_FEATURES, AI_MAX_TOKENS, AiBudgetExceededException, AiBudgetService, aiFeatureOf, type AiCaller, type AiUseCase } from './ai-budget.service';
 import { AI_TEST_LIMITS, aiBudget, configOf, fakeAiDatabase, fakeAnthropic } from '../../test/support/ai-fakes';
 import { fakeClient } from '../../test/support/fake-db-client';
 import type { DatabaseService } from '../database/database.service';
@@ -78,7 +78,7 @@ describe('AiBudgetService', () => {
     expect(model.requests[0].max_tokens).toBe(AI_MAX_TOKENS.vave_should_cost);
     expect(db.rpcCalls).toEqual([
       { fn: 'ai_usage_today', args: { p_organization_id: 'org-1' } },
-      { fn: 'ai_usage_record', args: { p_organization_id: 'org-1', p_input_tokens: 110, p_output_tokens: 40 } },
+      { fn: 'ai_usage_record', args: { p_organization_id: 'org-1', p_input_tokens: 110, p_output_tokens: 40, p_feature: 'vave' } },
     ]);
 
     // spent mid-request: the next call is refused before it reaches the model
@@ -103,7 +103,7 @@ describe('AiBudgetService', () => {
     };
     const session = await aiBudget(db.database, failing).open(caller, 'copilot');
     await expect(session.stream(ask, () => undefined)).rejects.toThrow('connection reset');
-    expect(db.rpcCalls.at(-1)).toEqual({ fn: 'ai_usage_record', args: { p_organization_id: 'org-1', p_input_tokens: 50, p_output_tokens: 20 } });
+    expect(db.rpcCalls.at(-1)).toEqual({ fn: 'ai_usage_record', args: { p_organization_id: 'org-1', p_input_tokens: 50, p_output_tokens: 20, p_feature: 'copilot' } });
   });
 
   it('fails the request when usage cannot be recorded, and maps "not a member" to 403', async () => {
@@ -118,3 +118,18 @@ describe('AiBudgetService', () => {
     await expect(ai2.open(caller, 'copilot')).rejects.toThrow(ForbiddenException);
   });
 });
+
+describe('aiFeatureOf', () => {
+  it('counts every use under one of the features the app shows, and none under "other"', () => {
+    const features = (Object.keys(AI_MAX_TOKENS) as AiUseCase[]).map((use) => [use, aiFeatureOf(use)]);
+    expect(Object.fromEntries(features)).toMatchObject({
+      copilot: 'copilot', drawing_extraction: 'drawing_reading', vave_bom_analysis: 'vave', vave_cost_analysis: 'vave', vave_ideation: 'vave', vave_should_cost: 'vave',
+    });
+    for (const [use, feature] of features) expect([use, AI_FEATURES.includes(feature as never) && feature !== 'other']).toEqual([use, true]);
+  });
+
+  it('counts a use it cannot place under "other"', () => {
+    expect(aiFeatureOf('summarise_minutes')).toBe('other');
+  });
+});
+

@@ -20,6 +20,8 @@ const REQUEST_TIMEOUT_MS = 90_000;
 export type CopilotEvent =
   | { type: 'text'; delta: string }
   | ({ type: 'memory_proposal' } & MemoryProposal)
+  /** After each model call of the answer, once its usage is recorded: the answer's usage so far. */
+  | { type: 'usage'; usage: CopilotUsage }
   | { type: 'done'; usage: CopilotUsage }
   | { type: 'error'; code: CopilotErrorCode };
 
@@ -129,6 +131,7 @@ export class CopilotService {
         usage.outputTokens += message.usage.output_tokens;
         usage.cacheReadTokens += message.usage.cache_read_input_tokens ?? 0;
         usage.cacheWriteTokens += message.usage.cache_creation_input_tokens ?? 0;
+        emit({ type: 'usage', usage: { ...usage } });
 
         if (message.stop_reason === 'refusal') return this.finish(emit, usage, userId, dto, startedAt, 'refused');
         if (message.stop_reason !== 'tool_use') return this.finish(emit, usage, userId, dto, startedAt);

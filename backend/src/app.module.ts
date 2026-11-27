@@ -37,6 +37,7 @@ import { VaveModule } from './modules/vave/vave.module';
 import { BenchmarkSessionsModule } from './modules/benchmark-sessions/benchmark-sessions.module';
 import { ProfileModule } from './modules/profile/profile.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { AiUsageModule } from './modules/ai-usage/ai-usage.module';
 import { CopilotModule } from './modules/copilot/copilot.module';
 import { DrawingReadingsModule } from './modules/drawing-readings/drawing-readings.module';
 import { ManufacturingKnowledgeModule } from './modules/manufacturing-knowledge/manufacturing-knowledge.module';
@@ -105,6 +106,7 @@ import { AppController } from './app.controller';
     BenchmarkSessionsModule,
     ProfileModule,
     OrganizationsModule,
+    AiUsageModule,
     CopilotModule,
     DrawingReadingsModule,
     ManufacturingKnowledgeModule,

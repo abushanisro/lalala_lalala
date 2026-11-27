@@ -25,6 +25,18 @@ export const AI_MAX_TOKENS = {
 
 export type AiUseCase = keyof typeof AI_MAX_TOKENS;
 
+/** What the app shows AI usage by: each use above belongs to one feature ('other' is usage recorded before features were named). */
+export const AI_FEATURES = ['copilot', 'drawing_reading', 'vave', 'other'] as const;
+export type AiFeature = (typeof AI_FEATURES)[number];
+
+/** The feature a use's tokens are counted under (migration 1166). By the use's name, so a new use of a feature needs no entry here. */
+export function aiFeatureOf(useCase: string): AiFeature {
+  if (useCase.startsWith('copilot')) return 'copilot';
+  if (useCase.startsWith('vave')) return 'vave';
+  if (useCase.startsWith('drawing')) return 'drawing_reading';
+  return 'other';
+}
+
 /** Who pays for a call: the signed-in user, in the organization the request acts for (OrganizationContextGuard). */
 export interface AiCaller {
   userId: string;
@@ -133,6 +145,11 @@ export class AiBudgetService {
     return new AiSession(this, this.client, caller, useCase);
   }
 
+  /** The tokens one user and one organization may spend per UTC day, as this server is configured. */
+  dailyLimits(): { userTokens: number; organizationTokens: number } {
+    return { userTokens: this.limits.userDailyTokens, organizationTokens: this.limits.orgDailyTokens };
+  }
+
   /** @internal AiSession */
   release(userId: string): void {
     const running = (this.running.get(userId) ?? 1) - 1;
@@ -163,8 +180,8 @@ export class AiBudgetService {
   }
 
   /**
-   * @internal AiSession: adds one response's usage to today's counters. A failure fails the request: an unrecorded call would be
-   * spend the budget never sees.
+   * @internal AiSession: adds one response's usage to today's counters, under the feature the use belongs to. A failure fails the
+   * request: an unrecorded call would be spend the budget never sees.
    */
   async record(caller: AiCaller, useCase: AiUseCase, usage: Anthropic.Usage): Promise<void> {
     const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
@@ -173,6 +190,7 @@ export class AiBudgetService {
       p_organization_id: caller.organizationId,
       p_input_tokens: input,
       p_output_tokens: output,
+      p_feature: aiFeatureOf(useCase),
     });
     this.logger.log(`ai usage user=${caller.userId} org=${caller.organizationId} use=${useCase} in=${input} out=${output}`);
     if (error) {
