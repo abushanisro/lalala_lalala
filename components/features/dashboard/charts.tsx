@@ -30,14 +30,14 @@ const CHART_COLORS = [
   'hsl(var(--chart-5))',
 ];
 
-const TOOLTIP_STYLE = {
+export const TOOLTIP_STYLE = {
   backgroundColor: 'hsl(var(--card))',
   border: '1px solid hsl(var(--border))',
   borderRadius: '12px',
   boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
 };
 
-const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 12 };
+export const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 12 };
 
 // Semrush-style axis title, rotated along a Y axis.
 function axisTitle(value: string, side: 'left' | 'right') {

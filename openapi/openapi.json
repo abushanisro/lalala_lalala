@@ -17657,6 +17657,26 @@
         ]
       }
     },
+    "/api/v1/cost-analytics": {
+      "get": {
+        "operationId": "CostAnalyticsController_summary_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The organization's should-cost: coverage, cost elements and drivers, annual spend, parts, processes, machines, materials, BOMs, and the gap to each part's ask price.",
+        "tags": [
+          "Cost analytics"
+        ]
+      }
+    },
     "/api/v1/currencies": {
       "get": {
         "operationId": "FxController_listCurrencies_v1",

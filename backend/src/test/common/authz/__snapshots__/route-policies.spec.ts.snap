@@ -133,6 +133,7 @@ org:viewer      GET /api/v1/copilot/memory  CopilotController.getMemory
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId  CostAnalysisController.getBomItemCost
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/excel  CostAnalysisController.downloadBomItemExcel
 org:viewer      GET /api/v1/cost-analysis/bom-item/:bomItemId/location-comparison  CostAnalysisController.getLocationComparison
+org:viewer      GET /api/v1/cost-analytics  CostAnalyticsController.summary
 org:viewer      GET /api/v1/currencies  FxController.listCurrencies
 org:viewer      GET /api/v1/exchange-rates  FxController.listExchangeRates
 org:viewer      GET /api/v1/exchange-rates/effective  FxController.getRate
