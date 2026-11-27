@@ -20,7 +20,10 @@ import {
   Legend
 } from 'recharts';
 
-import { BarChart3 } from '@/components/ui/icons';
+import { Badge } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
+import { BarChart3, FolderKanban } from '@/components/ui/icons';
+import { projectTrend } from '@/lib/dashboard/project-trend';
 
 const CHART_COLORS = [
   'hsl(var(--chart-1))',
@@ -228,59 +231,50 @@ export function StatusPieChart({ statusDistribution }: StatusPieChartProps) {
 export function ProjectTrendChart({ projects }: { projects: any[] }) {
   // recharts 3 replays the area's animation whenever it is handed a new data array, even one with the same values.
   // The rows are therefore rebuilt only when the projects change.
-  const trendData = useMemo(() => {
-    const last30Days = Array.from({ length: 30 }, (_, i) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (29 - i));
-      return date;
-    });
-
-    return last30Days.map(date => {
-      const dayProjects = projects.filter(p => {
-        const projectDate = new Date(p.createdAt || Date.now());
-        return projectDate.toDateString() === date.toDateString();
-      });
-
-      return {
-        date: date.getDate(),
-        projects: dayProjects.length,
-        value: dayProjects.reduce((sum, p) => sum + (Number(p.targetPrice) || 0), 0),
-        savings: dayProjects.reduce((sum, p) => sum + ((Number(p.targetPrice) || 0) - (Number(p.shouldCost) || 0)), 0)
-      };
-    });
-  }, [projects]);
+  const trend = useMemo(() => projectTrend(projects), [projects]);
 
   return (
-    <div className="h-80">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart accessibilityLayer={false} data={trendData} margin={{ top: 0, right: 8, left: 8, bottom: 0 }}>
-          <defs>
-            <linearGradient id="colorProjects" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="hsl(var(--chart-1))" stopOpacity={0.25} />
-              <stop offset="100%" stopColor="hsl(var(--chart-1))" stopOpacity={0.05} />
-            </linearGradient>
-          </defs>
-          {grid()}
-          <XAxis dataKey="date" tick={AXIS_TICK} axisLine={{ stroke: 'hsl(var(--border))' }} tickLine={false} tickMargin={10} />
-          <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={56} allowDecimals={false} label={axisTitle('New Projects', 'left')} />
-          <Tooltip cursor={{ stroke: 'hsl(var(--border))' }} contentStyle={TOOLTIP_STYLE} />
-          <Legend {...LEGEND_PROPS} />
-          <Area
-            type="linear"
-            dataKey="projects"
-            stroke="hsl(var(--chart-1))"
-            strokeWidth={2.5}
-            fillOpacity={1}
-            fill="url(#colorProjects)"
-            name="New Projects"
-            dot={false}
-            activeDot={{ r: 4 }}
-            // recharts 3 draws the hover line over the area; recharts 2 drew it behind.
-            zIndex={DefaultZIndexes.cursorLine + 1}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
+    <>
+      {/* The period follows the projects (30 days, 12 months, or since the first one), so the chart names it here. */}
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">Project creation trends and volume</p>
+        <Badge variant="outline" className="shrink-0 whitespace-nowrap">{trend.period}</Badge>
+      </div>
+      {projects.length === 0 ? (
+        <EmptyState icon={FolderKanban} title="No projects yet" description="Each project shows here on the day it was created" className="h-80 py-0" />
+      ) : (
+        <div className="h-80">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart accessibilityLayer={false} data={trend.buckets} margin={{ top: 0, right: 8, left: 8, bottom: 0 }}>
+              <defs>
+                <linearGradient id="colorProjects" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--chart-1))" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="hsl(var(--chart-1))" stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              {grid()}
+              <XAxis dataKey="label" tick={AXIS_TICK} axisLine={{ stroke: 'hsl(var(--border))' }} tickLine={false} tickMargin={10} />
+              <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={56} allowDecimals={false} label={axisTitle('New Projects', 'left')} />
+              <Tooltip cursor={{ stroke: 'hsl(var(--border))' }} contentStyle={TOOLTIP_STYLE} />
+              <Legend {...LEGEND_PROPS} />
+              <Area
+                type="linear"
+                dataKey="projects"
+                stroke="hsl(var(--chart-1))"
+                strokeWidth={2.5}
+                fillOpacity={1}
+                fill="url(#colorProjects)"
+                name="New Projects"
+                dot={false}
+                activeDot={{ r: 4 }}
+                // recharts 3 draws the hover line over the area; recharts 2 drew it behind.
+                zIndex={DefaultZIndexes.cursorLine + 1}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </>
   );
 }
 
