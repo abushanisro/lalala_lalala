@@ -2,11 +2,11 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertTriangle, ArrowUp, Box, CheckCircle2, FileText, Image as ImageIcon, Loader2, Plus, Upload, X } from '@/components/ui/icons';
+import { AlertTriangle, ArrowUp, Box, CheckCircle2, FileText, Image as ImageIcon, Loader2, Mic, Plus, Upload, X } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { drawingReadingsApi, type DrawingReading } from '@/lib/api/drawing-readings';
@@ -16,9 +16,10 @@ import { useRawMaterials } from '@/lib/api/hooks/useRawMaterials';
 import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-picker-query';
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { intakeApi } from '@/lib/intake/api';
+import { dictationProblem, transcriptOf, withDictation, type HeardResults } from '@/lib/intake/dictation';
 import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
 import {
-  costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
+  carriesFiles, costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
 } from '@/lib/intake/plan';
 import { runIntake, type IntakeEvent, type IntakeResult } from '@/lib/intake/run';
 
@@ -48,7 +49,6 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const [events, setEvents] = useState<IntakeEvent[]>([]);
   const [result, setResult] = useState<IntakeResult | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   useTypedPlaceholder(textarea, phase === 'compose' && note === '');
@@ -71,6 +71,12 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
     setFiles(current => [...current, ...taken.filter(file => !current.some(have => have.name === file.name))]);
     setRefused(all.filter(file => intakeFileKind(file.name) === null).map(file => file.name));
   }, []);
+
+  const dragging = useFileDrop(phase === 'compose', add);
+  const saidBefore = useRef('');
+  const dictation = useDictation(useCallback((heard: string) => { setNote(withDictation(saidBefore.current, heard)); }, []));
+  const stopDictation = dictation.stop;
+  useEffect(() => { if (phase !== 'compose') stopDictation(); }, [phase, stopDictation]);
 
   const read = async () => {
     const drawings = files.filter(file => intakeFileKind(file.name) === 'drawing');
@@ -127,12 +133,14 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
         </div>
-        <div
-          onDragOver={event => { event.preventDefault(); if (phase === 'compose') setDragging(true); }}
-          onDragLeave={() => { setDragging(false); }}
-          onDrop={event => { event.preventDefault(); setDragging(false); if (phase === 'compose') add(event.dataTransfer.files); }}
-          className={`rounded-3xl border bg-card shadow-lg transition-colors ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}
-        >
+        <div className={`relative rounded-3xl border bg-card shadow-lg transition-colors ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}>
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 rounded-3xl border-2 border-dashed border-primary bg-card/95 text-center">
+              <Upload className="h-5 w-5 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Drop to add</p>
+              <p className="text-xs text-muted-foreground">Drawings, pictures, STEP files or a zip</p>
+            </div>
+          )}
           <Textarea
             ref={textarea} value={note} disabled={phase !== 'compose'} onChange={event => { setNote(event.target.value); }}
             onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && files.length > 0 && phase === 'compose') { event.preventDefault(); void read(); } }}
@@ -163,10 +171,22 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
               className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
               <Plus className="h-5 w-5" />
             </Button>
-            <Button type="button" size="icon" aria-label="Read the files" title={files.length === 0 ? 'Add a file first' : 'Read the files'}
-              disabled={phase !== 'compose' || files.length === 0} onClick={() => { void read(); }} className="h-9 w-9 rounded-full">
-              {phase === 'reading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
-            </Button>
+            {phase === 'compose' && <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:block">Drag files anywhere onto this page, or add them with +</p>}
+            <div className="flex shrink-0 items-center gap-1">
+              {dictation.available && (
+                <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={phase !== 'compose'}
+                  aria-label={dictation.listening ? 'Stop dictating' : 'Dictate'}
+                  title={dictation.listening ? 'Listening. Press to stop.' : "Dictate what the job is (the browser's speech recognition)"}
+                  className={`h-9 w-9 shrink-0 rounded-full ${dictation.listening ? 'animate-pulse' : 'text-muted-foreground'}`}
+                  onClick={() => { if (dictation.listening) dictation.stop(); else { saidBefore.current = note; dictation.start(); } }}>
+                  <Mic className="h-4 w-4" />
+                </Button>
+              )}
+              <Button type="button" size="icon" aria-label="Read the files" title={files.length === 0 ? 'Add a file first' : 'Read the files'}
+                disabled={phase !== 'compose' || files.length === 0} onClick={() => { void read(); }} className="h-9 w-9 rounded-full">
+                {phase === 'reading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
         </div>
         {phase === 'compose' && (
@@ -180,6 +200,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
             Not taken: {refused.join(', ')}. The box takes PNG, JPEG, WebP, GIF and PDF drawings, STEP files and zips.
           </p>
         )}
+        {dictation.problem && <p className="text-center text-xs text-destructive" role="alert">{dictation.problem}</p>}
       </div>
 
       {phase === 'reading' && (
@@ -255,6 +276,92 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       )}
     </section>
   );
+}
+
+/** The browser's speech recognition, as far as dictation uses it (it is not in TypeScript's DOM types, and Chrome and Safari prefix it). */
+interface Recognizer {
+  lang: string; continuous: boolean; interimResults: boolean;
+  onresult: ((event: { results: HeardResults }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void; stop: () => void; abort: () => void;
+}
+type RecognizerClass = new () => Recognizer;
+function recognizerClass(): RecognizerClass | null {
+  const w = window as unknown as { SpeechRecognition?: RecognizerClass; webkitSpeechRecognition?: RecognizerClass };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+const never = () => () => undefined;
+
+/**
+ * Dictation into the prompt with the browser's own speech recognition, where it has one (`available`; the browser decides where the
+ * audio is recognised). While it listens, everything heard so far is handed to `onHeard` each time it firms up. It stops on `stop`, when
+ * the browser ends it, or on a failure, which `problem` says in plain words.
+ */
+function useDictation(onHeard: (heard: string) => void) {
+  // Known only in the browser: the server renders the prompt without the microphone, and the page adds it once it runs.
+  const available = useSyncExternalStore(never, () => recognizerClass() !== null, () => false);
+  const [listening, setListening] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const recognizer = useRef<Recognizer | null>(null);
+  useEffect(() => () => { recognizer.current?.abort(); }, []);
+  const stop = useCallback(() => { recognizer.current?.stop(); }, []);
+  const start = useCallback(() => {
+    const Recognition = recognizerClass();
+    if (!Recognition || recognizer.current) return;
+    const r = new Recognition();
+    r.lang = navigator.language;
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = (event) => { onHeard(transcriptOf(event.results)); };
+    r.onerror = (event) => { setProblem(dictationProblem(event.error)); };
+    r.onend = () => { recognizer.current = null; setListening(false); };
+    recognizer.current = r;
+    setProblem(null);
+    setListening(true);
+    try { r.start(); } catch { recognizer.current = null; setListening(false); setProblem(dictationProblem('audio-capture')); }
+  }, [onHeard]);
+  return { available, listening, problem, start, stop };
+}
+
+/**
+ * Files dragged anywhere over the page are the prompt's: true while a drag that carries files is over the window, and the dropped files
+ * are handed to `onFiles`. A drop of files is never left to the browser, which would open the file and lose the page; while the prompt
+ * is not taking files (they are being read, the plan is open) the drop is refused. A drag that carries no files (text, a link) is left
+ * alone.
+ */
+function useFileDrop(taking: boolean, onFiles: (files: File[]) => void): boolean {
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    // dragenter and dragleave fire for every element the pointer crosses: only leaving the last one ends the drag.
+    let depth = 0;
+    const withFiles = (event: DragEvent) => carriesFiles(event.dataTransfer?.types);
+    const enter = (event: DragEvent) => { if (!withFiles(event)) return; depth += 1; setOver(true); };
+    const move = (event: DragEvent) => {
+      if (!withFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = taking ? 'copy' : 'none';
+    };
+    const leave = (event: DragEvent) => { if (!withFiles(event)) return; depth = Math.max(0, depth - 1); if (depth === 0) setOver(false); };
+    const drop = (event: DragEvent) => {
+      if (!withFiles(event)) return;
+      event.preventDefault();
+      depth = 0;
+      setOver(false);
+      if (taking && event.dataTransfer) onFiles(Array.from(event.dataTransfer.files));
+    };
+    window.addEventListener('dragenter', enter);
+    window.addEventListener('dragover', move);
+    window.addEventListener('dragleave', leave);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', enter);
+      window.removeEventListener('dragover', move);
+      window.removeEventListener('dragleave', leave);
+      window.removeEventListener('drop', drop);
+    };
+  }, [taking, onFiles]);
+  return over && taking;
 }
 
 /**

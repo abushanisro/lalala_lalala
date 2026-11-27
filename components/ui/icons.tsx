@@ -90,6 +90,7 @@ import {
   Maximize2 as LucideMaximize2,
   Menu as LucideMenu,
   MessageSquare as LucideMessageSquare,
+  Mic as LucideMic,
   Microscope as LucideMicroscope,
   Minimize2 as LucideMinimize2,
   Monitor as LucideMonitor,
@@ -320,6 +321,7 @@ export const Maximize: LucideIcon = duo(LucideMaximize, 'Maximize');
 export const Maximize2: LucideIcon = duo(LucideMaximize2, 'Maximize2');
 export const Menu: LucideIcon = LucideMenu;
 export const MessageSquare: LucideIcon = duo(LucideMessageSquare, 'MessageSquare');
+export const Mic: LucideIcon = LucideMic;
 export const Microscope: LucideIcon = duo(LucideMicroscope, 'Microscope');
 export const Minimize2: LucideIcon = duo(LucideMinimize2, 'Minimize2');
 export const Monitor: LucideIcon = duo(LucideMonitor, 'Monitor');
