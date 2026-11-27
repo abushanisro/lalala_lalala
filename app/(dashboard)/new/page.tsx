@@ -25,8 +25,8 @@ export default function NewPage() {
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {/* The accent colour fades in from the top behind the prompt, in both themes: the page's one piece of decoration. */}
-      <div className="rounded-3xl bg-[radial-gradient(ellipse_at_top,hsl(var(--primary)/0.22),transparent_62%)] px-4 pb-10 pt-12 sm:px-8 sm:pt-16">
+      {/* The accent colour glows behind the prompt, centred low so it fades out before the top and bottom edges, in both themes: the page's one piece of decoration. */}
+      <div className="rounded-3xl bg-[radial-gradient(ellipse_50%_42%_at_50%_56%,hsl(var(--primary)/0.28),transparent)] px-4 pb-10 pt-12 sm:px-8 sm:pt-16">
         <IntakeBox title={firstName ? `What do you want to cost, ${firstName}?` : 'What do you want to cost?'} />
       </div>
 
