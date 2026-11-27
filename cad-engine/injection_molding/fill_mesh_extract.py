@@ -5,12 +5,16 @@ face, so every triangle gets its own reading) and `measure_solid` (the CAD volum
 
 How the skin is chosen
   1. The whole surface is welded and refined first, so thickness is measured on small triangles, not on the few huge ones a CAD tessellator leaves on a flat face.
+     Every triangle is measured on a part of ordinary size; on a detailed one, the largest triangle of every face and then the largest of the rest
+     (`_rays_for`): the work is bounded by the rays cast, never by refusing a part for its triangle count.
   2. A triangle faces a far wall if a surface facing back lies at p - n t (t its ball thickness). Rims, rib sides and hole walls do not.
   3. The decision is taken per CAD face, by area: a face mostly facing a far wall is a wall skin, and is kept whole. The strip of a floor that lies under a wall has no
      far wall of its own, yet it belongs to the floor: deciding triangle by triangle would cut the floor loose from the wall there.
   4. Of two faces facing each other the outer one is kept (larger outward offset from the part centre).
-  5. Only the largest connected piece is kept. A rib's side face is a wall skin too, but it stands on the inner surface, which was dropped: ribs and bosses are not
-     flow channels here, they show as a slightly thicker wall where they sit, and the report says what share of the volume that leaves out.
+  5. Only the largest piece is kept, a piece being triangles joined edge to edge (melt cannot pass through a single shared node). A rib's side face is a wall
+     skin too, but it stands on the inner surface, which was dropped: ribs and bosses are not flow channels here, they show as a slightly thicker wall where
+     they sit, and the report says what share of the volume that leaves out.
+  6. The mid-surface mesh is cleaned (edges far shorter than the target merged away) and refined to the target, twice, and cleaned once more.
 """
 from typing import Any, Dict, Optional, Tuple
 
@@ -23,10 +27,17 @@ from shared.solid_measures import measure_solid
 
 from .fill_mesh import FillMesh, check, check_time, components
 
-MAX_TRIANGLES = 8000         # surface triangles thickness is measured on: it costs rays x triangles (measured: 12 000 took 25 s, 8 000 about 11 s)
+# Thickness costs rays x surface triangles, so it is the rays that are limited, not the part. A real part's triangle count has a floor set by its
+# number of faces (a back cover: 10 121 however coarsely it is tessellated), and a limit on triangles simply refused such parts.
+MEASURE_ALL = 8000           # up to this many surface triangles, every one gets its own thickness ray
+RAY_WORK = MEASURE_ALL ** 2  # rays x triangles spent on thickness beyond that (measured: about 8 s)
+RAY_WORK_MAX = 6 * RAY_WORK  # every CAD face needs one ray at least to be decided; a part needing more work than this is refused, in words
+SURFACE_LIMIT = 40000        # a tessellation above this is retried more coarsely, then refused
+REFINE_EXTRA = 6000          # triangles the refinement before measuring may add to a detailed part: its few huge flat triangles still get cut
 MAX_FILL_TRIANGLES = 6000    # what the solver is given: about 10 s of fill on one core
 MEASURE_PER_DIAGONAL = 20    # the surface is refined to edges of diagonal / this before thickness is measured
 EDGE_PER_WALL = 2.0          # target element edge of the fill mesh, in wall thicknesses
+MIN_EDGE_SHARE = 1 / 3       # edges under this share of the target are merged away first: the mesh then runs from a third of the target to the target
 WALL_FACE_SHARE = 0.5        # a CAD face is a wall skin when at least this share of its area faces a far wall
 THIN_WALL_SHARE = 0.5        # a mesh holding less than this share of the CAD volume is not a model of the part: no simulation
 COVERED_SHARE = 0.9          # below this share (or as far above 1) the difference is reported with the mesh
@@ -46,15 +57,39 @@ def _welded(corners: np.ndarray, face_of: np.ndarray, grid: float, centre: np.nd
     return FillMesh(corners.reshape(-1, 3)[first], tri[real], np.zeros(int(real.sum())), face_of[real], centre)
 
 
-def _triangle_thickness(corners: np.ndarray, normal: np.ndarray, area: np.ndarray, deflection: float) -> np.ndarray:
-    """Shrinking-ball thickness per triangle (NaN where no ray left the material), through the existing wall-thickness code."""
+def _rays_for(face: np.ndarray, area: np.ndarray) -> np.ndarray:
+    """Which triangles get a thickness ray. All of them on a part of ordinary size. On a detailed one: the largest triangle of every CAD face (so
+    every face can be decided), then the largest of the rest while the work allows; the small ones left take their thickness from their neighbours."""
+    n = len(area)
+    faces = int(len(np.unique(face)))
+    rays = max(faces, min(n, RAY_WORK // max(n, 1)))
+    if rays * n > RAY_WORK_MAX:
+        raise ValueError(f"This part is too detailed to mesh for a fill simulation yet: {n} surface triangles on {faces} faces.")
+    if rays >= n:
+        return np.ones(n, bool)
+    chosen = np.zeros(n, bool)
+    order = np.lexsort((-area, face))
+    chosen[order[np.concatenate([[True], face[order][1:] != face[order][:-1]])]] = True
+    rest = np.flatnonzero(~chosen)
+    chosen[rest[np.argsort(-area[rest])[:max(0, rays - int(chosen.sum()))]]] = True
+    return chosen
+
+
+def _triangle_thickness(corners: np.ndarray, normal: np.ndarray, area: np.ndarray, deflection: float, chosen: np.ndarray) -> np.ndarray:
+    """Shrinking-ball thickness of the chosen triangles (NaN for the others, and where no ray left the material), through the existing
+    wall-thickness code: each chosen triangle is handed to it as a face of its own, so each gets its own reading; the rest go in as one more
+    face, there for the rays to hit."""
     as_tuple = lambda p: (float(p[0]), float(p[1]), float(p[2]))
-    singles = [FaceMesh(index=k, surface="other", area=float(area[k]),
-                        triangles=[Triangle(as_tuple(corners[k].mean(axis=0)), as_tuple(normal[k]), float(area[k]), tuple(as_tuple(p) for p in corners[k]))])
-               for k in range(len(corners))]
-    out = np.full(len(singles), np.nan)
-    for f in measure_wall_thickness(singles, deflection)["faces"]:
-        out[f["face_id"]] = f["thickness_mm"]
+    triangle = lambda k: Triangle(as_tuple(corners[k].mean(axis=0)), as_tuple(normal[k]), float(area[k]), tuple(as_tuple(p) for p in corners[k]))
+    own = np.flatnonzero(chosen)
+    meshes = [FaceMesh(index=i, surface="other", area=float(area[k]), triangles=[triangle(k)]) for i, k in enumerate(own)]
+    others = np.flatnonzero(~chosen)
+    if len(others):
+        meshes.append(FaceMesh(index=len(own), surface="other", area=float(area[others].sum()), triangles=[triangle(k) for k in others]))
+    out = np.full(len(corners), np.nan)
+    for f in measure_wall_thickness(meshes, deflection)["faces"]:
+        if f["face_id"] < len(own):
+            out[own[f["face_id"]]] = f["thickness_mm"]
     return out
 
 
@@ -87,11 +122,12 @@ def _partners(v: np.ndarray, n: np.ndarray, t: np.ndarray, tol: np.ndarray, dead
     return partner, gap
 
 
-def _wall_faces(face: np.ndarray, area: np.ndarray, outward: np.ndarray, partner: np.ndarray) -> np.ndarray:
-    """Which triangles to keep: every triangle of the CAD faces that are the outer skin of a wall (steps 3 and 4 of the module note)."""
+def _wall_faces(face: np.ndarray, area: np.ndarray, outward: np.ndarray, partner: np.ndarray, measured: np.ndarray) -> np.ndarray:
+    """Which triangles to keep: every triangle of the CAD faces that are the outer skin of a wall (steps 3 and 4 of the module note). A face is
+    judged on its measured triangles: the share of their area that faces a far wall."""
     n_faces = int(face.max()) + 1
     paired = partner >= 0
-    total = np.bincount(face, area, n_faces)
+    total = np.bincount(face[measured], area[measured], n_faces)
     facing = np.bincount(face[paired], area[paired], n_faces)
     offset = np.bincount(face[paired], (area * outward)[paired], n_faces) / np.maximum(facing, 1e-300)
     across = np.zeros((n_faces, n_faces))                                   # area of face f whose far wall is face g
@@ -163,12 +199,12 @@ def _surface(shape: Any, deflection: float):
     for _ in range(3):
         faces = tessellate_faces(shape, linear_deflection=deflection)
         count = sum(len(f.triangles) for f in faces)
-        if count <= MAX_TRIANGLES:
+        if count <= SURFACE_LIMIT:
             corners = np.array([t.vertices for f in faces for t in f.triangles], float).reshape(-1, 3, 3)
             return corners, np.array([f.index for f in faces for _ in f.triangles], int), deflection, faces
         breptools.Clean(shape)                                              # the mesher keeps a finer mesh it already has
         deflection *= 3
-    raise ValueError(f"{count} surface triangles even at a deflection of {deflection / 3:g} mm; the limit is {MAX_TRIANGLES}.")
+    raise ValueError(f"This part is too detailed to mesh for a fill simulation yet: {count} surface triangles even at a deflection of {deflection / 3:g} mm.")
 
 
 def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_edge_mm: Optional[float] = None,
@@ -180,7 +216,8 @@ def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_
     corners, face_of, deflection, faces = _surface(shape, deflection_mm or max(0.1, diagonal * 0.001))
     empty = FillMesh(np.zeros((0, 3)), np.zeros((0, 3), int), np.zeros(0), np.zeros(0, int))
     report: Dict[str, Any] = {
-        "deflection_mm": round(deflection, 4), "triangles_total": len(corners), "triangles_measured": 0, "triangles_kept": 0, "triangles_in_mesh": 0,
+        "deflection_mm": round(deflection, 4), "triangles_total": len(corners), "triangles_surface": 0, "triangles_measured": 0, "triangles_kept": 0,
+        "triangles_in_mesh": 0,
         "triangles_unmeasured": 0, "detached_pieces": 0, "detached_volume_pct": 0.0, "longest_edge_mm": 0.0, "target_edge_mm": 0.0,
         "resolution_limited": False, "cad_volume_mm3": round(solid["volume"], 2), "mesh_volume_mm3": 0.0, "volume_ratio": None,
         "pull_direction": None,
@@ -191,13 +228,15 @@ def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_
         return empty, {**report, "issues": [i.as_dict() for i in check(empty)]}
 
     centre = (corners.reshape(-1, 3).min(axis=0) + corners.reshape(-1, 3).max(axis=0)) / 2
-    surface = _welded(corners, face_of, max(deflection * 1e-3, 1e-6), centre).refined(diagonal / MEASURE_PER_DIAGONAL, MAX_TRIANGLES)
+    surface = _welded(corners, face_of, max(deflection * 1e-3, 1e-6), centre)
+    surface = surface.refined(diagonal / MEASURE_PER_DIAGONAL, max(MEASURE_ALL, len(surface.triangles) + REFINE_EXTRA))
     v = surface.corners()
     cross = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
     area = np.linalg.norm(cross, axis=1) / 2
     normal = cross / np.maximum(2 * area, 1e-300)[:, None]
     check_time(deadline, "reading the part")
-    thickness = _triangle_thickness(v, normal, area, deflection)
+    measured = _rays_for(surface.face_id, area)
+    thickness = _triangle_thickness(v, normal, area, deflection, measured)
     partner, gap = _partners(v, normal, thickness, _PARTNER_TOL * np.nan_to_num(thickness) + deflection, deadline)
     paired = partner >= 0
     if paired.any():   # a near-zero gap is where two faces meet at a knife edge: it reads as a wall 0.01 mm thick, which nothing flows through
@@ -205,8 +244,8 @@ def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_
         share = np.cumsum(area[paired][order])
         usual = float(gap[paired][order][np.searchsorted(share, share[-1] / 2)])        # the part's usual wall: the area-weighted median gap
         partner = np.where(paired & (gap < max(2 * deflection, MIN_WALL_SHARE * usual)), -1, partner)
-    keep = _wall_faces(surface.face_id, area, ((v.mean(axis=1) - centre) * normal).sum(axis=1), partner)
-    report.update(triangles_measured=len(v), triangles_unmeasured=int(np.isnan(thickness).sum()))
+    keep = _wall_faces(surface.face_id, area, ((v.mean(axis=1) - centre) * normal).sum(axis=1), partner, measured & np.isfinite(thickness))
+    report.update(triangles_surface=len(v), triangles_measured=int(measured.sum()), triangles_unmeasured=int((measured & np.isnan(thickness)).sum()))
     if not keep.any():
         return empty, {**report, "issues": [i.as_dict() for i in check(empty)]}
 
@@ -220,11 +259,24 @@ def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_
     nodes = _to_mid_surface(surface.nodes_mm[used], tri, normal[keep][body], np.nan_to_num(wall[body]))
     mesh = FillMesh(nodes, tri, wall[body], surface.face_id[keep][body], centre)
     target = target_edge_mm or EDGE_PER_WALL * float(np.nanmedian(mesh.thickness_mm))
-    mesh = mesh.refined(target, MAX_FILL_TRIANGLES)
+    # Merge away the edges far shorter than the target, cut the ones longer than it, and merge again: bisecting a nearly flat triangle
+    # leaves a new edge as short as its height. Twice round settles it; the last word is a clean-up, so no needle is left for the solver.
+    for _ in range(2):
+        mesh = mesh.cleaned(MIN_EDGE_SHARE * target).refined(target, MAX_FILL_TRIANGLES)
+    mesh = mesh.cleaned(MIN_EDGE_SHARE * target)
+    # Merging nodes can pinch a neck down to a point. What then hangs by a point is left out like the other detached pieces.
+    piece = components(mesh.triangles)
+    piece_volume = np.bincount(piece, mesh.areas_mm2() * mesh.thickness_mm, len(piece))
+    pinched = int((piece_volume > 0).sum()) - 1
+    if pinched > 0:
+        main = piece == piece_volume.argmax()
+        used, tri = np.unique(mesh.triangles[main], return_inverse=True)
+        mesh = FillMesh(mesh.nodes_mm[used], tri.reshape(-1, 3), mesh.thickness_mm[main], mesh.face_id[main], centre)
     ok = solid["volume"] > 0
     report.update(
         triangles_kept=int(body.sum()), triangles_in_mesh=len(mesh.triangles),
-        detached_pieces=int((volume > 0).sum()) - 1, detached_volume_pct=round(100.0 * float(1 - volume.max() / volume.sum()), 2),
+        detached_pieces=int((volume > 0).sum()) - 1 + pinched,
+        detached_volume_pct=round(100.0 * float(1 - (volume.max() / volume.sum()) * (piece_volume.max() / piece_volume.sum())), 2),
         longest_edge_mm=round(mesh.longest_edge_mm(), 3), target_edge_mm=round(target, 3), resolution_limited=bool(mesh.longest_edge_mm() > target),
         mesh_volume_mm3=round(mesh.volume_mm3(), 2), volume_ratio=round(mesh.volume_mm3() / solid["volume"], 4) if ok else None,
     )

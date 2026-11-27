@@ -8,6 +8,7 @@ from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse  # noqa: E402
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder  # noqa: E402
 from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt  # noqa: E402
 
+import injection_molding.fill_mesh_extract as extraction  # noqa: E402
 from injection_molding.fill_mesh_extract import MAX_FILL_TRIANGLES, extract_fill_mesh  # noqa: E402
 from injection_molding.fill_solver import fill  # noqa: E402
 
@@ -121,3 +122,33 @@ def test_step_to_solver_end_to_end_matches_hele_shaw_on_a_plate():
     assert np.nanmax(result.fill_time_s) == pytest.approx(mesh.volume_mm3() / q, rel=1e-6)
     expected = 12 * eta * (q * 1e-9 / (width * 1e-3)) * (0.95 * length * 1e-3) / (wall * 1e-3) ** 3 * 1e-6
     assert result.switchover_pressure_mpa(0.95) == pytest.approx(expected, rel=0.05)
+
+
+def test_a_part_too_detailed_to_ray_every_triangle_is_still_meshed_from_the_largest_ones_of_every_face(monkeypatch):
+    # A real back cover has 10 000 surface triangles however coarsely it is tessellated; a limit on triangles refused it outright.
+    # The same situation in small: a ray budget well under the tray's triangle count.
+    monkeypatch.setattr(extraction, "RAY_WORK", 150 ** 2)
+    monkeypatch.setattr(extraction, "RAY_WORK_MAX", 10 * 150 ** 2)
+    mesh, report = extract_fill_mesh(tray())
+    assert report["triangles_measured"] < report["triangles_surface"] / 2      # most triangles took their wall from their neighbours
+    assert report["issues"] == [] and report["detached_pieces"] == 0
+    assert mesh.thickness_mm == pytest.approx(2.5, abs=0.05 * 2.5)
+    assert report["volume_ratio"] == pytest.approx(1.0, abs=0.03)
+
+
+def test_a_part_beyond_the_work_allowed_is_refused_in_words_before_any_work_is_done(monkeypatch):
+    monkeypatch.setattr(extraction, "RAY_WORK", 10)
+    monkeypatch.setattr(extraction, "RAY_WORK_MAX", 100)
+    with pytest.raises(ValueError, match="too detailed to mesh for a fill simulation yet"):
+        extract_fill_mesh(tray())
+
+
+def test_no_edge_of_the_mesh_is_far_shorter_than_the_target_and_it_is_one_piece_edge_to_edge():
+    from injection_molding.fill_mesh import components
+
+    for make in (plate_with_hole, cup, tray):
+        mesh, report = extract_fill_mesh(make())
+        corners = mesh.corners()
+        shortest = np.linalg.norm(corners[:, [1, 2, 0]] - corners, axis=2).min()
+        assert shortest >= extraction.MIN_EDGE_SHARE * report["target_edge_mm"] * 0.999
+        assert len(np.unique(components(mesh.triangles))) == 1

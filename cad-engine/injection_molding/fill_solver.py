@@ -111,8 +111,9 @@ def element_geometry(xyz: np.ndarray, tri: np.ndarray):
     return area, grad
 
 
-def _cg(matvec, b, x, precondition, tol=1e-8, max_iter=5000):
-    """Preconditioned conjugate gradient for a symmetric positive definite operator; `x` is the warm start."""
+def _cg(matvec, b, x, precondition, tol=1e-5, max_iter=5000):
+    """Preconditioned conjugate gradient for a symmetric positive definite operator; `x` is the warm start. The tolerance is on the residual
+    against the source: at 1e-5 a real part's fill times and pressures are those of 1e-8 (to 0.0002 MPa) in two thirds of the time."""
     r = b - matvec(x)
     z = precondition(r)
     d = z.copy()
@@ -127,6 +128,24 @@ def _cg(matvec, b, x, precondition, tol=1e-8, max_iter=5000):
         rz, rz_old = r @ z, rz
         d = z + (rz / rz_old) * d
     return x
+
+
+def _clusters(xyz: np.ndarray) -> np.ndarray:
+    """Nodes grouped into compact patches of at most CLUSTER, by halving the set along its longest extent until each part is small enough
+    (the leaves of a k-d tree). The patches hold the same number of nodes whatever the local mesh density: a uniform grid of cells put
+    hundreds of nodes of a finely meshed fillet into one patch, where the coarse solve then did nothing."""
+    out = np.zeros(len(xyz), np.int64)
+    parts, count = [np.arange(len(xyz))], 0
+    while parts:
+        ids = parts.pop()
+        if len(ids) <= CLUSTER:
+            out[ids] = count
+            count += 1
+            continue
+        p = xyz[ids]
+        order = np.argsort(p[:, int(np.ptp(p, axis=0).argmax())], kind="stable")
+        parts += [ids[order[:len(ids) // 2]], ids[order[len(ids) // 2:]]]
+    return out
 
 
 def fill(nodes_mm, triangles, thickness_mm, gate_nodes, flow_mm3_s, rheology: Rheology, temp_k: float,
@@ -144,11 +163,9 @@ def fill(nodes_mm, triangles, thickness_mm, gate_nodes, flow_mm3_s, rheology: Rh
     ke_unit = area[:, None, None] * np.einsum('mik,mjk->mij', grad, grad)   # element stiffness for S = 1
     volume = np.bincount(tri.ravel(), np.repeat(area * h / 3, 3), n_nodes)  # node control volumes
     law = GapFlow(rheology, temp_k)
-    # Coarse space of the two-level preconditioner: nodes clustered by position, about CLUSTER to a cluster. Pressure is long-range, and a diagonal
-    # preconditioner alone needs iterations in proportion to the mesh width; one small dense solve over the clusters carries the long-range part.
-    cell = np.sqrt(CLUSTER * area.sum() / n_nodes)
-    _, cluster = np.unique(np.floor((xyz - xyz.min(axis=0)) / cell).astype(np.int64), axis=0, return_inverse=True)
-    cluster = cluster.ravel()
+    # Coarse space of the two-level preconditioner. Pressure is long-range, and a diagonal preconditioner alone needs iterations in proportion to
+    # the mesh width; one small dense solve over clusters of nodes carries the long-range part.
+    cluster = _clusters(xyz)
     n_clusters = int(cluster.max()) + 1
     pair = (cluster[tri][:, :, None] * n_clusters + cluster[tri][:, None, :]).reshape(len(tri), 9)
 

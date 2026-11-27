@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .fill_mesh import FillMesh, components
+from .fill_mesh import FillMesh, joined_at_nodes
 from .fill_solver import FillResult
 
 WELD_MEETING_ANGLE_DEG = 135.0   # fronts meeting at less than this form a weld line; at more, a meld line (the usual convention)
@@ -87,7 +87,7 @@ def weld_lines(mesh: FillMesh, fill_time_s: np.ndarray, velocity: np.ndarray) ->
     found = np.flatnonzero(weld & np.isfinite(formed))
     if len(found):                                                              # a weld line is at least two edges end to end: a lone edge is noise
         ends = pair[order[twin[found]]]
-        line = components(np.column_stack([ends, ends[:, 1]]))
+        line = joined_at_nodes(np.column_stack([ends, ends[:, 1]]))
         found = found[np.bincount(line, minlength=len(found))[line] > 1]
     found = found[np.argsort(formed[found])]
     return [{"from_mm": p0[i], "to_mm": p1[i], "time_s": float(formed[i]), "meeting_angle_deg": float(meeting[i])} for i in found]

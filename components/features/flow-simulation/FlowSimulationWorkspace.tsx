@@ -130,6 +130,7 @@ export function FlowSimulationWorkspace({ itemId, costFillTimeS, runner }: FlowS
     });
   };
   const failure = runMutation.error ?? meshQuery.error;
+  const reasonOf = (error: Error) => (error instanceof ApiError ? error.getUserMessage() : error.message);
   const cannotRun = runMutation.data && !runMutation.data.simulation;
 
   return (
@@ -166,6 +167,7 @@ export function FlowSimulationWorkspace({ itemId, costFillTimeS, runner }: FlowS
             <Home className="h-4 w-4" />
           </button>
           {meshQuery.isLoading && <Overlay spinner text="Meshing the part's wall mid-surface…" />}
+          {meshQuery.error && !mesh && <Overlay text={`This part could not be meshed. ${reasonOf(meshQuery.error)}`} />}
           {runMutation.isPending && <Overlay spinner text="Filling the cavity…" />}
           {mesh?.triangles.length === 0 && <Overlay text="This part has no thin wall the simulation can mesh (a solid block or a bar)." />}
           {mesh && mesh.triangles.length > 0 && report?.canSimulate && !form.gate && tab === "setup" && !runMutation.isPending && (
@@ -218,13 +220,14 @@ export function FlowSimulationWorkspace({ itemId, costFillTimeS, runner }: FlowS
           </TabsList>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {failure && (
-              <Notice tone="error" text={failure instanceof ApiError ? failure.getUserMessage() : failure.message} />
+              <Notice tone="error" text={reasonOf(failure)} />
             )}
             {cannotRun && <Notice tone="error" text="The mesh cannot be simulated. See the mesh issues under Setup." />}
             <TabsContent value="setup" className="m-0 space-y-3 px-3 pb-4">
               <SetupPanel
                 form={form} setForm={setForm} report={report} wallMm={mesh ? scaleOf(mesh.thicknessMm, false) : null}
                 suggestions={suggestions} notes={inputsQuery.data?.notes ?? []} material={inputsQuery.data?.referenceMaterial ?? inputsQuery.data?.materialGrade ?? null}
+                meshing={meshQuery.isLoading}
               />
               {built.missing.length > 0 && (
                 <p className="text-[11px] leading-snug text-muted-foreground">Still needed: {built.missing.join("; ")}.</p>
@@ -251,7 +254,7 @@ export function FlowSimulationWorkspace({ itemId, costFillTimeS, runner }: FlowS
 
 function Overlay({ text, spinner }: { text: string; spinner?: boolean }) {
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-white/40 text-xs font-medium text-[#1f2d3a]" role={spinner ? "status" : undefined}>
+    <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-white/40 px-10 text-center text-xs font-medium text-[#1f2d3a]" role={spinner ? "status" : undefined}>
       {spinner && <Loader2 className="h-4 w-4 animate-spin" />}
       {text}
     </div>
@@ -320,7 +323,7 @@ function Field({ id, label, unit, value, onChange, placeholder, suggestion }: {
   );
 }
 
-function SetupPanel({ form, setForm, report, wallMm, suggestions, notes, material }: {
+function SetupPanel({ form, setForm, report, wallMm, suggestions, notes, material, meshing }: {
   form: SetupForm;
   setForm: (update: (f: SetupForm) => SetupForm) => void;
   report: FillMeshReport | null;
@@ -329,6 +332,7 @@ function SetupPanel({ form, setForm, report, wallMm, suggestions, notes, materia
   /** What the reference data could not give, and why. */
   notes: readonly string[];
   material: string | null;
+  meshing: boolean;
 }) {
   const set = (key: keyof SetupForm) => (value: string) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -347,7 +351,7 @@ function SetupPanel({ form, setForm, report, wallMm, suggestions, notes, materia
           <div className="-mx-3 pt-1">{report.issues.map((issue) => <Notice key={issue.code} tone="warning" text={issue.message} />)}</div>
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">Meshing…</p>
+        <p className="text-xs text-muted-foreground">{meshing ? "Meshing…" : "Not meshed."}</p>
       )}
 
       <Heading>Gate</Heading>

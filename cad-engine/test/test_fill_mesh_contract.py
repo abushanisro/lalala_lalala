@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from injection_molding.fill_mesh import FillMesh, check
+from injection_molding.fill_mesh import FillMesh, check, components, joined_at_nodes
 
 
 def square(n=2, thickness=2.0):
@@ -115,3 +115,58 @@ def test_gate_mapping_by_click_radius_and_face():
     assert len(m.nodes_near([20, 20, 0], 10.0)) == 5            # the node and its four grid neighbours
     assert len(m.nodes_near([24, 24, 0], 0.01)) == 1       # a click between nodes still gives a gate: the nearest
     assert set(m.nodes_on_face(0)) <= set(np.unique(m.triangles))
+
+
+def split_edge(mesh, u, v, share):
+    """The mesh with edge u-v cut at `share` of the way from u: each triangle on the edge becomes two. A cut near u leaves a tiny edge and slivers."""
+    nodes = np.vstack([mesh.nodes_mm, mesh.nodes_mm[u] + share * (mesh.nodes_mm[v] - mesh.nodes_mm[u])])
+    w, tri, thickness, face = len(mesh.nodes_mm), [], [], []
+    for t, h, f in zip(mesh.triangles.tolist(), mesh.thickness_mm, mesh.face_id):
+        if u in t and v in t:
+            for old, new in ((v, w), (u, w)):                        # (u, w, c) and (w, v, c), each keeping the winding
+                tri.append([new if n == old else n for n in t])
+                thickness.append(h)
+                face.append(f)
+        else:
+            tri.append(t)
+            thickness.append(h)
+            face.append(f)
+    return FillMesh(nodes, np.array(tri), np.array(thickness), np.array(face))
+
+
+def test_pieces_that_touch_at_one_node_are_separate_because_melt_cannot_pass_through_a_point():
+    a, b = square(2), square(2)
+    corner = int(np.flatnonzero((a.nodes_mm[:, 0] == 20) & (a.nodes_mm[:, 1] == 20))[0])
+    nodes = np.vstack([a.nodes_mm, b.nodes_mm + [20, 20, 0]])
+    other = b.triangles + len(a.nodes_mm)
+    other[other == len(a.nodes_mm)] = corner                         # the second square's first corner IS the first square's far corner
+    touching = FillMesh(nodes, np.vstack([a.triangles, other]), np.full(16, 2.0), np.zeros(16, int))
+    assert len(np.unique(joined_at_nodes(touching.triangles))) == 1   # one group by shared nodes
+    assert len(np.unique(components(touching.triangles))) == 2        # two pieces for the melt
+    assert "disconnected" in codes(touching)
+    assert len(np.unique(components(square(3).triangles))) == 1
+
+
+def test_cleaning_merges_an_edge_far_shorter_than_the_rest_and_leaves_the_part_as_it_was():
+    m = square(4)                                                     # 10 mm squares
+    u, v = 6, 7                                                       # an inside edge
+    dirty = split_edge(m, u, v, 0.002)                                # a node 0.02 mm from another: two slivers
+    assert "degenerate_triangle" in codes(dirty) and len(dirty.triangles) == len(m.triangles) + 2
+    clean = dirty.cleaned(1.0)
+    assert check(clean) == [] and len(clean.triangles) == len(m.triangles) and len(clean.nodes_mm) == len(m.nodes_mm)
+    assert clean.volume_mm3() == pytest.approx(m.volume_mm3(), rel=1e-3)
+    corners = clean.corners()
+    assert np.linalg.norm(corners[:, [1, 2, 0]] - corners, axis=2).min() >= 1.0
+    assert m.cleaned(1.0).triangles.shape == m.triangles.shape        # nothing to merge: nothing changes
+
+
+def test_cutting_a_nearly_flat_triangle_leaves_a_short_edge_that_the_second_clean_removes():
+    # a 20 mm edge with its opposite corner 0.05 mm off its middle: bisecting the long edge joins the midpoint to that corner
+    flat = FillMesh(np.array([[0, 0, 0], [20, 0, 0], [10.3, 0.05, 0], [10, 10, 0], [10, -10, 0]], float),
+                    np.array([[0, 1, 2], [0, 2, 3], [2, 1, 3], [1, 0, 4]]), np.full(4, 2.0), np.zeros(4, int))
+    cut = flat.refined(6.0, 1000)
+    corners = cut.corners()
+    assert np.linalg.norm(corners[:, [1, 2, 0]] - corners, axis=2).min() < 0.5        # the new short edge
+    done = cut.cleaned(2.0)
+    corners = done.corners()
+    assert np.linalg.norm(corners[:, [1, 2, 0]] - corners, axis=2).min() >= 2.0 and "degenerate_triangle" not in codes(done)

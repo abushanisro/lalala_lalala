@@ -38,7 +38,9 @@ numpy only. scipy is not in the production image and is not needed.
 - **Viscosity.** Either the grade's own Cross-WLF constants (the pressure term D3 is not modelled), or one number estimated from the
   reference data (next section).
 - **Pressure.** `div(S grad p) = 0` on linear triangles, `p = 0` at the front, constant flow rate at the gate. Conjugate gradient with a
-  two-level preconditioner (Jacobi plus a dense coarse solve over node clusters): about 35 iterations at any mesh size.
+  two-level preconditioner (Jacobi plus a dense coarse solve over patches of at most 20 nodes, the leaves of a k-d tree): about 35
+  iterations on a clean mesh of any size, about 70 on a real part. Residual tolerance 1e-5: on a real part its fill times and pressures are
+  those of 1e-8 to 0.0002 MPa.
 - **Front.** Control-volume advance, one pressure solve per arriving node (nodes arriving together share one). Filling more of the front per
   solve was tried and rejected: on the race-tracking test it gave a front ratio of 1.03 to 1.75 where 2.0 is exact.
 - **Bookkeeping.** The clock advances by the volume actually placed over the flow rate, so the fill time equals volume / flow rate to rounding.
@@ -71,17 +73,23 @@ pressure from the grade's real viscosity curve the engineer switches to its Cros
 One skin of the part moved to the wall's mid-surface, each triangle with its local wall thickness.
 
 1. Tessellate (`tessellate_faces`), weld, and refine the whole surface so thickness is measured on small triangles.
-2. Thickness per triangle with the existing shrinking-ball code (`measure_wall_thickness`, untouched: each triangle is handed to it as its own face).
+2. Thickness per triangle with the existing shrinking-ball code (`measure_wall_thickness`, untouched: each measured triangle is handed to
+   it as its own face). Thickness costs rays times triangles, so it is the **rays** that are limited, never the part: up to 8 000 surface
+   triangles every one is measured; beyond that the largest triangle of every CAD face and then the largest of the rest, the small ones
+   taking their wall from their neighbours. (A limit on triangles refused a real back cover outright: it has 10 000 however coarsely it is
+   tessellated.)
 3. A triangle faces a far wall if a surface facing back lies at `p - n t`. Its wall thickness is the gap to that surface (the ball itself reads
    low within half a wall of a free edge).
    A gap under a tenth of the part's usual wall is a knife edge where two faces meet, not a wall (a real part read 0.01 mm), and is not counted.
 4. The skin is chosen **per CAD face**, by area: a face mostly facing a far wall is kept whole, so the strip of a floor under a wall stays with
    the floor. Of two faces facing each other the outer one is kept.
-5. Only the largest connected piece is kept. Rib sides and bosses stand on the dropped inner skin; they are **not flow channels**, and the
-   report gives their share of the volume.
+5. Only the largest piece is kept, a piece being triangles joined **edge to edge**. Rib sides and bosses stand on the dropped inner skin;
+   they are **not flow channels**, and the report gives their share of the volume. Sharing a single node does not join two pieces: melt
+   cannot pass through a point (see the back cover below).
 6. Nodes move half a wall inward: a crease node to where its triangles' offset planes meet, its neighbours sliding within their own surface.
-7. Refine to edges of 2 wall thicknesses (cap 6 000 triangles): longest-edge bisection with Delaunay flips, flips only between coplanar
-   triangles of one CAD face.
+7. Clean and refine, twice, then clean: edges under a third of the target are merged away (an end on a crease or a free edge stays put, so
+   corners are kept), and edges over the target (2 wall thicknesses, cap 6 000 triangles) are cut by longest-edge bisection with Delaunay
+   flips between coplanar triangles of one CAD face.
 
 Each of steps 1, 3, 4, 6 and 7 replaced a simpler version that failed on a real shape: a cup base lost 39 of 48 triangles; a flat face with a
 hole stayed a fan of 2 degree needles; flips across a cylinder's facets read a 3 mm wall as 2.3 mm; a mitred corner folded its neighbours.
@@ -144,9 +152,21 @@ holding under half the CAD volume is now refused (`not_thin_walled`) and one off
 Four parts kept some sliver triangles on curved faces (`degenerate_triangle`, reported, not blocking). Nothing here says the numbers are right
 on a real part: only that real geometry goes through.
 
-The first real molded part opened in the workspace (a back cover) meshed to the 6 000 triangle limit with 9 mm edges and kept 73 % of its
-volume, 18 % being ribs and bosses. That is the size of the rib limitation on a ribbed part: the fill pattern of the main wall is modelled,
-the ribs' own filling and their share of the pressure are not.
+### The first real molded part (a back cover, 16 MB STEP, 14 530 surface triangles, wall 0.6 to 2.8 mm)
+
+It found four faults that no constructed shape had:
+
+| Fault | What it did | Fix |
+|---|---|---|
+| A limit on surface triangles | the part was refused | the rays are limited instead (step 2) |
+| A knife edge read as a wall | "wall 0.01 mm" | gaps under a tenth of the usual wall are not walls |
+| Edges of 0.01 mm from small faces and fillets | 175 solver iterations per step, a 113 s fill | short edges merged away (step 7) |
+| Rib sides touching the skin at single nodes | the last 1 % forced through a point: 803 MPa at switchover, 115 MPa at 98 % | pieces are joined edge to edge (step 5) |
+
+Now: mesh in 15 s, fill in 18 s, 5 508 triangles with edges up to 3.4 mm, gate pressure rising smoothly from 27 MPa at half fill to
+114 MPa at switchover (127.5 MPa available by the flow-length estimate). The mesh holds 68 % of the part's volume, 18 % being ribs and
+bosses: that is the size of the rib limitation on a ribbed part. The fill pattern of the main wall is modelled; the ribs' own filling and
+their share of the pressure are not.
 
 ## Performance (one core, numpy)
 
@@ -156,7 +176,7 @@ the ribs' own filling and their share of the pressure are not.
 | Tray 100 x 60 x 15 | 1 996 | 2.3 s | 0.4 s |
 | Cup 50 dia x 30 | 3 160 | 4.7 s | 4.1 s |
 | Plate, Cross-WLF, 6 480 triangles | 6 480 | | 12.8 s |
-| Real parts at the surface limit (8 000 triangles measured) | up to 6 000 | about 11 s | |
+| Back cover (real, 14 530 surface triangles) | 5 508 | 15 s | 18 s |
 
 A second call on the same file skips extraction: 0.24 s end to end for a 1 024-triangle plate through the live route.
 

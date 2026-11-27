@@ -185,3 +185,15 @@ def test_a_run_past_its_time_budget_stops_with_a_clear_reason_instead_of_running
     with pytest.raises(TookTooLong, match="ran out of time while filling the cavity"):
         fill(nodes, tri, np.full(len(tri), 2.0), gate, 5000.0, Newtonian(500.0), 500.0, deadline=time.monotonic() - 1)
     assert isinstance(TookTooLong("x"), ValueError)                               # the route answers a ValueError with 422, never a 5xx
+
+
+def test_the_preconditioners_patches_hold_the_same_few_nodes_whether_the_mesh_is_coarse_or_fine_there():
+    from injection_molding.fill_solver import CLUSTER, _clusters
+
+    rng = np.random.default_rng(7)
+    sparse = rng.uniform(0, 100, (600, 3)) * [1, 1, 0]
+    dense = rng.uniform(0, 2, (2400, 3)) * [1, 1, 0] + [40, 40, 0]              # a finely meshed fillet: four fifths of the nodes in 0.04 % of the area
+    patch = _clusters(np.vstack([sparse, dense]))
+    size = np.bincount(patch)
+    assert size.max() <= CLUSTER and size.min() >= CLUSTER // 2
+    assert 3000 / CLUSTER <= len(size) <= 2 * 3000 / CLUSTER              # halving leaves patches between half full and full

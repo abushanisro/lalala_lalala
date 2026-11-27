@@ -89,6 +89,46 @@ class FillMesh:
             tri, thickness = _delaunay_flips(nodes, tri, thickness, face)
         return FillMesh(nodes, tri, thickness, face, self.centre_mm)
 
+    def cleaned(self, min_edge_mm: float, passes: int = 40) -> "FillMesh":
+        """Every edge shorter than `min_edge_mm` collapsed to its midpoint, and the triangles that vanish with it removed.
+
+        Small CAD faces and fillets leave edges of a hundredth of a millimetre in the skin (a real back cover: 156 triangles with an edge under
+        0.1 mm, the worst a 0.00008 sliver). They carry no flow, and they made each pressure solve take five times the iterations. An edge far
+        shorter than the wall is below what the fill resolves, so merging its ends changes nothing that is read off the result.
+
+        The shape is kept: an end that lies on a crease or on a free edge of the skin stays where it is and the other end moves to it
+        (two such ends, or two plain ones, meet half way). Meeting half way everywhere rounded off the corner between a cup's base and its wall.
+        """
+        nodes, tri, thickness, face = self.nodes_mm.copy(), self.triangles.copy(), self.thickness_mm, self.face_id
+        for _ in range(passes):
+            pair = np.unique(np.sort(np.stack([tri, tri[:, [1, 2, 0]]], axis=2), axis=2).reshape(-1, 2), axis=0)
+            length = np.linalg.norm(nodes[pair[:, 0]] - nodes[pair[:, 1]], axis=1)
+            short = np.flatnonzero(length < min_edge_mm)
+            if not short.size:
+                break
+            # edges that share a node cannot collapse in one pass: an edge goes when it is the shortest short edge at both its ends
+            shortest = np.full(len(nodes), np.inf)
+            np.minimum.at(shortest, pair[short].ravel(), np.repeat(length[short], 2))
+            go = short[(shortest[pair[short, 0]] == length[short]) & (shortest[pair[short, 1]] == length[short])]
+            claims = np.bincount(pair[go].ravel(), minlength=len(nodes))
+            go = go[(claims[pair[go, 0]] == 1) & (claims[pair[go, 1]] == 1)]
+            if not go.size:                                                      # equal lengths at a shared node: take the one shortest edge
+                go = short[[int(np.argmin(length[short]))]]
+            keep_node, drop_node = pair[go, 0], pair[go, 1]
+            fixed = _on_feature(nodes, tri)
+            stays, moves = fixed[keep_node] & ~fixed[drop_node], fixed[drop_node] & ~fixed[keep_node]
+            nodes[keep_node] = np.where(stays[:, None], nodes[keep_node], np.where(moves[:, None], nodes[drop_node], (nodes[keep_node] + nodes[drop_node]) / 2))
+            remap = np.arange(len(nodes))
+            remap[drop_node] = keep_node
+            tri = remap[tri]
+            real = (tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 0])
+            tri, thickness, face = tri[real], thickness[real], face[real]
+        _, inverse, count = np.unique(np.sort(tri, axis=1), axis=0, return_inverse=True, return_counts=True)
+        single = count[inverse.ravel()] == 1                                     # two triangles folded onto the same three nodes: neither is a wall
+        tri, thickness, face = tri[single], thickness[single], face[single]
+        used, tri = np.unique(tri, return_inverse=True)
+        return FillMesh(nodes[used], tri.reshape(-1, 3), thickness, face, self.centre_mm)
+
     # Gate mapping: where the engineer clicked, or which face they chose, to the nodes the melt enters through.
     def nearest_node(self, point_mm) -> int:
         return int(np.argmin(np.linalg.norm(self.nodes_mm - np.asarray(point_mm, float), axis=1)))
@@ -99,6 +139,28 @@ class FillMesh:
 
     def nodes_on_face(self, face_id: int) -> np.ndarray:
         return np.unique(self.triangles[self.face_id == face_id])
+
+
+_CREASE = np.cos(np.radians(30))   # two triangles turning more than this across their shared edge make a crease
+
+
+def _on_feature(nodes: np.ndarray, tri: np.ndarray) -> np.ndarray:
+    """Nodes that carry the shape: those on a free edge of the skin (an edge of one triangle) and those on a crease."""
+    c = nodes[tri]
+    normal = np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-300)
+    pair = np.sort(np.stack([tri, tri[:, [1, 2, 0]]], axis=2), axis=2).reshape(-1, 2)
+    order = np.lexsort((pair[:, 1], pair[:, 0]))
+    same = (pair[order][1:] == pair[order][:-1]).all(axis=1)
+    alone = np.ones(len(order), bool)
+    alone[1:] &= ~same
+    alone[:-1] &= ~same
+    twin = np.flatnonzero(same)
+    sharp = (normal[order[twin] // 3] * normal[order[twin + 1] // 3]).sum(axis=1) < _CREASE
+    out = np.zeros(len(nodes), bool)
+    out[pair[order[alone]].ravel()] = True
+    out[pair[order[twin[sharp]]].ravel()] = True
+    return out
 
 
 _FLAT = np.cos(np.radians(0.5))   # an edge is flipped only between coplanar triangles of one CAD face: across a facet ridge a flip dents the surface
@@ -165,14 +227,35 @@ MAX_THICKNESS_OVER_SIZE = 0.5  # a wall thicker than half the part's largest ext
 _SHOW = 8
 
 
-def components(triangles: np.ndarray) -> np.ndarray:
-    """Component label per triangle: triangles are connected when they share a node (label propagation, no graph library)."""
+def joined_at_nodes(triangles: np.ndarray) -> np.ndarray:
+    """Group label per triangle, triangles being in one group when they share a node (label propagation, no graph library)."""
     label = np.arange(len(triangles))
     node_label = np.full(triangles.max() + 1, len(triangles))
     while True:
         node_label[:] = len(triangles)
         np.minimum.at(node_label, triangles.ravel(), np.repeat(label, 3))
         new = node_label[triangles].min(axis=1)
+        if (new == label).all():
+            return label
+        label = new
+
+
+def components(triangles: np.ndarray) -> np.ndarray:
+    """Piece label per triangle: two triangles are one piece when they share an EDGE. Touching at a single node does not count, because melt
+    cannot pass through a point: on a real part the sides of ribs touched the skin at single nodes, the last 1 % of the volume was forced
+    through those points, and the gate pressure read 800 MPa where the part needed 115."""
+    label = np.arange(len(triangles))
+    if len(triangles) == 0:
+        return label
+    pair = np.sort(np.stack([triangles, triangles[:, [1, 2, 0]]], axis=2), axis=2).reshape(-1, 2)
+    order = np.lexsort((pair[:, 1], pair[:, 0]))
+    twin = np.flatnonzero((pair[order][1:] == pair[order][:-1]).all(axis=1))
+    a, b = order[twin] // 3, order[twin + 1] // 3
+    while True:
+        new = label.copy()
+        np.minimum.at(new, a, label[b])
+        np.minimum.at(new, b, label[a])
+        new = new[new]                                           # follow each label to its own label: halves the passes needed
         if (new == label).all():
             return label
         label = new
