@@ -25,6 +25,7 @@ import {
   DuoInfo,
   DuoLightbulb,
   DuoLogOut,
+  DuoNew,
   DuoPreferences,
   DuoProjects,
   DuoSettings,
@@ -63,6 +64,7 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: 'Work',
     items: [
+      { title: 'New', url: '/new', icon: DuoNew },
       { title: 'Dashboard', url: '/', icon: DuoDashboard, exact: true },
       { title: 'Projects', url: '/projects', icon: DuoProjects },
     ],
