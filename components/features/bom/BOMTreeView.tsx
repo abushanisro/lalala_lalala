@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { BOMItem as BOMItemRecord } from '@/lib/api/hooks/useBOMItems';
+import { modelPartsOf } from '@/lib/bom/model-parts';
 import { familyToProcessGroupLabel } from '@/lib/features/process-group';
 import { BOMItemType } from '@/lib/types/bom.types';
 import { cn } from '@/lib/utils';
@@ -358,7 +359,8 @@ const mm = (v: number | undefined): string => (v && v > 0 ? v.toLocaleString(und
 
 function CadDetails({ node, onOpen }: { node: BOMItem; onOpen?: () => void }) {
   const style    = typeStyleOf(node.itemType);
-  const hasModel = Boolean(node.file3dPath ?? node.file2dPath);
+  const parts    = modelPartsOf<BOMItemRecord>(node);
+  const hasModel = Boolean(node.file3dPath ?? node.file2dPath) || parts.length > 0;
   const childCount = node.children?.length ?? 0;
   const size =
     (node.maxLength ?? 0) > 0 || (node.maxWidth ?? 0) > 0 || (node.maxHeight ?? 0) > 0
@@ -399,7 +401,7 @@ function CadDetails({ node, onOpen }: { node: BOMItem; onOpen?: () => void }) {
       {/* The part's picture, larger than on the card */}
       {hasModel && (
         <div className="flex justify-center border-b bg-muted/40 py-3">
-          <BOMItemThumbnail item={node as unknown as BOMItemRecord} onClick={() => onOpen?.()} />
+          <BOMItemThumbnail item={node as unknown as BOMItemRecord} parts={parts} onClick={() => onOpen?.()} />
         </div>
       )}
       <div className="space-y-3 p-3">
@@ -484,7 +486,8 @@ function HierarchicalNode({
   const childCount = node.children?.length ?? 0;
   const style      = typeStyleOf(node.itemType);
   const pos        = node.position;
-  const hasModel   = Boolean(node.file3dPath ?? node.file2dPath);
+  const parts      = modelPartsOf<BOMItemRecord>(node);
+  const hasModel   = Boolean(node.file3dPath ?? node.file2dPath) || parts.length > 0;
 
   // The + adds a child part: into this card's item when it is an assembly or a sub-assembly, and beside it (same parent) when it is a
   // child part, since nothing goes under a child part (lib/bom/drop-intent.ts).
@@ -520,7 +523,7 @@ function HierarchicalNode({
             <span className={cn('absolute inset-y-0 left-0 w-1', style.bar)} aria-hidden="true" />
 
             {hasModel ? (
-              <BOMItemThumbnail item={node as unknown as BOMItemRecord} size="sm" onClick={open} />
+              <BOMItemThumbnail item={node as unknown as BOMItemRecord} parts={parts} size="sm" onClick={open} />
             ) : (
               <span className="flex h-12 w-16 shrink-0 items-center justify-center rounded bg-muted/50" aria-hidden="true">
                 <style.Icon className={cn('h-5 w-5', style.text)} />

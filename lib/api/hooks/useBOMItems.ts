@@ -28,6 +28,8 @@ export interface BOMItem {
   materialId?: string;
   makeBuy?: 'make' | 'buy';
   unitCost?: number;
+  /** The item's latest computed cost (an assembly's is rolled up from its children). Read only: unitCost is the bought price. */
+  computedCost?: number;
   parentItemId?: string;
   sortOrder: number;
   file3dPath?: string;
