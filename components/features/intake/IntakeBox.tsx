@@ -18,6 +18,7 @@ import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { intakeApi } from '@/lib/intake/api';
 import { dictationProblem, transcriptOf, withDictation, type HeardResults } from '@/lib/intake/dictation';
+import { pastedNames, pasteIsOfFiles } from '@/lib/intake/paste';
 import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
 import {
   carriesFiles, costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
@@ -91,6 +92,11 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   }, []);
 
   const dragging = useFileDrop(phase === 'compose', add);
+  // A copied picture is "image.png" every time: pasted files are named apart from the ones already there before they are added.
+  usePastedFiles(phase === 'compose', useCallback((pasted: File[]) => {
+    const names = pastedNames(pasted, files.map(file => file.name));
+    add(pasted.map((file, i) => { const name = names[i] ?? file.name; return name === file.name ? file : new File([file], name, { type: file.type, lastModified: file.lastModified }); }));
+  }, [add, files]));
   const saidBefore = useRef('');
   const dictation = useDictation(useCallback((heard: string) => { setNote(withDictation(saidBefore.current, heard)); }, []));
   const stopDictation = dictation.stop;
@@ -207,7 +213,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            {phase === 'compose' && <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">Drag files anywhere onto this page, or add them with +</p>}
+            {phase === 'compose' && <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">Drag files onto this page, paste a picture, or add them with +</p>}
             <div className="flex shrink-0 items-center gap-1">
               {dictation.available && (
                 <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={phase !== 'compose'}
@@ -312,6 +318,24 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       )}
     </section>
   );
+}
+
+/**
+ * Files pasted anywhere on the page are the prompt's while it is taking files: a copied picture, or a file copied in a file manager. A
+ * paste that is text (also text that comes with a picture of itself, as a copied table cell does) is left to the field it is pasted into.
+ */
+function usePastedFiles(taking: boolean, onFiles: (files: File[]) => void) {
+  useEffect(() => {
+    if (!taking) return;
+    const paste = (event: ClipboardEvent) => {
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (!pasteIsOfFiles(files.map(file => file.name), event.clipboardData?.getData('text/plain') ?? '')) return;
+      event.preventDefault();
+      onFiles(files);
+    };
+    window.addEventListener('paste', paste);
+    return () => { window.removeEventListener('paste', paste); };
+  }, [taking, onFiles]);
 }
 
 /** The browser's speech recognition, as far as dictation uses it (it is not in TypeScript's DOM types, and Chrome and Safari prefix it). */
