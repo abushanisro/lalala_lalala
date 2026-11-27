@@ -1245,6 +1245,8 @@ export interface CostSummaryDto {
       weldMaterial: string | null; gas: string | null; position: string | null; wireDiameterMm: number | null; timeS: number | null;
       prep: boolean; cleanUp: boolean; cycleSec: number | null; consumablesCost: number | null; reason: string | null;
     }>;
+    /** Each Mechanical Assembly operation and the time the fastening time table gives it (s per joint); null where it has none. */
+    operationTimes?: { operation: string; timeS: number | null }[];
     consumablesCost: number;
     adhesiveKg: number;
     options: Array<{ route: string; label: string; complete: boolean; totalCost: number | null; reason: string | null }>;

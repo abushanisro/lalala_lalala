@@ -976,6 +976,11 @@ export interface AssemblyBreakdown {
     weldMaterial: string | null; gas: string | null; position: string | null; wireDiameterMm: number | null; timeS: number | null;
     prep: boolean; cleanUp: boolean; cycleSec: number | null; consumablesCost: number | null; reason: string | null;
   }>;
+  /**
+   * Each Mechanical Assembly operation (press fit, snap fit, ...) and the time the fastening time table gives it (s per joint); null where the
+   * table has none, so a joint of it is costed by the time set on it. Absent when the reference data could not be read.
+   */
+  operationTimes?: { operation: string; timeS: number | null }[];
   /** The weld consumables on the weld lines (summary currency), and the adhesive the bonds take (kg, reported: memory/Assembly gives no price). */
   consumablesCost: number;
   adhesiveKg: number;

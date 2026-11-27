@@ -18,8 +18,9 @@ export const JOINT_PROCESSES = [
 ] as const;
 export type JointProcess = (typeof JOINT_PROCESSES)[number];
 
-/** The Mechanical Assembly operations of memory/Assembly. */
-export const MECHANICAL_OPERATIONS = ['Screw Tighten - Manual', 'Screw Tighten - Power', 'Snap Fit', 'Press Fit', 'Rivet', 'Nut Insert', 'Tab Bend'] as const;
+/** The Mechanical Assembly operations of memory/Assembly (operations.csv); the last is the engineer's own, costed by the time set on the joint. */
+export const USER_DEFINED_OPERATION = 'User-Defined Operation';
+export const MECHANICAL_OPERATIONS = ['Screw Tighten - Manual', 'Screw Tighten - Power', 'Snap Fit', 'Press Fit', 'Rivet', 'Nut Insert', 'Tab Bend', USER_DEFINED_OPERATION] as const;
 /** What an ultrasonic joint is: a weld, a stake or an insertion, each with its own horn time. */
 export const ULTRASONIC_TYPES = ['weld', 'stake', 'insertion'] as const;
 export const WELD_MATERIALS = ['Steel', 'Aluminum', 'Stainless Steel'] as const;

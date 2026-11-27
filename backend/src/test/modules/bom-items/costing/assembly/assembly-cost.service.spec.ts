@@ -1,3 +1,4 @@
+import { buildAssemblyCostSummary } from '../../../../../modules/bom-items/costing/assembly/assembly-cost-summary';
 import { assemblyCalculatorsByName } from '../../../../../modules/bom-items/costing/assembly/calculators/assembly-calculator-spec';
 import { AssemblyCostService, type AssemblyCostRequest } from '../../../../../modules/bom-items/costing/assembly/assembly-cost.service';
 import { componentOf } from '../../../../../modules/bom-items/costing/assembly/assembly-joints';
@@ -46,6 +47,14 @@ describe('a part set to Assembly with no parts under it in the BOM', () => {
     expect(r.route!.lines.filter((l) => l.process === 'Mechanical Assembly').map((l) => Math.round(l.cycleTimeMin * 60 * 10) / 10)).toEqual([49, 29.4, 19.6]);
     expect(r.warnings[0]).toContain('has no parts under it in the BOM');
     expect(r.materialOfParts).toBe(false);
+  });
+
+  it('tells the page which fastenings the time table times, so it can ask for the time of the ones it does not (a press fit)', async () => {
+    const r = await service().price(request({}));
+    expect(r.operationTimes).toContainEqual({ operation: 'Snap Fit', timeS: 6.95 });
+    expect(r.operationTimes).toContainEqual({ operation: 'Press Fit', timeS: null });
+    const summary = buildAssemblyCostSummary({ assembly: r, batchSize: 250, warnings: [], ratesSource: 'test' });
+    expect(summary.assembly?.operationTimes).toEqual(r.operationTimes);
   });
 
   it('points at the part on the page: its load and unload highlight it whole, a screw count its own threaded holes, names stay short', async () => {

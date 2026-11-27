@@ -15,8 +15,6 @@ interface Props<F extends string> {
   kindLabel: string;
   description: string;
   namePlaceholder: string;
-  /** The kind cannot be changed (a joint the engine derived). */
-  kindLocked?: boolean;
   onSave: (row: TableRow<F>) => void;
   onClose: () => void;
 }
@@ -27,7 +25,7 @@ const controlClass = 'w-full min-w-0 text-sm border border-border rounded-md px-
  * A row of a Cost Guide table (a joint, a weld): its kind, then exactly the measures that kind needs (required, marked *) or takes (optional,
  * empty: the engine's default). Saved, the row keeps only the measures its kind takes.
  */
-export function TableRowDialog<F extends string>({ vocabulary: v, initial, isNew, noun, kindLabel, description, namePlaceholder, kindLocked = false, onSave, onClose }: Props<F>) {
+export function TableRowDialog<F extends string>({ vocabulary: v, initial, isNew, noun, kindLabel, description, namePlaceholder, onSave, onClose }: Props<F>) {
   const [row, setRow] = useState<TableRow<F>>(initial);
   const required = v.required(row);
   const optional = v.optional(row);
@@ -70,8 +68,8 @@ export function TableRowDialog<F extends string>({ vocabulary: v, initial, isNew
         <div className="grid grid-cols-2 gap-3">
           <label className="col-span-2 flex flex-col gap-1 text-xs">
             <span className="text-muted-foreground">{kindLabel}</span>
-            <select className={`${controlClass} cursor-pointer`} value={row.process} disabled={kindLocked} onChange={(e) => { setRow(v.rekind(row, e.target.value)); }}>
-              {v.kinds.map((k) => <option key={k.process} value={k.process}>{k.label}</option>)}
+            <select className={`${controlClass} cursor-pointer`} value={v.kindOf?.(row) ?? row.process} onChange={(e) => { setRow(v.rekind(row, e.target.value)); }}>
+              {v.kinds.map((k) => <option key={k.key ?? k.process} value={k.key ?? k.process}>{k.label}</option>)}
             </select>
           </label>
           <label className="col-span-2 flex flex-col gap-1 text-xs">

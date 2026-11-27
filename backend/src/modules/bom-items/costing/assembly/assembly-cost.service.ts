@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { ASSEMBLY_JOINTS_KEY, componentOf, deriveJoints, mergeJoints, type AssemblyComponent, type AssemblyJoint } from './assembly-joints';
 import {
-  ASSEMBLY_ROUTE_CLASSES, ASSEMBLY_ROUTES, buildAssemblyRoutes, chooseAssemblyRoute,
+  ASSEMBLY_ROUTE_CLASSES, ASSEMBLY_ROUTES, buildAssemblyRoutes, chooseAssemblyRoute, mechanicalOperationTimes,
   type AssemblyRoute, type AssemblyRouteGap, type AssemblyRouteKey,
 } from './assembly-route';
 import { loadAssemblyCalculatorSpec } from './calculators/assembly-calculator-spec';
@@ -52,6 +52,8 @@ export interface AssemblyCostResult {
   gaps: AssemblyRouteGap[];
   components: AssemblyComponent[];
   joints: AssemblyJoint[];
+  /** Each Mechanical Assembly operation and the time the fastening time table gives it; absent when the reference data was not read. */
+  operationTimes?: { operation: string; timeS: number | null }[];
   note: string | null;
   missing: string[];
   warnings: string[];
@@ -135,13 +137,15 @@ export class AssemblyCostService {
     const components = await componentsOf(parts, req.densityOf);
     const { joints, ignored } = mergeJoints(deriveJoints(components), o[ASSEMBLY_JOINTS_KEY]);
     const warnings = [...ignored, ...(self ? [`${req.item.name} has no parts under it in the BOM: it is costed as the one component, loaded and screwed into its own threaded holes.`] : [])];
-    const none = (...missing: string[]): AssemblyCostResult => ({ materialOfParts: !self, route: null, routes: [], gaps: [], components, joints, note: null, missing, warnings });
+    const uncosted = (...missing: string[]): AssemblyCostResult => ({ materialOfParts: !self, route: null, routes: [], gaps: [], components, joints, note: null, missing, warnings });
     const [{ reference, missing: refMissing }, calculators, machines] = await Promise.all([
       this.reference(),
       this.catalog.loadAssemblyCalculators(req.accessToken),
       this.machines.getMachinesByClass(req.client, ASSEMBLY_ROUTE_CLASSES, req.location),
     ]);
-    if (!reference) return none(...refMissing);
+    if (!reference) return uncosted(...refMissing);
+    const operationTimes = mechanicalOperationTimes(reference);
+    const none = (...missing: string[]): AssemblyCostResult => ({ ...uncosted(...missing), operationTimes });
     const spec = loadAssemblyCalculatorSpec();
     const absent = spec.calculators.filter((c) => !calculators[c.name]).map((c) => c.name);
     if (absent.length) return none(`the assembly calculators are not in the database (run migration 1078): ${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', ...' : ''}`);
@@ -157,6 +161,6 @@ export class AssemblyCostService {
     const { route, note } = chooseAssemblyRoute(routes, gaps, chosen);
     if (!route) return { ...none(...gaps.map((g) => `${g.label}: ${g.reason}`)), gaps };
     const local = routes.map((r) => routeToLocal(r, req.usdToLocal));
-    return { materialOfParts: !self, route: local[routes.indexOf(route)], routes: local, gaps, components, joints, note, missing: [], warnings: [...warnings, ...route.warnings] };
+    return { materialOfParts: !self, route: local[routes.indexOf(route)], routes: local, gaps, components, joints, operationTimes, note, missing: [], warnings: [...warnings, ...route.warnings] };
   }
 }
