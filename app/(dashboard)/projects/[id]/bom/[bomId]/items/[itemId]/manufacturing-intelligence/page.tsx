@@ -160,7 +160,7 @@ import { isHydroformingItem } from '@/lib/costing/hydroforming-view';
 import { useAuth } from '@/lib/providers/auth-context';
 import type { PanelId, ManualRouteOption, AddProcessRequest } from '@/lib/features/mi-page-types';
 import { fmt, materialLabel, splitMaterialDisplay, fmtInt, formatCell, machineDisplayLabel, familyLabel, confidenceCls, formatEstCycleTime, money, partProcessBadge } from '@/lib/features/display-format';
-import { type ProcessTreeNode, resolveDisplayFamily, resolveProcessGroupLabel, collectLeaves, findNode, buildProcessTree } from '@/lib/features/process-tree';
+import { type ProcessTreeNode, resolveDisplayFamily, resolveProcessGroupLabel, collectLeaves, componentIdsUnder, findNode, buildProcessTree } from '@/lib/features/process-tree';
 import { resolveFeatureOpHighlight, mergeFeaturesToHL, type OperationVisual, computeOperationVisual, computeFeatureNodeVisual, getVizLabel } from '@/lib/features/operation-highlight';
 import { normalizeFeatureGraph, buildSummary } from '@/lib/features/feature-graph-normalize';
 import { costedGrade, partProcessGroup, appliedRouteIsStale, lastApplyError, deriveReadiness, buildRiskFlags } from '@/lib/features/part-status';
@@ -9833,6 +9833,9 @@ export default function ManufacturingIntelligencePage() {
                             flatPatternPierceCount={item.pierceCount}
                             flatPatternAreaMm2={item.flatPatternAreaMm2}
                           />
+                        ) : !item.file3dPath && item.itemType !== 'child_part' ? (
+                          // An assembly has no model of its own: it is shown from the models of its parts, with explode and selection.
+                          <AssemblyViewer bomId={item.bomId} assemblyId={item.id} highlightedIds={componentIdsUnder(selectedNodeId ? findNode(tree, selectedNodeId) : null)} />
                         ) : (
                           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
                             <AlertCircle className="h-8 w-8 opacity-30" />

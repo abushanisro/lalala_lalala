@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { explodeOffsets } from '@/lib/bom/assembly-explode';
-import { buildTree, groupedParts, modelIdsUnder, type TreeItem } from '@/lib/bom/assembly-tree';
+import { buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeItem } from '@/lib/bom/assembly-tree';
 
 const treeOf = (rootId: string) => {
   const tree = buildTree(items, rootId);
@@ -65,5 +65,19 @@ describe('explodeOffsets', () => {
   it('scales with the amount and is empty for no parts', () => {
     expect(explodeOffsets(parts, 0.5).get('c')?.[0]).toBeCloseTo(20);
     expect(explodeOffsets([], 1).size).toBe(0);
+  });
+});
+
+describe('selectionFor', () => {
+  const tree = treeOf('asm');
+
+  it('stands a part for itself and a sub-assembly for every model below it, without repeats', () => {
+    expect(selectionFor(tree, ['loose', 'sub2'])).toEqual(['loose', 'c']);
+    expect(selectionFor(tree, ['sub1', 'a'])).toEqual(['a', 'b']);
+  });
+
+  it('ignores an id that is not in the tree, and gives nothing for no ids', () => {
+    expect(selectionFor(tree, ['nope', 'c'])).toEqual(['c']);
+    expect(selectionFor(tree, [])).toEqual([]);
   });
 });
