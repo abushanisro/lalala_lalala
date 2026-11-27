@@ -29,6 +29,8 @@ class AppConfig:
     max_concurrent_analyses: int
     queue_wait_seconds: int
     analysis_hard_limit_seconds: int  # a request running longer ends the process so it restarts; 0 = off
+    # POST /simulate/fill (injection fill simulation): seconds of CPU per request. Off on a server too small to spare them.
+    fill_simulation_enabled: bool
     
     # Conversion settings
     linear_deflection: float
@@ -77,6 +79,7 @@ class AppConfig:
             max_concurrent_analyses=int(os.getenv("MAX_CONCURRENT_ANALYSES", "2")),
             queue_wait_seconds=int(os.getenv("QUEUE_WAIT_SECONDS", "30")),
             analysis_hard_limit_seconds=int(os.getenv("ANALYSIS_HARD_LIMIT_SECONDS", "900")),
+            fill_simulation_enabled=os.getenv("FILL_SIMULATION_ENABLED", "true").strip().lower() in ("1", "true", "yes"),
             linear_deflection=linear_deflection,
             angular_deflection=angular_deflection,
             face_graph_max_faces=int(os.getenv("FACE_GRAPH_MAX_FACES", "20000")),

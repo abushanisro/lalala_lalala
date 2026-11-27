@@ -5,7 +5,8 @@ export type HeatmapLayerType =
   | 'cost_density'
   | 'tolerance_risk'
   | 'sustainability'
-  | 'sink_mark';  // IM-only: rib/boss/wall-transition sink mark probability
+  | 'sink_mark'  // IM-only: rib/boss/wall-transition sink mark probability
+  | 'flow_analysis';  // IM-only: estimated fill difficulty, flow length/thickness, pressure and cooling imbalance (geometry estimate, not a simulation)
 
 // ─── Injection Molding heatmap types ─────────────────────────────────────────
 

@@ -76,6 +76,16 @@ function materialStrengthsFromRow(
   };
 }
 
+/** A grade's molding reference values (resolveMoldingReference). */
+export interface MoldingReference {
+  /** The raw material record the values were read from. */
+  materialName: string | null;
+  meltingTempC: number | null;
+  moldTempC: number | null;
+  injectionPressureMaxMpa: number | null;
+  flowLengthRatio: number | null;
+}
+
 interface MaterialMatch {
   row: MatchedMaterialRow | undefined;
   /** Disclosure to surface as a costing warning (non-exact or duplicate-name match). */
@@ -630,6 +640,25 @@ export class MaterialResolutionService {
     const client = this.databaseService.getClient(accessToken);
     const { row } = await this.matchBestRawMaterialRow(client, g, family, 'cost');
     return materialStrengthsFromRow(row, g);
+  }
+
+  /**
+   * What the reference data says about molding a grade (melt and mold temperature, maximum injection pressure, maximum flow length
+   * ratio), from the SAME matched row the quote prices from. Every value is null when the grade matches no row or the row does not
+   * carry it: never a default.
+   */
+  async resolveMoldingReference(accessToken: string, grade: string | null | undefined, family: string): Promise<MoldingReference> {
+    const none: MoldingReference = { materialName: null, meltingTempC: null, moldTempC: null, injectionPressureMaxMpa: null, flowLengthRatio: null };
+    const g = grade?.trim();
+    if (!g) return none;
+    const client = this.databaseService.getClient(accessToken);
+    const { row } = await this.matchBestRawMaterialRow(client, g, family, 'cost');
+    if (!row) return none;
+    return {
+      materialName: row.materialGrade ?? row.material ?? null,
+      meltingTempC: row.meltingTempC, moldTempC: row.moldTempC,
+      injectionPressureMaxMpa: row.imInjectionPressureMaxMpa, flowLengthRatio: row.imFlowLengthRatio,
+    };
   }
 
   async resolveDensityKgM3(accessToken: string, grade: string, family: string = 'unknown'): Promise<number | null> {

@@ -1,6 +1,7 @@
 ﻿'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
+import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -72,6 +73,7 @@ import {
   buildThermalSources, buildToolWearSources,
   buildIMHeatmapSources,
 } from '@/lib/heatmap/sources';
+import { costedFillTimeS } from '@/lib/flow-simulation/display';
 import type { IMHeatmapFeatures, IMHeatmapSignals } from '@/lib/heatmap/types';
 import { cn } from '@/lib/utils';
 import { downloadBomItemExcel } from '@/lib/utils/download-bom-item-excel';
@@ -149,7 +151,7 @@ import { isBend, isExtrudedHole, isPlainHole, type FeatureGraphEntryLike } from 
 import { cutLengthHighlight } from '@/lib/features/cut-length-highlight';
 import { CadEvidencePanel, type CadEvidence } from '@/components/features/process-planning/CadEvidencePanel';
 import { ConciseNote } from '@/components/ui/concise-note';
-import { ArrowLeft, Maximize2, Minimize2, ChevronDown, ChevronRight, AlertCircle, GripVertical, GripHorizontal, Calculator, ShieldCheck, Flame, Loader2, Edit, X, FileSpreadsheet, Search, Database, Zap, XCircle, AlertTriangle, Info, CheckCircle2 } from '@/components/ui/icons';
+import { ArrowLeft, Maximize2, Minimize2, ChevronDown, ChevronRight, AlertCircle, GripVertical, GripHorizontal, Calculator, ShieldCheck, Flame, Loader2, Activity, Edit, X, FileSpreadsheet, Search, Database, Zap, XCircle, AlertTriangle, Info, CheckCircle2 } from '@/components/ui/icons';
 import { ListSkeleton } from '@/components/ui/loading-skeleton';
 import { modelViewerMessage } from '@/lib/cad-uploads/model-viewer-message';
 import { calculationOfLine, calculationOfRecord, calculatorChangedSince, NO_CALCULATION, seedOfCalculation, tracedLineOf, type LineCalculation } from '@/lib/calculators/calculator-run';
@@ -8101,6 +8103,9 @@ function GeometricCostDriversPanel({
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
+// The fill simulation workspace is its own chunk: its 3D code loads when it is first opened.
+const FlowSimulationDialog = dynamic(() => import('@/components/features/flow-simulation/FlowSimulationDialog').then((m) => m.FlowSimulationDialog), { ssr: false });
+
 export default function ManufacturingIntelligencePage() {
   const params = useParams();
   const router = useRouter();
@@ -8161,6 +8166,7 @@ export default function ManufacturingIntelligencePage() {
   // scenario it belongs to.
   const [processRouting, setProcessRouting] = useState<'auto' | 'manual'>('auto');
   const [routeDialogOpen, setRouteDialogOpen] = useState(false);
+  const [flowSimulationOpen, setFlowSimulationOpen] = useState(false);
   const [selectedManualRoute, setSelectedManualRoute] = useState<ManualRouteOption | null>(null);
   const [operationVisual, setOperationVisual] = useState<OperationVisual>(null);
   const [vizLabel, setVizLabel] = useState<string | null>(null);
@@ -8809,7 +8815,7 @@ export default function ManufacturingIntelligencePage() {
     if (!heatmapMode || !fg?.feature_graph_v2) return [];
     // IM parts use localized per-feature source builders
     if (isInjectionMolded && imSignals) {
-      return buildIMHeatmapSources(fg, imSignals, imFeatures, heatmapLayer);
+      return buildIMHeatmapSources(fg, imSignals, imFeatures, heatmapLayer, costForHeatmap?.injectionMolding?.flowClass ?? null);
     }
     const thk = item?.sheetThicknessMm ?? 1;
     switch (heatmapLayer) {
@@ -8829,7 +8835,7 @@ export default function ManufacturingIntelligencePage() {
       default:
         return [];
     }
-  }, [heatmapMode, heatmapLayer, dfmScores, fg, item?.sheetThicknessMm, costHeatmapWeights, toleranceHeatmapWeights, sustainabilityHeatmapWeights, isInjectionMolded, imSignals, imFeatures]);
+  }, [heatmapMode, heatmapLayer, dfmScores, fg, item?.sheetThicknessMm, costHeatmapWeights, toleranceHeatmapWeights, sustainabilityHeatmapWeights, isInjectionMolded, imSignals, imFeatures, costForHeatmap?.injectionMolding?.flowClass]);
 
 
   const handleHeatmapInspect = useCallback((
@@ -9317,7 +9323,12 @@ export default function ManufacturingIntelligencePage() {
       <div className="w-px h-4 bg-border mx-0.5 shrink-0" />
 
       <button
-        onClick={() => { setHeatmapMode((m) => !m); setHeatmapInspector(null); }}
+        onClick={() => {
+          // Opening the heatmap on an injection-molded part starts on Flow Analysis
+          if (!heatmapMode && isInjectionMolded) setHeatmapLayer('flow_analysis');
+          setHeatmapMode((m) => !m);
+          setHeatmapInspector(null);
+        }}
         disabled={!fg?.feature_graph_v2}
         title={fg?.feature_graph_v2 ? 'Toggle heatmap overlay' : 'Upload and analyze a 3D model to enable heatmaps'}
         className={cn(
@@ -9330,12 +9341,25 @@ export default function ManufacturingIntelligencePage() {
         Heatmap
       </button>
 
+      {isInjectionMolded && (
+        <button
+          type="button"
+          onClick={() => { setFlowSimulationOpen(true); }}
+          title="Simulate how the melt fills the cavity from a gate you place"
+          className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border border-border hover:bg-muted transition-colors shrink-0"
+        >
+          <Activity className="h-3 w-3" />
+          Flow simulation
+        </button>
+      )}
+
       {heatmapMode && (
         <select
           value={heatmapLayer}
           onChange={(e) => { setHeatmapLayer(e.target.value as HeatmapLayerType); setHeatmapInspector(null); }}
           className="text-[10px] bg-background border border-border text-foreground rounded px-1.5 py-0.5 shrink-0"
         >
+          {isInjectionMolded && <option value="flow_analysis">Flow Analysis (IM, estimate)</option>}
           <option value="manufacturing_risk">Manufacturing Risk</option>
           <option value="tool_wear">Tooling Stress</option>
           <option value="thermal">Heat Concentration</option>
@@ -9375,6 +9399,7 @@ export default function ManufacturingIntelligencePage() {
             : heatmapLayer === 'cost_density' ? 'Cooling time, tool complexity & material volume drivers'
             : heatmapLayer === 'tolerance_risk' ? 'Warpage, differential shrinkage & ejection distortion'
             : heatmapLayer === 'sink_mark' ? 'Sink mark probability: rib/wall ratio, boss diameter & thick zones'
+            : heatmapLayer === 'flow_analysis' ? 'Estimated fill difficulty, flow length/thickness, pressure & cooling imbalance (not a simulation)'
             : 'Cooling energy, material volume & regrind complexity')
           : heatmapLayer === 'cost_density'
           ? (heatmapNorm === 'relative' ? 'Cost — scaled to highest zone' : 'Cost intensity (Low → High)')
@@ -9409,6 +9434,7 @@ export default function ManufacturingIntelligencePage() {
                 : heatmapLayer === 'tolerance_risk' ? 'Warpage / shrinkage risk at location'
                 : heatmapLayer === 'sustainability' ? 'Cooling energy at location'
                 : heatmapLayer === 'sink_mark' ? 'Sink mark probability at location'
+                : heatmapLayer === 'flow_analysis' ? 'Estimated flow risk at location'
                 : 'Manufacturing risk at location')
               : heatmapLayer === 'cost_density' ? 'Cost intensity at location'
               : heatmapLayer === 'tolerance_risk' ? 'Tolerance sensitivity at location'
@@ -9469,6 +9495,7 @@ export default function ManufacturingIntelligencePage() {
               : heatmapLayer === 'thermal' ? 'Heat Notes'
               : heatmapLayer === 'tool_wear' ? 'Tooling Notes'
               : heatmapLayer === 'sink_mark' ? 'Sink Mark Analysis'
+              : heatmapLayer === 'flow_analysis' ? 'Flow Analysis (estimate)'
               : 'Manufacturing Impact'}
           </div>
           {heatmapInspector.manufacturingImpact.map((imp, i) => (
@@ -9644,6 +9671,7 @@ export default function ManufacturingIntelligencePage() {
             {maximized === 'drivers' && <GeometricCostDriversPanel {...driversProps} />}
           </div>
         </div>
+        {isInjectionMolded && <FlowSimulationDialog open={flowSimulationOpen} onClose={() => { setFlowSimulationOpen(false); }} itemId={item.id} partName={item.name} costFillTimeS={costedFillTimeS(costForHeatmap?.processLines)} runner={costForHeatmap?.injectionMolding?.runnerSystemType ?? null} />}
         <RouteSelectionDialog
           open={routeDialogOpen}
           onClose={() => {
@@ -9879,6 +9907,7 @@ export default function ManufacturingIntelligencePage() {
 
         </PanelGroup>
       </div>
+      {isInjectionMolded && <FlowSimulationDialog open={flowSimulationOpen} onClose={() => { setFlowSimulationOpen(false); }} itemId={item.id} partName={item.name} costFillTimeS={costedFillTimeS(costForHeatmap?.processLines)} runner={costForHeatmap?.injectionMolding?.runnerSystemType ?? null} />}
       <RouteSelectionDialog
         open={routeDialogOpen}
         onClose={() => {

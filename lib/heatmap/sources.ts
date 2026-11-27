@@ -710,11 +710,61 @@ function buildIMSinkMarkSources(
   return out;
 }
 
+// Flow Analysis — ESTIMATED fill difficulty from geometry (not a mold-flow simulation).
+// No gate location or rheology is available, so this marks where filling is hard
+// (thin walls, thin ribs, long flow length / thickness) and where packing/cooling is
+// slow (thick sections). Material flow class (from the cost engine) scales the fill terms.
+// Weld-line and air-trap zones need a gate position and flow paths: not estimated here.
+function buildIMFlowAnalysis(
+  f: IMHeatmapFeatures | null,
+  wn: number,
+  bboxMm: [number, number, number],
+  flowClass: 'easy' | 'medium' | 'hard' | null,
+): HeatmapSource[] {
+  const layer: HeatmapLayerType = 'flow_analysis';
+  const maxBbox = Math.max(...bboxMm, 10);
+  const out: HeatmapSource[] = [];
+  const flowScale = flowClass === 'hard' ? 1.25 : flowClass === 'easy' ? 0.8 : 1;
+
+  if (f) {
+    // 0.35 fill difficulty: walls thinner than nominal hesitate / short-shot
+    out.push(...featureBlobs(
+      f.wall_samples.filter(s => s.thickness_mm < wn),
+      s => clamp(s.delta_from_nominal * 1.5 * flowScale, 0, 1) * 0.35,
+      () => wn * 4, layer,
+      s => `Thin wall ${s.thickness_mm.toFixed(1)}mm (-${Math.round(s.delta_from_nominal * 100)}%): fill difficulty (estimate)`));
+    // 0.20 thin ribs fill late and need higher pressure
+    out.push(...featureBlobs(
+      f.ribs,
+      r => clamp((1 - r.thickness_mm / (0.6 * wn)) * (r.height_mm / (3 * wn)) * flowScale, 0, 1) * 0.20,
+      r => r.thickness_mm * 3, layer,
+      r => `Rib ${r.thickness_mm.toFixed(1)}mm x ${r.height_mm.toFixed(1)}mm tall: late fill, pressure risk (estimate)`));
+    // 0.25 cooling imbalance: thick sections cool and pack slowly (cooling time ~ thickness squared)
+    out.push(...featureBlobs(
+      f.wall_samples.filter(s => s.thickness_mm > wn),
+      s => clamp(s.delta_from_nominal * 1.5, 0, 1) * 0.25,
+      s => s.thickness_mm * 3, layer,
+      s => `Thick section ${s.thickness_mm.toFixed(1)}mm (+${Math.round(s.delta_from_nominal * 100)}%): slow cooling (estimate)`));
+  }
+
+  // 0.30 flow length / thickness (L/T) pressure risk, whole part: no gate location yet
+  const LT = Math.hypot(bboxMm[0], bboxMm[1]) / wn;
+  const ltSrc = globalBlob(clamp(LT / 200 * flowScale, 0, 1) * 0.30, maxBbox * 0.45, layer);
+  ltSrc.reason = `Flow length / thickness ${LT.toFixed(0)}: injection pressure risk (estimate)`;
+  out.push(ltSrc);
+
+  if (!f || (f.wall_samples.length === 0 && f.ribs.length === 0)) {
+    out.push(globalBlob(0.30, maxBbox * 0.4, layer));
+  }
+  return out;
+}
+
 export function buildIMHeatmapSources(
   fg: FeatureGraph,
   signals: IMHeatmapSignals,
   features: IMHeatmapFeatures | null,
   layer: HeatmapLayerType,
+  flowClass: 'easy' | 'medium' | 'hard' | null = null,
 ): HeatmapSource[] {
   const wn = Math.max(signals.wallThicknessNominalMm, 0.5);
   const bbox = signals.bboxMm;
@@ -727,6 +777,7 @@ export function buildIMHeatmapSources(
     case 'tolerance_risk':     return buildIMToleranceRisk(fg, f, wn, bbox);
     case 'sustainability':     return buildIMSustainability(fg, f, wn, bbox);
     case 'sink_mark':          return buildIMSinkMarkSources(fg, f, wn, bbox);
+    case 'flow_analysis':      return buildIMFlowAnalysis(f, wn, bbox, flowClass);
     default:                   return [];
   }
 }

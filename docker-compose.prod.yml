@@ -220,6 +220,9 @@ services:
       MAX_CONCURRENT_ANALYSES: 1
       # A request running longer than this ends the process so the restart policy replaces it (0 = off).
       ANALYSIS_HARD_LIMIT_SECONDS: 900
+      # Injection fill simulation (POST /simulate/fill): about 10 s of one core per run. Off unless the env file turns it on,
+      # so a small production server never runs it by default (stage: FILL_SIMULATION_ENABLED=true in env/stage.env).
+      FILL_SIMULATION_ENABLED: ${FILL_SIMULATION_ENABLED:-false}
       CAD_ENGINE_API_KEY: ${CAD_ENGINE_API_KEY:?set CAD_ENGINE_API_KEY in the env file}
       LINEAR_DEFLECTION: 0.1
       ANGULAR_DEFLECTION: 0.5

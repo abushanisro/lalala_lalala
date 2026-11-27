@@ -92,6 +92,7 @@ org:viewer      GET /api/v1/bom-items/:id/dxf-content-legacy  BOMItemsController
 org:viewer      GET /api/v1/bom-items/:id/feature-tolerances  BOMItemsController.getFeatureTolerances
 org:viewer      GET /api/v1/bom-items/:id/file-url/:fileType  BOMItemsController.getFileUrl
 org:viewer      GET /api/v1/bom-items/:id/file-url/dxf  BOMItemsController.getDxfFileUrl
+org:viewer      GET /api/v1/bom-items/:id/fill-simulation-inputs  BomItemFillSimulationController.inputs
 org:viewer      GET /api/v1/bom-items/:id/forging-dfm  BOMItemsController.getForgingDfm
 org:viewer      GET /api/v1/bom-items/:id/gdt-analysis  BOMItemsController.getGdtAnalysis
 org:viewer      GET /api/v1/bom-items/:id/machining-dfm  BOMItemsController.getMachiningDfm
@@ -303,6 +304,7 @@ org:member      POST /api/v1/bom-items/:id/cost-override  BOMItemsController.set
 org:member      POST /api/v1/bom-items/:id/custom-route-applications  BOMItemsController.applyCustomRoute
 org:member      POST /api/v1/bom-items/:id/drawing-analyses  BOMItemsController.analyzeDrawing
 org:member      POST /api/v1/bom-items/:id/files  BOMItemsController.uploadFiles
+org:member      POST /api/v1/bom-items/:id/fill-simulations  BomItemFillSimulationController.run
 org:member      POST /api/v1/bom-items/:id/machine-override  BOMItemsController.setMachineOverride
 org:member      POST /api/v1/bom-items/:id/machining-allowances  BOMItemsController.decideMachiningAllowance
 org:member      POST /api/v1/bom-items/:id/machining-calculator-inputs  BOMItemsController.resolveMachiningCalculatorInputs

@@ -737,6 +737,65 @@ def measure_geometry(
             cleanup_files(step_path)
 
 
+@app.post("/simulate/fill")
+@limiter.limit(f"{config.rate_limit_per_minute}/minute")
+def simulate_fill(
+    request: Request,
+    file: UploadFile = File(...),
+    params: str = Form("{}"),
+    _auth: None = Security(require_api_key),
+    _slot: None = Depends(analysis_slot),
+) -> Dict[str, Any]:
+    """
+    Injection fill simulation of one part (injection_molding/FILL_SIMULATION.md). `params` is JSON (FillRequest): without
+    `gate_mm` the answer is the fill mesh alone, to show the engineer where a gate can go; with a gate, a fill time, a melt
+    temperature and the grade's Cross-WLF constants it is the mesh and the fill: fill time, pressure, melt-front velocity,
+    weld lines, end-of-fill points and the issues. Coordinates are part-centred millimetres, the 3D viewer's frame.
+    """
+    from pydantic import ValidationError
+
+    from injection_molding.fill_simulation import FillRequest, simulate
+
+    if not config.fill_simulation_enabled:   # 404, not 503: the backend's circuit breaker reads a 5xx as an engine outage
+        raise HTTPException(status_code=404, detail="Fill simulation is switched off on this server")
+    try:
+        fill_request = FillRequest.model_validate_json(params)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail="; ".join(f"{'.'.join(str(p) for p in err['loc']) or 'params'}: {err['msg']}" for err in e.errors()))
+    file_validator: FileValidator = request.app.state.file_validator
+    file_ext, content = read_checked_upload(file, file_validator)
+    paths: List[str] = []
+
+    def load_shape():   # only run when this file has not been meshed yet
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext, dir=config.temp_dir, mode="wb") as temp_step:
+            paths.append(temp_step.name)
+            temp_step.write(content)
+        try:
+            file_validator.validate_file(paths[0], file.filename)
+        except FileValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if file_ext == '.sldprt':
+            try:
+                paths.append(sldprt_converter.convert(paths[0], config.temp_dir))
+            except RuntimeError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+        try:
+            return StepReader().read(paths[-1])
+        except Exception:
+            raise _internal_error("Reading the STEP file", status_code=422)
+
+    try:
+        return simulate(load_shape, hashlib.sha256(content).hexdigest(), fill_request)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception:
+        raise _internal_error("Fill simulation")
+    finally:
+        cleanup_files(*paths)
+
+
 def _stage_step_uploads(request: Request, files: List[UploadFile], paths: List[str]) -> List[tuple]:
     """Writes the uploaded STEP files to temp files (their paths are appended to `paths` for cleanup) and validates them."""
     if len(files) > MAX_ASSEMBLY_FILES:
