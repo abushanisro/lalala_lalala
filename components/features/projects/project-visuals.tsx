@@ -6,12 +6,12 @@ const initialsOf = (name: string | undefined): string =>
   (name ?? '').split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join('') || '?';
 
 /** A project's picture, filling its container, or a placeholder when none has been drawn yet. */
-export function ProjectPicture({ thumbnailUrl, className }: { thumbnailUrl?: string | undefined; className?: string | undefined }) {
+export function ProjectPicture({ thumbnailUrl, className, compact }: { thumbnailUrl?: string | undefined; className?: string | undefined; compact?: boolean | undefined }) {
   return thumbnailUrl ? (
     // eslint-disable-next-line @next/next/no-img-element -- a stored data URL, not a file Next can optimise
-    <img src={thumbnailUrl} alt="" className={cn('h-full w-full object-contain p-5', className)} />
+    <img src={thumbnailUrl} alt="" className={cn('h-full w-full object-contain', compact ? 'p-0.5' : 'p-5', className)} />
   ) : (
-    <FolderKanban className="h-10 w-10 text-muted-foreground/30" aria-hidden="true" />
+    <FolderKanban className={cn(compact ? 'h-5 w-5' : 'h-10 w-10', 'text-muted-foreground/30')} aria-hidden="true" />
   );
 }
 
