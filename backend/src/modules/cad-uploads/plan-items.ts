@@ -23,44 +23,79 @@ export function packName(fileName: string): string {
   return fileName.replace(/\.(zip|step|stp)$/i, '').replace(/[\\/]/g, ' ').trim() || 'Uploaded assembly';
 }
 
+/** The folder a zip entry sits in, at the top of the archive ('' for a file at the top). */
+const topFolder = (file: string): string => (file.includes('/') ? file.split('/')[0] : '');
+
 /**
  * A pack of loose parts has no assembly of its own, yet a BOM needs a main assembly to hang them from. When the engine reports several
  * top-level nodes, they become the children of one assembly named after the upload; a single top-level node (a real assembly, or one part)
- * is left exactly as reported. Idempotent: the result has one root.
+ * is left exactly as reported. A zip that keeps all its parts in folders says how they group: each folder is a sub-assembly. Idempotent:
+ * the result has one root.
  */
 export function withPackRoot(report: AssemblyReport, fileName: string): AssemblyReport {
   if (report.assembly.length < 2) return report;
   const name = packName(fileName);
-  const root: AssemblyNode = { definition: `pack:${name}`, name, kind: 'assembly', quantity: 1, file: '', children: report.assembly };
+  const folders = new Map<string, AssemblyNode[]>();
+  for (const node of report.assembly) folders.set(topFolder(node.file), [...(folders.get(topFolder(node.file)) ?? []), node]);
+  const inFolders = folders.size > 1 && !folders.has('');
+  const children: AssemblyNode[] = inFolders
+    ? [...folders].map(([folder, nodes]) => ({ definition: `folder:${folder}`, name: folder, kind: 'assembly', quantity: 1, file: '', children: nodes }))
+    : report.assembly;
+  const root: AssemblyNode = { definition: `pack:${name}`, name, kind: 'assembly', quantity: 1, file: '', children };
   return { ...report, assembly: [root] };
 }
 
-/** The BOM lines an engine report becomes: one per tree node, parents before children. Pure. */
+/** The uploaded file's name without its folders and extension. */
+const fileStem = (file: string): string => (file.split(/[\\/]/).pop() ?? '').replace(/\.(step|stp)$/i, '');
+
+/**
+ * FreeCAD writes a lone body as an assembly named after the file around one part. That wrapper says nothing the file name does not,
+ * so the file's part stands alone. An assembly that merely holds one part, under any other name, is kept as the assembly it is.
+ */
+function unwrapFileAssemblies(node: AssemblyNode): AssemblyNode {
+  const children = node.children.map(unwrapFileAssemblies);
+  const only = children.length === 1 ? children[0] : undefined;
+  if (node.kind !== 'part' && only?.kind === 'part' && only.quantity === 1 && node.name === fileStem(node.file)) return { ...only, quantity: node.quantity };
+  return { ...node, children };
+}
+
+/**
+ * The BOM lines an engine report becomes: one per tree node, parents before children. Pure.
+ * A part that is a whole uploaded file (the only part it holds) is named after the file: its STEP product name is whatever the CAD tool wrote (FreeCAD
+ * names it after the last feature, "Chamfer" or "Hole003").
+ */
 export function planItems(report: AssemblyReport, uploadTag: string): PlannedItem[] {
   const partById = new Map(report.parts.map((p) => [p.id, p]));
+  const tree = report.assembly.map(unwrapFileAssemblies);
   // A part is a whole uploaded file when no assembly came from that file: parts inside an assembly file name the assembly's file.
   const assemblyFiles = new Set<string>();
   const collect = (nodes: AssemblyNode[]): void => nodes.forEach((n) => { if (n.kind !== 'part') assemblyFiles.add(n.file); collect(n.children); });
-  collect(report.assembly);
+  collect(tree);
   const ownFiles = new Map<string, string>();
-  const claim = (nodes: AssemblyNode[]): void => nodes.forEach((n) => { if (n.kind === 'part' && !assemblyFiles.has(n.file)) ownFiles.set(n.definition, n.file); claim(n.children); });
-  claim(report.assembly);
+  const partsPerFile = new Map<string, number>();
+  const claim = (nodes: AssemblyNode[]): void => nodes.forEach((n) => {
+    if (n.kind === 'part' && !assemblyFiles.has(n.file)) { ownFiles.set(n.definition, n.file); partsPerFile.set(n.file, (partsPerFile.get(n.file) ?? 0) + 1); }
+    claim(n.children);
+  });
+  claim(tree);
   const items: PlannedItem[] = [];
   const walk = (node: AssemblyNode, key: string, parentKey: string | null) => {
+    const ownFile = node.kind === 'part' ? (ownFiles.get(node.definition) ?? null) : null;
+    const name = ownFile && partsPerFile.get(ownFile) === 1 ? fileStem(ownFile) || node.name : node.name;
     items.push({
       key,
       parentKey,
-      name: node.name,
+      name,
       itemType: node.kind === 'part' ? BOMItemType.CHILD_PART : parentKey === null ? BOMItemType.ASSEMBLY : BOMItemType.SUB_ASSEMBLY,
       quantity: node.quantity,
-      partNumber: `${slug(node.name)}-${uploadTag}-${items.length + 1}`,
-      ownFile: node.kind === 'part' ? (ownFiles.get(node.definition) ?? null) : null,
+      partNumber: `${slug(name)}-${uploadTag}-${items.length + 1}`,
+      ownFile,
       definition: node.kind === 'part' ? node.definition : null,
       measured: node.kind === 'part' ? measured(partById.get(node.definition)) : null,
     });
     node.children.forEach((child, i) => walk(child, `${key}.${i}`, key));
   };
-  report.assembly.forEach((root, i) => walk(root, String(i), null));
+  tree.forEach((root, i) => walk(root, String(i), null));
   return items;
 }
 
