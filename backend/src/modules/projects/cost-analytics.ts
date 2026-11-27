@@ -109,7 +109,10 @@ export interface BomCost {
 export interface CostAnalytics {
   /** Every amount below is in this currency. */
   currency: string;
-  /** The exchange rates applied, as "1 unit of the key = this many of `currency`". Empty when nothing was converted. */
+  /**
+   * The exchange rate of every other currency the figures or the projects' target BOM costs are in, as "1 unit of the key = this
+   * many of `currency`". A currency with no rate on file is absent. Empty when everything is in `currency` already.
+   */
   fxRates: Record<string, number>;
   coverage: {
     parts: number; costed: number; notCosted: number; unresolved: number;
@@ -204,6 +207,11 @@ export function summariseCosts(input: {
   amounts: readonly AnalyticsAmount[];
   /** One exchange-rate snapshot: 1 unit of `from` in `to`, or null when no rate is on file. */
   rate: (from: string, to: string) => number | null;
+  /**
+   * The currencies the projects' target BOM costs are in. Their rates are reported in `fxRates`, so a target can be set beside the
+   * should-cost even when no cost record is in its currency.
+   */
+  targetCurrencies?: readonly (string | null)[];
 }): CostAnalytics {
   const { items, boms, amounts, rate } = input;
   const currency = reportingCurrencyOf(amounts);
@@ -213,6 +221,10 @@ export function summariseCosts(input: {
     if (r != null && Number.isFinite(r) && r > 0 && from !== currency) fxRates[from] = r;
     return r;
   };
+  for (const target of input.targetCurrencies ?? []) {
+    const code = target?.trim().toUpperCase();
+    if (isIso(code)) toReporting(code);
+  }
 
   const amountsByItem = new Map<string, AnalyticsAmount[]>();
   for (const a of amounts) entry(amountsByItem, a.itemId, () => []).push(a);

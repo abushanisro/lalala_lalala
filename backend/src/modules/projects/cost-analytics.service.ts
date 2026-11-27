@@ -37,7 +37,8 @@ export class CostAnalyticsService {
     const page = <T>(table: string, columns: string) => readAllRows<T>((from, to) => client.from(table)
       .select(columns as '*', { count: 'exact' }).eq('organization_id', organizationId).order('id').range(from, to));
     const [projects, boms, items, rates] = await Promise.all([
-      page<{ id: string; name: string }>('projects', 'id, name'),
+      page<{ id: string; name: string; target_bom_cost: number | string | null; target_bom_cost_currency: string | null }>(
+        'projects', 'id, name, target_bom_cost, target_bom_cost_currency'),
       page<{ id: string; name: string; project_id: string | null }>('boms', 'id, name, project_id'),
       page<Record<string, unknown>>('bom_items', 'id, bom_id, name, part_number, annual_volume, weight, scenario_overrides'),
       this.exchangeRates.getSnapshot(accessToken, organizationId),
@@ -77,6 +78,7 @@ export class CostAnalyticsService {
       boms: boms.map(b => ({ id: b.id, name: b.name, projectId: b.project_id, projectName: b.project_id ? projectName.get(b.project_id) ?? null : null })),
       amounts,
       rate: (from, to) => rates.convertOptional(from, to),
+      targetCurrencies: projects.filter(p => (number(p.target_bom_cost) ?? 0) > 0).map(p => p.target_bom_cost_currency),
     });
   }
 }

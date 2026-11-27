@@ -95,6 +95,15 @@ describe('summariseCosts', () => {
     expect(out.coverage).toMatchObject({ parts: 1, costed: 1, notCosted: 0, unresolved: 0, withAnnualVolume: 1 });
   });
 
+  it('reports the rate of each project target currency, so a target can be compared though no cost record is in that currency', () => {
+    const amounts = [record('block', 'process', 100, 'USD')];
+    expect(summariseCosts({ items: [item('block')], boms, amounts, rate }).fxRates).toEqual({});
+    const out = summariseCosts({ items: [item('block')], boms, amounts, rate, targetCurrencies: ['INR', ' inr ', 'USD', 'XXX', null, ''] });
+    expect(out.currency).toBe('USD');
+    expect(out.fxRates).toEqual({ INR: 1 / 80 });          // USD is the reporting currency; nothing is on file for XXX
+    expect(out.totals.unitCost).toBe(100);                 // the figures themselves do not change
+  });
+
   it('leaves a part out of every sum when its money cannot be trusted, and says how many', () => {
     const out = run([item('good'), item('legacy'), item('no-rate'), item('empty')], [
       record('good', 'process', 100),
