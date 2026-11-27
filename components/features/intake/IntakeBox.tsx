@@ -2,7 +2,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,7 +36,7 @@ const wholeNumber = (text: string): number | null => { const n = Number(text.rep
  * vision model; the box then shows the plan (project, BOM, each part with its material, size and process) to check and correct, and
  * one click creates it all, builds a model from each drawing and costs it with the existing engines.
  */
-export function IntakeBox({ title = 'What do you want to cost?' }: { title?: string }) {
+export function IntakeBox({ title = 'What do you want to cost?' }: { title?: ReactNode }) {
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>('compose');
   const [note, setNote] = useState('');
@@ -122,7 +122,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: str
     <section aria-label="Start from a drawing" className="space-y-6">
       <div className="mx-auto w-full max-w-3xl space-y-4">
         <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">{title}</h1>
+          <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
         </div>
         <div

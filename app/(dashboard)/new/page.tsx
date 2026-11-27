@@ -17,6 +17,54 @@ import { projectEntryHref } from '@/lib/projects/entry-href';
  * check, and one click makes the project, its BOM and its parts, each costed from a model built from its drawing. The newest
  * projects are below, to go back into one.
  */
+/**
+ * The page's backdrop, in the brand's own terms (the hero of emithran.com): a drawing sheet's grid, two parts in fine line as an engineer
+ * dimensions them, and the brand's teal slice rising to the right. It is not a box: it runs to the edges of the content area (over the
+ * layout's padding) and down the whole page, behind the recent projects, thinning out toward the foot. Everything is drawn from the
+ * theme's tokens, so it follows the light, dark and brand themes. Decoration only: nothing here can be focused or read aloud.
+ */
+function PageBackdrop() {
+  const line = { fill: 'none', stroke: 'currentColor', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const };
+  const centre = { ...line, strokeDasharray: '18 5 3 5' };
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute -inset-4 -z-10 overflow-hidden sm:-inset-8">
+      {/* The sheet's grid, strongest at the top centre and gone toward the sides and the middle. */}
+      <div className="absolute inset-0 opacity-[0.07] [background-image:linear-gradient(to_right,hsl(var(--foreground))_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--foreground))_1px,transparent_1px)] [background-size:32px_32px] [mask-image:radial-gradient(ellipse_75%_70%_at_50%_0%,black,transparent)]" />
+
+      {/* A plate with its holes, a slot and its overall dimension. */}
+      <svg viewBox="0 0 320 200" className="absolute left-6 top-10 hidden h-44 w-72 text-foreground/15 xl:block">
+        <rect x="30" y="46" width="260" height="120" rx="6" {...line} />
+        <rect x="120" y="91" width="80" height="30" rx="15" {...line} />
+        {[{ x: 60, y: 76 }, { x: 260, y: 76 }, { x: 60, y: 136 }, { x: 260, y: 136 }].map(({ x, y }) => <circle key={`${x}-${y}`} cx={x} cy={y} r="9" {...line} />)}
+        <path d="M30 40V16M290 40V16M30 24H290M30 24l8-3v6zM290 24l-8-3v6z" {...line} />
+        <path d="M14 106H306" {...centre} />
+        <text x="160" y="18" textAnchor="middle" className="fill-current font-mono text-[11px]">260</text>
+      </svg>
+
+      {/* A flange: its bolt circle, bore and centre lines. */}
+      <svg viewBox="0 0 400 400" className="absolute -right-14 -top-16 hidden h-80 w-80 text-foreground/15 lg:block">
+        <circle cx="200" cy="200" r="150" {...line} />
+        <circle cx="200" cy="200" r="110" {...line} strokeDasharray="6 6" />
+        <circle cx="200" cy="200" r="60" {...line} />
+        <circle cx="200" cy="200" r="24" {...line} />
+        {[0, 60, 120, 180, 240, 300].map((deg) => {
+          const a = (deg * Math.PI) / 180;
+          return <circle key={deg} cx={200 + 110 * Math.cos(a)} cy={200 + 110 * Math.sin(a)} r="11" {...line} />;
+        })}
+        <path d="M20 200H380M200 20V380" {...centre} />
+      </svg>
+
+      {/* The brand's teal slice and its glow. Its edge starts beside the prompt at the right edge (lower on a narrow page, where the
+          heading's lines reach that edge) and falls to the left at one angle whatever the page's size (a long sheet turned about its top
+          right corner); everything under the edge is teal, on down the page. */}
+      <div className="absolute right-0 top-56 h-64 w-3/5 rounded-full bg-primary/15 blur-3xl" />
+      <div className="absolute inset-0 [mask-image:linear-gradient(to_bottom,black_45%,transparent)]">
+        <div className="absolute right-0 top-64 h-[400vh] w-[220%] origin-top-right -rotate-[16deg] bg-[linear-gradient(90deg,hsl(var(--primary)/0.3)_70%,hsl(var(--primary)))] xl:top-44" />
+      </div>
+    </div>
+  );
+}
+
 export default function NewPage() {
   const { data: profile } = useProfile();
   const { data: projectsData } = useProjects({ limit: 6 });
@@ -24,10 +72,10 @@ export default function NewPage() {
   const projects = projectsData?.projects ?? [];
 
   return (
-    <div className="space-y-8 animate-fade-in">
-      {/* The accent colour glows behind the prompt, centred low so it fades out before the top and bottom edges, in both themes: the page's one piece of decoration. */}
-      <div className="rounded-3xl bg-[radial-gradient(ellipse_50%_42%_at_50%_56%,hsl(var(--primary)/0.28),transparent)] px-4 pb-10 pt-12 sm:px-8 sm:pt-16">
-        <IntakeBox title={firstName ? `What do you want to cost, ${firstName}?` : 'What do you want to cost?'} />
+    <div className="relative isolate space-y-8 animate-fade-in">
+      <PageBackdrop />
+      <div className="pb-8 pt-6 sm:pb-12 sm:pt-12">
+        <IntakeBox title={<>What do you want to <span className="text-primary">cost</span>{firstName ? `, ${firstName}` : ''}?</>} />
       </div>
 
       <section aria-label="Recent projects" className="rounded-2xl border border-border bg-card p-6 shadow-sm">
