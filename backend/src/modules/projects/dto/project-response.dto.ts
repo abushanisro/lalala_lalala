@@ -71,6 +71,9 @@ export class ProjectResponseDto {
   @ApiProperty({ example: 'Asha Rao', required: false, description: "The owner's display name (their email when they have none)" })
   ownerName?: string;
 
+  @ApiProperty({ required: false, description: 'The BOM to open for the project: the one that holds its main assembly, else the one with the most items. Absent when it has none.' })
+  mainBomId?: string;
+
   @ApiProperty({ required: false, description: "A picture of the project: its main assembly's, else a sub-assembly's, else a part's, as the BOM page stored it (a data URL). Absent until one has been drawn." })
   thumbnailUrl?: string;
 

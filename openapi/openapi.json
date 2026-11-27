@@ -143,6 +143,11 @@
             "example": 2620.53,
             "type": "number"
           },
+          "computedCostCurrency": {
+            "description": "The currency computedCost is in: the snapshot's own.",
+            "example": "USD",
+            "type": "string"
+          },
           "createdAt": {
             "example": "2025-01-15T10:30:00Z",
             "type": "string"
@@ -6981,6 +6986,10 @@
           },
           "industry": {
             "example": "Automotive",
+            "type": "string"
+          },
+          "mainBomId": {
+            "description": "The BOM to open for the project: the one that holds its main assembly, else the one with the most items. Absent when it has none.",
             "type": "string"
           },
           "name": {

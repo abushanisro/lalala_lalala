@@ -28,6 +28,8 @@ export type Project = {
   /** Who created the project, and the name to show for them. */
   ownerId?: string;
   ownerName?: string;
+  /** The BOM to open for the project: the one that holds its main assembly, else the one with the most items. Absent when it has none. */
+  mainBomId?: string;
   /** A picture of the project (a data URL): its main assembly's, else a sub-assembly's, else a part's. Absent until one has been drawn. */
   thumbnailUrl?: string;
 };
