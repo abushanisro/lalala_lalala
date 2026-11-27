@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DrawingReading } from "@/lib/api/drawing-readings";
-import { costable, gradeFor, intakeFileKind, planBlockers, planPart, processGroupFor, shapeSummary, type IntakePlan, type PlanPart } from "@/lib/intake/plan";
+import { carriesFiles, costable, gradeFor, intakeFileKind, planBlockers, planPart, processGroupFor, shapeSummary, type IntakePlan, type PlanPart } from "@/lib/intake/plan";
 
 const GROUPS = ["Die Casting", "Forging", "Machining", "Plastic Molding", "Sand Casting", "Sheet Metal"];
 const bracket: DrawingReading = {
@@ -95,5 +95,15 @@ describe("what a plan still needs", () => {
     expect(planBlockers(plan({ parts: [], cadFiles: [] }))).toEqual(["Nothing to create: no part was read and no CAD file was added."]);
     expect(planBlockers(plan({ parts: [], cadFiles: ["a.step"], location: "" }))).toEqual([]);
     expect(planBlockers(plan({ parts: [part({ name: "" })] }))).toEqual(["Every part needs a name and a part number."]);
+  });
+});
+
+describe("a drag over the page", () => {
+  it("is the prompt's to take only when it carries files, not selected text or a link", () => {
+    expect(carriesFiles(["Files"])).toBe(true);
+    expect(carriesFiles(["text/uri-list", "Files"])).toBe(true);
+    expect(carriesFiles(["text/plain", "text/html"])).toBe(false);
+    expect(carriesFiles([])).toBe(false);
+    expect(carriesFiles(undefined)).toBe(false);
   });
 });

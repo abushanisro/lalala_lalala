@@ -13,6 +13,14 @@ export function intakeFileKind(fileName: string): IntakeFileKind | null {
 }
 export const INTAKE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.step,.stp,.zip";
 
+/**
+ * Whether a drag carries files (a DataTransfer's `types`), as opposed to selected text or a link: only then is it the prompt's to take.
+ * The files themselves cannot be read until the drop.
+ */
+export function carriesFiles(types: readonly string[] | undefined | null): boolean {
+  return types?.includes("Files") ?? false;
+}
+
 /** One part the plan will create, from one drawing. The person can change the name, the grade and the process before creating. */
 export interface PlanPart {
   /** The drawing's file name: the part's key in the plan. */
