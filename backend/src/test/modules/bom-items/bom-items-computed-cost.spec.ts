@@ -23,13 +23,13 @@ const row = (id: string, unitCost: number) => ({ id, bom_id: 'b1', name: id, par
 describe('BOMItemsService.findAll computedCost', () => {
   it("carries each item's snapshot cost beside its own unit cost, which stays the bought price", async () => {
     const list = await service([row('asm', 0), row('part', 0), row('bought', 5)], [
-      { bom_item_id: 'asm', total_cost: '2620.53' },
-      { bom_item_id: 'part', total_cost: '145.12' },
+      { bom_item_id: 'asm', total_cost: '2620.53', currency_code: 'USD' },
+      { bom_item_id: 'part', total_cost: '145.12', currency_code: 'INR' },
     ]).findAll('b1');
-    expect(list.items.map((i) => [i.partNumber, i.unitCost, i.computedCost])).toEqual([
-      ['asm', 0, 2620.53],
-      ['part', 0, 145.12],
-      ['bought', 5, undefined],
+    expect(list.items.map((i) => [i.partNumber, i.unitCost, i.computedCost, i.computedCostCurrency])).toEqual([
+      ['asm', 0, 2620.53, 'USD'],
+      ['part', 0, 145.12, 'INR'],
+      ['bought', 5, undefined, undefined],
     ]);
   });
 
