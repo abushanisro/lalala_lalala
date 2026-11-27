@@ -428,10 +428,6 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="trend" className="mt-0 p-6">
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <p className="text-sm text-muted-foreground">Project creation trends and volume</p>
-              <Badge variant="outline">Last 30 Days</Badge>
-            </div>
             <ProjectTrendChart projects={projects} />
           </TabsContent>
 
