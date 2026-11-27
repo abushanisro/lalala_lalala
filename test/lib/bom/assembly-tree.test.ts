@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { explodeOffsets } from '@/lib/bom/assembly-explode';
-import { buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeItem } from '@/lib/bom/assembly-tree';
+import { ancestorChain, buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeItem } from '@/lib/bom/assembly-tree';
 
 const treeOf = (rootId: string) => {
   const tree = buildTree(items, rootId);
@@ -79,5 +79,20 @@ describe('selectionFor', () => {
   it('ignores an id that is not in the tree, and gives nothing for no ids', () => {
     expect(selectionFor(tree, ['nope', 'c'])).toEqual(['c']);
     expect(selectionFor(tree, [])).toEqual([]);
+  });
+});
+
+describe('ancestorChain', () => {
+  const tree = treeOf('asm');
+
+  it('is an item and the sub-assemblies above it, nearest first, without the root', () => {
+    expect(ancestorChain(tree, 'a')).toEqual(['a', 'sub1']);
+    expect(ancestorChain(tree, 'sub2')).toEqual(['sub2']);
+    expect(ancestorChain(tree, 'loose')).toEqual(['loose']);
+  });
+
+  it('is empty for the root and for an id not under it', () => {
+    expect(ancestorChain(tree, 'asm')).toEqual([]);
+    expect(ancestorChain(tree, 'nope')).toEqual([]);
   });
 });

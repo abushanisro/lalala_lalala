@@ -113,6 +113,16 @@ describe('an assembly\'s routes', () => {
     expect(JSON.stringify(pick[1].calculationTrace)).toContain('1.044 kg');
   });
 
+  it('names the parts each component row and each joint row concerns, for the assembly view to highlight', () => {
+    const ops = routeOf('manual', { joints: [...deriveJoints(COMPONENTS), weld({ componentId: 'bracket' })] }).lines.flatMap((l) => l.featureBreakdown ?? []);
+    const ofType = (type: string) => ops.filter((o) => o.featureType === type);
+    expect(ofType('AssemblyComponent').map((o) => o.componentIds)).toEqual(expect.arrayContaining([['housing'], ['bracket']]));
+    expect(ofType('AssemblyJointDerived').length).toBeGreaterThan(0);
+    expect(ofType('AssemblyJointDerived').every((o) => o.componentIds?.[0] === 'housing')).toBe(true);
+    expect(ofType('AssemblyJoint').map((o) => o.componentIds)).toEqual([['bracket']]);
+    expect(ofType('Assembly').every((o) => o.componentIds === undefined)).toBe(true);
+  });
+
   it('a machine is set up once per batch: the unload line on the pick and place station charges no second setup', () => {
     const pick = routeOf('manual').lines.filter((l) => l.process === 'Pick and Place');
     expect(pick[1].setupCost).toBe(0);

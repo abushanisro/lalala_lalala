@@ -12,7 +12,7 @@ import { Box, ChevronDown, ChevronRight, ExternalLink, Layers3, Loader2, RotateC
 import { apiClient } from '@/lib/api/client';
 import { useBOMItems, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { explodeOffsets, type Vec3 } from '@/lib/bom/assembly-explode';
-import { buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeNode } from '@/lib/bom/assembly-tree';
+import { ancestorChain, buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeNode } from '@/lib/bom/assembly-tree';
 
 type Node = TreeNode<BOMItem>;
 
@@ -107,6 +107,8 @@ export interface AssemblyViewerProps {
    * them replaces the selection, so a click in the view stays in force until the page's selection next changes. Absent: not driven.
    */
   highlightedIds?: readonly string[] | undefined;
+  /** Called when a part is clicked in the view, with it and the sub-assemblies above it (nearest first), so the page can select the row that stands for it. */
+  onPickPart?: ((itemIds: readonly string[]) => void) | undefined;
 }
 
 /**
@@ -114,7 +116,7 @@ export interface AssemblyViewerProps {
  * (the parts of one STEP assembly share them), with an explode control, and a click on a part, or a sub-assembly or part in the list,
  * to select it and dim the rest.
  */
-export function AssemblyViewer({ bomId, assemblyId, highlightedIds }: AssemblyViewerProps) {
+export function AssemblyViewer({ bomId, assemblyId, highlightedIds, onPickPart }: AssemblyViewerProps) {
   const router = useRouter();
   const { id: projectId } = useParams<{ id: string }>();
   const { data } = useBOMItems(bomId);
@@ -187,7 +189,7 @@ export function AssemblyViewer({ bomId, assemblyId, highlightedIds }: AssemblyVi
                 colour={d.colour}
                 offset={offsets.get(d.id) ?? [0, 0, 0]}
                 state={stateOf(d.id)}
-                onPick={() => { choose([d.id]); }}
+                onPick={() => { choose([d.id]); onPickPart?.(ancestorChain(tree, d.id)); }}
               />
             ))}
           </group>
