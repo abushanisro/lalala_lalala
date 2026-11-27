@@ -6987,6 +6987,15 @@
             "example": "Engine Block Manufacturing",
             "type": "string"
           },
+          "ownerId": {
+            "description": "Who created the project",
+            "type": "string"
+          },
+          "ownerName": {
+            "description": "The owner's display name (their email when they have none)",
+            "example": "Asha Rao",
+            "type": "string"
+          },
           "state": {
             "example": "California",
             "type": "string"
@@ -7016,6 +7025,10 @@
             "description": "Target price in rupees",
             "example": 3750000,
             "type": "number"
+          },
+          "thumbnailUrl": {
+            "description": "A picture of the project: its main assembly's, else a sub-assembly's, else a part's, as the BOM page stored it (a data URL). Absent until one has been drawn.",
+            "type": "string"
           },
           "updatedAt": {
             "example": "2025-01-20T14:45:00Z",
