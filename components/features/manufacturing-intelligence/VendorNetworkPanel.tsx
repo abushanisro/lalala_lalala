@@ -44,6 +44,7 @@ const LAYER_PROCESS_HINT: Partial<Record<HeatmapLayerType, string[]>> = {
   tolerance_risk:     ['CNC Machining', 'Quality'],
   sustainability:     ['Surface Treatment', 'Heat Treatment'],
   sink_mark:          ['Injection Moulding'],
+  flow_analysis:      ['Injection Moulding'],
 };
 
 function confidenceDots(score: number): { filled: number; label: string } {

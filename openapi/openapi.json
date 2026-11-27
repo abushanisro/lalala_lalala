@@ -4591,6 +4591,43 @@
         ],
         "type": "object"
       },
+      "CrossWlfDto": {
+        "properties": {
+          "a1": {
+            "description": "A1.",
+            "type": "number"
+          },
+          "a2K": {
+            "description": "A2 (K).",
+            "type": "number"
+          },
+          "d1PaS": {
+            "description": "D1 (Pa s).",
+            "type": "number"
+          },
+          "d2K": {
+            "description": "D2, the reference temperature (K).",
+            "type": "number"
+          },
+          "n": {
+            "description": "Power-law index n (0 to 1).",
+            "type": "number"
+          },
+          "tauPa": {
+            "description": "Critical shear stress tau* (Pa).",
+            "type": "number"
+          }
+        },
+        "required": [
+          "n",
+          "tauPa",
+          "d1PaS",
+          "d2K",
+          "a1",
+          "a2K"
+        ],
+        "type": "object"
+      },
       "CyclePhaseDto": {
         "properties": {
           "name": {
@@ -7916,6 +7953,55 @@
           "name",
           "responded"
         ],
+        "type": "object"
+      },
+      "RunFillSimulationDto": {
+        "properties": {
+          "fillTimeS": {
+            "description": "Fill time (s). The flow rate is the mesh volume over it.",
+            "type": "number"
+          },
+          "flowLengthRatio": {
+            "description": "The grade's maximum flow length over wall thickness (reference data). With maxInjectionPressureMpa it sets one effective viscosity: an estimate.",
+            "type": "number"
+          },
+          "gateMm": {
+            "description": "Gate position [x, y, z] in part-centred mm (the 3D viewer frame). The nearest mesh node becomes the gate.",
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "gateRadiusMm": {
+            "description": "Gate radius (mm): every mesh node within it is part of the gate. 0 is a pin gate.",
+            "type": "number"
+          },
+          "maxInjectionPressureMpa": {
+            "description": "Injection pressure the machine or material allows (MPa): going over it is reported as an issue.",
+            "type": "number"
+          },
+          "meltTempC": {
+            "description": "Melt temperature at the gate (deg C).",
+            "type": "number"
+          },
+          "pullAxis": {
+            "description": "Mold opening axis, for the clamp force. Left out, the CAD engine chooses it from the part.",
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ],
+            "type": "string"
+          },
+          "rheology": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CrossWlfDto"
+              }
+            ],
+            "description": "The grade's own viscosity constants. Without them, flowLengthRatio and maxInjectionPressureMpa give an estimate."
+          }
+        },
         "type": "object"
       },
       "SaveRawMaterialEditorDto": {
@@ -14526,6 +14612,74 @@
         "summary": "Upload 2D/3D/DXF files or a board set (Gerber, drill, Pick Place) for BOM item",
         "tags": [
           "BOM Items"
+        ]
+      }
+    },
+    "/api/v1/bom-items/{id}/fill-simulation-inputs": {
+      "get": {
+        "operationId": "BomItemFillSimulationController_inputs_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What the reference data recommends for a fill simulation of the part: its grade's melt temperature, pressure and flow length ratio.",
+        "tags": [
+          "Plastic molding"
+        ]
+      }
+    },
+    "/api/v1/bom-items/{id}/fill-simulations": {
+      "post": {
+        "operationId": "BomItemFillSimulationController_run_v1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunFillSimulationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Run an injection fill simulation of the part's 3D model (or, without a gate, return its fill mesh).",
+        "tags": [
+          "Plastic molding"
         ]
       }
     },

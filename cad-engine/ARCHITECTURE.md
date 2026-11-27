@@ -14,6 +14,8 @@ STEP upload (backend runner, or the browser through the backend)
         -> POST /assembly/parts   : a zip with one STEP per requested part id (same files, same order as /analyze/assembly)
         -> POST /analyze/geometry : shared/part_analysis.py analyze_part() (one part: features, DFM, PMI, component features)
         -> POST /measure/geometry : volume, area, bounding box only
+        -> POST /simulate/fill    : injection fill simulation of one part (injection_molding/FILL_SIMULATION.md); numpy only,
+              stops itself after 150 s, off unless FILL_SIMULATION_ENABLED (a 404, never a 5xx, when off)
 ```
 
 - **Contract.** `contract/assembly.schema.json` (version 1, additive within a version) is the canonical shape of
