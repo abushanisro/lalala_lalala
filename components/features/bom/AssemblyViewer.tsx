@@ -8,11 +8,11 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
 import { Button } from '@/components/ui/button';
-import { Box, ExternalLink, Layers3, Loader2, RotateCcw } from '@/components/ui/icons';
+import { Box, ChevronDown, ChevronRight, ExternalLink, Layers3, Loader2, RotateCcw } from '@/components/ui/icons';
 import { apiClient } from '@/lib/api/client';
 import { useBOMItems, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { explodeOffsets, type Vec3 } from '@/lib/bom/assembly-explode';
-import { buildTree, groupedParts, modelIdsUnder, type TreeNode } from '@/lib/bom/assembly-tree';
+import { buildTree, groupedParts, modelIdsUnder, selectionFor, type TreeNode } from '@/lib/bom/assembly-tree';
 
 type Node = TreeNode<BOMItem>;
 
@@ -102,6 +102,11 @@ export interface AssemblyViewerProps {
   bomId: string;
   /** The assembly or sub-assembly whose parts are shown. */
   assemblyId: string;
+  /**
+   * The items (parts, or sub-assemblies for all their parts) to show selected, as the page's selected process row says. Each change of
+   * them replaces the selection, so a click in the view stays in force until the page's selection next changes. Absent: not driven.
+   */
+  highlightedIds?: readonly string[] | undefined;
 }
 
 /**
@@ -109,7 +114,7 @@ export interface AssemblyViewerProps {
  * (the parts of one STEP assembly share them), with an explode control, and a click on a part, or a sub-assembly or part in the list,
  * to select it and dim the rest.
  */
-export function AssemblyViewer({ bomId, assemblyId }: AssemblyViewerProps) {
+export function AssemblyViewer({ bomId, assemblyId, highlightedIds }: AssemblyViewerProps) {
   const router = useRouter();
   const { id: projectId } = useParams<{ id: string }>();
   const { data } = useBOMItems(bomId);
@@ -118,6 +123,9 @@ export function AssemblyViewer({ bomId, assemblyId }: AssemblyViewerProps) {
   const models = useModels(useMemo(() => grouped.map((g) => g.part), [grouped]));
   const [explode, setExplode] = useState(0);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // The sub-assemblies whose list is closed; all start open.
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (id: string) => { setClosed((now) => { const next = new Set(now); if (!next.delete(id)) next.add(id); return next; }); };
 
   // What is drawn: the parts whose model loaded, each with its model, centre and colour (one colour per group, a shade per part in it).
   const drawn = useMemo(() => {
@@ -141,6 +149,12 @@ export function AssemblyViewer({ bomId, assemblyId }: AssemblyViewerProps) {
     drawn.forEach((d) => { if (d.geometry.boundingBox) box.union(d.geometry.boundingBox); });
     return { centre: box.getCenter(new THREE.Vector3()), diagonal: box.isEmpty() ? 1 : box.getSize(new THREE.Vector3()).length() };
   }, [drawn]);
+
+  const highlightKey = highlightedIds?.join(',');
+  useEffect(() => {
+    if (highlightedIds === undefined || !tree) return;
+    setSelected(new Set(selectionFor(tree, highlightedIds)));
+  }, [highlightKey, tree]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const choose = (ids: readonly string[]) => { setSelected(new Set(ids)); };
   const stateOf = (id: string): PartViewProps['state'] => (selected.size === 0 ? 'normal' : selected.has(id) ? 'selected' : 'dimmed');
@@ -183,7 +197,7 @@ export function AssemblyViewer({ bomId, assemblyId }: AssemblyViewerProps) {
 
       {/* The assembly's structure: a click selects a sub-assembly (all its parts) or a part. */}
       <div className="absolute left-2 top-2 max-h-[calc(100%-4.5rem)] w-56 overflow-y-auto rounded-md border bg-background/90 p-1 text-xs shadow-sm backdrop-blur">
-        <StructureRow node={tree} depth={0} selected={selected} drawn={models.geometries} onChoose={choose} root />
+        <StructureRow node={tree} depth={0} selected={selected} closed={closed} drawn={models.geometries} onChoose={choose} onToggle={toggle} root />
       </div>
 
       <div className="absolute inset-x-2 bottom-2 flex flex-wrap items-center gap-3 rounded-md border bg-background/90 px-3 py-2 text-xs shadow-sm backdrop-blur">
@@ -235,31 +249,54 @@ interface StructureRowProps {
   node: Node;
   depth: number;
   selected: ReadonlySet<string>;
+  /** The sub-assemblies whose list is closed. */
+  closed: ReadonlySet<string>;
   drawn: ReadonlyMap<string, unknown>;
   onChoose: (ids: readonly string[]) => void;
+  onToggle: (id: string) => void;
   root?: boolean;
 }
 
-function StructureRow({ node, depth, selected, drawn, onChoose, root }: StructureRowProps) {
+/**
+ * One line of the structure. A group (an assembly or sub-assembly) is a dropdown: its arrow, or a click on the line, opens or closes
+ * what is under it; a click on the line also selects its parts (the root shows all). A part is selected by its line alone.
+ */
+function StructureRow({ node, depth, selected, closed, drawn, onChoose, onToggle, root }: StructureRowProps) {
   const ids = modelIdsUnder(node).filter((id) => drawn.has(id));
   const active = !root && ids.length > 0 && ids.every((id) => selected.has(id)) && ids.length === selected.size;
-  const Icon = node.children.length > 0 ? Layers3 : Box;
+  const isGroup = node.children.length > 0;
+  const open = !closed.has(node.id);
+  const Icon = isGroup ? Layers3 : Box;
   return (
     <>
-      <button
-        type="button"
-        disabled={ids.length === 0}
-        onClick={() => { onChoose(root ? [] : ids); }}
-        style={{ paddingLeft: 6 + depth * 12 }}
-        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-accent disabled:opacity-40 ${active ? 'bg-accent font-medium' : ''}`}
-        title={root ? 'Show all' : ids.length === 1 ? node.name : `${node.name} (${ids.length} parts)`}
-      >
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate">{node.name}</span>
-        {node.children.length > 0 && <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">{ids.length}</span>}
-      </button>
-      {node.children.map((child) => (
-        <StructureRow key={child.id} node={child} depth={depth + 1} selected={selected} drawn={drawn} onChoose={onChoose} />
+      <div className={`flex items-center rounded hover:bg-accent ${active ? 'bg-accent font-medium' : ''}`} style={{ paddingLeft: 2 + depth * 12 }}>
+        {isGroup ? (
+          <button
+            type="button"
+            onClick={() => { onToggle(node.id); }}
+            aria-expanded={open}
+            aria-label={`${open ? 'Close' : 'Open'} ${node.name}`}
+            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          >
+            {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </button>
+        ) : (
+          <span className="w-5 shrink-0" aria-hidden="true" />
+        )}
+        <button
+          type="button"
+          disabled={ids.length === 0}
+          onClick={() => { onChoose(root ? [] : ids); if (isGroup) onToggle(node.id); }}
+          className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1 text-left disabled:opacity-40"
+          title={root ? 'Show all' : ids.length === 1 ? node.name : `${node.name} (${ids.length} parts)`}
+        >
+          <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{node.name}</span>
+          {isGroup && <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">{ids.length}</span>}
+        </button>
+      </div>
+      {isGroup && open && node.children.map((child) => (
+        <StructureRow key={child.id} node={child} depth={depth + 1} selected={selected} closed={closed} drawn={drawn} onChoose={onChoose} onToggle={onToggle} />
       ))}
     </>
   );

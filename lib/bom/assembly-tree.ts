@@ -39,3 +39,10 @@ export function groupedParts<T extends TreeItem>(root: TreeNode<T>): GroupedPart
 export function modelIdsUnder<T extends TreeItem>(node: TreeNode<T>): string[] {
   return node.file3dPath ? [node.id] : modelPartsOf<TreeNode<T>>(node).map((part) => part.id);
 }
+
+/** The models a set of item ids stands for in the assembly: a part its own, a sub-assembly every model below it; an id not in the tree is ignored. */
+export function selectionFor<T extends TreeItem>(root: TreeNode<T>, ids: readonly string[]): string[] {
+  const find = (node: TreeNode<T>, id: string): TreeNode<T> | null =>
+    node.id === id ? node : node.children.reduce<TreeNode<T> | null>((found, child) => found ?? find(child, id), null);
+  return [...new Set(ids.flatMap((id) => { const node = find(root, id); return node ? modelIdsUnder(node) : []; }))];
+}

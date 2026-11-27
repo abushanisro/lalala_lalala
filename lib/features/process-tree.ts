@@ -46,6 +46,8 @@ export interface ProcessTreeNode {
   v2Occurrences?: { featureId: string; occurrenceIndex: number }[];
   // A process that acts on the whole part surface (cleaning, NDT, packaging).
   wholePart?: boolean;
+  // An assembly's component rows: the BOM items (parts or sub-assemblies) the row loads, which the assembly view highlights.
+  componentIds?: string[];
 }
 
 // Cast alloys that can never run a laser + press-brake route, however flat the
@@ -106,6 +108,12 @@ export function resolveProcessGroupLabel(
 export function collectLeaves(node: ProcessTreeNode): ProcessTreeNode[] {
   if (!node.children?.length) return node.kind === 'feature' ? [node] : [];
   return node.children.flatMap(collectLeaves);
+}
+
+/** The assembly components a row stands for: its own, else those of the rows below it (an operation stands for all it loads). */
+export function componentIdsUnder(node: ProcessTreeNode | null): string[] {
+  if (!node) return [];
+  return node.componentIds ?? (node.children ?? []).flatMap(componentIdsUnder);
 }
 
 export function findNode(node: ProcessTreeNode, id: string): ProcessTreeNode | null {
@@ -514,6 +522,7 @@ export function buildProcessTree(
           label: stepRowLabel(b.name, rec.process),
           factory, machine,
           ...(ids.length > 0 ? { v2FeatureIds: ids } : {}),
+          ...(b.featureType === 'AssemblyComponent' && (b.featureIds ?? []).length > 0 ? { componentIds: b.featureIds } : {}),
           attrs: [
             { name: 'Count', value: String(b.count) },
             { name: 'Time', value: formatEstCycleTime(b.timeSec) },
