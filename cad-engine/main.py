@@ -817,6 +817,36 @@ def _stage_step_uploads(request: Request, files: List[UploadFile], paths: List[s
     return named
 
 
+@app.post("/build/drawing-solid")
+@limiter.limit(f"{config.rate_limit_per_minute}/minute")
+def build_drawing_solid(request: Request, body: Dict[str, Any], _auth: None = Security(require_api_key)) -> Dict[str, Any]:
+    """
+    A simple solid from what a drawing states (shared/drawing_solid.py): the overall form (block, sheet or turned part) and its
+    holes, as a STEP file in base64 with its measurements. For a part that has a 2D drawing and no model: the stand-in the same
+    analysis and cost engines can take. Holes that do not fit the form are left out and counted in `holes_left_out`.
+    """
+    import base64
+
+    from pydantic import ValidationError
+
+    from shared.drawing_solid import DrawingSolidRequest, build, step_bytes
+    from shared.solid_measures import measure_solid
+
+    try:
+        solid, placed, left_out = build(DrawingSolidRequest.model_validate(body))
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    measured = measure_solid(solid)
+    return {
+        "step_base64": base64.b64encode(step_bytes(solid)).decode("ascii"),
+        "volume_mm3": round(float(measured["volume"]), 4),
+        "surface_area_mm2": round(float(measured["surface_area"]), 4),
+        "bounding_box": measured["bounding_box"],
+        "holes_placed": placed,
+        "holes_left_out": left_out,
+    }
+
+
 @app.post("/analyze/assembly")
 @limiter.limit(f"{config.rate_limit_per_minute}/minute")
 def analyze_assembly(

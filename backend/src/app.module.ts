@@ -38,6 +38,7 @@ import { BenchmarkSessionsModule } from './modules/benchmark-sessions/benchmark-
 import { ProfileModule } from './modules/profile/profile.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { CopilotModule } from './modules/copilot/copilot.module';
+import { DrawingReadingsModule } from './modules/drawing-readings/drawing-readings.module';
 import { ManufacturingKnowledgeModule } from './modules/manufacturing-knowledge/manufacturing-knowledge.module';
 import { CostingModule } from './modules/costing/costing.module';
 import { ManufacturingRulesModule } from './modules/manufacturing-rules/manufacturing-rules.module';
@@ -105,6 +106,7 @@ import { AppController } from './app.controller';
     ProfileModule,
     OrganizationsModule,
     CopilotModule,
+    DrawingReadingsModule,
     ManufacturingKnowledgeModule,
     CostingModule,
     ManufacturingRulesModule,

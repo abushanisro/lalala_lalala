@@ -11,8 +11,8 @@ import { DatabaseService } from '../database/database.service';
 export const AI_MAX_TOKENS = {
   /** One step of the copilot's tool loop (low effort; a short answer or a few tool calls). */
   copilot: 4_096,
-  /** A drawing's structured brief (JSON, no thinking). */
-  drawing_extraction: 8_192,
+  /** One drawing's reading: a JSON object of a part's form, holes and notes, with room to think (the reader's thinking is always on). */
+  drawing_extraction: 16_000,
   /** Benchmark VAVE insights: one JSON object with a handful of short lists. */
   vave_bom_analysis: 6_000,
   /** Affinity groups, focus areas and a QFD matrix for the top 30 parts. */
