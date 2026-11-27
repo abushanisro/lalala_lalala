@@ -52,7 +52,7 @@ export interface BomCost {
 /** GET /cost-analytics: the organization's should-cost, totalled from its saved cost records. Every amount is in `currency`. */
 export interface CostAnalytics {
   currency: string;
-  /** The exchange rates applied: 1 unit of the key in `currency`. */
+  /** The rate of every other currency the figures or the projects' target BOM costs are in: 1 unit of the key in `currency`. */
   fxRates: Record<string, number>;
   coverage: {
     parts: number;
