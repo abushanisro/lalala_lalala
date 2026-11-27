@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from injection_molding.recognition.mesh import FaceMesh, Triangle, tessellate_faces
-from injection_molding.recognition.pull_direction import choose_pull_direction
+from injection_molding.recognition.pull_direction import GRID as PULL_GRID, choose_pull_direction
 from injection_molding.recognition.wall_thickness import measure_wall_thickness
 from shared.solid_measures import measure_solid
 
@@ -43,7 +43,8 @@ THIN_WALL_SHARE = 0.5        # a mesh holding less than this share of the CAD vo
 COVERED_SHARE = 0.9          # below this share (or as far above 1) the difference is reported with the mesh
 _PARTNER_TOL = 0.1           # the far wall is found within this share of the thickness (plus the mesh deflection)
 MIN_WALL_SHARE = 0.1         # a gap under this share of the part's usual wall is a knife edge or a fold, not a wall to flow through
-PULL_MAX_TRIANGLES = 6000    # the mold opening direction is chosen automatically up to this many surface triangles (4 000 took 2 s, 16 000 took 17 s)
+PULL_WORK = 1_500_000        # the mold opening direction is chosen automatically while that takes at most this many depth-buffer points
+                             # (a third of a microsecond each, for up to 9 directions: 5 s; a 14 500-triangle cover is 220 000 points, 0.4 s)
 UNDRAFTED_DEG = 0.3          # the plastic domain's own threshold (InjectionMoldedFeatureExtractor.UNDRAFTED_DEG), for the opening direction
 _SMOOTH = 0.98               # mean length of the unit normals around a node: below this the node is on a crease (about 11 degrees either way)
 _SLIDE_PASSES = 30           # how far the sideways move of a crease spreads, in elements (about its square root)
@@ -192,6 +193,20 @@ def _to_mid_surface(nodes: np.ndarray, tri: np.ndarray, n: np.ndarray, t: np.nda
     return nodes + shift
 
 
+def _opening_direction(corners: np.ndarray, faces: Any) -> Optional[list]:
+    """The direction the mold opens, chosen as the part analysis chooses it (for the clamp force); None when choosing would take too long.
+    The chooser spaces its depth-buffer points one cell apart along each triangle's longest edge, so what it costs is the long triangles,
+    not how many triangles there are."""
+    if not len(corners):
+        return None
+    longest = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2).max(axis=1)
+    size = np.sort(np.ptp(corners.reshape(-1, 3), axis=0))
+    steps = np.ceil(longest * PULL_GRID / max(float(size[1]), 1e-9))        # the buffer spans at least the part's middle dimension
+    if ((steps + 1) * (steps + 2) / 2).sum() > PULL_WORK:
+        return None
+    return [round(float(c), 5) for c in choose_pull_direction(faces, UNDRAFTED_DEG).vector]
+
+
 def _surface(shape: Any, deflection: float):
     """The tessellated surface as corner coordinates and face ids; a part too detailed for the triangle limit is tessellated more coarsely, up to twice."""
     from OCC.Core.BRepTools import breptools  # type: ignore
@@ -220,10 +235,8 @@ def extract_fill_mesh(shape: Any, deflection_mm: Optional[float] = None, target_
         "triangles_in_mesh": 0,
         "triangles_unmeasured": 0, "detached_pieces": 0, "detached_volume_pct": 0.0, "longest_edge_mm": 0.0, "target_edge_mm": 0.0,
         "resolution_limited": False, "cad_volume_mm3": round(solid["volume"], 2), "mesh_volume_mm3": 0.0, "volume_ratio": None,
-        "pull_direction": None,
+        "pull_direction": _opening_direction(corners, faces),
     }
-    if 0 < len(corners) <= PULL_MAX_TRIANGLES:   # the direction the mold opens, chosen as the part analysis chooses it: for the clamp force
-        report["pull_direction"] = [round(float(c), 5) for c in choose_pull_direction(faces, UNDRAFTED_DEG).vector]
     if not len(corners):
         return empty, {**report, "issues": [i.as_dict() for i in check(empty)]}
 

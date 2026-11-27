@@ -33,6 +33,14 @@ def plate_with_hole():
     return BRepAlgoAPI_Cut(box(0, 0, 0, 120, 60, 2), cylinder(12, 4, 50, 30, -1)).Shape()
 
 
+def perforated_plate(holes=8, pitch=10.0):
+    plate = box(0, 0, 0, pitch * (holes + 1), pitch * (holes + 1), 2)
+    for i in range(holes):
+        for j in range(holes):
+            plate = BRepAlgoAPI_Cut(plate, cylinder(pitch / 4, 4, pitch * (i + 1), pitch * (j + 1), -1)).Shape()
+    return plate
+
+
 def shape_ratio(mesh):
     c = mesh.corners()
     longest = np.linalg.norm(c[:, [1, 2, 0]] - c, axis=2).max(axis=1)
@@ -141,6 +149,18 @@ def test_a_part_beyond_the_work_allowed_is_refused_in_words_before_any_work_is_d
     monkeypatch.setattr(extraction, "RAY_WORK_MAX", 100)
     with pytest.raises(ValueError, match="too detailed to mesh for a fill simulation yet"):
         extract_fill_mesh(tray())
+
+
+def test_the_opening_direction_is_chosen_for_a_detailed_part_and_left_to_the_engineer_only_when_choosing_would_take_too_long(monkeypatch):
+    # The limit used to be 6 000 surface triangles, which left a real 14 500-triangle cover with no clamp force though choosing takes 0.4 s:
+    # what the chooser costs is the points it samples, and many small triangles are cheap.
+    corners, _, _, faces = extraction._surface(perforated_plate(), 0.01)
+    assert len(corners) > 6000
+    assert np.abs(extraction._opening_direction(corners, faces)) == pytest.approx([0, 0, 1], abs=1e-6)    # a plate opens across its faces
+    monkeypatch.setattr(extraction, "PULL_WORK", 1000)
+    assert extraction._opening_direction(corners, faces) is None        # no guess: the clamp force then asks the engineer for the axis
+    _, report = extract_fill_mesh(tray())
+    assert report["pull_direction"] is None
 
 
 def test_no_edge_of_the_mesh_is_far_shorter_than_the_target_and_it_is_one_piece_edge_to_edge():

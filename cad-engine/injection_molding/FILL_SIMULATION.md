@@ -38,9 +38,19 @@ numpy only. scipy is not in the production image and is not needed.
 - **Viscosity.** Either the grade's own Cross-WLF constants (the pressure term D3 is not modelled), or one number estimated from the
   reference data (next section).
 - **Pressure.** `div(S grad p) = 0` on linear triangles, `p = 0` at the front, constant flow rate at the gate. Conjugate gradient with a
-  two-level preconditioner (Jacobi plus a dense coarse solve over patches of at most 20 nodes, the leaves of a k-d tree): about 35
-  iterations on a clean mesh of any size, about 70 on a real part. Residual tolerance 1e-5: on a real part its fill times and pressures are
-  those of 1e-8 to 0.0002 MPa.
+  two-level preconditioner (Jacobi plus a dense coarse solve over patches of at most 20 nodes, the leaves of a k-d tree), started from the
+  last step's pressure: about 20 iterations a step on a plate, 26 on a real part. Residual tolerance 1e-5: on a real part its fill times
+  and pressures are those of 1e-8 to 0.0002 MPa.
+- **One system after another.** A fill is some 3 000 solves of systems that each differ from the last by one node. The coarse solve is
+  therefore kept, and rebuilt only when the melt has reached 5 % more nodes: conjugate gradients accepts any fixed positive definite
+  preconditioner, so an older one costs iterations (26 a step instead of 23.5), never accuracy (the switchover pressure moves in the
+  sixth figure). Rebuilding it at every step took half of the run.
+- **No BLAS thread pool.** numpy passes matrix products and `numpy.linalg` solves of this size to a pool of BLAS threads. The pool's idle
+  threads spin between calls, and one call a step keeps them spinning: the same fill took 18 s on an idle ten-core machine and 137 s on a
+  busy one, with all ten cores in use throughout (a plate: 69 s and 465 s of processor time, against 11 s single-threaded). The loop
+  now uses numpy's own loops only (`einsum`, and a Gauss-Jordan inverse of the small coarse matrix), so a fill uses one core and takes
+  the same time whatever else runs. Limiting the pool for the whole engine was not done: other modules' results could move in their
+  last digits.
 - **Front.** Control-volume advance, one pressure solve per arriving node (nodes arriving together share one). Filling more of the front per
   solve was tried and rejected: on the race-tracking test it gave a front ratio of 1.03 to 1.75 where 2.0 is exact.
 - **Bookkeeping.** The clock advances by the volume actually placed over the flow rate, so the fill time equals volume / flow rate to rounding.
@@ -57,7 +67,7 @@ The setup fills itself; every value shows where it came from and can be replaced
 | Melt temperature | the grade's material record (`raw_materials.melting_temp_c`) |
 | Injection pressure available | the grade's maximum injection pressure less the runner's loss: the cost engine's clamp model, read from that calculation itself |
 | Flow length ratio | the grade's material record (`raw_materials.im_flow_length_ratio`): the longest flow path over the wall thickness |
-| Mold opening direction | chosen from the part with the analysis's own `choose_pull_direction` (parts up to 6 000 surface triangles) |
+| Mold opening direction | chosen from the part with the analysis's own `choose_pull_direction` (while that takes at most 1.5 million depth-buffer points, about 5 s; the 14 500-triangle back cover takes 0.4 s) |
 
 A grade the reference does not cover gets no numbers: the backend says what is missing (`notes`) and the fields stay empty.
 
@@ -154,7 +164,7 @@ on a real part: only that real geometry goes through.
 
 ### The first real molded part (a back cover, 16 MB STEP, 14 530 surface triangles, wall 0.6 to 2.8 mm)
 
-It found four faults that no constructed shape had:
+It found six faults that no constructed shape had:
 
 | Fault | What it did | Fix |
 |---|---|---|
@@ -162,8 +172,10 @@ It found four faults that no constructed shape had:
 | A knife edge read as a wall | "wall 0.01 mm" | gaps under a tenth of the usual wall are not walls |
 | Edges of 0.01 mm from small faces and fillets | 175 solver iterations per step, a 113 s fill | short edges merged away (step 7) |
 | Rib sides touching the skin at single nodes | the last 1 % forced through a point: 803 MPa at switchover, 115 MPa at 98 % | pieces are joined edge to edge (step 5) |
+| The BLAS thread pool, woken once a step | a fill of 18 to 137 s by what else the machine was doing, on ten cores | no call in the fill loop goes through it; the coarse solve is kept between steps |
+| A limit of 6 000 surface triangles on choosing the opening direction | no clamp force, though choosing takes 0.4 s | the limit is on the points the chooser samples |
 
-Now: mesh in 15 s, fill in 18 s, 5 508 triangles with edges up to 3.4 mm, gate pressure rising smoothly from 27 MPa at half fill to
+Now: mesh in 15 s, fill in 8 s, 5 508 triangles with edges up to 3.4 mm, gate pressure rising smoothly from 27 MPa at half fill to
 114 MPa at switchover (127.5 MPa available by the flow-length estimate). The mesh holds 68 % of the part's volume, 18 % being ribs and
 bosses: that is the size of the rib limitation on a ribbed part. The fill pattern of the main wall is modelled; the ribs' own filling and
 their share of the pressure are not.
@@ -172,11 +184,20 @@ their share of the pressure are not.
 
 | Part | Triangles | Extract | Fill |
 |---|---|---|---|
-| Plate 120 x 60 x 2 | 2 488 | 1.1 s | 2.0 s |
-| Tray 100 x 60 x 15 | 1 996 | 2.3 s | 0.4 s |
-| Cup 50 dia x 30 | 3 160 | 4.7 s | 4.1 s |
-| Plate, Cross-WLF, 6 480 triangles | 6 480 | | 12.8 s |
-| Back cover (real, 14 530 surface triangles) | 5 508 | 15 s | 18 s |
+| Plate 120 x 60 x 2 with a hole | 2 236 | 1.6 s | 1.0 s |
+| Tray 100 x 60 x 15 | 1 940 | 2.4 s | 0.7 s |
+| Cup 50 dia x 30 | 1 702 | 5.4 s | 0.6 s |
+| Plate, Cross-WLF, 6 480 triangles | 6 480 | | 11.5 s |
+| Back cover (real, 14 530 surface triangles) | 5 508 | 15 s | 8 s |
+
+Where the back cover's time goes. Meshing (once per file while the engine runs): thickness rays 6 s, the far-wall search 2 s, volume and
+areas 2 s, tessellation 1 s, opening direction 0.4 s, and 2.5 s to read the STEP. Filling: 2 986 solves of 26 iterations at 75 microseconds
+an iteration, half in the element product and half in the preconditioner.
+
+What would make it faster, largest first: a compiled kernel for the solve (the loop is numpy calls on 3 000 numbers, so most of its time is
+call overhead); advancing a layer of the front per solve with the overflow passed downstream (some 60 solves instead of 3 000, but the
+simple version of it fails the race-tracking test, see "Front" above); a spatial index for the thickness rays; keeping the mesh with the
+part, so it is made once and not once per engine start.
 
 A second call on the same file skips extraction: 0.24 s end to end for a 1 024-triangle plate through the live route.
 

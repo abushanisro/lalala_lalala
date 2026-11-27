@@ -197,3 +197,36 @@ def test_the_preconditioners_patches_hold_the_same_few_nodes_whether_the_mesh_is
     size = np.bincount(patch)
     assert size.max() <= CLUSTER and size.min() >= CLUSTER // 2
     assert 3000 / CLUSTER <= len(size) <= 2 * 3000 / CLUSTER              # halving leaves patches between half full and full
+
+
+def test_the_coarse_inverse_is_the_matrix_inverse_at_the_size_of_real_stiffness_numbers():
+    from injection_molding.fill_solver import _inverse
+
+    a = np.random.default_rng(3).normal(size=(60, 60))
+    stiffness = (a @ a.T + 60 * np.eye(60)) * 1e-12                # fluidity in SI units is this small: no absolute threshold may hide in the sweep
+    assert _inverse(stiffness) @ stiffness == pytest.approx(np.eye(60), abs=1e-9)
+
+
+def test_keeping_the_coarse_solve_between_steps_changes_the_work_and_not_the_answer(monkeypatch):
+    import injection_molding.fill_solver as solver
+
+    nodes, tri, h, gate, _ = two_channels(3.0, 1.5)
+    kept = fill(nodes, tri, h, gate, 20000.0, PP, 503.15)
+    monkeypatch.setattr(solver, "REGROWN", 0.0)                    # rebuilt at every step, as it was at first
+    rebuilt = fill(nodes, tri, h, gate, 20000.0, PP, 503.15)
+    assert kept.fill_time_s == pytest.approx(rebuilt.fill_time_s, rel=1e-4)
+    assert kept.switchover_pressure_mpa() == pytest.approx(rebuilt.switchover_pressure_mpa(), rel=1e-4)
+
+
+def test_nothing_in_the_fill_loop_goes_through_the_blas_thread_pool():
+    # numpy hands matrix products and numpy.linalg solves to a pool of BLAS threads, whose idle threads spin between calls. With one such
+    # call per step, a 5 500-triangle fill took 18 s on an idle ten-core machine and 137 s on a busy one, using all ten cores throughout;
+    # single-threaded it takes 8 s. The answers are identical either way, so only this test notices if such a call comes back.
+    import inspect
+
+    import injection_molding.fill_solver as solver
+
+    for function in (solver.fill, solver._cg, solver._dot, solver._inverse):
+        source = inspect.getsource(function)
+        for call in (" @ ", ".dot(", "np.matmul", "np.tensordot", "linalg.inv", "linalg.solve", "linalg.lstsq", "linalg.cholesky"):
+            assert call not in source, f"{function.__name__} calls {call.strip()}"

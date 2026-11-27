@@ -21,6 +21,7 @@ from .fill_mesh import check_time
 MM = 1e-3  # mesh and flow rate arrive in mm
 SAME_STEP = 0.02  # front nodes due within 2 % of the next arrival fill in the same step: a symmetric front is not split by rounding
 CLUSTER = 20      # nodes per cluster of the preconditioner's coarse space
+REGROWN = 0.05    # the coarse solve is rebuilt once the melt has reached this share more nodes; until then the last one still preconditions
 SETTLED = 0.02    # the shear-thinning iteration stops when no element's fluidity would move its flow by more than 2 % of the largest flow
 
 
@@ -111,23 +112,41 @@ def element_geometry(xyz: np.ndarray, tri: np.ndarray):
     return area, grad
 
 
+def _dot(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.einsum('i,i->', a, b))       # einsum keeps to numpy's own loops (see _inverse)
+
+
 def _cg(matvec, b, x, precondition, tol=1e-5, max_iter=5000):
     """Preconditioned conjugate gradient for a symmetric positive definite operator; `x` is the warm start. The tolerance is on the residual
     against the source: at 1e-5 a real part's fill times and pressures are those of 1e-8 (to 0.0002 MPa) in two thirds of the time."""
     r = b - matvec(x)
     z = precondition(r)
     d = z.copy()
-    rz, stop = r @ z, tol * np.linalg.norm(b)
+    rz, stop = _dot(r, z), (tol * tol) * _dot(b, b)
     for _ in range(max_iter):
-        if np.linalg.norm(r) <= stop:
+        if _dot(r, r) <= stop:
             break
         ad = matvec(d)
-        a = rz / (d @ ad)
+        a = rz / _dot(d, ad)
         x, r = x + a * d, r - a * ad
         z = precondition(r)
-        rz, rz_old = r @ z, rz
+        rz, rz_old = _dot(r, z), rz
         d = z + (rz / rz_old) * d
     return x
+
+
+def _inverse(a: np.ndarray) -> np.ndarray:
+    """Inverse of a small symmetric positive definite matrix by Gauss-Jordan sweeps (no pivoting is needed), in numpy's own loops.
+    numpy.linalg hands a matrix of this size to the BLAS thread pool, whose idle threads spin between calls: on ten cores a fill
+    took six times as long and forty times the processor time. Nothing in the fill loop goes through that pool."""
+    a = a.copy()
+    for k in range(len(a)):
+        pivot = a[k, k]
+        row, column = a[k] / pivot, a[:, k].copy()
+        a -= column[:, None] * row
+        a[k], a[:, k] = row, -column / pivot
+        a[k, k] = 1.0 / pivot
+    return a
 
 
 def _clusters(xyz: np.ndarray) -> np.ndarray:
@@ -181,6 +200,7 @@ def fill(nodes_mm, triangles, thickness_mm, gate_nodes, flow_mm3_s, rheology: Rh
     closed = full[tri].all(axis=1)                                          # triangles the front has fully passed
     velocity = np.zeros((len(tri), 3))
     times, inlet, at_switchover = [], [], None
+    coarse_inverse, coarse_nodes = np.zeros((n_clusters, n_clusters)), 0
 
     while True:
         check_time(deadline, "filling the cavity")
@@ -202,12 +222,14 @@ def fill(nodes_mm, triangles, thickness_mm, gate_nodes, flow_mm3_s, rheology: Rh
             ke = ke_unit[idx] * s[:, None, None]
             apply = lambda x: np.bincount(et.ravel(), np.einsum('mij,mj->mi', ke, x[et]).ravel(), n_nodes)
             diag = np.where(full, np.bincount(et.ravel(), np.einsum('mii->mi', ke).ravel(), n_nodes), 1.0)
-            fe = full[et]
-            coarse = np.bincount(pair[idx].ravel(), (ke * fe[:, :, None] * fe[:, None, :]).ravel(), n_clusters ** 2).reshape(n_clusters, n_clusters)
-            dry = coarse.diagonal() == 0                                   # clusters the melt has not reached
-            coarse[dry, dry] = 1.0
-            coarse_inverse = np.linalg.inv(coarse)
-            precondition = lambda r: np.where(full, r / diag + (coarse_inverse @ np.bincount(cluster, r, n_clusters))[cluster], 0.0)
+            if full.sum() > (1 + REGROWN) * coarse_nodes:                  # any fixed positive definite preconditioner serves conjugate gradients
+                fe = full[et]
+                coarse = np.bincount(pair[idx].ravel(), (ke * fe[:, :, None] * fe[:, None, :]).ravel(), n_clusters ** 2).reshape(n_clusters, n_clusters)
+                reached = np.flatnonzero(coarse.diagonal() > 0)            # the clusters the melt is in
+                coarse_inverse = np.zeros_like(coarse)
+                coarse_inverse[np.ix_(reached, reached)] = _inverse(coarse[np.ix_(reached, reached)])
+                coarse_nodes = int(full.sum())
+            precondition = lambda r: np.where(full, r / diag + np.einsum('ij,j->i', coarse_inverse, np.bincount(cluster, r, n_clusters))[cluster], 0.0)
             p = _cg(lambda x: np.where(full, apply(np.where(full, x, 0.0)), 0.0), source * full, p * full, precondition)
             slope = np.einsum('mi,mik->mk', p[et], g)                       # grad p in each triangle
             steep = np.linalg.norm(slope, axis=1)
