@@ -184,7 +184,10 @@ export class BOMItemsService {
     const transformedItems = rows.map(row => {
       const dto = BOMItemResponseDto.fromDatabase(row);
       const cost = computed.get(row.id);
-      if (cost !== undefined) dto.computedCost = cost;
+      if (cost) {
+        dto.computedCost = cost.amount;
+        if (cost.currency) dto.computedCostCurrency = cost.currency;
+      }
       return dto;
     });
 
@@ -197,15 +200,15 @@ export class BOMItemsService {
   }
 
   /** The latest snapshot cost of each item (an assembly's is rolled up). A snapshot that cannot be read leaves the item without one; it never hides the item. */
-  private async computedCosts(client: DbClient, itemIds: string[]): Promise<Map<string, number>> {
-    const costs = new Map<string, number>();
+  private async computedCosts(client: DbClient, itemIds: string[]): Promise<Map<string, { amount: number; currency: string | null }>> {
+    const costs = new Map<string, { amount: number; currency: string | null }>();
     for (let start = 0; start < itemIds.length; start += 200) {
-      const { data, error } = await client.from('bom_item_costs').select('bom_item_id, total_cost').in('bom_item_id', itemIds.slice(start, start + 200));
+      const { data, error } = await client.from('bom_item_costs').select('bom_item_id, total_cost, currency_code').in('bom_item_id', itemIds.slice(start, start + 200));
       if (error) {
         this.logger.warn(`BOM item costs not read: ${error.message}`);
         break;
       }
-      for (const row of data ?? []) costs.set(row.bom_item_id, Number(row.total_cost));
+      for (const row of data ?? []) costs.set(row.bom_item_id, { amount: Number(row.total_cost), currency: row.currency_code ?? null });
     }
     return costs;
   }

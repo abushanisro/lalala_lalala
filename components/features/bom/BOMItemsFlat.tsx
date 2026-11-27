@@ -38,6 +38,7 @@ import { modelPartsOf } from '@/lib/bom/model-parts';
 import { rowFacts } from '@/lib/bom/row-summary';
 import { deletionOrder, namesInWords, selectionState, toggleAll, toggleOne } from '@/lib/bom/selection';
 import { filterTree, highlightParts, matchesQuery, visibleTreeRows } from '@/lib/bom/tree-rows';
+import { formatProjectMoney } from '@/lib/costing/project-costs';
 
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -177,12 +178,27 @@ function getErrorMessage(error: unknown): string {
 // Component
 // ---------------------------------------------------------------------------
 
-/** The cost a row shows: the item's latest computed cost, else its bought price. */
-const costOf = (item: { computedCost?: number; unitCost?: number }): number | undefined =>
-  item.computedCost !== undefined && item.computedCost > 0 ? item.computedCost : item.unitCost;
+/** The cost a row shows, with its currency: the item's latest computed cost (in its snapshot's currency), else its bought price (no currency is stored for it). */
+const costOf = (item: { computedCost?: number; computedCostCurrency?: string; unitCost?: number }): { amount: number | undefined; currency: string | undefined } =>
+  item.computedCost !== undefined && item.computedCost > 0
+    ? { amount: item.computedCost, currency: item.computedCostCurrency }
+    : { amount: item.unitCost, currency: undefined };
 
-const money = (amount: number | undefined): string | undefined =>
-  amount === undefined ? undefined : amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** The BOM total is reported in USD whatever its items' currencies (the backend's rollup reporting currency). */
+const BOM_TOTAL_CURRENCY = 'USD';
+
+/** An amount with its currency's symbol ("$2,623.89", "₹5,644.44"); without a known currency, the bare number. */
+const money = (amount: number | undefined, currency?: string): string | undefined => {
+  if (amount === undefined) return undefined;
+  if (currency) {
+    try {
+      return formatProjectMoney(amount, currency);
+    } catch {
+      return `${currency} ${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+  }
+  return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, totalCost, toolbarActions }: BOMItemsFlatProps) {
   const { data, isLoading, refetch } = useBOMItems(bomId);
@@ -471,7 +487,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
 
   // Round icon buttons, as Gmail's; their hover a shade darker than the row's (the row is already the hover colour).
   const actionButton = 'h-7 w-7 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground';
-  const formatCost = (cost: number | undefined): string => money(cost) ?? '—';
+  const formatCost = (cost: number | undefined, currency?: string): string => money(cost, currency) ?? '—';
   // Gmail's hover: the row's actions take the place of its cost while the pointer is on the row (or a key has focus in it); a touch screen,
   // with no hover, shows them all the time. Not while dragging: then the rows show where a drop would go.
   const costHidden   = isDragging ? '' : 'group-hover:invisible group-focus-within:invisible pointer-coarse:invisible';
@@ -491,6 +507,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
     const childType      = getChildType(item.itemType);
     const style          = typeStyleOf(item.itemType);
     const parts          = modelPartsOf<BOMItem>(item);
+    const rowCost        = costOf(item);
     const facts          = rowFacts(item, levelOf(item));
     const isStarred      = starred.has(item.id);
     const isSelected     = selected.has(item.id);
@@ -654,7 +671,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
         </td>
         {/* Gmail's date: the cost, which the row's actions replace on hover. */}
         <td className="relative whitespace-nowrap py-0 pl-2 pr-4 text-right">
-          <span className={`text-[13px] font-medium tabular-nums ${costHidden}`} title="Cost">{formatCost(costOf(item))}</span>
+          <span className={`text-[13px] font-medium tabular-nums ${costHidden}`} title="Cost">{formatCost(rowCost.amount, rowCost.currency)}</span>
           <div className={`pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-accent pl-2 pr-2 opacity-0 transition-opacity pointer-coarse:bg-card ${actionsShown}`}>
             {item.file2dPath && (
               <Button variant="ghost" size="icon" className={actionButton} onClick={() => onViewItem?.(item, '2d')} title="View 2D Drawing" aria-label="View 2D Drawing">
@@ -721,7 +738,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
   const actionsOnly  = toolbarActions
     ? <div className={toolbarClass}><div className="flex flex-wrap items-center gap-1">{toolbarActions}</div></div>
     : null;
-  const totalLabel   = formatCost(totalCost);
+  const totalLabel   = formatCost(totalCost, BOM_TOTAL_CURRENCY);
 
   if (isLoading) {
     return (
@@ -1047,7 +1064,7 @@ function PartDetailSheet({ item, onClose }: { item: BOMItem | null; onClose: () 
               <DetailRow label="Annual volume" value={item.annualVolume?.toLocaleString()} />
               <DetailRow
                 label="Cost"
-                value={money(costOf(item)) ?? ''}
+                value={money(costOf(item).amount, costOf(item).currency) ?? ''}
               />
               <DetailRow label="Weight" value={item.weight && item.weight > 0 ? `${item.weight.toFixed(3)} kg` : ''} />
               <DetailRow label="Dimensions" value={dims} />
