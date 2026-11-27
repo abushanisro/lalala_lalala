@@ -41,6 +41,17 @@ export function DuoDashboard(props: DuoProps) {
   );
 }
 
+/** New: a sheet with a plus over its corner. */
+export function DuoNew(props: DuoProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2" width="16" height="16" rx="5" className={BACK} />
+      <rect x="13.2" y="8" width="3.6" height="14" rx="1.8" className={FRONT} />
+      <rect x="8" y="13.2" width="14" height="3.6" rx="1.8" className={FRONT} />
+    </Svg>
+  );
+}
+
 export function DuoProjects(props: DuoProps) {
   return (
     <Svg {...props}>

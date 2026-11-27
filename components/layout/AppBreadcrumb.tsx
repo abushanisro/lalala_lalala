@@ -15,6 +15,7 @@ import {
 
 /** Display names for the fixed URL segments of the app. */
 const SEGMENT_LABELS: Partial<Record<string, string>> = {
+  new: 'New',
   projects: 'Projects',
   bom: 'BOM',
   items: 'Items',
