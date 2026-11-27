@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Edit2, Trash2, Plus, ChevronDown, ChevronRight, FileText, Box, GripVertical, Cpu, Info, Layers, Layers3, Package, Search, StarGlyph, X } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
@@ -34,6 +35,7 @@ import { useStarredBOMItems, useToggleBOMItemStar } from '@/lib/api/hooks/useBOM
 import { useBOMItems, deleteBOMItem, updateBOMItem, updateBOMItemsSortOrder, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { dropIntent, type DropIntent } from '@/lib/bom/drop-intent';
 import { rowFacts } from '@/lib/bom/row-summary';
+import { deletionOrder, namesInWords, selectionState, toggleAll, toggleOne } from '@/lib/bom/selection';
 import { filterTree, highlightParts, matchesQuery, visibleTreeRows } from '@/lib/bom/tree-rows';
 
 import { useQueryClient } from '@tanstack/react-query';
@@ -135,6 +137,10 @@ const TYPE_STYLE: Record<string, TypeStyle> = {
   },
 };
 const LEGEND_TYPES = ['assembly', 'sub_assembly', 'child_part'] as const;
+/** Gmail's selection box: a grey outline until it is ticked, then the accent colour. */
+const SELECT_BOX = 'border-muted-foreground/60 data-[state=checked]:border-primary data-[state=indeterminate]:border-primary data-[state=indeterminate]:bg-primary data-[state=indeterminate]:text-primary-foreground';
+/** The box over the list, when only some rows are selected: a dash in place of the tick. */
+const SELECT_ALL_BOX = `${SELECT_BOX} relative data-[state=indeterminate]:[&_svg]:hidden data-[state=indeterminate]:after:absolute data-[state=indeterminate]:after:left-1/2 data-[state=indeterminate]:after:top-1/2 data-[state=indeterminate]:after:h-0.5 data-[state=indeterminate]:after:w-2.5 data-[state=indeterminate]:after:-translate-x-1/2 data-[state=indeterminate]:after:-translate-y-1/2 data-[state=indeterminate]:after:rounded data-[state=indeterminate]:after:bg-primary-foreground data-[state=indeterminate]:after:content-['']`;
 
 function typeStyleOf(type: string): TypeStyle {
   return TYPE_STYLE[type] ?? {
@@ -181,6 +187,10 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
   const [dragOverItem, setDragOverItem]         = useState<string | null>(null);
   const [isUpdating, setIsUpdating]             = useState(false);
   const [detailItem, setDetailItem]             = useState<BOMItem | null>(null);
+  // Gmail's selection: a box on every row and one over the list; Edit and Delete on top act on the rows selected.
+  const [selected, setSelected]                 = useState<ReadonlySet<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen]     = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting]     = useState(false);
 
   const items = data?.items ?? [];
 
@@ -327,6 +337,34 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
     }
   };
 
+  // The selected items still in the list (a selection outlives a refetch; an item deleted elsewhere drops out of it).
+  const selectedItems = items.filter(item => selected.has(item.id));
+  const onlySelected  = selectedItems.length === 1 ? selectedItems[0] : undefined;
+
+  // Every selected item through the same delete as a row's own button, children before their parents. What could not be deleted
+  // stays selected and is named, with the reason the server gave.
+  const handleBulkDeleteConfirm = async () => {
+    setIsBulkDeleting(true);
+    const deleted: BOMItem[] = [];
+    const failed: { item: BOMItem; reason: string }[] = [];
+    for (const item of deletionOrder(items, selected)) {
+      try {
+        await deleteBOMItem(item.id);
+        deleted.push(item);
+      } catch (error: unknown) {
+        failed.push({ item, reason: getErrorMessage(error) });
+      }
+    }
+    if (deleted.length > 0) toast.success(`${deleted.length} ${deleted.length === 1 ? 'item' : 'items'} deleted from the BOM: ${namesInWords(deleted.map(i => i.name))}.`);
+    if (failed.length > 0) {
+      toast.error(`${failed.length} ${failed.length === 1 ? 'item' : 'items'} could not be deleted: ${namesInWords(failed.map(f => f.item.name))}. ${failed[0]?.reason ?? ''}`, { duration: 8000 });
+    }
+    setSelected(new Set(failed.map(f => f.item.id)));
+    setBulkDeleteOpen(false);
+    setIsBulkDeleting(false);
+    void refetch();
+  };
+
   // -------------------------------------------------------------------------
   // Drag & Drop
   // -------------------------------------------------------------------------
@@ -447,6 +485,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
     const style          = typeStyleOf(item.itemType);
     const facts          = rowFacts(item, levelOf(item));
     const isStarred      = starred.has(item.id);
+    const isSelected     = selected.has(item.id);
     // Every line takes the colour of the items it leads to: this row's connector its own type's (a child part's yellow, a sub-assembly's
     // blue), a line running past it the colour of the branch it joins (path[i + 1], the ancestor whose next sibling it reaches), and the
     // line down from an open parent its children's.
@@ -464,6 +503,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
         key={item.id}
         aria-level={depth + 1}
         aria-expanded={hasChildren ? isExpanded : undefined}
+        aria-selected={isSelected}
         draggable={!isUpdating}
         onDragStart={e => { handleDragStart(e, item); }}
         onDragEnd={handleDragEnd}
@@ -486,7 +526,8 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
           isBeingDragged ? 'bg-muted/40 opacity-40' : '',
           dropClass,
           isUpdating ? 'cursor-wait opacity-75' : 'cursor-pointer',
-          dropClass ? '' : style.tint,
+          // Gmail's selected row: a light tint of the accent colour, over the type's own tint.
+          dropClass ? '' : isSelected ? 'bg-primary/10' : style.tint,
         ].join(' ')}
       >
         <td className={`p-0 ${style.accent}`}>
@@ -498,6 +539,16 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
                   isBeingDragged ? 'text-primary' : 'text-muted-foreground/60 opacity-0 group-hover:opacity-100'
                 }`}
                 aria-hidden="true"
+              />
+            </span>
+            {/* Gmail's box: selects the row for the Edit and Delete on top of the list. */}
+            <span className="flex w-7 shrink-0 items-center justify-center">
+              <Checkbox
+                checked={isSelected}
+                onCheckedChange={() => { setSelected(prev => toggleOne(item.id, prev)); }}
+                onClick={(e) => { e.stopPropagation(); }}
+                aria-label={`Select ${item.name}`}
+                className={SELECT_BOX}
               />
             </span>
             {/* Gmail's star: grey outline, yellow and filled when starred; the person's own mark. */}
@@ -648,6 +699,8 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
     visibleTreeRows(nodes, expanded).map((r) => renderRow(r.node, r.depth, r.guides, r.isLast, r.path));
   const rowsTree     = filtered ? filtered.nodes : treeData;
   const rowsExpanded = filtered ? new Set([...expandedItems, ...filtered.expand]) : expandedItems;
+  const shownIds     = visibleTreeRows(rowsTree, rowsExpanded).map(r => r.node.id);
+  const allState     = selectionState(shownIds, selected);
 
   // -------------------------------------------------------------------------
   // Loading / empty states
@@ -765,6 +818,46 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
         </span>
       </div>
       {/*
+        Gmail's row over the list: the box that selects every row shown (in line with the rows' own boxes), then Edit and Delete for the
+        selection. Edit takes one item (it opens that item's form); Delete takes any number.
+      */}
+      <div className="-mt-3 flex min-h-10 flex-wrap items-center gap-1 border-b py-1 pl-1 pr-4" role="toolbar" aria-label="Selected items">
+        <span className="w-6 shrink-0" aria-hidden="true" />
+        <span className="flex w-7 shrink-0 items-center justify-center">
+          <Checkbox
+            checked={allState === 'all' ? true : allState === 'some' ? 'indeterminate' : false}
+            onCheckedChange={() => { setSelected(prev => toggleAll(shownIds, prev)); }}
+            aria-label={allState === 'all' ? 'Clear the selection of the items shown' : 'Select every item shown'}
+            title={allState === 'all' ? 'Clear selection' : 'Select all'}
+            className={SELECT_ALL_BOX}
+          />
+        </span>
+        <Button
+          variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+          disabled={!onlySelected} onClick={() => { if (onlySelected) onEditItem(onlySelected); }}
+          aria-label="Edit the selected item" title={onlySelected ? `Edit ${onlySelected.name}` : selectedItems.length > 1 ? 'Select one item to edit' : 'Select an item to edit'}
+        >
+          <Edit2 className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          disabled={selectedItems.length === 0} onClick={() => { setBulkDeleteOpen(true); }}
+          aria-label="Delete the selected items" title={selectedItems.length === 0 ? 'Select items to delete' : `Delete ${selectedItems.length} selected`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+        {selectedItems.length > 0 ? (
+          <>
+            <span className="px-1 text-xs font-medium tabular-nums text-foreground" aria-live="polite">{selectedItems.length} selected</span>
+            <Button variant="ghost" size="sm" className="h-8 rounded-full px-3 text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={() => { setSelected(new Set()); }}>
+              Clear
+            </Button>
+          </>
+        ) : (
+          <span className="px-1 text-xs text-muted-foreground">Tick items to edit or delete them</span>
+        )}
+      </div>
+      {/*
         The drag image: a card of the item being dragged, drawn off screen for the browser to take under the cursor (handleDragStart). Only
         while dragging, so no empty box is ever left on the page.
       */}
@@ -879,6 +972,27 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={(open) => { if (!isBulkDeleting) setBulkDeleteOpen(open); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedItems.length} {selectedItems.length === 1 ? 'BOM item' : 'BOM items'}</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {namesInWords(selectedItems.map(i => `"${i.name}"`))}? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBulkDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isBulkDeleting}
+              onClick={(e) => { e.preventDefault(); void handleBulkDeleteConfirm(); }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isBulkDeleting ? 'Deleting…' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
