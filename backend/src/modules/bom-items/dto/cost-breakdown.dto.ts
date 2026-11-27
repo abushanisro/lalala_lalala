@@ -85,6 +85,8 @@ export interface FeatureOp {
   occurrenceRefs?: Array<{ featureId: string; occurrenceIndex: number }>;
   /** CAD faces (face_map ids) the entry acts on when no feature lists them (the faces meeting at the sharp edges deburred). */
   faceIds?: number[];
+  /** An assembly row: the BOM items (parts, or sub-assemblies) it concerns, which the assembly view highlights: a component row's own, a joint's part. */
+  componentIds?: string[];
   /**
    * Why this feature is machined after the primary process (secondary-machining-cost.ts): the requirement, where it was read, and what the primary process
    * holds instead. Absent on every other entry.
