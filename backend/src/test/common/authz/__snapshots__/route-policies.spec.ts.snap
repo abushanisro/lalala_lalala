@@ -333,6 +333,8 @@ org:member      POST /api/v1/child-part-costs  ChildPartCostController.create
 org:member      POST /api/v1/child-part-costs/calculations  ChildPartCostController.calculateOnly
 org:member      POST /api/v1/copilot/chat  CopilotController.chat
 org:member      POST /api/v1/copilot/memory-proposals/:id/confirm  CopilotController.confirmMemoryProposal
+org:member      POST /api/v1/drawing-readings  DrawingReadingsController.read
+org:member      POST /api/v1/drawing-solids  DrawingSolidsController.build
 platform_admin  POST /api/v1/exchange-rates/refresh  FxController.refresh
 org:member      POST /api/v1/feature-process-mappings  ManufacturingKnowledgeController.createFeatureProcessMapping
 org:admin       POST /api/v1/labour-rates  LHRController.create

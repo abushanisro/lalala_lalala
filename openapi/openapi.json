@@ -138,6 +138,11 @@
             "example": "medium",
             "type": "string"
           },
+          "computedCost": {
+            "description": "The item's cost from its latest cost snapshot (an assembly: rolled up from its children). Read only: unitCost stays the bought price.",
+            "example": 2620.53,
+            "type": "number"
+          },
           "createdAt": {
             "example": "2025-01-15T10:30:00Z",
             "type": "string"
@@ -17693,6 +17698,46 @@
         ],
         "tags": [
           "fx"
+        ]
+      }
+    },
+    "/api/v1/drawing-readings": {
+      "post": {
+        "operationId": "DrawingReadingsController_read_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read one drawing (PNG, JPEG, WebP, GIF or PDF): part, material, overall shape, holes, tolerances, and what could not be read.",
+        "tags": [
+          "Drawing readings"
+        ]
+      }
+    },
+    "/api/v1/drawing-solids": {
+      "post": {
+        "operationId": "DrawingSolidsController_build_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Build a simple solid (STEP) from a drawing reading's overall form and holes, to upload as the part's 3D model.",
+        "tags": [
+          "Drawing readings"
         ]
       }
     },
