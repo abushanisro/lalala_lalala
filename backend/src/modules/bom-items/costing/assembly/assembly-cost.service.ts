@@ -16,6 +16,7 @@ import type { DbClient } from '../../../../common/db/postgrest-client';
 import type { BOMItemResponseDto } from '../../dto/bom-item-response.dto';
 import type { CostContext } from '../casting/casting-finishing';
 import type { SandReference } from '../casting/sand/sand-reference';
+import { withRolledUpMass, type RollupItem } from './assembly-rollup';
 
 
 const SOURCE_VERSION = '2026-Assembly';
@@ -113,11 +114,24 @@ export class AssemblyCostService {
     return read;
   }
 
+  /** What the roll-up needs of the items directly below `parentId`. */
+  private async itemsBelow(client: DbClient, parentId: string): Promise<RollupItem[]> {
+    const { data, error } = await client.from('bom_items')
+      .select('id, item_type, quantity, weight, max_length, max_width, max_height').eq('parent_item_id', parentId);
+    if (error) throw new Error(`the parts below ${parentId} could not be read: ${error.message}`);
+    const n = (v: unknown): number | null => (v == null ? null : Number(v));
+    return (data ?? []).map((r: Record<string, unknown>) => ({
+      id: String(r.id), itemType: String(r.item_type), quantity: n(r.quantity), weight: n(r.weight),
+      maxLength: n(r.max_length), maxWidth: n(r.max_width), maxHeight: n(r.max_height),
+    }));
+  }
+
   async price(req: AssemblyCostRequest): Promise<AssemblyCostResult> {
     const o = req.overrides ?? {};
     // A part set to Assembly with no parts under it in the BOM is the one component: it is loaded, and its own threaded holes are screwed.
     const self = req.children.length === 0;
-    const parts = self ? [{ ...req.item, quantity: 1 }] : req.children;
+    // A sub-assembly is loaded by its parts' weight and size when the BOM holds none of its own.
+    const parts = self ? [{ ...req.item, quantity: 1 }] : await withRolledUpMass(req.children, (id) => this.itemsBelow(req.client, id));
     const components = await componentsOf(parts, req.densityOf);
     const { joints, ignored } = mergeJoints(deriveJoints(components), o[ASSEMBLY_JOINTS_KEY]);
     const warnings = [...ignored, ...(self ? [`${req.item.name} has no parts under it in the BOM: it is costed as the one component, loaded and screwed into its own threaded holes.`] : [])];

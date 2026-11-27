@@ -75,6 +75,9 @@ export class BOMItemResponseDto {
   @ApiPropertyOptional({ example: 1250.50 })
   unitCost?: number;
 
+  @ApiPropertyOptional({ example: 2620.53, description: "The item's cost from its latest cost snapshot (an assembly: rolled up from its children). Read only: unitCost stays the bought price." })
+  computedCost?: number;
+
   @ApiPropertyOptional({ example: 1.5 })
   weight?: number;
 

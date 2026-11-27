@@ -34,6 +34,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { useStarredBOMItems, useToggleBOMItemStar } from '@/lib/api/hooks/useBOMItemStars';
 import { useBOMItems, deleteBOMItem, updateBOMItem, updateBOMItemsSortOrder, type BOMItem } from '@/lib/api/hooks/useBOMItems';
 import { dropIntent, type DropIntent } from '@/lib/bom/drop-intent';
+import { modelPartsOf } from '@/lib/bom/model-parts';
 import { rowFacts } from '@/lib/bom/row-summary';
 import { deletionOrder, namesInWords, selectionState, toggleAll, toggleOne } from '@/lib/bom/selection';
 import { filterTree, highlightParts, matchesQuery, visibleTreeRows } from '@/lib/bom/tree-rows';
@@ -175,6 +176,13 @@ function getErrorMessage(error: unknown): string {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+/** The cost a row shows: the item's latest computed cost, else its bought price. */
+const costOf = (item: { computedCost?: number; unitCost?: number }): number | undefined =>
+  item.computedCost !== undefined && item.computedCost > 0 ? item.computedCost : item.unitCost;
+
+const money = (amount: number | undefined): string | undefined =>
+  amount === undefined ? undefined : amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, totalCost, toolbarActions }: BOMItemsFlatProps) {
   const { data, isLoading, refetch } = useBOMItems(bomId);
@@ -463,8 +471,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
 
   // Round icon buttons, as Gmail's; their hover a shade darker than the row's (the row is already the hover colour).
   const actionButton = 'h-7 w-7 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground';
-  const formatCost = (cost: number | undefined): string =>
-    typeof cost === 'number' ? cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  const formatCost = (cost: number | undefined): string => money(cost) ?? '—';
   // Gmail's hover: the row's actions take the place of its cost while the pointer is on the row (or a key has focus in it); a touch screen,
   // with no hover, shows them all the time. Not while dragging: then the rows show where a drop would go.
   const costHidden   = isDragging ? '' : 'group-hover:invisible group-focus-within:invisible pointer-coarse:invisible';
@@ -483,6 +490,7 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
     const isBeingDragged = draggedItem?.id === item.id;
     const childType      = getChildType(item.itemType);
     const style          = typeStyleOf(item.itemType);
+    const parts          = modelPartsOf<BOMItem>(item);
     const facts          = rowFacts(item, levelOf(item));
     const isStarred      = starred.has(item.id);
     const isSelected     = selected.has(item.id);
@@ -597,9 +605,10 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
                   </>
                 ) : null}
               </span>
-              {(item.file3dPath || item.file2dPath) ? (
+              {(item.file3dPath || item.file2dPath || parts.length > 0) ? (
                 <BOMItemThumbnail
                   item={item}
+                  parts={parts}
                   size="sm"
                   onClick={() => onViewItem?.(item, item.file3dPath ? '3d' : '2d')}
                 />
@@ -643,9 +652,9 @@ export function BOMItemsFlat({ bomId, onEditItem, onViewItem, onAddChildItem, to
             <span className="text-muted-foreground">{facts.join(' · ')}</span>
           </div>
         </td>
-        {/* Gmail's date: the unit cost, which the row's actions replace on hover. */}
+        {/* Gmail's date: the cost, which the row's actions replace on hover. */}
         <td className="relative whitespace-nowrap py-0 pl-2 pr-4 text-right">
-          <span className={`text-[13px] font-medium tabular-nums ${costHidden}`} title="Unit cost">{formatCost(item.unitCost)}</span>
+          <span className={`text-[13px] font-medium tabular-nums ${costHidden}`} title="Cost">{formatCost(costOf(item))}</span>
           <div className={`pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-accent pl-2 pr-2 opacity-0 transition-opacity pointer-coarse:bg-card ${actionsShown}`}>
             {item.file2dPath && (
               <Button variant="ghost" size="icon" className={actionButton} onClick={() => onViewItem?.(item, '2d')} title="View 2D Drawing" aria-label="View 2D Drawing">
@@ -1037,12 +1046,8 @@ function PartDetailSheet({ item, onClose }: { item: BOMItem | null; onClose: () 
               <DetailRow label="Quantity" value={`${item.quantity}${item.unit ? ` ${item.unit}` : ''}`} />
               <DetailRow label="Annual volume" value={item.annualVolume?.toLocaleString()} />
               <DetailRow
-                label="Unit cost"
-                value={
-                  typeof item.unitCost === 'number'
-                    ? item.unitCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                    : ''
-                }
+                label="Cost"
+                value={money(costOf(item)) ?? ''}
               />
               <DetailRow label="Weight" value={item.weight && item.weight > 0 ? `${item.weight.toFixed(3)} kg` : ''} />
               <DetailRow label="Dimensions" value={dims} />

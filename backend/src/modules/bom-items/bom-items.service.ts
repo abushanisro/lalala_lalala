@@ -179,7 +179,14 @@ export class BOMItemsService {
     }
 
     // Transform database rows to DTOs
-    const transformedItems = (data || []).map(row => BOMItemResponseDto.fromDatabase(row));
+    const rows = (data || []) as unknown as Array<{ id: string }>;
+    const computed = await this.computedCosts(client, rows.map(row => row.id));
+    const transformedItems = rows.map(row => {
+      const dto = BOMItemResponseDto.fromDatabase(row);
+      const cost = computed.get(row.id);
+      if (cost !== undefined) dto.computedCost = cost;
+      return dto;
+    });
 
     return {
       items: transformedItems,
@@ -187,6 +194,20 @@ export class BOMItemsService {
       page,
       limit,
     } as BOMItemListResponseDto;
+  }
+
+  /** The latest snapshot cost of each item (an assembly's is rolled up). A snapshot that cannot be read leaves the item without one; it never hides the item. */
+  private async computedCosts(client: DbClient, itemIds: string[]): Promise<Map<string, number>> {
+    const costs = new Map<string, number>();
+    for (let start = 0; start < itemIds.length; start += 200) {
+      const { data, error } = await client.from('bom_item_costs').select('bom_item_id, total_cost').in('bom_item_id', itemIds.slice(start, start + 200));
+      if (error) {
+        this.logger.warn(`BOM item costs not read: ${error.message}`);
+        break;
+      }
+      for (const row of data ?? []) costs.set(row.bom_item_id, Number(row.total_cost));
+    }
+    return costs;
   }
 
   async findOne(
