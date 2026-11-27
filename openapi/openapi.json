@@ -12473,6 +12473,26 @@
         ]
       }
     },
+    "/api/v1/ai-usage-totals": {
+      "get": {
+        "operationId": "AiUsageController_summary_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The organization's AI tokens today against the daily allowances, by feature, and for each of the last 30 days.",
+        "tags": [
+          "AI usage"
+        ]
+      }
+    },
     "/api/v1/audit-events": {
       "get": {
         "operationId": "AuditController_list_v1",

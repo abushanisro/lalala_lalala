@@ -5,6 +5,7 @@ import { useCallback, useRef, useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Bot, Send, RotateCcw, Loader2 } from '@/components/ui/icons';
 import { Mark } from '@/components/ui/status-mark';
+import { notifyAiUsage } from "@/lib/ai/usage-events";
 import { apiClient } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +80,8 @@ const MAX_ANSWER_CHARS = 8000;
 type CopilotEvent =
   | { type: "text"; delta: string }
   | { type: "memory_proposal"; proposalId: string; add: string[]; remove: string[]; expiresAt: string }
+  // "usage" follows each model call of an answer, "done" ends it: both mean the answer has spent tokens that are now recorded.
+  | { type: "usage" }
   | { type: "done" }
   | { type: "error"; code: string };
 
@@ -288,8 +291,11 @@ function useCopilotChat(bomItemId: string, scenario: CopilotScenario) {
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, proposals: [...(m.proposals ?? []), proposal] } : m)),
           );
-        } else if (event.type === "error") {
+        } else if (event.type === "usage" || event.type === "done") {
+          notifyAiUsage();
+        } else {
           setError(ERROR_TEXT[event.code] ?? "Something went wrong. Try again.");
+          notifyAiUsage();
         }
       };
 

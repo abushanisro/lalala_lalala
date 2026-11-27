@@ -1,3 +1,4 @@
+import { spendingAi } from "@/lib/ai/usage-events";
 import { apiClient } from "@/lib/api/client";
 
 export type ProcessFamily = "machining" | "sheet_metal" | "casting" | "forging" | "plastic_molding" | "other";
@@ -49,7 +50,7 @@ export const drawingReadingsApi = {
     const form = new FormData();
     form.append("file", file);
     if (note?.trim()) form.append("note", note.trim());
-    return apiClient.uploadFiles<DrawingReadingResult>("/drawing-readings", form, { timeout: 240_000 });   // a dense drawing takes the reader up to three minutes
+    return spendingAi(apiClient.uploadFiles<DrawingReadingResult>("/drawing-readings", form, { timeout: 240_000 }));   // a dense drawing takes the reader up to three minutes
   },
   /** POST /drawing-solids: the STEP of the solid a reading describes. */
   solid: (body: { shape: DrawingShape; holes: DrawingHole[]; name: string }) =>

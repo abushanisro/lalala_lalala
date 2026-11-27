@@ -5,6 +5,9 @@ INSERT INTO public.organizations (id) VALUES ('aaaaaaaa-0000-4000-8000-000000000
 
 \i /migrations/949_ai_usage_daily.sql
 \i /migrations/949_ai_usage_daily.sql
+-- 1166 added the feature to the table's key and redefined ai_usage_record on it; applying 949 again above put the old body back,
+-- so 1166 is applied again too. What 949 promised is checked below as the functions stand now.
+\i /migrations/1166_ai_usage_by_feature.sql
 
 SET ROLE authenticated;
 SELECT set_config('test.uid', '11111111-0000-4000-8000-00000000000a', false);
