@@ -2,7 +2,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,6 +16,7 @@ import { useRawMaterials } from '@/lib/api/hooks/useRawMaterials';
 import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-picker-query';
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { intakeApi } from '@/lib/intake/api';
+import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
 import {
   costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
 } from '@/lib/intake/plan';
@@ -50,6 +51,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  useTypedPlaceholder(textarea, phase === 'compose' && note === '');
 
   const { data: factories } = useFactories();
   const { data: catalog } = useProcessCalculatorMappings({ limit: 1000 });
@@ -134,7 +136,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           <Textarea
             ref={textarea} value={note} disabled={phase !== 'compose'} onChange={event => { setNote(event.target.value); }}
             onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && files.length > 0 && phase === 'compose') { event.preventDefault(); void read(); } }}
-            placeholder="Say what this is, for example: brackets for the pump frame"
+            placeholder={STILL_PLACEHOLDER}
             aria-label="What the job is"
             className="min-h-[56px] resize-none border-none bg-transparent px-5 pb-2 pt-4 text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
           />
@@ -253,6 +255,25 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       )}
     </section>
   );
+}
+
+/**
+ * Types the prompt's examples into its placeholder, one after another, while the prompt is empty and waiting (`typing`). The field is
+ * written to directly, so nothing re-renders on a tick. Nothing moves for a reader who asked for less motion, or while the page is
+ * hidden; when the typing stops the placeholder is the first example again.
+ */
+function useTypedPlaceholder(field: RefObject<HTMLTextAreaElement | null>, typing: boolean) {
+  useEffect(() => {
+    const node = field.current;
+    if (!node || !typing || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let tick = FIRST_HELD_TICK;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      tick += 1;
+      node.placeholder = placeholderAt(tick);
+    }, TYPING.tickMs);
+    return () => { window.clearInterval(timer); node.placeholder = STILL_PLACEHOLDER; };
+  }, [field, typing]);
 }
 
 function Field({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
