@@ -1,14 +1,12 @@
 import { format, formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
 
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowRight, FolderKanban, Pencil, Settings, Trash2 } from '@/components/ui/icons';
+import { ArrowRight, Pencil, Settings, Trash2 } from '@/components/ui/icons';
 import type { Project } from '@/lib/api/projects';
 
-const initialsOf = (name: string | undefined): string =>
-  (name ?? '').split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join('') || '?';
+import { OwnerAvatar, ProjectPicture } from './project-visuals';
 
 export interface ProjectCardProps {
   project: Project;
@@ -29,18 +27,12 @@ export function ProjectCard({ project, ownerAvatarUrl, statusBadge, actualCost, 
   const href = `/projects/${project.id}`;
   const location = [project.city, project.state, project.country].filter(Boolean).join(', ');
   const meta = [project.industry?.replace('-', ' '), location].filter(Boolean).join(' · ');
-  const owner = project.ownerName ?? 'Owner';
 
   return (
     <article className="group flex flex-col gap-3">
       <div className="relative aspect-[16/10] overflow-hidden rounded-2xl border bg-gradient-to-br from-muted/70 to-muted/20">
         <Link href={href} aria-label={`Open ${project.name}`} className="absolute inset-0 z-0 flex items-center justify-center">
-          {project.thumbnailUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element -- a stored data URL, not a file Next can optimise
-            <img src={project.thumbnailUrl} alt="" className="h-full w-full object-contain p-5 transition-transform duration-300 group-hover:scale-[1.03]" />
-          ) : (
-            <FolderKanban className="h-10 w-10 text-muted-foreground/30" aria-hidden="true" />
-          )}
+          <ProjectPicture thumbnailUrl={project.thumbnailUrl} className="transition-transform duration-300 group-hover:scale-[1.03]" />
         </Link>
         <div className="pointer-events-none absolute left-3 top-3 z-10">{statusBadge}</div>
         <div className="absolute right-3 top-3 z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
@@ -71,10 +63,7 @@ export function ProjectCard({ project, ownerAvatarUrl, statusBadge, actualCost, 
       </div>
 
       <div className="flex items-start gap-3">
-        <Avatar className="h-9 w-9" title={owner}>
-          {ownerAvatarUrl && <AvatarImage src={ownerAvatarUrl} alt={owner} />}
-          <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">{initialsOf(project.ownerName)}</AvatarFallback>
-        </Avatar>
+        <OwnerAvatar name={project.ownerName} photoUrl={ownerAvatarUrl} />
         <div className="min-w-0 flex-1">
           <Link href={href} className="block truncate font-semibold text-foreground hover:text-primary hover:underline" title={project.name}>
             {project.name}
