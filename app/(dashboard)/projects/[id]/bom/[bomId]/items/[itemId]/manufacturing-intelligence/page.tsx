@@ -3330,7 +3330,7 @@ function RouteSelectionDialog({
                 description: 'The press-and-sinter route as quoted: the powder compacted to its green density on the cheapest press that delivers the force, takes the fill and fits the part, then sintered on the mesh belt furnace that carries it, with the powder. The Cost Guide sets the green density.',
               } : isForged ? {
                 title: 'Forging',
-                description: 'Each forging route of the part: closed-die on a screw press, a die hammer or a mechanical press with transfer; open-die for a flashless shape; ring rolling for a ring. Each saws the bar into mults, heats them by induction (or in a gas furnace when too thick for the coils), forms them on the cheapest capable machine and trims the flash, with the bar and the dies.',
+                description: 'Each forging route of the part: closed-die on a hydraulic press, a die hammer or a mechanical press with transfer; open-die for a flashless shape; ring rolling for a ring. Each saws the bar into mults, heats them by induction (or in a gas furnace when too thick for the coils), forms them on the cheapest capable machine and trims the flash, with the bar and the dies.',
               } : isInvestmentCast ? {
                 title: 'Investment casting',
                 description: 'The investment casting route as quoted: wax pattern, tree, shell dips, de-waxing, burnout, pour, knockout, cut-off and finishing, each on the cheapest capable machine. Steps a tree shares are divided by its patterns.',
