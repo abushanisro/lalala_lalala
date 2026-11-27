@@ -1,38 +1,33 @@
 'use client';
 
 import { Country, State, City } from 'country-state-city';
-import { format, formatDistanceToNow } from 'date-fns';
-import Link from 'next/link';
+import { formatDistanceToNow } from 'date-fns';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo } from 'react';
 
 import { StatusBadge } from '@/components/common/status-badge';
+import { ProjectCard } from '@/components/features/projects/ProjectCard';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EmptyState } from '@/components/ui/empty-state';
 import {
   Plus,
   FolderKanban,
   Clock,
   CheckCircle2,
-  Trash2,
-  ArrowRight,
   Pause,
   XCircle,
-  Pencil,
-  Settings,
 } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { TableSkeleton } from '@/components/ui/loading-skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import { useProfile } from '@/lib/api/hooks/useProfile';
 import { useProjects, useCreateProject, useUpdateProject, useDeleteProject } from '@/lib/api/hooks/useProjects';
 import { formatProjectMoney, projectCostCurrency, projectSavings } from '@/lib/costing/project-costs';
 import { cn } from '@/lib/utils';
@@ -48,6 +43,7 @@ const PROJECT_STATUSES = [
 export default function Projects() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { data: profile } = useProfile();
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -510,8 +506,16 @@ export default function Projects() {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-6">
-              <TableSkeleton rows={5} columns={5} label="Loading projects..." />
+            <div className="grid gap-x-6 gap-y-8 p-6 sm:grid-cols-2 xl:grid-cols-3" role="status" aria-busy="true" aria-label="Loading projects...">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="space-y-3">
+                  <Skeleton className="aspect-[16/10] w-full rounded-2xl" />
+                  <div className="flex items-center gap-3">
+                    <Skeleton className="h-9 w-9 rounded-full" />
+                    <div className="flex-1 space-y-2"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-1/3" /></div>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : projects.length === 0 ? (
             <div className="p-6">
@@ -528,136 +532,25 @@ export default function Projects() {
               </EmptyState>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="min-w-64 pl-6">Project</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead data-numeric>BOMs</TableHead>
-                  <TableHead data-numeric>Items</TableHead>
-                  <TableHead data-numeric>Annual Volume</TableHead>
-                  <TableHead data-numeric>Target BOM Cost</TableHead>
-                  <TableHead data-numeric>Actual Cost</TableHead>
-                  <TableHead data-numeric>Savings</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="w-16 pr-6 text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {projects.map((project) => {
-                  const location = [project.city, project.state, project.country].filter(Boolean).join(', ');
-                  const industryLabel = project.industry ? project.industry.replace('-', ' ') : '';
-                  const meta = [industryLabel, location].filter(Boolean).join(' · ');
-                  const saved = projectSavings(project);
-                  const target = project.targetBomCost ?? 0;
-                  return (
-                    <TableRow
-                      key={project.id}
-                      className="cursor-pointer"
-                      onClick={() => router.push(`/projects/${project.id}`)}
-                    >
-                      <TableCell className="max-w-80 py-4 pl-6">
-                        <Link
-                          href={`/projects/${project.id}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                          }}
-                          className="block truncate font-semibold text-foreground hover:text-primary hover:underline"
-                        >
-                          {project.name}
-                        </Link>
-                        {project.description && (
-                          <p className="line-clamp-1 text-sm text-muted-foreground">{project.description}</p>
-                        )}
-                        <p className="truncate text-xs capitalize text-muted-foreground" title={location}>
-                          {meta || '-'}
-                        </p>
-                      </TableCell>
-                      <TableCell>{renderStatusBadge(project.status)}</TableCell>
-                      <TableCell data-numeric>{project.bomCount ?? 0}</TableCell>
-                      <TableCell data-numeric>{project.bomItemCount ?? 0}</TableCell>
-                      <TableCell data-numeric>
-                        {project.estimatedAnnualVolume
-                          ? Number(project.estimatedAnnualVolume).toLocaleString()
-                          : '-'}
-                      </TableCell>
-                      <TableCell data-numeric>
-                        {project.targetBomCost && project.targetBomCostCurrency ? (
-                          <span className="font-medium">
-                            {`${project.targetBomCostCurrency} ${Number(project.targetBomCost).toLocaleString()}`}
-                          </span>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditOpen(project);
-                            }}
-                          >
-                            Set up
-                          </Button>
-                        )}
-                      </TableCell>
-                      <TableCell data-numeric>
-                        {formatProjectMoney(project.actualCost, projectCostCurrency(project))}
-                      </TableCell>
-                      <TableCell data-numeric className="text-success">
-                        {target > 0 && saved != null ? `${(saved / target * 100).toFixed(1)}%` : '—'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">
-                        {format(new Date(project.createdAt), 'MMM d, yyyy')}
-                      </TableCell>
-                      <TableCell
-                        className="pr-6 text-right"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                        }}
-                      >
-                        <DropdownMenu modal={false}>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="icon" className="h-8 w-8 text-muted-foreground">
-                              <Settings className="h-4 w-4" />
-                              <span className="sr-only">Open menu for {project.name}</span>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-40">
-                            <DropdownMenuItem
-                              onSelect={() => {
-                                router.push(`/projects/${project.id}`);
-                              }}
-                            >
-                              <ArrowRight className="mr-2 h-4 w-4 text-muted-foreground" />
-                              Open Project
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={() => {
-                                handleEditOpen(project);
-                              }}
-                            >
-                              <Pencil className="mr-2 h-4 w-4 text-muted-foreground" />
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                              onSelect={() => {
-                                setProjectToDelete(project);
-                                setDeleteOpen(true);
-                              }}
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+            <div className="grid gap-x-6 gap-y-8 p-6 sm:grid-cols-2 xl:grid-cols-3">
+              {projects.map((project) => {
+                const target = project.targetBomCost ?? 0;
+                const saved = projectSavings(project);
+                return (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    ownerAvatarUrl={project.ownerId && project.ownerId === profile?.userId ? (profile.avatarUrl ?? undefined) : undefined}
+                    statusBadge={renderStatusBadge(project.status)}
+                    actualCost={formatProjectMoney(project.actualCost, projectCostCurrency(project))}
+                    savings={target > 0 && saved != null ? `${(saved / target * 100).toFixed(1)}%` : null}
+                    onOpen={() => { router.push(`/projects/${project.id}`); }}
+                    onEdit={() => { handleEditOpen(project); }}
+                    onDelete={() => { setProjectToDelete(project); setDeleteOpen(true); }}
+                  />
+                );
+              })}
+            </div>
           )}
         </CardContent>
       </Card>

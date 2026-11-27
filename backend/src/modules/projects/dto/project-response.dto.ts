@@ -65,6 +65,15 @@ export class ProjectResponseDto {
   @ApiProperty({ example: 'USD', description: 'Denomination of actualCost' })
   actualCostCurrency: string;
 
+  @ApiProperty({ required: false, description: 'Who created the project' })
+  ownerId?: string;
+
+  @ApiProperty({ example: 'Asha Rao', required: false, description: "The owner's display name (their email when they have none)" })
+  ownerName?: string;
+
+  @ApiProperty({ required: false, description: "A picture of the project: its main assembly's, else a sub-assembly's, else a part's, as the BOM page stored it (a data URL). Absent until one has been drawn." })
+  thumbnailUrl?: string;
+
   /**
    * Transform database row to DTO
    * Validates all required fields exist
@@ -89,6 +98,7 @@ export class ProjectResponseDto {
     dto.targetBomCostCurrency = row.target_bom_cost_currency || undefined;
     dto.createdAt = row.created_at;
     dto.updatedAt = row.updated_at;
+    dto.ownerId = row.user_id || undefined;
     // Aggregate fields — set externally after enrichment, default to 0
     dto.bomCount = row.bom_count ?? 0;
     dto.bomItemCount = row.bom_item_count ?? 0;

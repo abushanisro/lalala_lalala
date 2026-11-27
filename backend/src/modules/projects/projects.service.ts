@@ -9,6 +9,7 @@ import { Logger as CustomLogger } from '@/common/logger/logger.service';
 import { ExchangeRateService } from '../../common/exchange-rate/exchange-rate.service';
 import { ROLLUP_REPORTING_CURRENCY } from '../bom-items/costing/shared/core/persisted-currency-contract';
 import { loadBomTotals, readAllRows } from '../boms/bom-totals';
+import { pickThumbnailItems } from './project-thumbnail';
 
 // One answer for an unknown account and for an account of another organization, so adding a member reveals nobody's account.
 const NOT_AN_ORG_MEMBER = 'No member of this organization with that email or user id. Invite them to the organization first.';
@@ -74,6 +75,13 @@ export class ProjectsService {
             p.bomItemCount = stats.bomItemCount;
             p.actualCost = stats.actualCost;
           }
+        }
+        const [owners, thumbnails] = await Promise.all([this.ownerNames(projects.map(p => p.ownerId)), this.projectThumbnails(client, projectIds)]);
+        for (const p of projects) {
+          const owner = p.ownerId ? owners.get(p.ownerId) : undefined;
+          if (owner) p.ownerName = owner;
+          const thumbnail = thumbnails.get(p.id);
+          if (thumbnail) p.thumbnailUrl = thumbnail;
         }
       }
 
@@ -374,6 +382,45 @@ export class ProjectsService {
       }
       
       throw new InternalServerErrorException('Unable to retrieve cost analysis. Please try again or contact support if the problem persists.');
+    }
+  }
+
+  /** The display name of each owner (their email when they have none). A directory that cannot be read leaves the names out; it never fails the list. */
+  private async ownerNames(ownerIds: ReadonlyArray<string | undefined>): Promise<Map<string, string>> {
+    try {
+      const found = await this.directory.findByIds(ownerIds.filter((id): id is string => !!id));
+      return new Map([...found].flatMap(([id, user]) => { const name = user.fullName?.trim() || user.email; return name ? [[id, name] as const] : []; }));
+    } catch (error) {
+      this.logger.warn(`Project owners not read: ${error instanceof Error ? error.message : String(error)}`);
+      return new Map();
+    }
+  }
+
+  /**
+   * One stored item picture per project (project-thumbnail.ts). Only which items have one is read first; then the few pictures chosen.
+   * Only the transparent PNGs the BOM page draws now: its older pictures are JPEGs on a dark background, which it redraws when it shows the part.
+   */
+  private async projectThumbnails(client: ReturnType<DatabaseService['getUserClient']>, projectIds: string[]): Promise<Map<string, string>> {
+    try {
+      const boms = await readAllRows<{ id: string; project_id: string }>((from, to) => client.from('boms')
+        .select('id, project_id', { count: 'exact' }).in('project_id', projectIds).order('id').range(from, to));
+      const projectOf = new Map(boms.map(bom => [bom.id, bom.project_id]));
+      const drawn: Array<{ id: string; projectId: string; itemType: string; createdAt: string }> = [];
+      const bomIds = [...projectOf.keys()];
+      for (let start = 0; start < bomIds.length; start += 200) {
+        const rows = await readAllRows<{ id: string; bom_id: string; item_type: string; created_at: string }>((from, to) => client.from('bom_items')
+          .select('id, bom_id, item_type, created_at', { count: 'exact' }).in('bom_id', bomIds.slice(start, start + 200)).like('thumbnail_url', 'data:image/png%').order('id').range(from, to));
+        for (const row of rows) drawn.push({ id: row.id, projectId: projectOf.get(row.bom_id) ?? '', itemType: row.item_type, createdAt: row.created_at });
+      }
+      const chosen = pickThumbnailItems(drawn.filter(item => item.projectId));
+      if (chosen.size === 0) return new Map();
+      const { data, error } = await client.from('bom_items').select('id, thumbnail_url').in('id', [...chosen.values()]);
+      if (error) throw new Error(error.message);
+      const pictureOf = new Map((data ?? []).map((row: { id: string; thumbnail_url: string | null }) => [row.id, row.thumbnail_url]));
+      return new Map([...chosen].flatMap(([projectId, itemId]) => { const picture = pictureOf.get(itemId); return picture ? [[projectId, picture] as const] : []; }));
+    } catch (error) {
+      this.logger.warn(`Project thumbnails not read: ${error instanceof Error ? error.message : String(error)}`);
+      return new Map();
     }
   }
 
