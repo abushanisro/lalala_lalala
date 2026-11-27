@@ -46,3 +46,20 @@ export function selectionFor<T extends TreeItem>(root: TreeNode<T>, ids: readonl
     node.id === id ? node : node.children.reduce<TreeNode<T> | null>((found, child) => found ?? find(child, id), null);
   return [...new Set(ids.flatMap((id) => { const node = find(root, id); return node ? modelIdsUnder(node) : []; }))];
 }
+
+/** An item and the sub-assemblies above it, nearest first, up to the root's own child (the root is not in it); empty when the id is not under the root. */
+export function ancestorChain<T extends TreeItem>(root: TreeNode<T>, id: string): string[] {
+  const find = (node: TreeNode<T>): string[] | null => {
+    if (node.id === id) return [node.id];
+    for (const child of node.children) {
+      const below = find(child);
+      if (below) return [...below, node.id];
+    }
+    return null;
+  };
+  for (const child of root.children) {
+    const chain = find(child);
+    if (chain) return chain;
+  }
+  return [];
+}

@@ -116,6 +116,13 @@ export function componentIdsUnder(node: ProcessTreeNode | null): string[] {
   return node.componentIds ?? (node.children ?? []).flatMap(componentIdsUnder);
 }
 
+/** The row that stands for a clicked part: the first row (in the tree's order) for the nearest of `itemIds` (the part, then the sub-assemblies above it) that has one. */
+export function findComponentNode(root: ProcessTreeNode, itemIds: readonly string[]): ProcessTreeNode | null {
+  const rowFor = (node: ProcessTreeNode, id: string): ProcessTreeNode | null =>
+    node.componentIds?.includes(id) ? node : (node.children ?? []).reduce<ProcessTreeNode | null>((found, child) => found ?? rowFor(child, id), null);
+  return itemIds.reduce<ProcessTreeNode | null>((found, id) => found ?? rowFor(root, id), null);
+}
+
 export function findNode(node: ProcessTreeNode, id: string): ProcessTreeNode | null {
   if (node.id === id) return node;
   for (const c of node.children ?? []) { const f = findNode(c, id); if (f) return f; }
@@ -522,7 +529,7 @@ export function buildProcessTree(
           label: stepRowLabel(b.name, rec.process),
           factory, machine,
           ...(ids.length > 0 ? { v2FeatureIds: ids } : {}),
-          ...(b.featureType === 'AssemblyComponent' && (b.featureIds ?? []).length > 0 ? { componentIds: b.featureIds } : {}),
+          ...((b.componentIds ?? []).length > 0 ? { componentIds: b.componentIds } : {}),
           attrs: [
             { name: 'Count', value: String(b.count) },
             { name: 'Time', value: formatEstCycleTime(b.timeSec) },

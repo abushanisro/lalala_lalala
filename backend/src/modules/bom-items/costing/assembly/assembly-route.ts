@@ -199,7 +199,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
       else bands.set(row, [...(bands.get(row) ?? []), c]);
     }
     // Feature names stay short (the tree lists features); the mass and where it came from are on the panel and in the trace.
-    const componentOp = (c: AssemblyComponent, sec = 0): FeatureOp => ({ name: `${c.name} ×${c.quantity}`, featureType: 'AssemblyComponent', timeSec: sec, count: c.quantity, featureIds: [c.id] });
+    const componentOp = (c: AssemblyComponent, sec = 0): FeatureOp => ({ name: `${c.name} ×${c.quantity}`, featureType: 'AssemblyComponent', timeSec: sec, count: c.quantity, featureIds: [c.id], componentIds: [c.id] });
     for (const [row, group] of bands) {
       const quantity = group.reduce((s, c) => s + c.quantity, 0);
       const loadSeed = lookupSeed('componentLoadTimes', row, 'Load Time (s)', ['Equipment', 'Weight (kg)', 'Part Max Dimension (mm)']);
@@ -250,7 +250,7 @@ export function buildAssemblyRoutes(input: AssemblyRouteInput): { routes: Assemb
     let consumablesUsd = 0;
     for (const j of enabled) {
       const process = ARC_WELDS[j.process]?.[route.key] ?? j.process;
-      const jointOp: FeatureOp = { name: j.label, featureType: j.source === 'derived' ? 'AssemblyJointDerived' : 'AssemblyJoint', timeSec: 0, count: j.count, featureIds: j.featureIds };
+      const jointOp: FeatureOp = { name: j.label, featureType: j.source === 'derived' ? 'AssemblyJointDerived' : 'AssemblyJoint', timeSec: 0, count: j.count, featureIds: j.featureIds, ...(j.componentId ? { componentIds: [j.componentId] } : {}) };
       const countSource = `${j.count} on the joint (${j.source === 'derived' ? 'from the threaded holes of its part' : 'the joint table'})`;
       const count: CalcSeed = isSelf(j.componentId) && j.featureIds.length > 0
         ? { value: j.count, source: countSource, ref: featureRef(j.label, j.featureIds) }
