@@ -20,7 +20,7 @@ import { projectEntryHref } from '@/lib/projects/entry-href';
 /**
  * The page's backdrop, in the brand's own terms (the hero of emithran.com): a drawing sheet's grid, two parts in fine line as an engineer
  * dimensions them, and the brand's teal slice rising to the right. It is not a box: it runs to the edges of the content area (over the
- * layout's padding) and down the whole page, behind the recent projects, thinning out toward the foot. Everything is drawn from the
+ * layout's padding) and down the whole page, behind the recent projects, to the foot of the screen. Everything is drawn from the
  * theme's tokens, so it follows the light, dark and brand themes. Decoration only: nothing here can be focused or read aloud.
  */
 function PageBackdrop() {
@@ -55,12 +55,10 @@ function PageBackdrop() {
       </svg>
 
       {/* The brand's teal slice and its glow. Its edge starts beside the prompt at the right edge (lower on a narrow page, where the
-          heading's lines reach that edge) and falls to the left at one angle whatever the page's size (a long sheet turned about its top
-          right corner); everything under the edge is teal, on down the page. */}
+          heading's lines reach that edge) and falls to the left at one angle whatever the page's size (a very long sheet turned about its
+          top right corner); everything under the edge is teal, all the way down the page. */}
       <div className="absolute right-0 top-56 h-64 w-3/5 rounded-full bg-primary/15 blur-3xl" />
-      <div className="absolute inset-0 [mask-image:linear-gradient(to_bottom,black_45%,transparent)]">
-        <div className="absolute right-0 top-64 h-[400vh] w-[220%] origin-top-right -rotate-[16deg] bg-[linear-gradient(90deg,hsl(var(--primary)/0.3)_70%,hsl(var(--primary)))] xl:top-44" />
-      </div>
+      <div className="absolute right-0 top-64 h-[20000px] w-[600%] origin-top-right -rotate-[16deg] bg-[linear-gradient(90deg,hsl(var(--primary)/0.3)_88.5%,hsl(var(--primary)))] xl:top-44" />
     </div>
   );
 }
@@ -72,8 +70,9 @@ export default function NewPage() {
   const projects = projectsData?.projects ?? [];
 
   return (
-    <div className="relative isolate space-y-8 animate-fade-in">
-      <PageBackdrop />
+    // At least as tall as the screen below the header and the credits bar (5.75rem), less the layout's padding, so the backdrop reaches the
+    // foot of the screen when there are few projects.
+    <div className="relative isolate min-h-[calc(100dvh-7.75rem)] space-y-8 animate-fade-in sm:min-h-[calc(100dvh-9.75rem)]">
       <div className="pb-8 pt-6 sm:pb-12 sm:pt-12">
         <IntakeBox title={<>What do you want to <span className="text-primary">cost</span>{firstName ? `, ${firstName}` : ''}?</>} />
       </div>
@@ -116,6 +115,9 @@ export default function NewPage() {
           </ul>
         )}
       </section>
+      {/* Last in the markup, behind everything in the paint order: as the first child it would make the prompt a later sibling, and the
+          stack's spacing would push the whole page down. */}
+      <PageBackdrop />
     </div>
   );
 }
