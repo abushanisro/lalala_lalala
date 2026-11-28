@@ -18,17 +18,19 @@ import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { useDictation } from '@/lib/hooks/useDictation';
 import { intakeApi } from '@/lib/intake/api';
+import { answerQuestion, askQuestion, startBuild, type BuildDeps } from '@/lib/intake/build';
+import type { Answer, Entry } from '@/lib/intake/conversation';
 import { withDictation } from '@/lib/intake/dictation';
 import { intakeDraft } from '@/lib/intake/draft';
 import { ASK_PLACEHOLDER, DEFAULT_INTAKE_MODE, INTAKE_BOX, INTAKE_MODES, INTAKE_SEND, intakeModeFrom, intakeModeOf } from '@/lib/intake/modes';
 import { pastedNames, pasteIsOfFiles } from '@/lib/intake/paste';
 import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
 import {
-  buildNeeds, carriesFiles, costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, isPicture, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
+  carriesFiles, costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, isPicture, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
 } from '@/lib/intake/plan';
 import { runIntake, type IntakeEvent, type IntakeResult } from '@/lib/intake/run';
 
-type Phase = 'compose' | 'reading' | 'asking' | 'plan' | 'creating' | 'done';
+type Phase = 'compose' | 'reading' | 'plan' | 'creating' | 'done';
 /** What became of one dropped drawing: being read, read, not a drawing of a part, or not readable (with the server's reason). */
 type Read = { state: 'reading' } | { state: 'read'; reading: DrawingReading } | { state: 'failed'; why: string };
 
@@ -61,7 +63,8 @@ const madeInChoice = rememberedChoice('intake.location');
 const modeChoice = rememberedChoice('intake.mode');
 const modeNow = () => intakeModeFrom(modeChoice.now());
 // The draft's setters are the store's own, so what is typed and added outlives the page (lib/intake/draft.ts).
-const { setNote, setFiles, setAsked } = intakeDraft;
+const { setNote, setFiles } = intakeDraft;
+const ANSWER_PLACEHOLDER = 'Type your answer, or choose above';
 const messageOf = (error: unknown): string => (error instanceof Error && error.message ? error.message : 'The server did not answer.');
 const wholeNumber = (text: string): number | null => { const n = Number(text.replace(/,/g, '')); return text.trim() !== '' && Number.isInteger(n) && n > 0 ? n : null; };
 
@@ -69,23 +72,25 @@ const wholeNumber = (text: string): number | null => { const n = Number(text.rep
  * The dashboard's intake: drop drawings, pictures of parts, STEP files or a zip, and say what the job is. Each drawing is read by the
  * vision model; the box then shows the plan (project, BOM, each part with its material, size and process) to check and correct, and
  * one click creates it all, builds a model from each drawing and costs it with the existing engines. The mode menu changes what the
- * prompt does: Plan is the above; Build creates at once when nothing needs the person's answer; Ask answers a question and creates
- * nothing.
+ * prompt does: Plan is the above. Build is a conversation (lib/intake/build.ts): it says what it read, asks for what a cost still
+ * needs one question at a time, then creates and costs. Ask answers a question and creates nothing.
  */
 export function IntakeBox({ title = 'What do you want to cost?' }: { title?: ReactNode }) {
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>('compose');
   // Kept outside the page: still there after a visit elsewhere in the app. The server and the first paint show an empty prompt.
-  const { note, files, asked } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
+  const { note, files, thread, working } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
+  /** The prompt takes input: nothing of the plan is open and the conversation is not busy. */
+  const idle = phase === 'compose' && !working;
+  /** The question the build is waiting on, if any. */
+  const open = thread.find((e): e is Extract<Entry, { kind: 'question' }> => e.kind === 'question' && e.answer === null);
+  const [typedWhy, setTypedWhy] = useState<string | null>(null);
   const [refused, setRefused] = useState<string[]>([]);
   const [reads, setReads] = useState<Record<string, Read>>({});
   const [plan, setPlan] = useState<IntakePlan | null>(null);
-  const planned = plan;
   const [events, setEvents] = useState<IntakeEvent[]>([]);
   const [result, setResult] = useState<IntakeResult | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
-  /** Why Build stopped at the plan instead of creating (what it needs from the person). */
-  const [buildNeed, setBuildNeed] = useState<string | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -93,8 +98,8 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   // Known only in the browser (its storage): the server renders the menus with no choice, and the page shows the remembered ones.
   const madeIn = useSyncExternalStore(madeInChoice.subscribe, madeInChoice.now, () => '');
   const mode = useSyncExternalStore(modeChoice.subscribe, modeNow, () => DEFAULT_INTAKE_MODE);
-  const stillPlaceholder = mode === 'ask' ? ASK_PLACEHOLDER : STILL_PLACEHOLDER;
-  useTypedPlaceholder(textarea, phase === 'compose' && note === '' && mode !== 'ask', stillPlaceholder);
+  const stillPlaceholder = mode === 'ask' ? ASK_PLACEHOLDER : open && mode === 'build' ? ANSWER_PLACEHOLDER : STILL_PLACEHOLDER;
+  useTypedPlaceholder(textarea, idle && note === '' && mode !== 'ask' && thread.length === 0, stillPlaceholder);
   const { data: catalog } = useProcessCalculatorMappings({ limit: 1000 });
   const groups = useMemo(() => processGroupOptionsFrom(catalog?.mappings), [catalog]);
 
@@ -113,27 +118,42 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
     setRefused(all.filter(file => intakeFileKind(file.name) === null).map(file => file.name));
   }, []);
 
-  const dragging = useFileDrop(phase === 'compose', add);
+  const dragging = useFileDrop(idle, add);
   // A copied picture is "image.png" every time: pasted files are named apart from the ones already there before they are added.
-  usePastedFiles(phase === 'compose', useCallback((pasted: File[]) => {
+  usePastedFiles(idle, useCallback((pasted: File[]) => {
     const names = pastedNames(pasted, files.map(file => file.name));
     add(pasted.map((file, i) => { const name = names[i] ?? file.name; return name === file.name ? file : new File([file], name, { type: file.type, lastModified: file.lastModified }); }));
   }, [add, files]));
   const saidBefore = useRef('');
   const dictation = useDictation(useCallback((heard: string) => { setNote(withDictation(saidBefore.current, heard)); }, []));
   const stopDictation = dictation.stop;
-  useEffect(() => { if (phase !== 'compose') stopDictation(); }, [phase, stopDictation]);
+  useEffect(() => { if (!idle) stopDictation(); }, [idle, stopDictation]);
 
-  /** The grade of the material database that a part's drawing names, among the grades of its process (as the plan's own picker offers it). */
-  const gradeOf = async (part: PlanPart): Promise<string | null> => {
-    if (!part.processGroup) return null;
-    try {
-      const list = await queryClient.query(rawMaterialsListQuery(materialPickerQuery({ processGroup: part.processGroup, group: PROCESS_MATERIALS })));
-      return gradeFor(part.materialRead, [...new Set(list.items.map(m => m.material))]);
-    } catch {
-      return null;                                    // the plan's picker loads the grades again and says what failed
-    }
-  };
+  // The conversation keeps to the page's foot as it grows, where the prompt is.
+  const foot = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (thread.length > 0) foot.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [thread]);
+
+  /** What a build calls: the page's own catalogs and the app's existing endpoints. */
+  const buildDeps = (): BuildDeps => ({
+    read: async (file, said) => (await drawingReadingsApi.read(file, said)).reading,
+    groups,
+    locations: (factories ?? []).map(f => f.location),
+    grades: async processGroup => {
+      const list = await queryClient.query(rawMaterialsListQuery(materialPickerQuery({ processGroup, group: PROCESS_MATERIALS })));
+      return [...new Set(list.items.map(m => m.material))].sort((a, b) => a.localeCompare(b));
+    },
+    madeIn: madeInChoice.now(),
+    create: async (made, byName, onEvent) => {
+      if (made.location) madeInChoice.choose(made.location);
+      try {
+        return await runIntake(made, byName, intakeApi, onEvent);
+      } finally {
+        void queryClient.invalidateQueries({ queryKey: ['projects'] });
+        void queryClient.invalidateQueries({ queryKey: ['cost-analytics'] });
+      }
+    },
+  });
+  const answer = (id: number, given: Answer) => answerQuestion(id, given, buildDeps());
 
   const read = async () => {
     const drawings = files.filter(file => intakeFileKind(file.name) === 'drawing');
@@ -149,29 +169,18 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       }
       setReads(current => ({ ...current, [file.name]: done[file.name] ?? { state: 'reading' } }));
     }
-    const read = drawings.flatMap(file => { const r = done[file.name]; return r?.state === 'read' ? planPart(file.name, r.reading, groups) ?? [] : []; });
-    // Build decides without the plan's pickers, so each part's grade is looked up now; the plan offers the same grade when it opens.
-    const parts = mode === 'build' ? await Promise.all(read.map(async part => ({ ...part, grade: await gradeOf(part) }))) : read;
+    const parts = drawings.flatMap(file => { const r = done[file.name]; return r?.state === 'read' ? planPart(file.name, r.reading, groups) ?? [] : []; });
     const firstLine = note.trim().split('\n')[0] ?? '';
-    const next: IntakePlan = {
+    setPlan({
       projectName: firstLine.length > 0 && firstLine.length <= 60 ? firstLine : parts[0]?.name ?? files[0]?.name.replace(/\.[^.]+$/, '') ?? '',
       bomName: parts.length > 0 ? 'Parts from drawings' : 'Imported parts',
       location: madeInChoice.now(), annualVolume: null, batchSize: null, parts,
       cadFiles: files.filter(file => intakeFileKind(file.name) === 'cad').map(file => file.name),
-    };
-    setPlan(next);
-    if (mode === 'build') {
-      // A drawing that was left out is the person's to see before anything is created, like a part that needs their answer.
-      const leftOut = drawings.length - parts.length;
-      const need = buildNeeds(next)[0] ?? (leftOut > 0 ? `${leftOut} of the ${drawings.length} drawings could not be used.` : null);
-      if (need === null) { await create(next); return; }
-      setBuildNeed(need);
-    }
+    });
     setPhase('plan');
   };
 
-  const create = async (given?: IntakePlan) => {
-    const plan = given ?? planned;
+  const create = async () => {
     if (!plan) return;
     if (plan.location) madeInChoice.choose(plan.location);
     setPhase('creating');
@@ -190,31 +199,29 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
     void queryClient.invalidateQueries({ queryKey: ['cost-analytics'] });
   };
 
-  /** Ask: the question goes to the model with the first drawing or picture added, if there is one. Nothing is created. */
-  const ask = async () => {
-    const question = note.trim();
-    if (question === '') return;
-    const drawing = files.find(file => intakeFileKind(file.name) === 'drawing');
-    const id = Date.now();
+  /** What the send button does: in Build, start the conversation or answer its open question; in Ask, ask; in Plan, read for the plan. */
+  const send = () => {
     dictation.cancel();                               // the box is emptied now: what is still being heard must not fill it again
-    setAsked(current => [...current, { id, question, file: drawing?.name ?? null, state: 'asking' }]);
-    setNote('');
     setRefused([]);
-    setPhase('asking');
-    const settle = (outcome: { state: 'answered'; answer: string } | { state: 'failed'; why: string }) => {
-      setAsked(current => current.map(a => (a.id === id ? { id, question: a.question, file: a.file, ...outcome } : a)));
-    };
-    try {
-      settle({ state: 'answered', answer: (await drawingReadingsApi.ask(question, drawing)).answer });
-    } catch (error) {
-      settle({ state: 'failed', why: messageOf(error) });
+    setTypedWhy(null);
+    if (mode === 'ask') {
+      void askQuestion(note.trim(), files.find(file => intakeFileKind(file.name) === 'drawing'), async (question, drawing) => (await drawingReadingsApi.ask(question, drawing)).answer);
+    } else if (mode === 'plan') {
+      void read();
+    } else if (open) {
+      void answer(open.id, { action: 'accept', value: note }).then(why => { if (why) setTypedWhy(why); else setNote(''); });
+    } else {
+      void startBuild(note, files, buildDeps());
     }
-    setPhase('compose');
   };
-  const send = () => { void (mode === 'ask' ? ask() : read()); };
-  const canSend = phase === 'compose' && (mode === 'ask' ? note.trim() !== '' : files.length > 0);
+  const canSend = idle && (mode === 'ask' ? note.trim() !== ''
+    : open ? mode === 'build' && note.trim() !== '' && files.length === 0   // a question is open: the box answers it, and nothing else starts
+      : files.length > 0);
+  const sendTitle = !idle ? INTAKE_SEND[mode] : mode === 'ask' ? (canSend ? 'Ask' : 'Type a question first')
+    : open ? (mode === 'build' ? 'Answer the question' : 'Answer the question above first, or skip it')
+      : canSend ? INTAKE_SEND[mode] : 'Add a file first';
 
-  const reset = () => { setPhase('compose'); intakeDraft.clear(); setRefused([]); setReads({}); setPlan(null); setEvents([]); setResult(null); setFatal(null); setBuildNeed(null); };
+  const reset = () => { setPhase('compose'); intakeDraft.clear(); setRefused([]); setTypedWhy(null); setReads({}); setPlan(null); setEvents([]); setResult(null); setFatal(null); };
   const setPart = (file: string, change: Partial<PlanPart>) => { setPlan(current => current && { ...current, parts: current.parts.map(p => (p.file === file ? { ...p, ...change } : p)) }); };
   const blockers = plan ? planBlockers(plan) : [];
   const skipped = Object.entries(reads).flatMap(([name, r]) => (r.state === 'failed' ? [{ name, why: r.why }] : r.state === 'read' && !r.reading.isDrawing ? [{ name, why: 'Not a drawing or a picture of a part.' }] : []));
@@ -222,10 +229,12 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   return (
     <section aria-label="Start from a drawing" className="space-y-6">
       <div className="mx-auto w-full max-w-3xl space-y-4">
-        <div className="text-center">
-          <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
-        </div>
+        {thread.length === 0 ? (
+          <div className="text-center">
+            <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
+            <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
+          </div>
+        ) : <Conversation thread={thread} working={working} onAnswer={answer} onClear={reset} />}
         <div className={`relative rounded-3xl border bg-card shadow-lg transition-colors ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}>
           {dragging && (
             <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 rounded-3xl border-2 border-dashed border-primary bg-card/95 text-center">
@@ -235,7 +244,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
             </div>
           )}
           <Textarea
-            ref={textarea} value={note} disabled={phase !== 'compose'} onChange={event => { setNote(event.target.value); }}
+            ref={textarea} value={note} disabled={!idle} onChange={event => { setNote(event.target.value); }}
             onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && canSend) { event.preventDefault(); send(); } }}
             placeholder={stillPlaceholder}
             aria-label={INTAKE_BOX[mode]}
@@ -244,7 +253,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           {files.length > 0 && (
             <ul className="flex flex-wrap items-end gap-2 px-4 pb-1" aria-label="Files added">
               {files.map(file => {
-                const remove = phase === 'compose' ? () => { setFiles(current => current.filter(f => f.name !== file.name)); } : null;
+                const remove = idle ? () => { setFiles(current => current.filter(f => f.name !== file.name)); } : null;
                 // A picture is shown as the picture; a PDF or a CAD file, which the page cannot draw, by its name.
                 return isPicture(file.name) ? <PictureTile key={file.name} file={file} onRemove={remove} /> : (
                   <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground">
@@ -264,13 +273,13 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
             <input ref={picker} type="file" multiple accept={INTAKE_ACCEPT} className="hidden"
               onChange={event => { if (event.target.files) add(event.target.files); event.target.value = ''; }} />
             <div className="flex shrink-0 items-center gap-1">
-              <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={phase !== 'compose'}
+              <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={!idle}
                 className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
                 <Plus className="h-5 w-5" />
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="sm" disabled={phase !== 'compose'}
+                  <Button type="button" variant="ghost" size="sm" disabled={!idle}
                     aria-label={`Mode: ${intakeModeOf(mode).label}`} title="What the prompt does with this"
                     className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
                     {intakeModeOf(mode).label}
@@ -292,7 +301,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
               </DropdownMenu>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="sm" disabled={phase !== 'compose' || !factories?.length}
+                  <Button type="button" variant="ghost" size="sm" disabled={!idle || !factories?.length}
                     aria-label={madeIn ? `Where the parts are made: ${madeIn}` : 'Where the parts are made'} title="Where the parts are made"
                     className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
                     {madeIn || 'Made in'}
@@ -309,7 +318,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {dictation.available && (
-                <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={phase !== 'compose'}
+                <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={!idle}
                   aria-label={dictation.listening ? 'Stop dictating' : 'Dictate'}
                   title={dictation.listening ? 'Listening. Press to stop.' : "Dictate what the job is (the browser's speech recognition)"}
                   className={`h-9 w-9 shrink-0 rounded-full ${dictation.listening ? 'animate-pulse' : 'text-muted-foreground'}`}
@@ -317,15 +326,15 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
                   <Mic className="h-4 w-4" />
                 </Button>
               )}
-              <Button type="button" size="icon" aria-label={INTAKE_SEND[mode]}
-                title={canSend || phase !== 'compose' ? INTAKE_SEND[mode] : mode === 'ask' ? 'Type a question first' : 'Add a file first'}
+              <Button type="button" size="icon" aria-label={open && mode === 'build' ? 'Answer' : INTAKE_SEND[mode]} title={sendTitle}
                 disabled={!canSend} onClick={send} className="h-9 w-9 rounded-full">
-                {phase === 'reading' || phase === 'asking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                {phase === 'reading' || working ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
               </Button>
             </div>
           </div>
         </div>
-        {phase === 'compose' && (
+        <div ref={foot} />
+        {phase === 'compose' && thread.length === 0 && (
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><ImageIcon className="h-4 w-4" /> Drawing or picture</Button>
             <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><Upload className="h-4 w-4" /> STEP files or a zip</Button>
@@ -337,22 +346,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           </p>
         )}
         {dictation.problem && <p className="text-center text-xs text-destructive" role="alert">{dictation.problem}</p>}
-        {asked.length > 0 && (
-          <div className="space-y-3">
-            <ul aria-label="Questions and answers" className="space-y-3">
-              {asked.map(a => (
-                <li key={a.id} className="rounded-2xl border border-border bg-card p-4 text-sm shadow-sm">
-                  <p className="font-medium text-foreground">{a.question}</p>
-                  {a.file && <p className="mt-0.5 break-all text-xs text-muted-foreground">About {a.file}</p>}
-                  {a.state === 'asking' ? <p className="mt-2 flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Answering</p>
-                    : a.state === 'failed' ? <p className="mt-2 text-destructive" role="alert">{a.why}</p>
-                      : <p className="mt-2 whitespace-pre-wrap text-foreground">{a.answer}</p>}
-                </li>
-              ))}
-            </ul>
-            <p className="text-center text-xs text-muted-foreground">An answer holds no cost. Build or Plan creates the part and costs it with the cost engines.</p>
-          </div>
-        )}
+        {typedWhy && <p className="text-center text-xs text-destructive" role="alert">{typedWhy}</p>}
       </div>
 
       {phase === 'reading' && (
@@ -372,7 +366,6 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           <CardHeader className="border-b border-border p-6 pb-4">
             <CardTitle className="text-lg font-semibold">Check the plan</CardTitle>
             <p className="text-sm text-muted-foreground">This is what was read. Correct anything that is wrong; nothing is created until you click Create.</p>
-            {buildNeed && <p className="text-sm font-medium text-foreground" role="status">Build stopped here for your answer. {buildNeed}</p>}
           </CardHeader>
           <CardContent className="space-y-6 p-6">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -428,6 +421,113 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
         </Card>
       )}
     </section>
+  );
+}
+
+/**
+ * The conversation: what the person sent, what the build did and said, its questions, and what it made. One surface, so it reads over
+ * the page's backdrop; the newest is at the foot, above the prompt.
+ */
+function Conversation({ thread, working, onAnswer, onClear }: { thread: Entry[]; working: boolean; onAnswer: (id: number, answer: Answer) => Promise<string | null>; onClear: () => void }) {
+  return (
+    <div aria-label="Conversation" className="space-y-4 rounded-3xl border border-border bg-card p-5 shadow-sm">
+      {thread.map(entry => {
+        if (entry.kind === 'user') {
+          return (
+            <div key={entry.id} className="flex flex-col items-end gap-2">
+              {entry.files.length > 0 && (
+                <ul className="flex flex-wrap items-end justify-end gap-2" aria-label="Files sent">
+                  {entry.files.map(file => (isPicture(file.name) ? <PictureTile key={file.name} file={file} onRemove={null} /> : (
+                    <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground">
+                      {intakeFileKind(file.name) === 'cad' ? <Box className="h-3.5 w-3.5 shrink-0" /> : <FileText className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="break-all">{file.name}</span>
+                    </li>
+                  )))}
+                </ul>
+              )}
+              {entry.text && <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-muted px-4 py-2 text-sm text-foreground">{entry.text}</p>}
+            </div>
+          );
+        }
+        if (entry.kind === 'step') return <Line key={entry.id} state={entry.state} title={entry.title} detail={entry.detail} />;
+        if (entry.kind === 'say') return <p key={entry.id} className="whitespace-pre-wrap text-sm text-foreground">{entry.text}</p>;
+        if (entry.kind === 'question') return <QuestionCard key={entry.id} entry={entry} onAnswer={given => onAnswer(entry.id, given)} />;
+        const { result } = entry;
+        return (
+          <div key={entry.id} className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
+            <Button asChild><Link href={`/projects/${result.projectId}/bom/${result.bomId}`}>Open the BOM</Link></Button>
+            <Button variant="outline" onClick={onClear}>Start another</Button>
+            <p className="text-sm text-muted-foreground">{result.parts.filter(p => p.costed).length} of {result.parts.length} parts costed.</p>
+          </div>
+        );
+      })}
+      <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
+        <p>Every cost comes from the cost engines, never from the AI's words.</p>
+        {thread.at(-1)?.kind !== 'result' && <button type="button" className="shrink-0 font-medium hover:text-foreground disabled:opacity-50" disabled={working} onClick={onClear}>Start over</button>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A question the build asks: a few likely answers (the one the drawing supports is marked), the person's own words, and Skip. While
+ * the person types, the answers their words match are offered. Once answered it is one line.
+ */
+function QuestionCard({ entry, onAnswer }: { entry: Extract<Entry, { kind: 'question' }>; onAnswer: (answer: Answer) => Promise<string | null> }) {
+  const { question, answer } = entry;
+  const [chosen, setChosen] = useState<string | null>(question.pick);
+  const [own, setOwn] = useState('');
+  const [why, setWhy] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  if (answer) {
+    return (
+      <p className="flex items-start gap-3 text-sm text-muted-foreground">
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+        <span><span className="font-medium text-foreground">{question.text}</span> {answer.action === 'skip' ? 'Skipped.' : answer.value}</span>
+      </p>
+    );
+  }
+  const words = own.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const offered = words.length > 0 && question.choices.length > 0
+    ? question.choices.filter(choice => words.every(word => choice.toLowerCase().includes(word))).slice(0, 6).map(value => ({ value, why: undefined }))
+    : question.options;
+  const value = chosen ?? own.trim();
+  const submit = async (given: Answer) => {
+    setSending(true);
+    setWhy(null);
+    const refused = await onAnswer(given);
+    setSending(false);
+    if (refused) setWhy(refused);
+  };
+  return (
+    <form aria-label={question.text} className="rounded-2xl border border-border bg-background shadow-sm" onSubmit={event => { event.preventDefault(); if (value !== '') void submit({ action: 'accept', value }); }}>
+      <div className="border-b border-border px-4 py-3">
+        <p className="font-medium text-foreground">{question.text}</p>
+        <p className="mt-0.5 text-sm text-muted-foreground">{question.hint}</p>
+      </div>
+      <div className="space-y-1 p-3">
+        {offered.map(option => (
+          <label key={option.value} className={`flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm ${chosen === option.value ? 'bg-muted' : 'hover:bg-muted/60'}`}>
+            <input type="radio" name={`question-${entry.id}`} className="mt-1 accent-primary" checked={chosen === option.value} onChange={() => { setChosen(option.value); }} />
+            <span className="min-w-0">
+              <span className="font-medium text-foreground">{option.value}</span>
+              {question.pick === option.value && <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">EMITHRAN's pick</span>}
+              {option.why && <span className="block text-muted-foreground">{option.why}</span>}
+            </span>
+          </label>
+        ))}
+        <Input value={own} aria-label="Your own answer" placeholder={question.choices.length > 0 ? 'Type to search, or write your own' : 'Write your own'}
+          onChange={event => { setOwn(event.target.value); setChosen(null); }} />
+        {why && <p className="px-1 text-sm text-destructive" role="alert">{why}</p>}
+      </div>
+      <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+        <p className="text-xs text-muted-foreground">Skip, and {question.need.part ? 'the part is' : 'the parts are'} created without a cost.</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button type="button" variant="ghost" disabled={sending} onClick={() => { void submit({ action: 'skip' }); }}>Skip</Button>
+          <Button type="submit" disabled={sending || value === ''}>Submit</Button>
+        </div>
+      </div>
+    </form>
   );
 }
 

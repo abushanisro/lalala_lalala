@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DrawingReading } from "@/lib/api/drawing-readings";
-import { buildNeeds, carriesFiles, costable, gradeFor, intakeFileKind, isPicture, planBlockers, planPart, processGroupFor, shapeSummary, type IntakePlan, type PlanPart } from "@/lib/intake/plan";
+import { carriesFiles, costable, gradeFor, intakeFileKind, isPicture, planBlockers, planPart, processGroupFor, shapeSummary, type IntakePlan, type PlanPart } from "@/lib/intake/plan";
 
 const GROUPS = ["Die Casting", "Forging", "Machining", "Plastic Molding", "Sand Casting", "Sheet Metal"];
 const bracket: DrawingReading = {
@@ -102,34 +102,6 @@ describe("what a plan still needs", () => {
     expect(planBlockers(plan({ parts: [], cadFiles: [] }))).toEqual(["Nothing to create: no part was read and no CAD file was added."]);
     expect(planBlockers(plan({ parts: [], cadFiles: ["a.step"], location: "" }))).toEqual([]);
     expect(planBlockers(plan({ parts: [part({ name: "" })] }))).toEqual(["Every part needs a name and a part number."]);
-  });
-});
-
-describe("what Build needs before it creates by itself", () => {
-  const read = planPart("bracket.png", bracket, GROUPS);
-  if (!read) throw new Error("the bracket is a drawing of a part");
-  const part = (over: Partial<PlanPart> = {}): PlanPart => ({ ...read, grade: "Aluminum, ANSI 6061", ...over });
-  const plan = (over: Partial<IntakePlan> = {}): IntakePlan =>
-    ({ projectName: "Pump frame", bomName: "Parts from drawings", location: "India", annualVolume: null, batchSize: null, parts: [part()], cadFiles: [], ...over });
-
-  it("is nothing when every part with a size has its process, its grade and a place to be made", () => {
-    expect(buildNeeds(plan())).toEqual([]);
-    expect(buildNeeds(plan({ parts: [], cadFiles: ["frame.step"], location: "" }))).toEqual([]);
-  });
-
-  it("is the person's answer for a part that would be created without a cost", () => {
-    expect(buildNeeds(plan({ parts: [part({ grade: null })] }))).toEqual(["Choose the material grade for MOUNTING BRACKET."]);
-    expect(buildNeeds(plan({ parts: [part({ processGroup: null, grade: null })] }))).toEqual(["Choose the process for MOUNTING BRACKET."]);
-    expect(buildNeeds(plan({ parts: [part({ name: " ", grade: null })] }))).toContain("Choose the material grade for bracket.png.");
-  });
-
-  it("does not wait for a part whose drawing gives no size: no answer makes that one costable", () => {
-    expect(buildNeeds(plan({ parts: [part({ shape: null, processGroup: null, grade: null })] }))).toEqual([]);
-  });
-
-  it("starts with whatever stops the plan itself", () => {
-    expect(buildNeeds(plan({ location: "" }))).toEqual(["Choose where the parts are made."]);
-    expect(buildNeeds(plan({ projectName: " ", parts: [part({ grade: null })] }))).toEqual(["Give the project a name.", "Choose the material grade for MOUNTING BRACKET."]);
   });
 });
 
