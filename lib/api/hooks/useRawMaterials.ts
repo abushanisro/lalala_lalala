@@ -165,6 +165,18 @@ export interface CreateRawMaterialData {
 // QUERY HOOKS
 // ============================================================================
 
+/** The raw materials list as a query: what useRawMaterials runs, for code that needs the list outside a component (queryClient.fetchQuery). */
+export function rawMaterialsListQuery(params?: QueryRawMaterialsParams) {
+  return {
+    queryKey: ['raw-materials', 'list', params],
+    queryFn: async () => {
+      const response = await apiClient.get<RawMaterialListResponse>('/raw-materials', { ...(params !== undefined ? { params } : {}) });
+      return response;
+    },
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  };
+}
+
 export function useRawMaterials(
   params?: QueryRawMaterialsParams,
   // enabled: skip the request entirely (default true, so every existing caller is unchanged).
@@ -172,14 +184,9 @@ export function useRawMaterials(
   options?: { enabled?: boolean; keepPrevious?: boolean },
 ) {
   return useQuery({
-    queryKey: ['raw-materials', 'list', params],
+    ...rawMaterialsListQuery(params),
     enabled: options?.enabled ?? true,
     ...(options?.keepPrevious ? { placeholderData: keepPreviousData } : {}),
-    queryFn: async () => {
-      const response = await apiClient.get<RawMaterialListResponse>('/raw-materials', { ...(params !== undefined ? { params } : {}) });
-      return response;
-    },
-    staleTime: 1000 * 60 * 5, // 5 minutes
   });
 }
 

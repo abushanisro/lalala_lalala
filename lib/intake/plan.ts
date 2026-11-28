@@ -13,6 +13,11 @@ export function intakeFileKind(fileName: string): IntakeFileKind | null {
 }
 export const INTAKE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.step,.stp,.zip";
 
+/** Whether an added file is a picture the page can show as it is (a PDF drawing and a CAD file are named instead). */
+export function isPicture(fileName: string): boolean {
+  return ["png", "jpg", "jpeg", "webp", "gif"].includes(fileName.toLowerCase().split(".").pop() ?? "");
+}
+
 /**
  * Whether a drag carries files (a DataTransfer's `types`), as opposed to selected text or a link: only then is it the prompt's to take.
  * The files themselves cannot be read until the drop.
@@ -127,3 +132,19 @@ export function planBlockers(plan: IntakePlan): string[] {
   if (plan.parts.some(p => p.shape && p.processGroup && p.grade) && !plan.location) blockers.push("Choose where the parts are made.");
   return blockers;
 }
+
+/**
+ * What Build still needs from the person before it creates the project by itself: whatever stops the plan, then each part that has a
+ * size but no process or no material grade (it would be created without a cost, and only the person can say which it is). A part with
+ * no size on its drawing is not held back for: no answer makes it costable. Empty: Build goes ahead.
+ */
+export function buildNeeds(plan: IntakePlan): string[] {
+  const needs = planBlockers(plan);
+  for (const part of plan.parts) {
+    if (!part.shape) continue;
+    if (!part.processGroup) needs.push(`Choose the process for ${part.name.trim() || part.file}.`);
+    else if (!part.grade) needs.push(`Choose the material grade for ${part.name.trim() || part.file}.`);
+  }
+  return needs;
+}
+
