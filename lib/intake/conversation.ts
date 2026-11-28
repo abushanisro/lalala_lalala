@@ -33,7 +33,8 @@ export type Entry =
   | { kind: "step"; id: number; key: string; title: string; state: StepState; detail: string }
   | { kind: "say"; id: number; text: string }
   | { kind: "question"; id: number; question: Question; answer: Answer | null }
-  | { kind: "result"; id: number; result: IntakeResult };
+  /** `restored`: it came back with the conversation after a reload, so it is shown and not opened again. */
+  | { kind: "result"; id: number; result: IntakeResult; restored?: boolean };
 
 /** A moulded or cast part is usually a shell, not a solid: costed as the block that encloses it, it would weigh many times too much. */
 export const hollowProne = (processGroup: string | null): boolean => /mold|casting/i.test(processGroup ?? "");
