@@ -14,6 +14,25 @@ export const DRAWING_READING_MODEL = 'claude-opus-5-5';
 export interface DrawingReadingResult { fileName: string; model: string; reading: DrawingReading }
 
 /**
+ * A drawing file as the model takes it: an image, or a PDF as a document. The kind is told from the file's first bytes, never its
+ * name; a file that is not a drawing (415) or is over the size the model's API takes of its kind (413) is refused.
+ */
+export function drawingBlock(buffer: Buffer): Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam {
+  const kind = drawingFileKind(buffer);
+  if (!kind) {
+    throw new UnsupportedMediaTypeException({ code: 'not_a_drawing_file', message: 'A drawing is a PNG, JPEG, WebP or GIF image, or a PDF.' });
+  }
+  const { mediaType, maxBytes } = DRAWING_FILES[kind];
+  if (buffer.length > maxBytes) {
+    throw new PayloadTooLargeException({ code: 'drawing_too_large', message: `This ${kind.toUpperCase()} is over the ${maxBytes / (1024 * 1024)} MB a drawing of that kind may be.` });
+  }
+  const data = buffer.toString('base64');
+  return kind === 'pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType as Exclude<typeof mediaType, 'application/pdf'>, data } };
+}
+
+/**
  * Reads one drawing (an image or a PDF) with the vision model, through AiBudgetService like every other AI call: the caller's budget
  * pays for it. Nothing is saved: the answer goes back to the person, who checks it before anything is created from it.
  */
@@ -22,18 +41,7 @@ export class DrawingReadingsService {
   constructor(private readonly ai: AiBudgetService) {}
 
   async read(file: { buffer: Buffer; originalname: string }, caller: AiCaller, note?: string): Promise<DrawingReadingResult> {
-    const kind = drawingFileKind(file.buffer);
-    if (!kind) {
-      throw new UnsupportedMediaTypeException({ code: 'not_a_drawing_file', message: 'A drawing is a PNG, JPEG, WebP or GIF image, or a PDF.' });
-    }
-    const { mediaType, maxBytes } = DRAWING_FILES[kind];
-    if (file.buffer.length > maxBytes) {
-      throw new PayloadTooLargeException({ code: 'drawing_too_large', message: `This ${kind.toUpperCase()} is over the ${maxBytes / (1024 * 1024)} MB a drawing of that kind may be.` });
-    }
-    const data = file.buffer.toString('base64');
-    const drawing: Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam = kind === 'pdf'
-      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
-      : { type: 'image', source: { type: 'base64', media_type: mediaType as Exclude<typeof mediaType, 'application/pdf'>, data } };
+    const drawing = drawingBlock(file.buffer);
     const said = note?.trim().slice(0, 500);
 
     const session = await this.ai.open(caller, 'drawing_extraction');

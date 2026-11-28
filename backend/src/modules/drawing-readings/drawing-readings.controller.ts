@@ -7,6 +7,7 @@ import { memoryStorage } from 'multer';
 import { MAX_DRAWING_BYTES } from './drawing-reading';
 import { DrawingReadingsService, type DrawingReadingResult } from './drawing-readings.service';
 import { DrawingSolidsService, type DrawingSolid } from './drawing-solids.service';
+import { IntakeAnswersService, type IntakeAnswer } from './intake-answers.service';
 import { OrgRole } from '../../common/authz/authz-policy';
 import { AccessToken } from '../../common/decorators/access-token.decorator';
 import { CurrentOrganization } from '../../common/decorators/current-organization.decorator';
@@ -60,3 +61,33 @@ export class DrawingSolidsController {
     return this.solids.build(body);
   }
 }
+
+/**
+ * "Ask" on the intake page: one question, about the attached drawing or picture when there is one, answered in words. An answer is
+ * made, not stored, and nothing is created from it. It spends the caller's AI budget (429 when used up, 503 when AI is off).
+ */
+@ApiTags('Drawing readings')
+@ApiBearerAuth()
+@OrgRole('member')
+@UseGuards(OrganizationContextGuard)
+@Controller({ path: 'intake-answers', version: '1' })
+export class IntakeAnswersController {
+  constructor(private readonly answers: IntakeAnswersService) {}
+
+  @Post()
+  @HttpCode(200) // an answer, given in full: nothing is created
+  @SpendsAi()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Answer one question about a drawing or a picture of a part (optional file: PNG, JPEG, WebP, GIF or PDF). No cost figures; nothing is created.' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: MAX_DRAWING_BYTES } }))
+  ask(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: { question?: unknown },
+    @CurrentUser() user: { id: string },
+    @AccessToken() token: string,
+    @CurrentOrganization() organizationId: string,
+  ): Promise<IntakeAnswer> {
+    return this.answers.ask(body.question, file, { userId: user.id, organizationId, accessToken: token });
+  }
+}
+

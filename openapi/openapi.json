@@ -17985,6 +17985,26 @@
         ]
       }
     },
+    "/api/v1/intake-answers": {
+      "post": {
+        "operationId": "IntakeAnswersController_ask_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Answer one question about a drawing or a picture of a part (optional file: PNG, JPEG, WebP, GIF or PDF). No cost figures; nothing is created.",
+        "tags": [
+          "Drawing readings"
+        ]
+      }
+    },
     "/api/v1/labour-rates": {
       "delete": {
         "operationId": "LHRController_removeAll_v1",

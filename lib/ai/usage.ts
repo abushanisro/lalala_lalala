@@ -3,7 +3,7 @@ import type { AiFeature, AiUsage } from "@/lib/api/ai-usage";
 
 export const AI_FEATURE_LABEL: Record<AiFeature, string> = {
   copilot: "Manufacturing Copilot",
-  drawing_reading: "Drawing reading",
+  drawing_reading: "Drawing reading and Ask",
   vave: "VAVE and benchmark analysis",
   other: "Other",
 };

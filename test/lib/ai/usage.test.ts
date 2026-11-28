@@ -65,7 +65,7 @@ describe("resetsIn", () => {
 describe("featureRows", () => {
   it("shows the three named features always, each with its share of today's tokens, and Other only when it holds usage", () => {
     const rows = featureRows(usage());
-    expect(rows.map((r) => r.label)).toEqual(["Manufacturing Copilot", "Drawing reading", "VAVE and benchmark analysis"]);
+    expect(rows.map((r) => r.label)).toEqual(["Manufacturing Copilot", "Drawing reading and Ask", "VAVE and benchmark analysis"]);
     expect(rows[0]).toMatchObject({ tokens: 3650, calls: 3 });
     expect(rows.reduce((sum, r) => sum + r.share, 0)).toBeCloseTo(100, 6);
     const withOther = usage({ features: [...usage().features.slice(0, 3), { feature: "other", ...totals(100, 4, 1) }] });

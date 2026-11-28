@@ -44,6 +44,9 @@ export interface DrawingSolid {
   holesLeftOut: number;
 }
 
+/** One answer to a question asked on the New page (backend intake-answers.service.ts). It holds no cost figure. */
+export interface IntakeAnswer { answer: string; model: string; fileName: string | null }
+
 export const drawingReadingsApi = {
   /** POST /drawing-readings: one drawing (image or PDF) read by the vision model. Spends the caller's AI budget. */
   read: (file: File, note?: string) => {
@@ -51,6 +54,13 @@ export const drawingReadingsApi = {
     form.append("file", file);
     if (note?.trim()) form.append("note", note.trim());
     return spendingAi(apiClient.uploadFiles<DrawingReadingResult>("/drawing-readings", form, { timeout: 240_000 }));   // a dense drawing takes the reader up to three minutes
+  },
+  /** POST /intake-answers: one question, about the attached drawing or picture when there is one. Spends the caller's AI budget. */
+  ask: (question: string, file?: File) => {
+    const form = new FormData();
+    form.append("question", question);
+    if (file) form.append("file", file);
+    return spendingAi(apiClient.uploadFiles<IntakeAnswer>("/intake-answers", form, { timeout: 150_000 }));
   },
   /** POST /drawing-solids: the STEP of the solid a reading describes. */
   solid: (body: { shape: DrawingShape; holes: DrawingHole[]; name: string }) =>

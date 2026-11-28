@@ -15,6 +15,8 @@ export const AI_MAX_TOKENS = {
   copilot_detailed: 8_192,
   /** One drawing's reading: a JSON object of a part's form, holes and notes, with room to think (the reader's thinking is always on). */
   drawing_extraction: 16_000,
+  /** One answer to a question on the intake page ("Ask"), about a drawing or about making a part: a few paragraphs, with room to think. */
+  drawing_question: 4_096,
   /** Benchmark VAVE insights: one JSON object with a handful of short lists. */
   vave_bom_analysis: 6_000,
   /** Affinity groups, focus areas and a QFD matrix for the top 30 parts. */
