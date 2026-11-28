@@ -7,13 +7,14 @@ import type { ProcessFamily } from "@/lib/api/drawing-readings";
 import type { Entry } from "./conversation";
 import type { IntakePlan } from "./plan";
 
-/** A build between its first reading and its result: the plan as far as it is known, and what the person chose not to answer. */
+/** A build between its first reading and its result: the plan as far as it is known, and the questions that are closed. */
 export interface BuildState {
   plan: IntakePlan;
   files: File[];
   /** What each drawing itself indicated as its process (by file name), for the question about it. */
   reads: Record<string, { family: ProcessFamily; reason: string } | null>;
-  skipped: string[];
+  /** The questions closed without changing the plan: skipped, or answered with what it already was (conversation.ts needKey). */
+  closed: string[];
 }
 
 export interface IntakeDraft {

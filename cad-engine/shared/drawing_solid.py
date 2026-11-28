@@ -1,5 +1,5 @@
 """
-A simple solid built from what a drawing states: the part's overall form (a block, a turned part, a sheet) and its holes.
+A simple solid built from what a drawing states: the part's overall form (a block, a turned part, a sheet, a shell) and its holes.
 
 A part that arrives as a 2D drawing only has no model to analyse and cost. This builds the plainest solid that agrees with the
 drawing's own numbers, so the same analysis and cost engines that take a STEP file can take the part. It is a stand-in, and is
@@ -9,6 +9,10 @@ real part (pockets, fillets, chamfers, bends) is absent.
 Where a hole goes is not read from the drawing (what a hole costs depends on its diameter, its depth and how many there are, not on
 where it sits), so holes are set out evenly: on a grid across the largest face of a block or sheet, on a bolt circle in the flange of a
 turned part. A hole that does not fit that way is left out and counted, never squeezed in.
+
+A shell is a hollow part open on one side (a cover, a cap, a housing, a tray): its outer length, width and height, with a floor and four
+walls of one thickness. A moulded or cast part of that kind weighs a fraction of the block that encloses it, so it is not costed as one.
+Holes are not placed in a shell: they are counted as left out.
 """
 from __future__ import annotations
 
@@ -56,8 +60,16 @@ class Turned(BaseModel):
     bore_diameter_mm: Optional[float] = Field(default=None, gt=0, le=MAX_MM)
 
 
+class Shell(BaseModel):
+    kind: Literal["shell"]
+    length_mm: float = Field(gt=0, le=MAX_MM)
+    width_mm: float = Field(gt=0, le=MAX_MM)
+    height_mm: float = Field(gt=0, le=MAX_MM)
+    wall_mm: float = Field(gt=0, le=MAX_MM)
+
+
 class DrawingSolidRequest(BaseModel):
-    shape: Union[Block, Sheet, Turned] = Field(discriminator="kind")
+    shape: Union[Block, Sheet, Turned, Shell] = Field(discriminator="kind")
     holes: List[Hole] = Field(default_factory=list, max_length=60)
 
 
@@ -138,6 +150,20 @@ def _turned(shape: Turned, holes: List[Hole]):
     return _cut(solid, cutters), len(cutters), len(each) - len(cutters)
 
 
+def _shell(shape: Shell, holes: List[Hole]):
+    """A box hollowed from its length x width face: a floor and four walls of the wall thickness, open on top."""
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCC.Core.gp import gp_Pnt
+
+    wall = shape.wall_mm
+    if 2 * wall >= min(shape.length_mm, shape.width_mm) or wall >= shape.height_mm:
+        raise ValueError("The wall is too thick for the size of the part: nothing of it would be hollow.")
+    outer = BRepPrimAPI_MakeBox(shape.length_mm, shape.width_mm, shape.height_mm).Shape()
+    # The hollow runs past the top face, so the cut leaves a clean opening and not a skin.
+    hollow = BRepPrimAPI_MakeBox(gp_Pnt(wall, wall, wall), shape.length_mm - 2 * wall, shape.width_mm - 2 * wall, shape.height_mm - wall + 1.0).Shape()
+    return _cut(outer, [hollow]), 0, sum(h.count for h in holes)
+
+
 def _cut(solid, cutters):
     if not cutters:
         return solid
@@ -161,6 +187,8 @@ def build(request: DrawingSolidRequest):
     shape = request.shape
     if isinstance(shape, Turned):
         return _turned(shape, request.holes)
+    if isinstance(shape, Shell):
+        return _shell(shape, request.holes)
     if isinstance(shape, Block):
         return _plate(shape.length_mm, shape.width_mm, shape.height_mm, request.holes)
     return _plate(shape.length_mm, shape.width_mm, shape.thickness_mm, request.holes)

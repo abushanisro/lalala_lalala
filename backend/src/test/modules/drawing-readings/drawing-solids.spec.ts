@@ -19,6 +19,8 @@ describe('engineSolidRequest', () => {
     expect(engineSolidRequest({ kind: 'sheet', lengthMm: 300, widthMm: 200, thicknessMm: 2 }, []).shape).toEqual({ kind: 'sheet', length_mm: 300, width_mm: 200, thickness_mm: 2 });
     expect(engineSolidRequest({ kind: 'turned', segments: [{ diameterMm: 80, lengthMm: 15 }], boreDiameterMm: 20 }, []).shape)
       .toEqual({ kind: 'turned', segments: [{ diameter_mm: 80, length_mm: 15 }], bore_diameter_mm: 20 });
+    expect(engineSolidRequest({ kind: 'shell', lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 2.5 }, []).shape)
+      .toEqual({ kind: 'shell', length_mm: 250, width_mm: 120, height_mm: 90, wall_mm: 2.5 });
   });
 });
 

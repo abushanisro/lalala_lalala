@@ -535,7 +535,7 @@ function QuestionCard({ entry, onAnswer }: { entry: Extract<Entry, { kind: 'ques
         {why && <p className="px-1 text-sm text-destructive" role="alert">{why}</p>}
       </div>
       <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
-        <p className="text-xs text-muted-foreground">Skip, and {question.need.part ? 'the part is' : 'the parts are'} created without a cost.</p>
+        <p className="text-xs text-muted-foreground">{question.skip}</p>
         <div className="flex shrink-0 items-center gap-2">
           <Button type="button" variant="ghost" disabled={sending} onClick={() => { void submit({ action: 'skip' }); }}>Skip</Button>
           <Button type="submit" disabled={sending || value === ''}>Submit</Button>

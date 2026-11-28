@@ -88,6 +88,30 @@ def test_a_hole_wider_than_the_flange_land_is_left_out():
     assert (placed, left_out) == (0, 4)
 
 
+COVER = {"kind": "shell", "length_mm": 250, "width_mm": 120, "height_mm": 90, "wall_mm": 2.5}
+
+
+def test_a_shell_is_a_floor_and_four_walls_open_on_one_side():
+    made, placed, left_out = solid(COVER)
+    assert (placed, left_out) == (0, 0)
+    assert volume(made) == pytest.approx(250 * 120 * 90 - 245 * 115 * 87.5, rel=1e-6)
+    assert extents(made) == pytest.approx([250, 120, 90], abs=1e-3)
+    assert volume(made) < 0.1 * 250 * 120 * 90                 # a fraction of the block that encloses it
+
+
+def test_holes_are_not_placed_in_a_shell_and_are_counted():
+    made, placed, left_out = solid(COVER, [{"diameter_mm": 5, "depth_mm": None, "count": 4}])
+    assert (placed, left_out) == (0, 4)
+    assert volume(made) == pytest.approx(250 * 120 * 90 - 245 * 115 * 87.5, rel=1e-6)
+
+
+def test_a_wall_that_leaves_nothing_hollow_is_refused():
+    with pytest.raises(ValueError, match="wall is too thick"):
+        solid({**COVER, "wall_mm": 60})                        # twice the wall is the whole width
+    with pytest.raises(ValueError, match="wall is too thick"):
+        solid({**COVER, "wall_mm": 90, "width_mm": 400, "length_mm": 400})   # the wall is the whole height
+
+
 def test_a_bore_as_wide_as_the_part_is_refused():
     with pytest.raises(ValueError, match="bore"):
         solid({**SHAFT, "bore_diameter_mm": 40})
@@ -102,8 +126,9 @@ def test_what_is_not_a_size_is_refused_before_anything_is_built():
         solid(BRACKET, [{"diameter_mm": 1, "depth_mm": None, "count": 300}, {"diameter_mm": 1, "depth_mm": None, "count": 300}])
 
 
-def test_the_solid_reads_back_from_its_step_file_with_the_same_volume():
-    made, _, _ = solid(BRACKET, [{"diameter_mm": 6.6, "depth_mm": None, "count": 4}])
+@pytest.mark.parametrize("shape, holes", [(BRACKET, [{"diameter_mm": 6.6, "depth_mm": None, "count": 4}]), (COVER, [])])
+def test_the_solid_reads_back_from_its_step_file_with_the_same_volume(shape, holes):
+    made, _, _ = solid(shape, holes)
     data = step_bytes(made)
     assert data.startswith(b"ISO-10303-21")
     handle, path = tempfile.mkstemp(suffix=".step")

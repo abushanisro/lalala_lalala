@@ -11,11 +11,16 @@
 export const PROCESS_FAMILIES = ['machining', 'sheet_metal', 'casting', 'forging', 'plastic_molding', 'other'] as const;
 export type ProcessFamily = (typeof PROCESS_FAMILIES)[number];
 
-/** The overall form of the part, in millimetres. */
+/**
+ * The overall form of the part, in millimetres. A shell is a hollow part open on one side (a cover, a cap, a housing): its outer size
+ * and its wall thickness. The reader does not report shells (its schema below has none): a shell comes from the person, who says a
+ * part is hollow and how thick its wall is.
+ */
 export type DrawingShape =
   | { kind: 'block'; lengthMm: number; widthMm: number; heightMm: number }
   | { kind: 'turned'; segments: { diameterMm: number; lengthMm: number }[]; boreDiameterMm: number | null }
-  | { kind: 'sheet'; lengthMm: number; widthMm: number; thicknessMm: number };
+  | { kind: 'sheet'; lengthMm: number; widthMm: number; thicknessMm: number }
+  | { kind: 'shell'; lengthMm: number; widthMm: number; heightMm: number; wallMm: number };
 
 /** One hole specification and how many holes have it. depthMm null is a through hole. */
 export interface DrawingHole { diameterMm: number; depthMm: number | null; count: number; thread: string | null }
@@ -138,6 +143,11 @@ export function shapeFrom(raw: unknown): DrawingShape | null {
     const length = size(raw.lengthMm), width = size(raw.widthMm), third = size(raw.kind === 'block' ? raw.heightMm : raw.thicknessMm);
     if (length == null || width == null || third == null) return null;
     return raw.kind === 'block' ? { kind: 'block', lengthMm: length, widthMm: width, heightMm: third } : { kind: 'sheet', lengthMm: length, widthMm: width, thicknessMm: third };
+  }
+  if (raw.kind === 'shell') {
+    const length = size(raw.lengthMm), width = size(raw.widthMm), height = size(raw.heightMm), wall = size(raw.wallMm);
+    if (length == null || width == null || height == null || wall == null) return null;
+    return { kind: 'shell', lengthMm: length, widthMm: width, heightMm: height, wallMm: wall };
   }
   if (raw.kind === 'turned' && Array.isArray(raw.segments) && raw.segments.length > 0 && raw.segments.length <= 40) {
     const segments: { diameterMm: number; lengthMm: number }[] = [];

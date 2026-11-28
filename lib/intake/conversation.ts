@@ -7,7 +7,7 @@ import { gradeFor, processGroupFor, shapeSummary, type IntakePlan, type PlanPart
 
 import type { IntakeResult, StepState } from "./run";
 
-export type NeedKind = "process" | "size" | "grade" | "location";
+export type NeedKind = "process" | "size" | "wall" | "grade" | "location";
 /** Something a cost needs that only the person can say: about one part (its drawing's file name), or about the whole job (null). */
 export interface Need { kind: NeedKind; part: string | null }
 export const needKey = (need: Need): string => `${need.kind}:${need.part ?? ""}`;
@@ -23,6 +23,8 @@ export interface Question {
   pick: string | null;
   /** Every answer there is, for the person's own words to be matched against; empty when the answer is free (a size). */
   choices: string[];
+  /** What skipping the question means, in words. */
+  skip: string;
 }
 export type Answer = { action: "accept"; value: string } | { action: "skip" };
 
@@ -33,21 +35,30 @@ export type Entry =
   | { kind: "question"; id: number; question: Question; answer: Answer | null }
   | { kind: "result"; id: number; result: IntakeResult };
 
+/** A moulded or cast part is usually a shell, not a solid: costed as the block that encloses it, it would weigh many times too much. */
+export const hollowProne = (processGroup: string | null): boolean => /mold|casting/i.test(processGroup ?? "");
+
+/** Skipping one of these leaves the part with no cost at all, so nothing more is asked about it. */
+const NEEDED_FOR_A_COST: readonly NeedKind[] = ["process", "size", "grade"];
+
 /**
- * The next thing to ask, in the order a cost needs them: for each part its process, its size when the drawing gives none, and its
- * material grade; then where the parts are made. A part the person skipped a question for is created without a cost, so nothing more
- * is asked about it. Null: nothing left to ask.
+ * The next thing to ask, in the order a cost needs them: for each part its process, its size when the drawing gives none, whether it
+ * is hollow when it is moulded or cast and known only as a block, and its material grade; then where the parts are made. `closed` are
+ * the questions already skipped or settled without changing the plan: a part with a skipped process, size or grade is created without
+ * a cost, so nothing more is asked about it. Null: nothing left to ask.
  */
-export function nextNeed(plan: IntakePlan, skipped: readonly string[]): Need | null {
+export function nextNeed(plan: IntakePlan, closed: readonly string[]): Need | null {
   for (const part of plan.parts) {
-    if (skipped.some(key => key.endsWith(`:${part.file}`))) continue;
+    if (NEEDED_FOR_A_COST.some(kind => closed.includes(needKey({ kind, part: part.file })))) continue;
     if (!part.processGroup) return { kind: "process", part: part.file };
     if (!part.shape) return { kind: "size", part: part.file };
+    const wall: Need = { kind: "wall", part: part.file };
+    if (part.shape.kind === "block" && hollowProne(part.processGroup) && !closed.includes(needKey(wall))) return wall;
     if (!part.grade) return { kind: "grade", part: part.file };
   }
   const location: Need = { kind: "location", part: null };
   const anyCostable = plan.parts.some(p => p.shape && p.processGroup && p.grade);
-  return anyCostable && !plan.location && !skipped.includes(needKey(location)) ? location : null;
+  return anyCostable && !plan.location && !closed.includes(needKey(location)) ? location : null;
 }
 
 const FAMILY_GROUPS: Partial<Record<ProcessFamily, RegExp>> = {
@@ -55,6 +66,9 @@ const FAMILY_GROUPS: Partial<Record<ProcessFamily, RegExp>> = {
 };
 const COMMON_GROUPS = ["Machining", "Sheet Metal", "Plastic Molding", "Die Casting", "Sand Casting", "Forging"];
 const OFFERED = 6;
+const NO_COST = "Skip, and the part is created without a cost.";
+/** The answer that says a part is not hollow. */
+const SOLID = "Solid";
 
 export interface Lists { groups: readonly string[]; grades: readonly string[]; locations: readonly string[] }
 
@@ -72,7 +86,7 @@ export function questionFor(need: Need, plan: IntakePlan, lists: Lists, read?: {
       need, text: `Which process makes ${name}?`,
       hint: likely.length > 1 ? "The drawing points to this family of processes. Choose the one that is used." : "Choose one, or type another process.",
       options: offered.map(value => ({ value, ...(value === pick && read?.reason ? { why: read.reason } : {}) })),
-      pick: pick && offered.includes(pick) ? pick : null, choices: [...lists.groups],
+      pick: pick && offered.includes(pick) ? pick : null, choices: [...lists.groups], skip: NO_COST,
     };
   }
   if (need.kind === "grade") {
@@ -84,19 +98,28 @@ export function questionFor(need: Need, plan: IntakePlan, lists: Lists, read?: {
       need, text: `Which material is ${name} made of?`,
       hint: part?.materialRead ? `The drawing says "${part.materialRead}". Choose the grade it means, or type one to search.` : `The drawing names no material. Type a grade to search the ${part?.processGroup ?? "process"} materials.`,
       options: offered.map(value => ({ value, ...(value === pick ? { why: `The drawing says "${part?.materialRead ?? ""}".` } : {}) })),
-      pick, choices: [...lists.grades],
+      pick, choices: [...lists.grades], skip: NO_COST,
     };
   }
   if (need.kind === "size") {
     return {
       need, text: `What is the overall size of ${name}?`,
-      hint: "The drawing gives no overall size. Type length × width × height in mm, for example 250 × 120 × 90; for a round part, ⌀40 × 120. It is costed as a solid of that size, which overstates a hollow part.",
-      options: [], pick: null, choices: [],
+      hint: "The drawing gives no overall size. Type length × width × height in mm, for example 250 × 120 × 90; for a round part, ⌀40 × 120.",
+      options: [], pick: null, choices: [], skip: NO_COST,
+    };
+  }
+  if (need.kind === "wall") {
+    return {
+      need, text: `Is ${name} hollow?`,
+      hint: `A ${part?.processGroup ?? "moulded"} cover, cap or housing is a shell, and weighs a fraction of the block around it. Type its wall thickness in mm, for example 2.5, and it is costed as a shell open on one side.`,
+      options: [{ value: SOLID, why: "Not hollow: it is costed as the solid block." }], pick: null, choices: [SOLID],
+      skip: "Skip, and it is costed as a solid block.",
     };
   }
   return {
     need, text: "Where are the parts made?", hint: "The cost uses this place's machine and labour rates.",
     options: lists.locations.slice(0, OFFERED).map(value => ({ value })), pick: null, choices: [...lists.locations],
+    skip: "Skip, and the parts are created without a cost.",
   };
 }
 
@@ -145,6 +168,17 @@ export function applyAnswer(plan: IntakePlan, question: Question, value: string)
     const shape = sizeFrom(value, plan.parts.find(p => p.file === need.part)?.processGroup ?? null);
     if (!shape) return { error: "That does not read as a size. Type three numbers in mm, like 250 × 120 × 90, or ⌀40 × 120 for a round part." };
     return { plan: setPart({ shape, holes: [] }), said: shapeSummary(shape, []) };
+  }
+  if (need.kind === "wall") {
+    const shape = plan.parts.find(p => p.file === need.part)?.shape;
+    if (value.trim().toLowerCase() === SOLID.toLowerCase() || shape?.kind !== "block") return { plan, said: SOLID };
+    const wallMm = Number(/\d+(?:\.\d+)?/.exec(value)?.[0] ?? NaN);
+    if (!(wallMm > 0)) return { error: `Type the wall thickness in mm, like 2.5, or choose ${SOLID}.` };
+    // The same limit as the model's builder: the walls must leave a hollow between them.
+    if (2 * wallMm >= shape.widthMm || wallMm >= shape.heightMm) return { error: `A wall of ${wallMm} mm leaves nothing hollow in a part ${shape.widthMm} mm wide and ${shape.heightMm} mm high.` };
+    const shell: DrawingShape = { kind: "shell", lengthMm: shape.lengthMm, widthMm: shape.widthMm, heightMm: shape.heightMm, wallMm };
+    // The part's holes stay with it: the shell's builder places none, and says so in the cost's note.
+    return { plan: setPart({ shape: shell }), said: shapeSummary(shell, []) };
   }
   const matched = matchChoice(value, question.choices);
   if ("error" in matched) return matched;
