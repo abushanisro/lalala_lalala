@@ -9,6 +9,7 @@ import { signOutForInactivity } from '@/lib/auth/session-idle/browser'
 import { isSessionIdleBody } from '@/lib/auth/session-idle/policy'
 import { sessionSource } from '@/lib/auth/session-source'
 import { appReadiness } from '@/lib/core/app-readiness'
+import { intakeDraft } from '@/lib/intake/draft'
 import { AuthContext, type AuthContextType, type AuthUser, type OrganizationRole } from '@/lib/providers/auth-context'
 
 type Me =
@@ -89,7 +90,8 @@ export function Auth0AuthProvider({ children }: { children: React.ReactNode }) {
     [me, auth0User],
   )
 
-  const signOut = useCallback(async () => { await sessionSource.signOutThisDevice() }, [])
+  // What the person had on the New page (text, files, the conversation) is theirs: it does not stay in the tab for whoever signs in next.
+  const signOut = useCallback(async () => { intakeDraft.clear(); await sessionSource.signOutThisDevice() }, [])
 
   const value: AuthContextType = {
     user,

@@ -14,6 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { drawingReadingsApi, type DrawingReading } from '@/lib/api/drawing-readings';
 import { useFactories } from '@/lib/api/hooks/useFx';
 import { useProcessCalculatorMappings } from '@/lib/api/hooks/useProcessCalculatorMappings';
+import { useProfile } from '@/lib/api/hooks/useProfile';
 import { rawMaterialsListQuery, useRawMaterials } from '@/lib/api/hooks/useRawMaterials';
 import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-picker-query';
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
@@ -23,6 +24,7 @@ import { answerQuestion, askQuestion, startBuild, stopBuild, type BuildDeps } fr
 import type { Answer, Entry, Option } from '@/lib/intake/conversation';
 import { withDictation } from '@/lib/intake/dictation';
 import { intakeDraft } from '@/lib/intake/draft';
+import { browserDraftStorage } from '@/lib/intake/draft-storage';
 import { ASK_PLACEHOLDER, DEFAULT_INTAKE_MODE, INTAKE_BOX, INTAKE_MODES, INTAKE_SEND, intakeModeFrom, intakeModeOf } from '@/lib/intake/modes';
 import { pastedNames, pasteIsOfFiles } from '@/lib/intake/paste';
 import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib/intake/placeholder';
@@ -81,6 +83,12 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const [phase, setPhase] = useState<Phase>('compose');
   // Kept outside the page: still there after a visit elsewhere in the app. The server and the first paint show an empty prompt.
   const { note, files, thread, working, stopping } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
+  // The browser keeps the draft for the signed-in person in this tab, so a reload brings back what was typed, added and said.
+  const owner = useProfile().data?.userId;
+  useEffect(() => {
+    const kept = owner ? browserDraftStorage(owner) : null;
+    if (kept) void intakeDraft.keepIn(kept);
+  }, [owner]);
   /** The prompt takes input: nothing of the plan is open and the conversation is not busy. */
   const idle = phase === 'compose' && !working;
   /** The question the build is waiting on, if any. */
@@ -135,7 +143,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   // when the page opened is shown with its buttons, or coming back here would lead straight away again.
   const router = useRouter();
   const last = thread.at(-1);
-  const made = result ?? (last?.kind === 'result' ? last.result : null);
+  const made = result ?? (last?.kind === 'result' && !last.restored ? last.result : null);
   const opened = useRef(made);
   useEffect(() => {
     if (!made || made === opened.current) return;
