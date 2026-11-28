@@ -339,6 +339,7 @@ org:member      POST /api/v1/drawing-solids  DrawingSolidsController.build
 platform_admin  POST /api/v1/exchange-rates/refresh  FxController.refresh
 org:member      POST /api/v1/feature-process-mappings  ManufacturingKnowledgeController.createFeatureProcessMapping
 org:member      POST /api/v1/intake-answers  IntakeAnswersController.ask
+org:member      POST /api/v1/intake-picks  IntakePicksController.pick
 org:admin       POST /api/v1/labour-rates  LHRController.create
 org:admin       POST /api/v1/labour-rates/batches  LHRController.bulkCreate
 org:admin       POST /api/v1/labour-rates/imports  LHRController.importFromExcel

@@ -18005,6 +18005,26 @@
         ]
       }
     },
+    "/api/v1/intake-picks": {
+      "post": {
+        "operationId": "IntakePicksController_pick_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Pick from a list of choices: up to three likely material grades for a part (\"material\"), or the one a typed answer means (\"answer\"). No cost figures; nothing is created.",
+        "tags": [
+          "Drawing readings"
+        ]
+      }
+    },
     "/api/v1/labour-rates": {
       "delete": {
         "operationId": "LHRController_removeAll_v1",

@@ -3,9 +3,9 @@
 // what is created is decided by the rules in conversation.ts and plan.ts, never by generated text. Everything it learns goes into the
 // draft (lib/intake/draft.ts), so it carries on while the page is not on screen. What it calls is given as `deps`, so the order can
 // be tested without a server.
-import type { DrawingReading } from "@/lib/api/drawing-readings";
+import type { DrawingReading, IntakePick, IntakePickRequest } from "@/lib/api/drawing-readings";
 
-import { applyAnswer, narrative, needKey, nextNeed, questionFor, type Answer, type Entry } from "./conversation";
+import { answeredFromList, applyAnswer, matchesNone, narrative, needKey, nextNeed, questionFor, type Answer, type Entry } from "./conversation";
 import { intakeDraft } from "./draft";
 import { gradeFor, intakeFileKind, planBlockers, planPart, type IntakePlan, type PlanPart } from "./plan";
 
@@ -20,6 +20,8 @@ export interface BuildDeps {
   grades(processGroup: string): Promise<string[]>;
   /** Where the parts are made, when the person already chose ("" when not). */
   madeIn: string;
+  /** The model's picks from a list: likely material grades for a part, or the listed answer the person's own words mean. */
+  pick(request: IntakePickRequest): Promise<IntakePick[]>;
   create(plan: IntakePlan, files: ReadonlyMap<string, File>, onEvent: (event: IntakeEvent) => void): Promise<IntakeResult>;
 }
 
@@ -85,7 +87,9 @@ async function advance(deps: BuildDeps): Promise<void> {
     const need = nextNeed(build.plan, build.closed);
     if (!need) break;
     const part = build.plan.parts.find(p => p.file === need.part);
+    const read = need.part ? build.reads[need.part] : null;
     let grades: string[] = [];
+    let suggested: IntakePick[] = [];
     if (need.kind === "grade" && part?.processGroup) {
       grades = await deps.grades(part.processGroup).catch((): string[] => []);
       const named = gradeFor(part.materialRead, grades);
@@ -94,13 +98,32 @@ async function advance(deps: BuildDeps): Promise<void> {
         say(`Material for ${part.name}: ${named}, as the drawing says (${part.materialRead ?? ""}).`);
         continue;
       }
+      suggested = await suggestGrades(deps, part, grades, read?.reason ?? "");
     }
-    const question = questionFor(need, build.plan, { groups: deps.groups, grades, locations: deps.locations }, need.part ? build.reads[need.part] : null);
+    const question = questionFor(need, build.plan, { groups: deps.groups, grades, locations: deps.locations }, read, suggested);
     push({ kind: "question", id: newId(), question, answer: null });
     intakeDraft.setWorking(false);                    // the person's turn
     return;
   }
   await create(deps);
+}
+
+/**
+ * The grades the model thinks likely for a part whose drawing names none of them, to offer on the question. A suggestion is a help:
+ * when there is none to be had (no grades, AI off, the budget used up) the question is asked without one.
+ */
+async function suggestGrades(deps: BuildDeps, part: PlanPart, grades: string[], seen: string): Promise<IntakePick[]> {
+  if (grades.length === 0) return [];
+  const key = `suggest:${newId()}`;
+  step(key, `Looking for the likely material of ${part.name}`, "running", "");
+  const note = intakeDraft.get().thread.filter(e => e.kind === "user").at(-1)?.text ?? "";
+  try {
+    return await deps.pick({ purpose: "material", choices: grades, part: { name: part.name, processGroup: part.processGroup ?? "", materialRead: part.materialRead ?? "", seen, note } });
+  } catch {
+    return [];
+  } finally {
+    dropStep(key);
+  }
 }
 
 async function create(deps: BuildDeps): Promise<void> {
@@ -137,11 +160,28 @@ export async function answerQuestion(entryId: number, answer: Answer, deps: Buil
   if (answer.action === "skip") {
     intakeDraft.setBuild({ ...build, closed: [...build.closed, needKey(need)] });
   } else {
-    const applied = applyAnswer(build.plan, entry.question, answer.value);
+    let applied = applyAnswer(build.plan, entry.question, answer.value);
+    let from = "";
+    if ("error" in applied && answeredFromList(entry.question) && matchesNone(answer.value, entry.question.choices)) {
+      // Words that are no listed answer by spelling ("injection moulding", "aluminium", "PP"): the model says which answer they mean.
+      const said = answer.value.trim();
+      intakeDraft.setWorking(true);
+      const meant = await deps.pick({ purpose: "answer", question: entry.question.text, said, choices: entry.question.choices }).catch((): IntakePick[] => []);
+      intakeDraft.setWorking(false);
+      const now = intakeDraft.get();
+      if (now.build !== build || !now.thread.some(e => e === entry)) return null;   // skipped, answered or cleared meanwhile
+      if (meant.length > 1) {                         // they could mean several: those are offered on the question, to choose from
+        const options = meant.map(p => ({ value: p.choice, ...(p.why ? { why: p.why } : {}) }));
+        const hint = `These are the answers "${said}" could mean. Choose one, or type more of the name.`;
+        intakeDraft.setThread(current => current.map(e => (e === entry ? { ...entry, question: { ...entry.question, options, pick: null, hint } } : e)));
+        return `"${said}" could be one of these. Choose one, or type more of the name.`;
+      }
+      if (meant[0]) { applied = applyAnswer(build.plan, entry.question, meant[0].choice); from = ` (from "${said}")`; }
+    }
     if ("error" in applied) return applied.error;
     // "Solid" leaves the plan as it is, so the question is closed by name or it would be asked again.
     intakeDraft.setBuild({ ...build, plan: applied.plan, closed: need.kind === "wall" ? [...build.closed, needKey(need)] : build.closed });
-    given = { action: "accept", value: applied.said };
+    given = { action: "accept", value: `${applied.said}${from}` };
   }
   intakeDraft.setThread(current => current.map(e => (e.kind === "question" && e.id === entryId ? { ...e, answer: given } : e)));
   intakeDraft.setWorking(true);

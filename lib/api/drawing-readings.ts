@@ -49,6 +49,13 @@ export interface DrawingSolid {
 /** One answer to a question asked on the New page (backend intake-answers.service.ts). It holds no cost figure. */
 export interface IntakeAnswer { answer: string; model: string; fileName: string | null }
 
+/** A choice the model picked from a list it was given, and why (backend intake-pick.ts). Always one of the choices sent. */
+export interface IntakePick { choice: string; why: string }
+/** What a pick is asked for: the likely material grades of a part, or the listed answer a person's own words mean. */
+export type IntakePickRequest =
+  | { purpose: "material"; choices: string[]; part: { name: string; processGroup: string; materialRead: string; seen: string; note: string } }
+  | { purpose: "answer"; choices: string[]; question: string; said: string };
+
 export const drawingReadingsApi = {
   /** POST /drawing-readings: one drawing (image or PDF) read by the vision model. Spends the caller's AI budget. */
   read: (file: File, note?: string) => {
@@ -64,6 +71,9 @@ export const drawingReadingsApi = {
     if (file) form.append("file", file);
     return spendingAi(apiClient.uploadFiles<IntakeAnswer>("/intake-answers", form, { timeout: 150_000 }));
   },
+  /** POST /intake-picks: up to three likely materials, or the answer the person's words mean (a few when they could mean several); none is a valid answer. Spends the caller's AI budget. */
+  pick: (body: IntakePickRequest) =>
+    spendingAi(apiClient.post<{ picks: IntakePick[]; model: string }>("/intake-picks", body, { timeout: 75_000, retry: false })),
   /** POST /drawing-solids: the STEP of the solid a reading describes. */
   solid: (body: { shape: DrawingShape; holes: DrawingHole[]; name: string }) =>
     apiClient.post<DrawingSolid>("/drawing-solids", body, { timeout: 90_000, retry: false }),

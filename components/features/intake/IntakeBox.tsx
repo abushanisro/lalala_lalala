@@ -20,7 +20,7 @@ import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { useDictation } from '@/lib/hooks/useDictation';
 import { intakeApi } from '@/lib/intake/api';
 import { answerQuestion, askQuestion, startBuild, type BuildDeps } from '@/lib/intake/build';
-import type { Answer, Entry } from '@/lib/intake/conversation';
+import type { Answer, Entry, Option } from '@/lib/intake/conversation';
 import { withDictation } from '@/lib/intake/dictation';
 import { intakeDraft } from '@/lib/intake/draft';
 import { ASK_PLACEHOLDER, DEFAULT_INTAKE_MODE, INTAKE_BOX, INTAKE_MODES, INTAKE_SEND, intakeModeFrom, intakeModeOf } from '@/lib/intake/modes';
@@ -157,6 +157,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       return [...new Set(list.items.map(m => m.material))].sort((a, b) => a.localeCompare(b));
     },
     madeIn: madeInChoice.now(),
+    pick: async request => (await drawingReadingsApi.pick(request)).picks,
     create: async (made, byName, onEvent) => {
       if (made.location) madeInChoice.choose(made.location);
       try {
@@ -501,10 +502,11 @@ function QuestionCard({ entry, onAnswer }: { entry: Extract<Entry, { kind: 'ques
       </p>
     );
   }
+  // What is typed searches the answers; words that find none leave the question's own offers in place (the build may have put there
+  // the answers those words could mean).
   const words = own.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const offered = words.length > 0 && question.choices.length > 0
-    ? question.choices.filter(choice => words.every(word => choice.toLowerCase().includes(word))).slice(0, 6).map(value => ({ value, why: undefined }))
-    : question.options;
+  const found = words.length > 0 ? question.choices.filter(choice => words.every(word => choice.toLowerCase().includes(word))).slice(0, 6) : [];
+  const offered: Option[] = found.length > 0 ? found.map(value => ({ value })) : question.options;
   const value = chosen ?? own.trim();
   const submit = async (given: Answer) => {
     setSending(true);

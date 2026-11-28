@@ -8,6 +8,7 @@ import { MAX_DRAWING_BYTES } from './drawing-reading';
 import { DrawingReadingsService, type DrawingReadingResult } from './drawing-readings.service';
 import { DrawingSolidsService, type DrawingSolid } from './drawing-solids.service';
 import { IntakeAnswersService, type IntakeAnswer } from './intake-answers.service';
+import { IntakePicksService, type IntakePicks } from './intake-picks.service';
 import { OrgRole } from '../../common/authz/authz-policy';
 import { AccessToken } from '../../common/decorators/access-token.decorator';
 import { CurrentOrganization } from '../../common/decorators/current-organization.decorator';
@@ -91,3 +92,29 @@ export class IntakeAnswersController {
   }
 }
 
+/**
+ * A pick from a list for the intake page's questions: the material grades a part is most likely made of, or the listed answer a
+ * person's own words mean. Picks are made, not stored, and are always choices of the list given. It spends the caller's AI budget
+ * (429 when used up, 503 when AI is off).
+ */
+@ApiTags('Drawing readings')
+@ApiBearerAuth()
+@OrgRole('member')
+@UseGuards(OrganizationContextGuard)
+@Controller({ path: 'intake-picks', version: '1' })
+export class IntakePicksController {
+  constructor(private readonly picks: IntakePicksService) {}
+
+  @Post()
+  @HttpCode(200) // picks, given in full: nothing is created
+  @SpendsAi()
+  @ApiOperation({ summary: 'Pick from a list of choices: up to three likely material grades for a part ("material"), or the one a typed answer means ("answer"). No cost figures; nothing is created.' })
+  pick(
+    @Body() body: unknown,
+    @CurrentUser() user: { id: string },
+    @AccessToken() token: string,
+    @CurrentOrganization() organizationId: string,
+  ): Promise<IntakePicks> {
+    return this.picks.pick(body, { userId: user.id, organizationId, accessToken: token });
+  }
+}

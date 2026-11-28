@@ -17,6 +17,8 @@ export const AI_MAX_TOKENS = {
   drawing_extraction: 16_000,
   /** One answer to a question on the intake page ("Ask"), about a drawing or about making a part: a few paragraphs, with room to think. */
   drawing_question: 4_096,
+  /** One pick from a list on the intake page (a likely material, or the answer a person's words mean): up to three names and a sentence each. */
+  drawing_pick: 2_048,
   /** Benchmark VAVE insights: one JSON object with a handful of short lists. */
   vave_bom_analysis: 6_000,
   /** Affinity groups, focus areas and a QFD matrix for the top 30 parts. */

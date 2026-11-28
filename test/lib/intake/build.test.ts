@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DrawingReading } from "@/lib/api/drawing-readings";
+import type { DrawingReading, IntakePick, IntakePickRequest } from "@/lib/api/drawing-readings";
 import { answerQuestion, askQuestion, startBuild, type BuildDeps } from "@/lib/intake/build";
 import type { Entry } from "@/lib/intake/conversation";
 import { intakeDraft } from "@/lib/intake/draft";
@@ -24,6 +24,7 @@ const made: IntakeResult = { projectId: "P1", bomId: "B1", parts: [{ file: "a.pn
 function deps(over: Partial<BuildDeps> = {}) {
   const created: IntakePlan[] = [];
   const all: BuildDeps = {
+    pick: () => Promise.resolve([]),                  // the model has nothing to suggest, unless a test says otherwise
     read: () => Promise.resolve(photo),
     groups: ["Die Casting", "Machining", "Plastic Molding", "Sand Casting", "Sheet Metal"], locations: ["India", "USA"],
     grades: group => Promise.resolve(group === "Machining" ? ["Aluminum, ANSI 6061", "Aluminum, ANSI 7050"] : ["ABS, General Purpose", "ABS, High Impact", "PC/ABS Blend"]),
@@ -99,6 +100,87 @@ describe("a build as a conversation", () => {
       expect(openQuestion().question.need.kind).toBe("grade");
       expect(intakeDraft.get().build?.plan.parts[0]?.shape).toEqual({ kind: "block", lengthMm: 250, widthMm: 120, heightMm: 90 });
     }
+  });
+
+  it("offers the material the model suggests for a part whose drawing names none, chosen for the person to confirm", async () => {
+    const asked: IntakePickRequest[] = [];
+    const pick = (request: IntakePickRequest): Promise<IntakePick[]> => { asked.push(request); return Promise.resolve([{ choice: "ABS, High Impact", why: "Exterior trim takes knocks." }]); };
+    const { all, created } = deps({ pick, madeIn: "USA" });
+    await startBuild("a cover for a car mirror", [file("mirror.png")], all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "2.5" }, all);
+
+    expect(asked).toEqual([{
+      purpose: "material", choices: ["ABS, General Purpose", "ABS, High Impact", "PC/ABS Blend"],
+      part: { name: "Car side mirror cover", processGroup: "Plastic Molding", materialRead: "", seen: "The form is a thin moulded cover.", note: "a cover for a car mirror" },
+    }]);
+    expect(openQuestion().question).toMatchObject({ need: { kind: "grade" }, pick: "ABS, High Impact", options: [{ value: "ABS, High Impact", why: "Suggested. Exterior trim takes knocks." }] });
+    expect(thread().some(e => e.kind === "step" && e.title.includes("Looking for the likely material"))).toBe(false);   // the line goes once the question is there
+    expect(created).toHaveLength(0);                                                                                // a suggestion is not an answer
+    await answerQuestion(openQuestion().id, { action: "accept", value: "ABS, High Impact" }, all);
+    expect(created[0]?.parts[0]).toMatchObject({ grade: "ABS, High Impact" });
+  });
+
+  it("asks for the material with no suggestion when the model cannot be asked", async () => {
+    const { all } = deps({ pick: () => Promise.reject(new Error("You have used your daily AI allowance.")) });
+    await startBuild("", [file("mirror.png")], all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "Solid" }, all);
+    expect(openQuestion().question).toMatchObject({ need: { kind: "grade" }, pick: null, options: [] });
+    expect(intakeDraft.get().working).toBe(false);
+  });
+
+  it("takes words that are no listed answer by spelling as the answer the model says they mean, and says what they were", async () => {
+    const asked: IntakePickRequest[] = [];
+    const pick = (request: IntakePickRequest): Promise<IntakePick[]> => {
+      asked.push(request);
+      return Promise.resolve(request.purpose === "answer" && request.said.includes("mould") ? [{ choice: "Plastic Molding", why: "Another spelling of molding." }] : []);
+    };
+    const { all } = deps({ pick, read: () => Promise.resolve({ ...photo, process: null }) });
+    await startBuild("", [file("mirror.png")], all);
+    const process = openQuestion();
+    expect(process.question.need.kind).toBe("process");
+
+    expect(await answerQuestion(process.id, { action: "accept", value: "by magic" }, all)).toBe('Nothing here is called "by magic".');   // the model names none: the question stays
+    expect(openQuestion().id).toBe(process.id);
+    expect(intakeDraft.get().working).toBe(false);
+
+    expect(await answerQuestion(process.id, { action: "accept", value: " injection moulding " }, all)).toBeNull();
+    expect(asked.at(-1)).toEqual({ purpose: "answer", question: "Which process makes Car side mirror cover?", said: "injection moulding", choices: all.groups });
+    expect(questions()[0]?.answer).toEqual({ action: "accept", value: 'Plastic Molding (from "injection moulding")' });
+    expect(intakeDraft.get().build?.plan.parts[0]?.processGroup).toBe("Plastic Molding");
+    expect(openQuestion().question.need.kind).toBe("size");
+  });
+
+  it("offers the answers the words could mean when the model names several, and leaves the question open", async () => {
+    const family = [{ choice: "ABS, General Purpose", why: "The common ABS." }, { choice: "ABS, High Impact", why: "" }];
+    const { all, created } = deps({ pick: request => Promise.resolve(request.purpose === "answer" ? family : []), madeIn: "USA" });
+    await startBuild("", [file("mirror.png")], all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "Solid" }, all);
+    const material = openQuestion();
+    expect(await answerQuestion(material.id, { action: "accept", value: "acrylonitrile" }, all)).toBe('"acrylonitrile" could be one of these. Choose one, or type more of the name.');
+    expect(openQuestion()).toMatchObject({ id: material.id, question: {
+      pick: null, options: [{ value: "ABS, General Purpose", why: "The common ABS." }, { value: "ABS, High Impact" }],
+      hint: 'These are the answers "acrylonitrile" could mean. Choose one, or type more of the name.',
+    } });
+    expect(intakeDraft.get().working).toBe(false);
+    await answerQuestion(material.id, { action: "accept", value: "ABS, High Impact" }, all);
+    expect(created[0]?.parts[0]).toMatchObject({ grade: "ABS, High Impact" });
+  });
+
+  it("does not ask the model about words a listed answer holds, a size or a wall", async () => {
+    const pick = vi.fn((): Promise<IntakePick[]> => Promise.resolve([]));
+    const { all } = deps({ pick });
+    await startBuild("", [file("mirror.png")], all);
+    expect(await answerQuestion(openQuestion().id, { action: "accept", value: "quite big" }, all)).toMatch(/does not read as a size/);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all);
+    expect(await answerQuestion(openQuestion().id, { action: "accept", value: "thin" }, all)).toMatch(/Type the wall thickness/);
+    await answerQuestion(openQuestion().id, { action: "accept", value: "Solid" }, all);
+    const before = pick.mock.calls.length;                                                           // the one suggestion for the material
+    expect(before).toBe(1);
+    expect(await answerQuestion(openQuestion().id, { action: "accept", value: "abs" }, all)).toMatch(/^Several match "abs"/);
+    expect(pick).toHaveBeenCalledTimes(before);
   });
 
   it("creates a part without a cost when its question is skipped, and asks nothing more about it", async () => {
