@@ -2,6 +2,7 @@
 
 import { formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
+import { useSyncExternalStore } from 'react';
 
 import { StatusBadge } from '@/components/common/status-badge';
 import { IntakeBox } from '@/components/features/intake/IntakeBox';
@@ -10,26 +11,30 @@ import { ArrowRight } from '@/components/ui/icons';
 import { useProfile } from '@/lib/api/hooks/useProfile';
 import { useProjects } from '@/lib/api/hooks/useProjects';
 import { formatProjectMoney, projectCostCurrency } from '@/lib/costing/project-costs';
+import { intakeDraft } from '@/lib/intake/draft';
 import { projectEntryHref } from '@/lib/projects/entry-href';
 
 /**
  * New: the generative way in. Drop drawings, pictures of parts, STEP files or a zip and say what the job is; the plan is shown to
  * check, and one click makes the project, its BOM and its parts, each costed from a model built from its drawing. The newest
- * projects are below, to go back into one.
+ * projects are below, to go back into one. Once a conversation is open the page is the conversation alone, like a chat page.
  */
 /**
  * The page's backdrop, in the brand's own terms (the hero of emithran.com): a drawing sheet's grid, two parts in fine line as an engineer
  * dimensions them, and the brand's teal slice rising to the right. It is not a box: it runs to the edges of the content area (over the
  * layout's padding) and down the whole page, behind the recent projects, to the foot of the screen. Everything is drawn from the
  * theme's tokens, so it follows the light, dark and brand themes. Decoration only: nothing here can be focused or read aloud.
+ * `quiet` is the conversation's page: the sheet's grid alone, as text runs over all of it and the parts and the slice would sit behind it.
  */
-function PageBackdrop() {
+function PageBackdrop({ quiet = false }: { quiet?: boolean }) {
   const line = { fill: 'none', stroke: 'currentColor', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' as const };
   const centre = { ...line, strokeDasharray: '18 5 3 5' };
+  /** The sheet's grid, strongest at the top centre and gone toward the sides and the middle. */
+  const grid = <div className="absolute inset-0 opacity-[0.07] [background-image:linear-gradient(to_right,hsl(var(--foreground))_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--foreground))_1px,transparent_1px)] [background-size:32px_32px] [mask-image:radial-gradient(ellipse_75%_70%_at_50%_0%,black,transparent)]" />;
+  if (quiet) return <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">{grid}</div>;
   return (
     <div aria-hidden="true" className="pointer-events-none absolute -inset-4 -z-10 overflow-hidden sm:-inset-8">
-      {/* The sheet's grid, strongest at the top centre and gone toward the sides and the middle. */}
-      <div className="absolute inset-0 opacity-[0.07] [background-image:linear-gradient(to_right,hsl(var(--foreground))_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--foreground))_1px,transparent_1px)] [background-size:32px_32px] [mask-image:radial-gradient(ellipse_75%_70%_at_50%_0%,black,transparent)]" />
+      {grid}
 
       {/* A plate with its holes, a slot and its overall dimension. */}
       <svg viewBox="0 0 320 200" className="absolute left-6 top-10 hidden h-44 w-72 text-foreground/15 xl:block">
@@ -68,56 +73,62 @@ export default function NewPage() {
   const { data: projectsData } = useProjects({ limit: 6 });
   const firstName = profile?.displayName?.trim().split(/\s+/)[0];
   const projects = projectsData?.projects ?? [];
+  // A conversation is open (it is kept outside the page, lib/intake/draft.ts): the page is then the conversation alone, like a chat
+  // page. It fills the screen below the header and the credits bar (5.75rem), over the layout's padding, and scrolls inside itself, so
+  // the prompt stays at the foot. The box is the same one in both, so what is typed and being built carries across.
+  const chatting = useSyncExternalStore(intakeDraft.subscribe, () => intakeDraft.get().thread.length > 0, () => false);
 
   return (
-    // At least as tall as the screen below the header and the credits bar (5.75rem), less the layout's padding, so the backdrop reaches the
-    // foot of the screen when there are few projects.
-    <div className="relative isolate min-h-[calc(100dvh-7.75rem)] space-y-8 animate-fade-in sm:min-h-[calc(100dvh-9.75rem)]">
-      <div className="pb-8 pt-6 sm:pb-12 sm:pt-12">
+    // The start: at least as tall as the screen below the header and the credits bar, less the layout's padding, so the backdrop reaches
+    // the foot of the screen when there are few projects.
+    <div className={chatting ? 'relative isolate -m-4 h-[calc(100dvh-5.75rem)] animate-fade-in sm:-m-8' : 'relative isolate min-h-[calc(100dvh-7.75rem)] space-y-8 animate-fade-in sm:min-h-[calc(100dvh-9.75rem)]'}>
+      <div className={chatting ? 'h-full' : 'pb-8 pt-6 sm:pb-12 sm:pt-12'}>
         <IntakeBox title={<>What do you want to <span className="text-primary">cost</span>{firstName ? `, ${firstName}` : ''}?</>} />
       </div>
 
-      <section aria-label="Recent projects" className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-foreground">Recent projects</h2>
-          <Link href="/projects" className="flex items-center gap-1 text-sm font-medium text-foreground hover:underline">Browse all <ArrowRight className="h-4 w-4" /></Link>
-        </div>
-        {projects.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No project yet. The first one you create above appears here.</p>
-        ) : (
-          <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {projects.map(project => (
-              <li key={project.id}>
-                <Link href={projectEntryHref(project)} className="block h-full overflow-hidden rounded-xl border border-border bg-background transition-colors hover:border-primary/60 hover:bg-accent">
-                  <div className="flex aspect-[16/9] items-center justify-center border-b border-border bg-gradient-to-br from-muted/70 to-muted/20">
-                    <ProjectPicture thumbnailUrl={project.thumbnailUrl} className="p-3" />
-                  </div>
-                  <div className="p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="min-w-0 break-words text-sm font-semibold text-foreground">{project.name}</p>
-                      <StatusBadge status={project.status} />
+      {!chatting && (
+        <section aria-label="Recent projects" className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-foreground">Recent projects</h2>
+            <Link href="/projects" className="flex items-center gap-1 text-sm font-medium text-foreground hover:underline">Browse all <ArrowRight className="h-4 w-4" /></Link>
+          </div>
+          {projects.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No project yet. The first one you create above appears here.</p>
+          ) : (
+            <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {projects.map(project => (
+                <li key={project.id}>
+                  <Link href={projectEntryHref(project)} className="block h-full overflow-hidden rounded-xl border border-border bg-background transition-colors hover:border-primary/60 hover:bg-accent">
+                    <div className="flex aspect-[16/9] items-center justify-center border-b border-border bg-gradient-to-br from-muted/70 to-muted/20">
+                      <ProjectPicture thumbnailUrl={project.thumbnailUrl} className="p-3" />
                     </div>
-                    <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                      <OwnerAvatar
-                        className="h-6 w-6 text-[10px]"
-                        name={project.ownerName}
-                        photoUrl={project.ownerId && project.ownerId === profile?.userId ? (profile.avatarUrl ?? undefined) : undefined}
-                      />
-                      <span className="truncate">{project.ownerName ? `${project.ownerName} · ` : ''}Edited {formatDistanceToNow(new Date(project.updatedAt), { addSuffix: true })}</span>
+                    <div className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="min-w-0 break-words text-sm font-semibold text-foreground">{project.name}</p>
+                        <StatusBadge status={project.status} />
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <OwnerAvatar
+                          className="h-6 w-6 text-[10px]"
+                          name={project.ownerName}
+                          photoUrl={project.ownerId && project.ownerId === profile?.userId ? (profile.avatarUrl ?? undefined) : undefined}
+                        />
+                        <span className="truncate">{project.ownerName ? `${project.ownerName} · ` : ''}Edited {formatDistanceToNow(new Date(project.updatedAt), { addSuffix: true })}</span>
+                      </div>
+                      <p className="mt-3 text-xs tabular-nums text-muted-foreground">
+                        {project.bomCount ?? 0} {project.bomCount === 1 ? 'BOM' : 'BOMs'} · {project.bomItemCount ?? 0} {project.bomItemCount === 1 ? 'item' : 'items'} · {formatProjectMoney(project.actualCost, projectCostCurrency(project))}
+                      </p>
                     </div>
-                    <p className="mt-3 text-xs tabular-nums text-muted-foreground">
-                      {project.bomCount ?? 0} {project.bomCount === 1 ? 'BOM' : 'BOMs'} · {project.bomItemCount ?? 0} {project.bomItemCount === 1 ? 'item' : 'items'} · {formatProjectMoney(project.actualCost, projectCostCurrency(project))}
-                    </p>
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
       {/* Last in the markup, behind everything in the paint order: as the first child it would make the prompt a later sibling, and the
           stack's spacing would push the whole page down. */}
-      <PageBackdrop />
+      <PageBackdrop quiet={chatting} />
     </div>
   );
 }

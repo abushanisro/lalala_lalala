@@ -114,6 +114,29 @@ describe("runIntake", () => {
   });
 });
 
+describe("a stop while it runs", () => {
+  const stoppingAt = (s: ReturnType<typeof server>, call: RegExp) => () => s.calls.some(c => call.test(c));
+
+  it("ends the part in hand after its step, begins no other part or file, and says it was stopped", async () => {
+    const s = server();
+    const events: IntakeEvent[] = [];
+    const result = await runIntake(plan({ parts: [part("a.png"), part("b.png")], cadFiles: ["asm.zip"] }), new Map(["a.png", "b.png", "asm.zip"].map(n => [n, file(n)])), s.api,
+      e => events.push(e), () => Promise.resolve(), stoppingAt(s, /^upload I1/));
+    expect(s.calls).toEqual(["project Bracket job", "bom P From drawings", "item PN-a.png qty 2 vol 5000 grade Aluminum, ANSI 6061", "solid PN-a.png", "upload I1 a.png + PN-a.png (from drawing).step"]);
+    expect(result).toEqual({ projectId: "P", bomId: "B", cadImported: 0, stopped: true, parts: [{ file: "a.png", itemId: "I1", costed: false, detail: "Stopped before it was costed." }] });
+    expect(events.at(-1)).toEqual({ key: "part:a.png", title: "a", state: "done", detail: "Created without a cost: stopped before it was costed." });
+  });
+
+  it("does not ask for the analysis again once stopped, and is not marked stopped when no stop was asked", async () => {
+    const waiting = server(undefined, [false, false, true]);
+    const result = await runIntake(plan(), new Map([["a.png", file("a.png")]]), waiting.api, () => undefined, () => Promise.resolve(), stoppingAt(waiting, /^analyse I1/));
+    expect(waiting.calls.filter(c => c.startsWith("analyse"))).toHaveLength(1);
+    expect(waiting.calls.some(c => c.startsWith("apply"))).toBe(false);
+    expect(result.parts[0]).toMatchObject({ costed: false, detail: "Stopped before it was costed." });
+    expect((await run(plan(), server())).result).not.toHaveProperty("stopped");
+  });
+});
+
 describe("partPath", () => {
   const made = (parts: PartOutcome[]) => ({ projectId: "p1", bomId: "b1", parts, cadImported: 0 });
   const outcome = (itemId: string | null, costed: boolean): PartOutcome => ({ file: `${itemId ?? "none"}.png`, itemId, costed, detail: "" });

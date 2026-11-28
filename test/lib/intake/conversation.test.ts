@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DrawingReading } from "@/lib/api/drawing-readings";
-import { applyAnswer, hollowProne, matchChoice, narrative, needKey, nextNeed, questionFor, sizeFrom, type Lists } from "@/lib/intake/conversation";
+import { answeredFromList, applyAnswer, hollowProne, matchChoice, matchesNone, narrative, needKey, nextNeed, questionFor, sizeFrom, type Lists } from "@/lib/intake/conversation";
 import type { IntakePlan, PlanPart } from "@/lib/intake/plan";
 
 const LISTS: Lists = {
@@ -88,6 +88,34 @@ describe("questionFor", () => {
     const where = questionFor({ kind: "location", part: null }, plan([part()]), LISTS);
     expect(where.options.map(o => o.value)).toEqual(["India", "USA", "Germany"]);
     expect(where.skip).toBe("Skip, and the parts are created without a cost.");
+  });
+
+  it("offers the grades the model suggests first, the first one picked, when the drawing names no material", () => {
+    const moulded = plan([part({ processGroup: "Plastic Molding" })]);
+    const lists = { ...LISTS, grades: ["ABS, General Purpose", "ABS, High Impact", "PC/ABS Blend"] };
+    const suggested = [{ choice: "ABS, High Impact", why: "Exterior trim takes knocks." }, { choice: "Unobtainium", why: "Not a grade here." }, { choice: "PC/ABS Blend", why: "" }];
+    const asked = questionFor({ kind: "grade", part: "mirror.png" }, moulded, lists, null, suggested);
+    expect(asked.pick).toBe("ABS, High Impact");
+    expect(asked.options).toEqual([{ value: "ABS, High Impact", why: "Suggested. Exterior trim takes knocks." }, { value: "PC/ABS Blend", why: "Suggested." }]);
+    expect(asked.hint).toBe("The drawing names no material. These are suggested from what the part is: choose one, or type one to search the Plastic Molding materials.");
+    expect(questionFor({ kind: "grade", part: "mirror.png" }, moulded, lists).hint).toBe("The drawing names no material. Type a grade to search the Plastic Molding materials.");
+  });
+
+  it("keeps the grade the drawing names as the pick, ahead of what is suggested", () => {
+    const named = plan([part({ processGroup: "Machining", materialRead: "AL 6061-T6" })]);
+    const lists = { ...LISTS, grades: ["Aluminum, ANSI 6061", "Aluminum, ANSI 7050"] };
+    const asked = questionFor({ kind: "grade", part: "mirror.png" }, named, lists, null, [{ choice: "Aluminum, ANSI 7050", why: "Stronger." }]);
+    expect(asked.pick).toBe("Aluminum, ANSI 6061");
+    expect(asked.options.slice(0, 2)).toEqual([{ value: "Aluminum, ANSI 6061", why: 'The drawing says "AL 6061-T6".' }, { value: "Aluminum, ANSI 7050", why: "Suggested. Stronger." }]);
+  });
+
+  it("knows which typed words are worth asking the model about: no listed answer holds them, and the answers are a list", () => {
+    const groups = ["Machining", "Plastic Molding", "Sheet Metal"];
+    expect(["injection moulding", "CNC", "  plastic moulding "].map(typed => matchesNone(typed, groups))).toEqual([true, true, true]);
+    expect(["plastic", "molding", "Sheet Metal", "", "   "].map(typed => matchesNone(typed, groups))).toEqual([false, false, false, false, false]);
+    const sized = plan([part({ processGroup: "Plastic Molding", shape: block })]);
+    const listed = (kind: "process" | "size" | "wall" | "grade" | "location") => answeredFromList(questionFor({ kind, part: kind === "location" ? null : "mirror.png" }, sized, LISTS));
+    expect((["process", "grade", "location", "size", "wall"] as const).map(listed)).toEqual([true, true, true, false, false]);
   });
 
   it("asks whether a moulded part is hollow, offering Solid, and says a skip costs it as a block", () => {

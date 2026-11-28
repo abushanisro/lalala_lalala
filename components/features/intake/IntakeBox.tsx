@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { AlertTriangle, ArrowUp, Box, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, Loader2, Mic, Plus, Upload, X } from '@/components/ui/icons';
+import { AlertTriangle, ArrowUp, Box, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, Loader2, Mic, Plus, Square, Upload, X } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { drawingReadingsApi, type DrawingReading } from '@/lib/api/drawing-readings';
@@ -19,8 +19,8 @@ import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { useDictation } from '@/lib/hooks/useDictation';
 import { intakeApi } from '@/lib/intake/api';
-import { answerQuestion, askQuestion, startBuild, type BuildDeps } from '@/lib/intake/build';
-import type { Answer, Entry } from '@/lib/intake/conversation';
+import { answerQuestion, askQuestion, startBuild, stopBuild, type BuildDeps } from '@/lib/intake/build';
+import type { Answer, Entry, Option } from '@/lib/intake/conversation';
 import { withDictation } from '@/lib/intake/dictation';
 import { intakeDraft } from '@/lib/intake/draft';
 import { ASK_PLACEHOLDER, DEFAULT_INTAKE_MODE, INTAKE_BOX, INTAKE_MODES, INTAKE_SEND, intakeModeFrom, intakeModeOf } from '@/lib/intake/modes';
@@ -80,7 +80,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>('compose');
   // Kept outside the page: still there after a visit elsewhere in the app. The server and the first paint show an empty prompt.
-  const { note, files, thread, working } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
+  const { note, files, thread, working, stopping } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
   /** The prompt takes input: nothing of the plan is open and the conversation is not busy. */
   const idle = phase === 'compose' && !working;
   /** The question the build is waiting on, if any. */
@@ -140,7 +140,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   useEffect(() => {
     if (!made || made === opened.current) return;
     opened.current = made;
-    router.push(partPath(made) ?? bomPath(made));
+    if (!made.stopped) router.push(partPath(made) ?? bomPath(made));   // stopped by the person: they are not taken anywhere
   }, [made, router]);
 
   // The conversation keeps to the page's foot as it grows, where the prompt is.
@@ -157,10 +157,11 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
       return [...new Set(list.items.map(m => m.material))].sort((a, b) => a.localeCompare(b));
     },
     madeIn: madeInChoice.now(),
-    create: async (made, byName, onEvent) => {
+    pick: async request => (await drawingReadingsApi.pick(request)).picks,
+    create: async (made, byName, onEvent, stopped) => {
       if (made.location) madeInChoice.choose(made.location);
       try {
-        return await runIntake(made, byName, intakeApi, onEvent);
+        return await runIntake(made, byName, intakeApi, onEvent, undefined, stopped);
       } finally {
         void queryClient.invalidateQueries({ queryKey: ['projects'] });
         void queryClient.invalidateQueries({ queryKey: ['cost-analytics'] });
@@ -240,129 +241,129 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const blockers = plan ? planBlockers(plan) : [];
   const skipped = Object.entries(reads).flatMap(([name, r]) => (r.state === 'failed' ? [{ name, why: r.why }] : r.state === 'read' && !r.reading.isDrawing ? [{ name, why: 'Not a drawing or a picture of a part.' }] : []));
 
-  return (
-    <section aria-label="Start from a drawing" className="space-y-6">
-      <div className="mx-auto w-full max-w-3xl space-y-4">
-        {thread.length === 0 ? (
-          <div className="text-center">
-            <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
-            <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
-          </div>
-        ) : <Conversation thread={thread} working={working} onAnswer={answer} onClear={reset} />}
-        <div className={`relative rounded-3xl border bg-card shadow-lg transition-colors ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}>
-          {dragging && (
-            <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 rounded-3xl border-2 border-dashed border-primary bg-card/95 text-center">
-              <Upload className="h-5 w-5 text-primary" />
-              <p className="text-sm font-semibold text-foreground">Drop to add</p>
-              <p className="text-xs text-muted-foreground">Drawings, pictures, STEP files or a zip</p>
-            </div>
-          )}
-          <Textarea
-            ref={textarea} value={note} disabled={!idle} onChange={event => { setNote(event.target.value); }}
-            onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && canSend) { event.preventDefault(); send(); } }}
-            placeholder={stillPlaceholder}
-            aria-label={INTAKE_BOX[mode]}
-            className="min-h-[56px] resize-none border-none bg-transparent px-5 pb-2 pt-4 text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
-          />
-          {files.length > 0 && (
-            <ul className="flex flex-wrap items-end gap-2 px-4 pb-1" aria-label="Files added">
-              {files.map(file => {
-                const remove = idle ? () => { setFiles(current => current.filter(f => f.name !== file.name)); } : null;
-                // A picture is shown as the picture; a PDF or a CAD file, which the page cannot draw, by its name.
-                return isPicture(file.name) ? <PictureTile key={file.name} file={file} onRemove={remove} /> : (
-                  <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground">
-                    {intakeFileKind(file.name) === 'cad' ? <Box className="h-3.5 w-3.5 shrink-0" /> : <FileText className="h-3.5 w-3.5 shrink-0" />}
-                    <span className="break-all">{file.name}</span>
-                    {remove && (
-                      <button type="button" aria-label={`Remove ${file.name}`} className="rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={remove}>
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          <div className="flex items-center justify-between gap-2 p-3">
-            <input ref={picker} type="file" multiple accept={INTAKE_ACCEPT} className="hidden"
-              onChange={event => { if (event.target.files) add(event.target.files); event.target.value = ''; }} />
-            <div className="flex shrink-0 items-center gap-1">
-              <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={!idle}
-                className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
-                <Plus className="h-5 w-5" />
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="sm" disabled={!idle}
-                    aria-label={`Mode: ${intakeModeOf(mode).label}`} title="What the prompt does with this"
-                    className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
-                    {intakeModeOf(mode).label}
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-72">
-                  <DropdownMenuRadioGroup value={mode} onValueChange={modeChoice.choose}>
-                    {INTAKE_MODES.map(m => (
-                      <DropdownMenuRadioItem key={m.key} value={m.key} className="items-start">
-                        <span>
-                          <span className="block font-medium">{m.label}</span>
-                          <span className="block text-xs text-muted-foreground">{m.hint}</span>
-                        </span>
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="sm" disabled={!idle || !factories?.length}
-                    aria-label={madeIn ? `Where the parts are made: ${madeIn}` : 'Where the parts are made'} title="Where the parts are made"
-                    className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
-                    {madeIn || 'Made in'}
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
-                  <DropdownMenuLabel>Where the parts are made</DropdownMenuLabel>
-                  <DropdownMenuRadioGroup value={madeIn} onValueChange={madeInChoice.choose}>
-                    {(factories ?? []).map(f => <DropdownMenuRadioItem key={f.location} value={f.location}>{f.location} ({f.code})</DropdownMenuRadioItem>)}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {dictation.available && (
-                <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={!idle}
-                  aria-label={dictation.listening ? 'Stop dictating' : 'Dictate'}
-                  title={dictation.listening ? 'Listening. Press to stop.' : "Dictate what the job is (the browser's speech recognition)"}
-                  className={`h-9 w-9 shrink-0 rounded-full ${dictation.listening ? 'animate-pulse' : 'text-muted-foreground'}`}
-                  onClick={() => { if (dictation.listening) dictation.stop(); else { saidBefore.current = note; dictation.start(); } }}>
-                  <Mic className="h-4 w-4" />
-                </Button>
-              )}
-              <Button type="button" size="icon" aria-label={open && mode === 'build' ? 'Answer' : INTAKE_SEND[mode]} title={sendTitle}
-                disabled={!canSend} onClick={send} className="h-9 w-9 rounded-full">
-                {phase === 'reading' || working ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
+  /** A conversation is open: the page is the conversation, with the prompt at its foot. Else it is the start, with the prompt in its middle. */
+  const chat = thread.length > 0;
+  const prompt = (
+    <div className={`relative rounded-3xl border bg-card shadow-lg transition-colors ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}>
+      {dragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 rounded-3xl border-2 border-dashed border-primary bg-card/95 text-center">
+          <Upload className="h-5 w-5 text-primary" />
+          <p className="text-sm font-semibold text-foreground">Drop to add</p>
+          <p className="text-xs text-muted-foreground">Drawings, pictures, STEP files or a zip</p>
         </div>
-        <div ref={foot} />
-        {phase === 'compose' && thread.length === 0 && (
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><ImageIcon className="h-4 w-4" /> Drawing or picture</Button>
-            <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><Upload className="h-4 w-4" /> STEP files or a zip</Button>
-          </div>
-        )}
-        {refused.length > 0 && (
-          <p className="text-center text-xs text-destructive" role="alert">
-            Not taken: {refused.join(', ')}. The box takes PNG, JPEG, WebP, GIF and PDF drawings, STEP files and zips.
-          </p>
-        )}
-        {dictation.problem && <p className="text-center text-xs text-destructive" role="alert">{dictation.problem}</p>}
-        {typedWhy && <p className="text-center text-xs text-destructive" role="alert">{typedWhy}</p>}
+      )}
+      <Textarea
+        ref={textarea} value={note} disabled={!idle} onChange={event => { setNote(event.target.value); }}
+        onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && canSend) { event.preventDefault(); send(); } }}
+        placeholder={stillPlaceholder}
+        aria-label={INTAKE_BOX[mode]}
+        className="min-h-[56px] resize-none border-none bg-transparent px-5 pb-2 pt-4 text-base shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+      {files.length > 0 && (
+        <ul className="flex flex-wrap items-end gap-2 px-4 pb-1" aria-label="Files added">
+          {files.map(file => {
+            const remove = idle ? () => { setFiles(current => current.filter(f => f.name !== file.name)); } : null;
+            // A picture is shown as the picture; a PDF or a CAD file, which the page cannot draw, by its name.
+            return isPicture(file.name) ? <PictureTile key={file.name} file={file} onRemove={remove} /> : (
+              <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground">
+                {intakeFileKind(file.name) === 'cad' ? <Box className="h-3.5 w-3.5 shrink-0" /> : <FileText className="h-3.5 w-3.5 shrink-0" />}
+                <span className="break-all">{file.name}</span>
+                {remove && (
+                  <button type="button" aria-label={`Remove ${file.name}`} className="rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground" onClick={remove}>
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="flex items-center justify-between gap-2 p-3">
+        <input ref={picker} type="file" multiple accept={INTAKE_ACCEPT} className="hidden"
+          onChange={event => { if (event.target.files) add(event.target.files); event.target.value = ''; }} />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button type="button" variant="ghost" size="icon" aria-label="Add files" title="Add drawings, pictures, STEP files or a zip" disabled={!idle}
+            className="h-9 w-9 rounded-full text-muted-foreground" onClick={() => picker.current?.click()}>
+            <Plus className="h-5 w-5" />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" disabled={!idle}
+                aria-label={`Mode: ${intakeModeOf(mode).label}`} title="What the prompt does with this"
+                className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
+                {intakeModeOf(mode).label}
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-72">
+              <DropdownMenuRadioGroup value={mode} onValueChange={modeChoice.choose}>
+                {INTAKE_MODES.map(m => (
+                  <DropdownMenuRadioItem key={m.key} value={m.key} className="items-start">
+                    <span>
+                      <span className="block font-medium">{m.label}</span>
+                      <span className="block text-xs text-muted-foreground">{m.hint}</span>
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" disabled={!idle || !factories?.length}
+                aria-label={madeIn ? `Where the parts are made: ${madeIn}` : 'Where the parts are made'} title="Where the parts are made"
+                className="h-9 shrink-0 gap-1 rounded-full px-3 text-sm font-medium text-foreground">
+                {madeIn || 'Made in'}
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+              <DropdownMenuLabel>Where the parts are made</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={madeIn} onValueChange={madeInChoice.choose}>
+                {(factories ?? []).map(f => <DropdownMenuRadioItem key={f.location} value={f.location}>{f.location} ({f.code})</DropdownMenuRadioItem>)}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {dictation.available && (
+            <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={!idle}
+              aria-label={dictation.listening ? 'Stop dictating' : 'Dictate'}
+              title={dictation.listening ? 'Listening. Press to stop.' : "Dictate what the job is (the browser's speech recognition)"}
+              className={`h-9 w-9 shrink-0 rounded-full ${dictation.listening ? 'animate-pulse' : 'text-muted-foreground'}`}
+              onClick={() => { if (dictation.listening) dictation.stop(); else { saidBefore.current = note; dictation.start(); } }}>
+              <Mic className="h-4 w-4" />
+            </Button>
+          )}
+          {working ? (
+            // The conversation is busy: the send button is Stop. While parts are being created it ends after the step in hand.
+            <Button type="button" size="icon" aria-label="Stop" title={stopping ? 'Stopping after the step in hand' : 'Stop'} disabled={stopping} onClick={stopBuild} className="h-9 w-9 rounded-full">
+              {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
+            </Button>
+          ) : (
+            <Button type="button" size="icon" aria-label={open && mode === 'build' ? 'Answer' : INTAKE_SEND[mode]} title={sendTitle}
+              disabled={!canSend} onClick={send} className="h-9 w-9 rounded-full">
+              {phase === 'reading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            </Button>
+          )}
+        </div>
       </div>
-
+    </div>
+  );
+  const notices = (
+    <>
+      {refused.length > 0 && (
+        <p className="text-center text-xs text-destructive" role="alert">
+          Not taken: {refused.join(', ')}. The box takes PNG, JPEG, WebP, GIF and PDF drawings, STEP files and zips.
+        </p>
+      )}
+      {dictation.problem && <p className="text-center text-xs text-destructive" role="alert">{dictation.problem}</p>}
+      {typedWhy && <p className="text-center text-xs text-destructive" role="alert">{typedWhy}</p>}
+    </>
+  );
+  /** Plan's own steps: the files being read, the plan to check, and what is being created. */
+  const cards = (
+    <>
       {phase === 'reading' && (
         <Card className="mx-auto max-w-3xl rounded-xl shadow-sm">
           <CardContent className="space-y-2 p-5">
@@ -428,6 +429,48 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           </CardContent>
         </Card>
       )}
+    </>
+  );
+
+  if (chat) {
+    // Like a chat page: what was said runs down the middle of the page and scrolls by itself; the prompt stays at the foot.
+    return (
+      <section aria-label="Chat" className="flex h-full flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-6 pt-8 sm:pt-10">
+            <Conversation thread={thread} onAnswer={answer} onClear={reset} />
+            {cards}
+            <div ref={foot} />
+          </div>
+        </div>
+        <div className="mx-auto w-full max-w-3xl shrink-0 space-y-2 px-4 pb-4">
+          {prompt}
+          {notices}
+          <div className="flex items-center justify-between gap-3 px-2 text-xs text-muted-foreground">
+            <p>Every cost comes from the cost engines, never from the AI's words.</p>
+            {thread.at(-1)?.kind !== 'result' && <button type="button" className="shrink-0 font-medium hover:text-foreground disabled:opacity-50" disabled={working} onClick={reset}>Start over</button>}
+          </div>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section aria-label="Start from a drawing" className="space-y-6">
+      <div className="mx-auto w-full max-w-3xl space-y-4">
+        <div className="text-center">
+          <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:text-5xl">{title}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Drop a drawing, a picture of a part, STEP files or a zip. The project, the BOM and the parts are made for you.</p>
+        </div>
+        {prompt}
+        {phase === 'compose' && (
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><ImageIcon className="h-4 w-4" /> Drawing or picture</Button>
+            <Button type="button" variant="outline" size="sm" className="gap-1.5 rounded-full" onClick={() => picker.current?.click()}><Upload className="h-4 w-4" /> STEP files or a zip</Button>
+          </div>
+        )}
+        {notices}
+      </div>
+      {cards}
     </section>
   );
 }
@@ -446,12 +489,12 @@ function ResultActions({ result, onAnother }: { result: IntakeResult | null; onA
 }
 
 /**
- * The conversation: what the person sent, what the build did and said, its questions, and what it made. One surface, so it reads over
- * the page's backdrop; the newest is at the foot, above the prompt.
+ * The conversation: what the person sent, what the build did and said, its questions, and what it made. It is written straight on
+ * the page, not in a box: the person's words in a tinted bubble on the right, the rest down the left; the newest is at the foot.
  */
-function Conversation({ thread, working, onAnswer, onClear }: { thread: Entry[]; working: boolean; onAnswer: (id: number, answer: Answer) => Promise<string | null>; onClear: () => void }) {
+function Conversation({ thread, onAnswer, onClear }: { thread: Entry[]; onAnswer: (id: number, answer: Answer) => Promise<string | null>; onClear: () => void }) {
   return (
-    <div aria-label="Conversation" className="space-y-4 rounded-3xl border border-border bg-card p-5 shadow-sm">
+    <div aria-label="Conversation" className="space-y-5">
       {thread.map(entry => {
         if (entry.kind === 'user') {
           return (
@@ -459,14 +502,14 @@ function Conversation({ thread, working, onAnswer, onClear }: { thread: Entry[];
               {entry.files.length > 0 && (
                 <ul className="flex flex-wrap items-end justify-end gap-2" aria-label="Files sent">
                   {entry.files.map(file => (isPicture(file.name) ? <PictureTile key={file.name} file={file} onRemove={null} /> : (
-                    <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground">
+                    <li key={file.name} className="flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs text-foreground">
                       {intakeFileKind(file.name) === 'cad' ? <Box className="h-3.5 w-3.5 shrink-0" /> : <FileText className="h-3.5 w-3.5 shrink-0" />}
                       <span className="break-all">{file.name}</span>
                     </li>
                   )))}
                 </ul>
               )}
-              {entry.text && <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-muted px-4 py-2 text-sm text-foreground">{entry.text}</p>}
+              {entry.text && <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-primary/10 px-4 py-2 text-sm text-foreground">{entry.text}</p>}
             </div>
           );
         }
@@ -475,10 +518,6 @@ function Conversation({ thread, working, onAnswer, onClear }: { thread: Entry[];
         if (entry.kind === 'question') return <QuestionCard key={entry.id} entry={entry} onAnswer={given => onAnswer(entry.id, given)} />;
         return <ResultActions key={entry.id} result={entry.result} onAnother={onClear} />;
       })}
-      <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
-        <p>Every cost comes from the cost engines, never from the AI's words.</p>
-        {thread.at(-1)?.kind !== 'result' && <button type="button" className="shrink-0 font-medium hover:text-foreground disabled:opacity-50" disabled={working} onClick={onClear}>Start over</button>}
-      </div>
     </div>
   );
 }
@@ -501,10 +540,11 @@ function QuestionCard({ entry, onAnswer }: { entry: Extract<Entry, { kind: 'ques
       </p>
     );
   }
+  // What is typed searches the answers; words that find none leave the question's own offers in place (the build may have put there
+  // the answers those words could mean).
   const words = own.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const offered = words.length > 0 && question.choices.length > 0
-    ? question.choices.filter(choice => words.every(word => choice.toLowerCase().includes(word))).slice(0, 6).map(value => ({ value, why: undefined }))
-    : question.options;
+  const found = words.length > 0 ? question.choices.filter(choice => words.every(word => choice.toLowerCase().includes(word))).slice(0, 6) : [];
+  const offered: Option[] = found.length > 0 ? found.map(value => ({ value })) : question.options;
   const value = chosen ?? own.trim();
   const submit = async (given: Answer) => {
     setSending(true);
@@ -514,7 +554,7 @@ function QuestionCard({ entry, onAnswer }: { entry: Extract<Entry, { kind: 'ques
     if (refused) setWhy(refused);
   };
   return (
-    <form aria-label={question.text} className="rounded-2xl border border-border bg-background shadow-sm" onSubmit={event => { event.preventDefault(); if (value !== '') void submit({ action: 'accept', value }); }}>
+    <form aria-label={question.text} className="rounded-2xl border border-border bg-card shadow-sm" onSubmit={event => { event.preventDefault(); if (value !== '') void submit({ action: 'accept', value }); }}>
       <div className="border-b border-border px-4 py-3">
         <p className="font-medium text-foreground">{question.text}</p>
         <p className="mt-0.5 text-sm text-muted-foreground">{question.hint}</p>

@@ -53,7 +53,7 @@ describe("the prompt's draft", () => {
     first.intakeDraft.setFiles([file("a.png")]);
     expect([...first.store.entries()]).toEqual([["intake.draft.note", "gearbox housing, rev B"]]);
     const reloaded = await freshDraft(Object.fromEntries(first.store));
-    expect(reloaded.intakeDraft.get()).toEqual({ note: "gearbox housing, rev B", files: [], thread: [], build: null, working: false });
+    expect(reloaded.intakeDraft.get()).toEqual({ note: "gearbox housing, rev B", files: [], thread: [], build: null, working: false, stopping: false });
   });
 
   it("drops the text and the files once they are sent, and everything on a fresh start", async () => {
@@ -66,7 +66,7 @@ describe("the prompt's draft", () => {
     expect(intakeDraft.get().thread).toHaveLength(1);
     expect(store.size).toBe(0);
     intakeDraft.clear();
-    expect(intakeDraft.get()).toEqual({ note: "", files: [], thread: [], build: null, working: false });
+    expect(intakeDraft.get()).toEqual({ note: "", files: [], thread: [], build: null, working: false, stopping: false });
   });
 
   it("works where the browser gives no storage: the draft is then kept for the visit only", async () => {
