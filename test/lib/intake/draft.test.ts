@@ -18,17 +18,19 @@ describe("the prompt's draft", () => {
   beforeEach(() => { vi.unstubAllGlobals(); });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("keeps what is typed, the files added and the questions asked, for whoever reads it next", async () => {
+  it("keeps what is typed, the files added and the conversation, for whoever reads it next", async () => {
     const { intakeDraft } = await freshDraft();
     intakeDraft.setNote("cooling line flanges");
     intakeDraft.setFiles([file("a.png")]);
     intakeDraft.setFiles((current) => [...current, file("b.png")]);
-    intakeDraft.setAsked([{ id: 1, question: "What is it?", file: "a.png", state: "asking" }]);
-    intakeDraft.setAsked((current) => current.map((a) => ({ id: a.id, question: a.question, file: a.file, state: "answered", answer: "A flange." })));
+    intakeDraft.setThread([{ kind: "user", id: 1, text: "What is it?", files: [] }]);
+    intakeDraft.setThread((current) => [...current, { kind: "say", id: 2, text: "A flange." }]);
+    intakeDraft.setWorking(true);
     const draft = intakeDraft.get();
     expect(draft.note).toBe("cooling line flanges");
     expect(draft.files.map((f) => f.name)).toEqual(["a.png", "b.png"]);
-    expect(draft.asked).toEqual([{ id: 1, question: "What is it?", file: "a.png", state: "answered", answer: "A flange." }]);
+    expect(draft.thread).toEqual([{ kind: "user", id: 1, text: "What is it?", files: [] }, { kind: "say", id: 2, text: "A flange." }]);
+    expect(draft.working).toBe(true);
   });
 
   it("is the same object until something changes, and tells its listeners when it does", async () => {
@@ -45,26 +47,26 @@ describe("the prompt's draft", () => {
     expect(heard).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the text for the tab, so a reload brings it back; files and answers are not stored", async () => {
+  it("keeps the text for the tab, so a reload brings it back; files and the conversation are not stored", async () => {
     const first = await freshDraft();
     first.intakeDraft.setNote("gearbox housing, rev B");
     first.intakeDraft.setFiles([file("a.png")]);
     expect([...first.store.entries()]).toEqual([["intake.draft.note", "gearbox housing, rev B"]]);
     const reloaded = await freshDraft(Object.fromEntries(first.store));
-    expect(reloaded.intakeDraft.get()).toEqual({ note: "gearbox housing, rev B", files: [], asked: [] });
+    expect(reloaded.intakeDraft.get()).toEqual({ note: "gearbox housing, rev B", files: [], thread: [], build: null, working: false });
   });
 
-  it("drops the text and the files once they are used, and everything on a fresh start", async () => {
+  it("drops the text and the files once they are sent, and everything on a fresh start", async () => {
     const { intakeDraft, store } = await freshDraft();
     intakeDraft.setNote("flanges");
     intakeDraft.setFiles([file("a.png")]);
-    intakeDraft.setAsked([{ id: 1, question: "q", file: null, state: "failed", why: "down" }]);
+    intakeDraft.setThread([{ kind: "say", id: 1, text: "answer" }]);
     intakeDraft.clearInputs();
     expect(intakeDraft.get()).toMatchObject({ note: "", files: [] });
-    expect(intakeDraft.get().asked).toHaveLength(1);
+    expect(intakeDraft.get().thread).toHaveLength(1);
     expect(store.size).toBe(0);
     intakeDraft.clear();
-    expect(intakeDraft.get()).toEqual({ note: "", files: [], asked: [] });
+    expect(intakeDraft.get()).toEqual({ note: "", files: [], thread: [], build: null, working: false });
   });
 
   it("works where the browser gives no storage: the draft is then kept for the visit only", async () => {

@@ -1,15 +1,32 @@
-// The New page prompt's draft: what was typed, the files added and the questions asked so far. It lives outside the page, so it is
-// still there when the person goes elsewhere in the app and comes back. The text is also kept by the browser for the tab (session
-// storage), so it survives a reload; files and answers are held in memory only, and a reload drops them.
+// The New page prompt's state that outlives the page: what is typed and added, the conversation so far, and a build that is under
+// way. It lives outside the page, so it is all still there when the person goes elsewhere in the app and comes back, and a build
+// that is running or waiting for an answer goes on. The text is also kept by the browser for the tab (session storage), so it
+// survives a reload; files and the conversation are held in memory only, and a reload drops them.
+import type { ProcessFamily } from "@/lib/api/drawing-readings";
 
-/** One question asked in Ask mode, with the drawing it was about, and what became of it. */
-export type AskedQuestion = { id: number; question: string; file: string | null }
-  & ({ state: "asking" } | { state: "answered"; answer: string } | { state: "failed"; why: string });
+import type { Entry } from "./conversation";
+import type { IntakePlan } from "./plan";
 
-export interface IntakeDraft { note: string; files: File[]; asked: AskedQuestion[] }
+/** A build between its first reading and its result: the plan as far as it is known, and what the person chose not to answer. */
+export interface BuildState {
+  plan: IntakePlan;
+  files: File[];
+  /** What each drawing itself indicated as its process (by file name), for the question about it. */
+  reads: Record<string, { family: ProcessFamily; reason: string } | null>;
+  skipped: string[];
+}
+
+export interface IntakeDraft {
+  note: string;
+  files: File[];
+  thread: Entry[];
+  build: BuildState | null;
+  /** The engine is busy (reading, creating, answering): the prompt waits. False while a question is open for the person. */
+  working: boolean;
+}
 
 const NOTE_KEY = "intake.draft.note";
-const EMPTY: IntakeDraft = { note: "", files: [], asked: [] };
+const EMPTY: IntakeDraft = { note: "", files: [], thread: [], build: null, working: false };
 
 const savedNote = (): string => { try { return sessionStorage.getItem(NOTE_KEY) ?? ""; } catch { return ""; } };
 const saveNote = (note: string): void => {
@@ -42,8 +59,10 @@ export const intakeDraft = {
   },
   setNote: (note: string): void => { update(d => ({ ...d, note })); },
   setFiles: (files: Change<File[]>): void => { update(d => ({ ...d, files: applied(files, d.files) })); },
-  setAsked: (asked: Change<AskedQuestion[]>): void => { update(d => ({ ...d, asked: applied(asked, d.asked) })); },
-  /** What was typed and added has been used (a project was made from it): the questions and answers stay. */
+  setThread: (thread: Change<Entry[]>): void => { update(d => ({ ...d, thread: applied(thread, d.thread) })); },
+  setBuild: (build: BuildState | null): void => { update(d => ({ ...d, build })); },
+  setWorking: (working: boolean): void => { update(d => ({ ...d, working })); },
+  /** What was typed and added has been sent or used: the conversation stays. */
   clearInputs: (): void => { update(d => ({ ...d, note: "", files: [] })); },
   clear: (): void => { update(() => EMPTY); },
 };
