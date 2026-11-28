@@ -22,7 +22,8 @@ export interface BuildDeps {
   madeIn: string;
   /** The model's picks from a list: likely material grades for a part, or the listed answer the person's own words mean. */
   pick(request: IntakePickRequest): Promise<IntakePick[]>;
-  create(plan: IntakePlan, files: ReadonlyMap<string, File>, onEvent: (event: IntakeEvent) => void): Promise<IntakeResult>;
+  /** `stopped` says whether the person has asked to stop: what is being made then ends after the step in hand. */
+  create(plan: IntakePlan, files: ReadonlyMap<string, File>, onEvent: (event: IntakeEvent) => void, stopped: () => boolean): Promise<IntakeResult>;
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error && error.message ? error.message : "The server did not answer.");
@@ -40,9 +41,30 @@ function step(key: string, title: string, state: StepState, detail: string): voi
 }
 const dropStep = (key: string): void => { intakeDraft.setThread(thread => thread.filter(e => !(e.kind === "step" && e.key === key))); };
 
+/** Rises each time the person stops. Work that was in flight then finds its own number old when it comes back, and leaves the conversation alone. */
+let stops = 0;
+/** Parts are being created on the server: a stop then waits for the step in hand, so nothing is left half made. */
+let creating = false;
+
+/**
+ * Stop, pressed while the conversation is busy. While only the model is at work (reading, suggesting, answering) it ends at once and
+ * nothing was created: whatever the model still returns is left out. While parts are being created it ends after the step in hand,
+ * and what was made is kept.
+ */
+export function stopBuild(): void {
+  const { working, stopping } = intakeDraft.get();
+  if (!working || stopping) return;
+  if (creating) { intakeDraft.setStopping(true); return; }
+  stops++;
+  intakeDraft.setThread(thread => thread.map(e => (e.kind === "step" && e.state === "running" ? { ...e, state: "failed", detail: "Stopped" } : e)));
+  say("Stopped. Nothing was created.");
+  intakeDraft.setBuild(null);
+  intakeDraft.setWorking(false);
+}
+
 /** Build: the person's message goes into the conversation, each drawing is read, and the build goes as far as it can by itself. */
 export async function startBuild(note: string, files: File[], deps: BuildDeps): Promise<void> {
-  const run = newId();
+  const run = newId(), mine = stops;
   push({ kind: "user", id: run, text: note.trim(), files });
   intakeDraft.clearInputs();
   intakeDraft.setWorking(true);
@@ -53,11 +75,13 @@ export async function startBuild(note: string, files: File[], deps: BuildDeps): 
     step(key, `Reading ${file.name}`, "running", "About a quarter of a minute");
     try {
       const reading = await deps.read(file, note);
+      if (stops !== mine) return;
       step(key, `Reviewed ${file.name}`, "done", "");
       say(narrative(reading, file.name));
       const part = planPart(file.name, reading, deps.groups);
       if (part) { parts.push(part); reads[file.name] = reading.process; }
     } catch (error) {
+      if (stops !== mine) return;
       step(key, `Could not read ${file.name}`, "failed", messageOf(error));
     }
   }
@@ -81,6 +105,7 @@ export async function startBuild(note: string, files: File[], deps: BuildDeps): 
 
 /** Asks the next thing only the person can say and stops for their answer; when nothing is left to ask, creates the project. */
 async function advance(deps: BuildDeps): Promise<void> {
+  const mine = stops;
   for (;;) {
     const build = intakeDraft.get().build;
     if (!build) return;
@@ -92,6 +117,7 @@ async function advance(deps: BuildDeps): Promise<void> {
     let suggested: IntakePick[] = [];
     if (need.kind === "grade" && part?.processGroup) {
       grades = await deps.grades(part.processGroup).catch((): string[] => []);
+      if (stops !== mine) return;
       const named = gradeFor(part.materialRead, grades);
       if (named) {                                    // the drawing names the grade itself: taken as read, and said
         intakeDraft.setBuild({ ...build, plan: { ...build.plan, parts: build.plan.parts.map(p => (p.file === part.file ? { ...p, grade: named } : p)) } });
@@ -99,6 +125,7 @@ async function advance(deps: BuildDeps): Promise<void> {
         continue;
       }
       suggested = await suggestGrades(deps, part, grades, read?.reason ?? "");
+      if (stops !== mine) return;
     }
     const question = questionFor(need, build.plan, { groups: deps.groups, grades, locations: deps.locations }, read, suggested);
     push({ kind: "question", id: newId(), question, answer: null });
@@ -114,16 +141,13 @@ async function advance(deps: BuildDeps): Promise<void> {
  */
 async function suggestGrades(deps: BuildDeps, part: PlanPart, grades: string[], seen: string): Promise<IntakePick[]> {
   if (grades.length === 0) return [];
-  const key = `suggest:${newId()}`;
+  const key = `suggest:${newId()}`, mine = stops;
   step(key, `Looking for the likely material of ${part.name}`, "running", "");
   const note = intakeDraft.get().thread.filter(e => e.kind === "user").at(-1)?.text ?? "";
-  try {
-    return await deps.pick({ purpose: "material", choices: grades, part: { name: part.name, processGroup: part.processGroup ?? "", materialRead: part.materialRead ?? "", seen, note } });
-  } catch {
-    return [];
-  } finally {
-    dropStep(key);
-  }
+  const picks = await deps.pick({ purpose: "material", choices: grades, part: { name: part.name, processGroup: part.processGroup ?? "", materialRead: part.materialRead ?? "", seen, note } })
+    .catch((): IntakePick[] => []);
+  if (stops === mine) dropStep(key);
+  return picks;
 }
 
 async function create(deps: BuildDeps): Promise<void> {
@@ -135,15 +159,20 @@ async function create(deps: BuildDeps): Promise<void> {
     say(`Nothing was created. ${blocker}`);
   } else {
     const run = newId();
+    creating = true;
     try {
       const result = await deps.create(build.plan, new Map(build.files.map(file => [file.name, file])),
-        event => { step(`make:${run}:${event.key}`, event.title, event.state, event.detail); });
+        event => { step(`make:${run}:${event.key}`, event.title, event.state, event.detail); }, () => intakeDraft.get().stopping);
       push({ kind: "result", id: newId(), result });
+      if (result.stopped) say("Stopped. What was made so far is kept.");
     } catch (error) {
       say(`Stopped: ${messageOf(error)}`);
+    } finally {
+      creating = false;
     }
   }
   intakeDraft.setBuild(null);
+  intakeDraft.setStopping(false);
   intakeDraft.setWorking(false);
 }
 
@@ -155,6 +184,7 @@ export async function answerQuestion(entryId: number, answer: Answer, deps: Buil
   const { build, thread } = intakeDraft.get();
   const entry = thread.find(e => e.kind === "question" && e.id === entryId && e.answer === null);
   if (!build || entry?.kind !== "question") return null;
+  const mine = stops;
   let given = answer;
   const { need } = entry.question;
   if (answer.action === "skip") {
@@ -167,6 +197,7 @@ export async function answerQuestion(entryId: number, answer: Answer, deps: Buil
       const said = answer.value.trim();
       intakeDraft.setWorking(true);
       const meant = await deps.pick({ purpose: "answer", question: entry.question.text, said, choices: entry.question.choices }).catch((): IntakePick[] => []);
+      if (stops !== mine) return null;
       intakeDraft.setWorking(false);
       const now = intakeDraft.get();
       if (now.build !== build || !now.thread.some(e => e === entry)) return null;   // skipped, answered or cleared meanwhile
@@ -191,7 +222,7 @@ export async function answerQuestion(entryId: number, answer: Answer, deps: Buil
 
 /** Ask: the question goes to the model with the drawing or picture added, if there is one, and its answer joins the conversation. Nothing is created. */
 export async function askQuestion(question: string, drawing: File | undefined, ask: (question: string, drawing?: File) => Promise<string>): Promise<void> {
-  const run = newId();
+  const run = newId(), mine = stops;
   push({ kind: "user", id: run, text: question, files: drawing ? [drawing] : [] });
   intakeDraft.setNote("");
   intakeDraft.setWorking(true);
@@ -199,9 +230,11 @@ export async function askQuestion(question: string, drawing: File | undefined, a
   step(key, "Answering", "running", "");
   try {
     const answer = await ask(question, drawing);
+    if (stops !== mine) return;
     dropStep(key);
     say(answer);
   } catch (error) {
+    if (stops !== mine) return;
     step(key, "Could not answer", "failed", messageOf(error));
   }
   intakeDraft.setWorking(false);

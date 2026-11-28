@@ -24,10 +24,12 @@ export interface IntakeDraft {
   build: BuildState | null;
   /** The engine is busy (reading, creating, answering): the prompt waits. False while a question is open for the person. */
   working: boolean;
+  /** The person pressed Stop while parts were being created: it ends after the step in hand. */
+  stopping: boolean;
 }
 
 const NOTE_KEY = "intake.draft.note";
-const EMPTY: IntakeDraft = { note: "", files: [], thread: [], build: null, working: false };
+const EMPTY: IntakeDraft = { note: "", files: [], thread: [], build: null, working: false, stopping: false };
 
 const savedNote = (): string => { try { return sessionStorage.getItem(NOTE_KEY) ?? ""; } catch { return ""; } };
 const saveNote = (note: string): void => {
@@ -63,6 +65,7 @@ export const intakeDraft = {
   setThread: (thread: Change<Entry[]>): void => { update(d => ({ ...d, thread: applied(thread, d.thread) })); },
   setBuild: (build: BuildState | null): void => { update(d => ({ ...d, build })); },
   setWorking: (working: boolean): void => { update(d => ({ ...d, working })); },
+  setStopping: (stopping: boolean): void => { update(d => ({ ...d, stopping })); },
   /** What was typed and added has been sent or used: the conversation stays. */
   clearInputs: (): void => { update(d => ({ ...d, note: "", files: [] })); },
   clear: (): void => { update(() => EMPTY); },

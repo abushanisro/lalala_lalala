@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { AlertTriangle, ArrowUp, Box, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, Loader2, Mic, Plus, Upload, X } from '@/components/ui/icons';
+import { AlertTriangle, ArrowUp, Box, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, Loader2, Mic, Plus, Square, Upload, X } from '@/components/ui/icons';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { drawingReadingsApi, type DrawingReading } from '@/lib/api/drawing-readings';
@@ -19,7 +19,7 @@ import { PROCESS_MATERIALS, materialPickerQuery } from '@/lib/features/material-
 import { processGroupOptionsFrom } from '@/lib/features/process-group';
 import { useDictation } from '@/lib/hooks/useDictation';
 import { intakeApi } from '@/lib/intake/api';
-import { answerQuestion, askQuestion, startBuild, type BuildDeps } from '@/lib/intake/build';
+import { answerQuestion, askQuestion, startBuild, stopBuild, type BuildDeps } from '@/lib/intake/build';
 import type { Answer, Entry, Option } from '@/lib/intake/conversation';
 import { withDictation } from '@/lib/intake/dictation';
 import { intakeDraft } from '@/lib/intake/draft';
@@ -80,7 +80,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>('compose');
   // Kept outside the page: still there after a visit elsewhere in the app. The server and the first paint show an empty prompt.
-  const { note, files, thread, working } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
+  const { note, files, thread, working, stopping } = useSyncExternalStore(intakeDraft.subscribe, intakeDraft.get, () => intakeDraft.empty);
   /** The prompt takes input: nothing of the plan is open and the conversation is not busy. */
   const idle = phase === 'compose' && !working;
   /** The question the build is waiting on, if any. */
@@ -140,7 +140,7 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   useEffect(() => {
     if (!made || made === opened.current) return;
     opened.current = made;
-    router.push(partPath(made) ?? bomPath(made));
+    if (!made.stopped) router.push(partPath(made) ?? bomPath(made));   // stopped by the person: they are not taken anywhere
   }, [made, router]);
 
   // The conversation keeps to the page's foot as it grows, where the prompt is.
@@ -158,10 +158,10 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
     },
     madeIn: madeInChoice.now(),
     pick: async request => (await drawingReadingsApi.pick(request)).picks,
-    create: async (made, byName, onEvent) => {
+    create: async (made, byName, onEvent, stopped) => {
       if (made.location) madeInChoice.choose(made.location);
       try {
-        return await runIntake(made, byName, intakeApi, onEvent);
+        return await runIntake(made, byName, intakeApi, onEvent, undefined, stopped);
       } finally {
         void queryClient.invalidateQueries({ queryKey: ['projects'] });
         void queryClient.invalidateQueries({ queryKey: ['cost-analytics'] });
@@ -341,10 +341,17 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
                   <Mic className="h-4 w-4" />
                 </Button>
               )}
-              <Button type="button" size="icon" aria-label={open && mode === 'build' ? 'Answer' : INTAKE_SEND[mode]} title={sendTitle}
-                disabled={!canSend} onClick={send} className="h-9 w-9 rounded-full">
-                {phase === 'reading' || working ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
-              </Button>
+              {working ? (
+                // The conversation is busy: the send button is Stop. While parts are being created it ends after the step in hand.
+                <Button type="button" size="icon" aria-label="Stop" title={stopping ? 'Stopping after the step in hand' : 'Stop'} disabled={stopping} onClick={stopBuild} className="h-9 w-9 rounded-full">
+                  {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
+                </Button>
+              ) : (
+                <Button type="button" size="icon" aria-label={open && mode === 'build' ? 'Answer' : INTAKE_SEND[mode]} title={sendTitle}
+                  disabled={!canSend} onClick={send} className="h-9 w-9 rounded-full">
+                  {phase === 'reading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                </Button>
+              )}
             </div>
           </div>
         </div>

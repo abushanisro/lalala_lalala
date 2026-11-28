@@ -23,7 +23,11 @@ export type StepState = "running" | "done" | "failed";
 export interface IntakeEvent { key: string; title: string; state: StepState; detail: string }
 
 export interface PartOutcome { file: string; itemId: string | null; costed: boolean; detail: string }
-export interface IntakeResult { projectId: string; bomId: string; parts: PartOutcome[]; cadImported: number }
+export interface IntakeResult {
+  projectId: string; bomId: string; parts: PartOutcome[]; cadImported: number;
+  /** The person stopped it before everything was made: `parts` holds only what was begun. */
+  stopped?: boolean;
+}
 
 /** The page of the BOM that was made. */
 export const bomPath = ({ projectId, bomId }: Pick<IntakeResult, "projectId" | "bomId">): string => `/projects/${projectId}/bom/${bomId}`;
@@ -44,6 +48,9 @@ export function stepFile(solid: Pick<DrawingSolid, "fileName" | "stepBase64">): 
   return new File([bytes], solid.fileName, { type: "application/octet-stream" });
 }
 
+/** Thrown between the steps of a part when the person has stopped: the part stays as far as it was made. */
+class Stopped extends Error {}
+
 const ANALYSIS_TRIES = 3;
 const BUSY_TRIES = 4;
 
@@ -63,9 +70,11 @@ async function patiently<T>(work: () => Promise<T>, wait: (ms: number) => Promis
 }
 
 async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawing: File | undefined, api: IntakeApi,
-  say: (state: StepState, detail: string) => void, wait: (ms: number) => Promise<void>): Promise<PartOutcome> {
+  say: (state: StepState, detail: string) => void, wait: (ms: number) => Promise<void>, stopped: () => boolean): Promise<PartOutcome> {
   let itemId: string | null = null;
   let doing = "creating the part";
+  /** Before each step that follows the part's creation: a stop is honoured between steps, never in the middle of one. */
+  const goOn = () => { if (stopped()) throw new Stopped(); };
   try {
     say("running", "Creating the part");
     itemId = (await api.createItem({
@@ -78,6 +87,7 @@ async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawi
     let note = "";
     let model: File | undefined;
     if (part.shape) {
+      goOn();
       doing = "building the 3D model";
       say("running", "Building the 3D model from the drawing");
       const { shape, holes } = part;
@@ -86,6 +96,7 @@ async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawi
       if (solid.holesLeftOut > 0) note = ` ${solid.holesLeftOut} ${solid.holesLeftOut === 1 ? "hole does" : "holes do"} not fit the model and ${solid.holesLeftOut === 1 ? "is" : "are"} not in the cost.`;
     }
     if (drawing || model) {
+      goOn();
       doing = "attaching the files";
       say("running", "Attaching the drawing and the model");
       const made = itemId;
@@ -98,6 +109,7 @@ async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawi
       say("done", `Created without a cost. ${why}`);
       return { file: part.file, itemId, costed: false, detail: why };
     }
+    goOn();
     doing = "analysing the model";
     say("running", `Analysing the model for ${part.processGroup}`);
     const item = itemId, { grade, processGroup } = part;
@@ -107,7 +119,9 @@ async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawi
       if (status.ready) break;
       if (attempt === ANALYSIS_TRIES) throw new Error(`The analysis is not complete (${status.missing.join(", ") || "still running"}).`);
       await wait(6000);
+      goOn();
     }
+    goOn();
     doing = "costing";
     say("running", `Costing in ${plan.location}`);
     await patiently(() => api.applyScenario(item, {
@@ -118,14 +132,19 @@ async function createPart(part: PlanPart, plan: IntakePlan, bomId: string, drawi
     say("done", `Costed from a model built from the drawing (approximate).${note}`);
     return { file: part.file, itemId, costed: true, detail: note.trim() };
   } catch (error) {
+    if (error instanceof Stopped) {
+      say("done", "Created without a cost: stopped before it was costed.");
+      return { file: part.file, itemId, costed: false, detail: "Stopped before it was costed." };
+    }
     const detail = `Stopped while ${doing}: ${messageOf(error)}`;
     say("failed", detail);
     return { file: part.file, itemId, costed: false, detail };
   }
 }
 
+/** `stopped` says whether the person has asked to stop: no further part or file is begun then, and the part in hand ends after its step. */
 export async function runIntake(plan: IntakePlan, files: ReadonlyMap<string, File>, api: IntakeApi, onEvent: (event: IntakeEvent) => void,
-  wait: (ms: number) => Promise<void> = ms => new Promise(resolve => { setTimeout(resolve, ms); })): Promise<IntakeResult> {
+  wait: (ms: number) => Promise<void> = ms => new Promise(resolve => { setTimeout(resolve, ms); }), stopped: () => boolean = () => false): Promise<IntakeResult> {
   const step = async <T>(key: string, title: string, doing: string, work: () => Promise<T>): Promise<T> => {
     onEvent({ key, title, state: "running", detail: doing });
     try {
@@ -142,13 +161,15 @@ export async function runIntake(plan: IntakePlan, files: ReadonlyMap<string, Fil
 
   const parts: PartOutcome[] = [];
   for (const part of plan.parts) {            // one at a time: the CAD engine limits how many analyses run at once
+    if (stopped()) break;
     const title = part.name.trim();
-    parts.push(await createPart(part, plan, bom.id, files.get(part.file), api, (state, detail) => { onEvent({ key: `part:${part.file}`, title, state, detail }); }, wait));
+    parts.push(await createPart(part, plan, bom.id, files.get(part.file), api, (state, detail) => { onEvent({ key: `part:${part.file}`, title, state, detail }); }, wait, stopped));
   }
   let cadImported = 0;
   for (const name of plan.cadFiles) {
     const file = files.get(name);
     if (!file) continue;
+    if (stopped()) break;
     try {
       onEvent({ key: `cad:${name}`, title: name, state: "running", detail: "Sending to the CAD import" });
       await api.importCad(bom.id, file);
@@ -158,5 +179,5 @@ export async function runIntake(plan: IntakePlan, files: ReadonlyMap<string, Fil
       onEvent({ key: `cad:${name}`, title: name, state: "failed", detail: messageOf(error) });
     }
   }
-  return { projectId: project.id, bomId: bom.id, parts, cadImported };
+  return { projectId: project.id, bomId: bom.id, parts, cadImported, ...(stopped() ? { stopped: true } : {}) };
 }

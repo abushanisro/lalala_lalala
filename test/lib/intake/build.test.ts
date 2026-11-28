@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DrawingReading, IntakePick, IntakePickRequest } from "@/lib/api/drawing-readings";
-import { answerQuestion, askQuestion, startBuild, type BuildDeps } from "@/lib/intake/build";
+import { answerQuestion, askQuestion, startBuild, stopBuild, type BuildDeps } from "@/lib/intake/build";
 import type { Entry } from "@/lib/intake/conversation";
 import { intakeDraft } from "@/lib/intake/draft";
 import type { IntakePlan } from "@/lib/intake/plan";
@@ -183,6 +183,60 @@ describe("a build as a conversation", () => {
     expect(pick).toHaveBeenCalledTimes(before);
   });
 
+  it("stops at once while a picture is being read: nothing is created, and what the reader still returns is left out", async () => {
+    let finish: (reading: DrawingReading) => void = () => undefined;
+    const { all, created } = deps({ read: () => new Promise(resolve => { finish = resolve; }) });
+    const building = startBuild("", [file("mirror.png"), file("b.png")], all);
+    expect(intakeDraft.get().working).toBe(true);
+    stopBuild();
+    expect(kinds()).toEqual(["user", "step", "say"]);
+    expect(thread()[1]).toMatchObject({ title: "Reading mirror.png", state: "failed", detail: "Stopped" });
+    expect(thread()[2]).toMatchObject({ text: "Stopped. Nothing was created." });
+    expect(intakeDraft.get()).toMatchObject({ working: false, stopping: false, build: null });
+
+    finish(photo);                                    // the reading that was in flight comes back
+    await building;
+    expect(kinds()).toEqual(["user", "step", "say"]); // no second picture read, no question, nothing made
+    expect(created).toHaveLength(0);
+    stopBuild();                                      // nothing is busy: Stop does nothing
+    expect(kinds()).toEqual(["user", "step", "say"]);
+  });
+
+  it("stops after the step in hand while parts are being created, keeps what was made, and says so", async () => {
+    const making: { finish: (result: IntakeResult) => void; asksToStop: (() => boolean) | null } = { finish: () => undefined, asksToStop: null };
+    const { all } = deps({
+      read: () => Promise.resolve(drawing), madeIn: "USA",
+      create: (_plan, _files, _onEvent, stopped) => { making.asksToStop = stopped; return new Promise(resolve => { making.finish = resolve; }); },
+    });
+    const building = startBuild("", [file("a.png")], all);
+    await vi.waitFor(() => { expect(making.asksToStop).not.toBeNull(); });       // creating has begun
+    expect(making.asksToStop?.()).toBe(false);
+    stopBuild();
+    expect(intakeDraft.get()).toMatchObject({ working: true, stopping: true });   // still busy: the step in hand is finished first
+    expect(making.asksToStop?.()).toBe(true);
+    expect(thread().some(e => e.kind === "say" && e.text.startsWith("Stopped"))).toBe(false);
+
+    making.finish({ ...made, parts: [{ file: "a.png", itemId: "I1", costed: false, detail: "Stopped before it was costed." }], stopped: true });
+    await building;
+    expect(kinds().slice(-2)).toEqual(["result", "say"]);
+    expect(thread().at(-1)).toMatchObject({ text: "Stopped. What was made so far is kept." });
+    expect(intakeDraft.get()).toMatchObject({ working: false, stopping: false, build: null });
+  });
+
+  it("stops while the model is asked what typed words mean, and its late answer changes nothing", async () => {
+    let finish: (picks: IntakePick[]) => void = () => undefined;
+    const pick = (request: IntakePickRequest): Promise<IntakePick[]> => (request.purpose === "answer" ? new Promise(resolve => { finish = resolve; }) : Promise.resolve([]));
+    const { all } = deps({ pick, read: () => Promise.resolve({ ...photo, process: null }) });
+    await startBuild("", [file("mirror.png")], all);
+    const answering = answerQuestion(openQuestion().id, { action: "accept", value: "injection moulding" }, all);
+    expect(intakeDraft.get().working).toBe(true);
+    stopBuild();
+    finish([{ choice: "Plastic Molding", why: "Another spelling." }]);
+    expect(await answering).toBeNull();
+    expect(thread().at(-1)).toMatchObject({ kind: "say", text: "Stopped. Nothing was created." });
+    expect(intakeDraft.get()).toMatchObject({ working: false, build: null });
+  });
+
   it("creates a part without a cost when its question is skipped, and asks nothing more about it", async () => {
     const { all, created } = deps();
     await startBuild("", [file("mirror.png")], all);
@@ -239,6 +293,18 @@ describe("a question in the conversation", () => {
     expect(ask).toHaveBeenCalledWith("What is this part?", expect.any(File));
     expect(thread()).toMatchObject([{ kind: "user", text: "What is this part?" }, { kind: "say", text: "It is a machined bracket." }]);
     expect(intakeDraft.get()).toMatchObject({ note: "", working: false });
+  });
+
+  it("stops waiting for an answer: the answer that comes later is left out", async () => {
+    let finish: (answer: string) => void = () => undefined;
+    const asking = askQuestion("Which process fits?", undefined, () => new Promise(resolve => { finish = resolve; }));
+    stopBuild();
+    finish("Machining.");
+    await asking;
+    expect(kinds()).toEqual(["user", "step", "say"]);
+    expect(thread()[1]).toMatchObject({ title: "Answering", state: "failed", detail: "Stopped" });
+    expect(thread()[2]).toMatchObject({ text: "Stopped. Nothing was created." });
+    expect(intakeDraft.get().working).toBe(false);
   });
 
   it("says why when the question cannot be answered", async () => {
