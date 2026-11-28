@@ -307,11 +307,6 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            {phase === 'compose' && (
-              <p className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">
-                {mode === 'ask' ? 'Add a drawing or a picture to ask about it, or just ask' : 'Drag files onto this page, paste a picture, or add them with +'}
-              </p>
-            )}
             <div className="flex shrink-0 items-center gap-1">
               {dictation.available && (
                 <Button type="button" variant={dictation.listening ? 'default' : 'ghost'} size="icon" aria-pressed={dictation.listening} disabled={phase !== 'compose'}
