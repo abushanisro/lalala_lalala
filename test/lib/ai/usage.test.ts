@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { featureRows, historyTotals, resetsIn, shareLabel, shareUsed, tokenCount, tokenShort, usageLevel } from "@/lib/ai/usage";
+import {
+  cacheReadShare, completeTo, featureRows, historyTotals, modelName, resetDay, resetsIn, shareLabel, shareUsed, tokenCount, tokenShort, usageLevel, usd, usdLimit, wholePercent,
+} from "@/lib/ai/usage";
 import type { AiUsage } from "@/lib/api/ai-usage";
 
 const totals = (inputTokens: number, outputTokens: number, calls: number) => ({ tokens: inputTokens + outputTokens, inputTokens, outputTokens, calls });
@@ -83,3 +85,45 @@ describe("historyTotals", () => {
     expect(historyTotals(usage())).toEqual({ tokens: 21_970, calls: 8 });
   });
 });
+
+describe("the Anthropic account's figures, worded as the Claude Console words them", () => {
+  it("writes dollars with cents and separators, and a trace as less than a cent", () => {
+    expect([3.5125, 1056.39, 0, 20].map(usd)).toEqual(["$3.51", "$1,056.39", "$0.00", "$20.00"]);
+    expect(usd(0.004)).toBe("<$0.01");
+    expect(usd(0.005)).toBe("$0.01");
+  });
+
+  it("writes a limit of whole dollars without cents", () => {
+    expect([20, 1500, 12.5].map(usdLimit)).toEqual(["$20", "$1,500", "$12.50"]);
+  });
+
+  it("counts a share in whole percent, never rounded up, as the Console does", () => {
+    expect([17.55, 99.9, 100, 1, 0.4, 0].map(wholePercent)).toEqual(["17%", "99%", "100%", "1%", "<1%", "0%"]);
+  });
+
+  it("says the day the month's limit starts again, in Anthropic's UTC month", () => {
+    expect(resetDay("2026-12-01T00:00:00.000Z")).toBe("Dec 1");
+    expect(resetDay("2027-01-01T00:00:00.000Z")).toBe("Jan 1");
+  });
+
+  it("gives the share of input tokens read from the cache, and none when there was no input", () => {
+    expect(cacheReadShare({ uncachedInputTokens: 300, cacheReadTokens: 560, cacheWriteTokens: 140 })).toBeCloseTo(56, 6);
+    expect(cacheReadShare({ uncachedInputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 })).toBe(0);
+    expect(cacheReadShare({ uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })).toBeNull();
+  });
+
+  it("names a model as people do, and leaves a name it does not know as it is", () => {
+    expect(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-sonnet-4-5-20250929", "claude-opus-4-20250514"].map(modelName))
+      .toEqual(["Claude Opus 5.5", "Claude Sonnet 5.5", "Claude Haiku 5.5", "Claude Fable 5.2", "Claude Sonnet 4.5", "Claude Opus 4"]);
+    expect(["Other", "code-execution", ""].map(modelName)).toEqual(["Other", "code-execution", ""]);
+  });
+
+  it("says how far Anthropic's data is complete, in UTC", () => {
+    const now = new Date("2026-11-28T09:40:00Z");
+    expect(completeTo("2026-11-28T08:00:00Z", now)).toBe("08:00 UTC today");
+    expect(completeTo("2026-11-27T22:00:00Z", now)).toBe("22:00 UTC, Nov 27");
+    expect(completeTo(null, now)).toBeNull();
+    expect(completeTo("not a time", now)).toBeNull();
+  });
+});
+
