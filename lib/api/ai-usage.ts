@@ -26,6 +26,25 @@ export interface AiUsage {
   history: { date: string; tokens: number; calls: number }[];
 }
 
+export interface AiAccountModel { model: string; tokens: number; requests: number; spendUsd: number }
+/**
+ * GET /ai-account-totals (every signed-in person): the Anthropic account's own figures, as the Claude Console shows them, from
+ * Anthropic's usage and cost reports. They cover everything the account's keys spent, every customer together, and run behind by
+ * half an hour to a few hours: `asOf` is the moment the data is complete up to. `configured: false`: the server has no Admin API key.
+ */
+export type AiAccount = { configured: false } | {
+  configured: true;
+  asOf: string | null;
+  /** The calendar month so far (UTC); `limitUsd` is the account's monthly spend limit, null when none is known. */
+  month: { startsAt: string; resetsAt: string; spendUsd: number; limitUsd: number | null };
+  /** The last seven days. Input tokens are in three parts: not cached, read from the cache, written to it. */
+  week: {
+    startsAt: string; tokens: number; uncachedInputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number;
+    requests: number; spendUsd: number; models: AiAccountModel[];
+  };
+};
+
 export const aiUsageApi = {
   get: () => apiClient.get<AiUsage>("/ai-usage-totals"),
+  account: () => apiClient.get<AiAccount>("/ai-account-totals", { retry: false }),
 };

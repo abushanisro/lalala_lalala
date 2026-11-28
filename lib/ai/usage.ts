@@ -65,3 +65,50 @@ export function featureRows(usage: AiUsage): { feature: AiFeature; label: string
 export function historyTotals(usage: AiUsage): { tokens: number; calls: number } {
   return usage.history.reduce((sum, d) => ({ tokens: sum.tokens + d.tokens, calls: sum.calls + d.calls }), { tokens: 0, calls: 0 });
 }
+
+// ── The Anthropic account's own figures (GET /ai-account-totals), worded as the Claude Console words them ─────────────────────────
+
+/** Dollars as the Console writes them: 3.5125 -> "$3.51", 1056.39 -> "$1,056.39". An amount under a cent that is not nothing is "<$0.01". */
+export function usd(amount: number): string {
+  if (amount > 0 && amount < 0.005) return "<$0.01";
+  return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** A limit as the Console writes it: whole dollars without cents ("$20"), otherwise with them ("$12.50"). */
+export function usdLimit(amount: number): string {
+  return Number.isInteger(amount) ? `$${amount.toLocaleString("en-US")}` : usd(amount);
+}
+
+/** A share as the Console counts it: whole percent, never rounded up (17.55 -> "17%"); a trace is "<1%". */
+export function wholePercent(share: number): string {
+  if (share <= 0) return "0%";
+  return share < 1 ? "<1%" : `${Math.floor(share)}%`;
+}
+
+/** The day a monthly limit starts again, as the Console says it: "Dec 1". The month is Anthropic's, in UTC. */
+export function resetDay(resetsAt: string): string {
+  return new Date(resetsAt).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/** The share of input tokens that were read from the prompt cache, 0 to 100. Null when there was no input at all. */
+export function cacheReadShare(week: { uncachedInputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }): number | null {
+  const input = week.uncachedInputTokens + week.cacheReadTokens + week.cacheWriteTokens;
+  return input > 0 ? (week.cacheReadTokens / input) * 100 : null;
+}
+
+/** A model as people name it: "claude-opus-5-5" -> "Claude Opus 5.5", with or without a date at its end. Any other name is left as it is. */
+export function modelName(model: string): string {
+  const parts = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(model);
+  if (!parts) return model;
+  const [, family = "", major = "", minor] = parts;
+  return `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}${minor ? `.${minor}` : ""}`;
+}
+
+/** How far Anthropic's data is complete, in UTC as its reports are: "08:00 UTC today", "22:00 UTC, Nov 27". Null: it did not say. */
+export function completeTo(asOf: string | null, now: Date): string | null {
+  if (!asOf) return null;
+  const at = new Date(asOf);
+  if (Number.isNaN(at.getTime())) return null;
+  const time = `${at.toISOString().slice(11, 16)} UTC`;
+  return at.toISOString().slice(0, 10) === now.toISOString().slice(0, 10) ? `${time} today` : `${time}, ${at.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
+}

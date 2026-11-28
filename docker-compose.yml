@@ -111,6 +111,10 @@ services:
       AI_ORG_DAILY_TOKENS: ${AI_ORG_DAILY_TOKENS:-20000000}
       AI_GLOBAL_DAILY_TOKENS: ${AI_GLOBAL_DAILY_TOKENS:-50000000}
       AI_MAX_CONCURRENT_PER_USER: ${AI_MAX_CONCURRENT_PER_USER:-2}
+      # The Anthropic account's own spend and usage, shown in the EMITHRAN AI bar: an Admin API key that reads Anthropic's reports
+      # (models are never called with it), and the Console's monthly spend limit for an account Anthropic reports no limit for.
+      ANTHROPIC_ADMIN_API_KEY: ${ANTHROPIC_ADMIN_API_KEY:-}
+      ANTHROPIC_MONTHLY_SPEND_LIMIT_USD: ${ANTHROPIC_MONTHLY_SPEND_LIMIT_USD:-}
       JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
       REFRESH_TOKEN_EXPIRATION: ${REFRESH_TOKEN_EXPIRATION:-7d}
 

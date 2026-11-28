@@ -168,6 +168,18 @@ class EnvironmentVariables {
   @Min(1)
   AI_MAX_CONCURRENT_PER_USER: number = 2;
 
+  // The Anthropic account's own spend and usage, shown in the EMITHRAN AI bar (modules/ai-usage/ai-account.service.ts).
+  /** An Admin API key of the Anthropic organization (sk-ant-admin...). It reads the usage and cost reports; models are not called with it. Unset = no account figures. */
+  @IsString()
+  @IsOptional()
+  ANTHROPIC_ADMIN_API_KEY?: string;
+
+  /** The account's monthly spend limit in USD, as set in the Claude Console. Used only when Anthropic does not report the limit itself. */
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  ANTHROPIC_MONTHLY_SPEND_LIMIT_USD?: number;
+
   @IsString()
   @IsOptional()
   @IsIn(['error', 'warn', 'info', 'debug', 'verbose'])

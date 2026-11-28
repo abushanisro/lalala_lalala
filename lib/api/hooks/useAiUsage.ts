@@ -7,6 +7,9 @@ import { aiUsageApi } from "@/lib/api/ai-usage";
 import { useAuthEnabled } from "./useAuthEnabled";
 
 const KEY = ["ai-usage"] as const;
+const ACCOUNT_KEY = ["ai-account"] as const;
+/** Anthropic's reports change a few times an hour at most, and the server keeps one reading for five minutes. */
+const ACCOUNT_POLL_MS = 5 * 60_000;
 /** Other members spend AI too, and so do other tabs: the figures are read again this often while the page is in view. */
 const POLL_MS = 15_000;
 
@@ -26,3 +29,16 @@ export function useAiUsage() {
     refetchOnWindowFocus: true,
   });
 }
+
+/** The Anthropic account's own spend and usage. Read every few minutes: Anthropic's reports run behind and change slowly. */
+export function useAiAccount() {
+  return useQuery({
+    queryKey: ACCOUNT_KEY,
+    queryFn: () => aiUsageApi.account(),
+    enabled: useAuthEnabled(),
+    staleTime: ACCOUNT_POLL_MS,
+    refetchInterval: ACCOUNT_POLL_MS,
+    retry: false,
+  });
+}
+

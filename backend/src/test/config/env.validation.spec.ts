@@ -67,4 +67,10 @@ describe('env.validation', () => {
       ),
     ).not.toThrow();
   });
+
+  it('takes the Anthropic account settings as given, and starts when the compose file passes them empty', () => {
+    expect(() => validate(baseConfig({ ANTHROPIC_ADMIN_API_KEY: '', ANTHROPIC_MONTHLY_SPEND_LIMIT_USD: '' }))).not.toThrow();
+    expect(validate(baseConfig({ ANTHROPIC_ADMIN_API_KEY: 'k', ANTHROPIC_MONTHLY_SPEND_LIMIT_USD: '20' }))).toMatchObject({ ANTHROPIC_ADMIN_API_KEY: 'k', ANTHROPIC_MONTHLY_SPEND_LIMIT_USD: 20 });
+    expect(() => validate(baseConfig({ ANTHROPIC_MONTHLY_SPEND_LIMIT_USD: '-5' }))).toThrow(/ANTHROPIC_MONTHLY_SPEND_LIMIT_USD/);
+  });
 });
