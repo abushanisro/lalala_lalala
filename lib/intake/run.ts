@@ -25,6 +25,17 @@ export interface IntakeEvent { key: string; title: string; state: StepState; det
 export interface PartOutcome { file: string; itemId: string | null; costed: boolean; detail: string }
 export interface IntakeResult { projectId: string; bomId: string; parts: PartOutcome[]; cadImported: number }
 
+/** The page of the BOM that was made. */
+export const bomPath = ({ projectId, bomId }: Pick<IntakeResult, "projectId" | "bomId">): string => `/projects/${projectId}/bom/${bomId}`;
+/**
+ * The Manufacturing Intelligence page of the part to look at first: the first costed one, else the first one created. Null when no
+ * part was made here (CAD files only: their parts appear in the BOM as the import finishes).
+ */
+export function partPath(result: IntakeResult): string | null {
+  const part = result.parts.find(p => p.costed && p.itemId) ?? result.parts.find(p => p.itemId);
+  return part?.itemId ? `${bomPath(result)}/items/${part.itemId}/manufacturing-intelligence` : null;
+}
+
 const messageOf = (error: unknown): string => (error instanceof Error && error.message ? error.message : "The server did not answer.");
 
 /** The STEP of a built solid as a file to upload. */

@@ -2,6 +2,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -28,7 +29,7 @@ import { FIRST_HELD_TICK, placeholderAt, STILL_PLACEHOLDER, TYPING } from '@/lib
 import {
   carriesFiles, costable, gradeFor, INTAKE_ACCEPT, intakeFileKind, isPicture, planBlockers, planPart, shapeSummary, type IntakePlan, type PlanPart,
 } from '@/lib/intake/plan';
-import { runIntake, type IntakeEvent, type IntakeResult } from '@/lib/intake/run';
+import { bomPath, partPath, runIntake, type IntakeEvent, type IntakeResult } from '@/lib/intake/run';
 
 type Phase = 'compose' | 'reading' | 'plan' | 'creating' | 'done';
 /** What became of one dropped drawing: being read, read, not a drawing of a part, or not readable (with the server's reason). */
@@ -128,6 +129,19 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
   const dictation = useDictation(useCallback((heard: string) => { setNote(withDictation(saidBefore.current, heard)); }, []));
   const stopDictation = dictation.stop;
   useEffect(() => { if (!idle) stopDictation(); }, [idle, stopDictation]);
+
+  // What is made opens by itself, like a preview beside a chat: the part's Manufacturing Intelligence page, where its cost is (the BOM
+  // when only CAD files were imported). Only as it is made, with this page on screen: a result that was already in the conversation
+  // when the page opened is shown with its buttons, or coming back here would lead straight away again.
+  const router = useRouter();
+  const last = thread.at(-1);
+  const made = result ?? (last?.kind === 'result' ? last.result : null);
+  const opened = useRef(made);
+  useEffect(() => {
+    if (!made || made === opened.current) return;
+    opened.current = made;
+    router.push(partPath(made) ?? bomPath(made));
+  }, [made, router]);
 
   // The conversation keeps to the page's foot as it grows, where the prompt is.
   const foot = useRef<HTMLDivElement>(null);
@@ -410,17 +424,24 @@ export function IntakeBox({ title = 'What do you want to cost?' }: { title?: Rea
           <CardContent className="space-y-2 p-5">
             {events.map(event => <Line key={event.key} state={event.state} title={event.title} detail={event.detail} />)}
             {fatal && <p className="pt-1 text-sm text-destructive" role="alert">Stopped: {fatal}</p>}
-            {phase === 'done' && (
-              <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
-                {result && <Button asChild><Link href={`/projects/${result.projectId}/bom/${result.bomId}`}>Open the BOM</Link></Button>}
-                <Button variant="outline" onClick={reset}>Start another</Button>
-                {result && <p className="text-sm text-muted-foreground">{result.parts.filter(p => p.costed).length} of {result.parts.length} parts costed.</p>}
-              </div>
-            )}
+            {phase === 'done' && <ResultActions result={result} onAnother={reset} />}
           </CardContent>
         </Card>
       )}
     </section>
+  );
+}
+
+/** Where to go from what was made: the part's Manufacturing Intelligence page, its BOM, or another start. Null: nothing was made. */
+function ResultActions({ result, onAnother }: { result: IntakeResult | null; onAnother: () => void }) {
+  const part = result && partPath(result);
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
+      {part && <Button asChild><Link href={part}>Open Manufacturing Intelligence</Link></Button>}
+      {result && <Button asChild variant={part ? 'outline' : 'default'}><Link href={bomPath(result)}>Open the BOM</Link></Button>}
+      <Button variant="outline" onClick={onAnother}>Start another</Button>
+      {result && <p className="text-sm text-muted-foreground">{result.parts.filter(p => p.costed).length} of {result.parts.length} parts costed.</p>}
+    </div>
   );
 }
 
@@ -452,14 +473,7 @@ function Conversation({ thread, working, onAnswer, onClear }: { thread: Entry[];
         if (entry.kind === 'step') return <Line key={entry.id} state={entry.state} title={entry.title} detail={entry.detail} />;
         if (entry.kind === 'say') return <p key={entry.id} className="whitespace-pre-wrap text-sm text-foreground">{entry.text}</p>;
         if (entry.kind === 'question') return <QuestionCard key={entry.id} entry={entry} onAnswer={given => onAnswer(entry.id, given)} />;
-        const { result } = entry;
-        return (
-          <div key={entry.id} className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
-            <Button asChild><Link href={`/projects/${result.projectId}/bom/${result.bomId}`}>Open the BOM</Link></Button>
-            <Button variant="outline" onClick={onClear}>Start another</Button>
-            <p className="text-sm text-muted-foreground">{result.parts.filter(p => p.costed).length} of {result.parts.length} parts costed.</p>
-          </div>
-        );
+        return <ResultActions key={entry.id} result={entry.result} onAnother={onClear} />;
       })}
       <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
         <p>Every cost comes from the cost engines, never from the AI's words.</p>

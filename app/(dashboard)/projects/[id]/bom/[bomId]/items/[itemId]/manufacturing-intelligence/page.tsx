@@ -52,7 +52,6 @@ import { cueRefreshAnalysis } from '@/lib/analysis/refresh-analysis-cue';
 import { RefreshAnalysisButton } from '@/components/features/analysis/RefreshAnalysisButton';
 import { MachiningAllowancePanel } from '@/components/features/casting-viewer/MachiningAllowancePanel';
 import { SandCastingFeaturesPanel } from '@/components/features/casting-viewer/SandCastingFeaturesPanel';
-import { CopilotPanel } from '@/components/features/manufacturing-intelligence/CopilotPanel';
 import { CostTablePanel } from '@/components/features/manufacturing-intelligence/CostTablePanel';
 import { cycleFields, formatFieldValue } from '@/lib/costing/cycle-fields';
 import { formatCycleMin, storableCycleSec } from '@/lib/costing/format-cycle';
@@ -221,7 +220,6 @@ const DEFAULT_VALIDATION_CONFIG: ValidationConfig = {
 
 
 const RIGHT_TABS = [
-  { key: 'copilot',       label: 'Copilot'   },
   { key: 'cost',          label: 'Cost'         },
   { key: 'part_summary',  label: 'Summary'      },
   { key: 'design_guidance', label: 'Validation' },
@@ -2501,10 +2499,10 @@ function Row({ label, value }: { label: string; value: string }) {
 
 // `value` is null while a scenario input has not been resolved yet — the field
 // shows an em dash rather than a number this component invented.
-// Shown where a panel needs a definite quantity (an RFQ volume, the Copilot's
-// scenario context) that has not been resolved yet. Deliberately a wait rather
-// than a stand-in number: these surfaces send figures outward, and a fabricated
-// batch size would leave the building.
+// Shown where a panel needs a definite quantity (an RFQ volume) that has not
+// been resolved yet. Deliberately a wait rather than a stand-in number: these
+// surfaces send figures outward, and a fabricated batch size would leave the
+// building.
 function ScenarioInputsPending() {
   return (
     <div className="flex flex-col items-center justify-center h-32 gap-2 text-muted-foreground p-4">
@@ -7309,10 +7307,9 @@ function AnalysisTabsPanel({
   // Factory. `factory` is already a real prop on this component.
   const { data: summaryForPartTab } = useCostSummary(item.id, batchSize, factory);
   // What this part is actually being priced at, read back from the engine.
-  // Panels below that need a definite quantity (an RFQ volume, the Copilot's
-  // context) get these rather than a number this component chose.
+  // Panels below that need a definite quantity (an RFQ volume) get this rather
+  // than a number this component chose.
   const effBatchSize = batchSize ?? summaryForPartTab?.resolvedInputs.batchSize ?? null;
-  const effProductionLife = productionLife ?? summaryForPartTab?.resolvedInputs.productionLifeYears ?? null;
 
   return (
     <div className="flex flex-col h-full">
@@ -7375,19 +7372,6 @@ function AnalysisTabsPanel({
             productionLife={productionLife}
             factory={factory}
           />
-        )}
-
-        {tab === 'copilot' && (
-          effBatchSize === null || effProductionLife === null ? (
-            <ScenarioInputsPending />
-          ) : (
-            <CopilotPanel
-              itemId={item.id}
-              batchSize={effBatchSize}
-              productionLife={effProductionLife}
-              factory={factory}
-            />
-          )
         )}
 
         {tab === 'vendor_network' && (
@@ -8373,7 +8357,8 @@ export default function ManufacturingIntelligencePage() {
     }
   };
   // ── Right panel tab — lifted so the inspector bridge button can switch it ─────
-  const [rightTab, setRightTab] = useState<RightTabKey>('copilot');
+  // Opens on the cost: what a part is looked up for, and where a part made on the New page lands.
+  const [rightTab, setRightTab] = useState<RightTabKey>('cost');
   // An operation the engineer added by hand in the Workflow Builder: handed to the Cost tab, which opens it as a new line.
   const [addProcessRequest, setAddProcessRequest] = useState<AddProcessRequest | null>(null);
 
