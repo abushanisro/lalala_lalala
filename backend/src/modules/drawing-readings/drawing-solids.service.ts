@@ -22,7 +22,9 @@ export function engineSolidRequest(shape: DrawingShape, holes: readonly DrawingH
     ? { kind: 'turned', segments: shape.segments.map(s => ({ diameter_mm: s.diameterMm, length_mm: s.lengthMm })), bore_diameter_mm: shape.boreDiameterMm }
     : shape.kind === 'block'
       ? { kind: 'block', length_mm: shape.lengthMm, width_mm: shape.widthMm, height_mm: shape.heightMm }
-      : { kind: 'sheet', length_mm: shape.lengthMm, width_mm: shape.widthMm, thickness_mm: shape.thicknessMm };
+      : shape.kind === 'shell'
+        ? { kind: 'shell', length_mm: shape.lengthMm, width_mm: shape.widthMm, height_mm: shape.heightMm, wall_mm: shape.wallMm }
+        : { kind: 'sheet', length_mm: shape.lengthMm, width_mm: shape.widthMm, thickness_mm: shape.thicknessMm };
   return { shape: form, holes: holes.map(h => ({ diameter_mm: h.diameterMm, depth_mm: h.depthMm, count: h.count })) };
 }
 
@@ -61,7 +63,7 @@ export class DrawingSolidsService {
 
   async build(body: { shape?: unknown; holes?: unknown; name?: unknown }): Promise<DrawingSolid> {
     const shape = shapeFrom(body.shape);
-    if (!shape) throw new BadRequestException({ code: 'no_shape', message: 'A solid needs the overall form of the part: a block, a sheet or a turned part, with every size given.' });
+    if (!shape) throw new BadRequestException({ code: 'no_shape', message: 'A solid needs the overall form of the part: a block, a sheet, a turned part or a shell, with every size given.' });
     const { holes, dropped } = holesFrom(body.holes);
     if (dropped > 0) throw new BadRequestException({ code: 'bad_holes', message: `${dropped} of the holes are not holes: each needs a diameter and a whole count.` });
     try {

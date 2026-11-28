@@ -1,7 +1,7 @@
 import { BadGatewayException, PayloadTooLargeException, UnsupportedMediaTypeException } from '@nestjs/common';
 
 import {
-  DRAWING_READING_SCHEMA, DrawingReadingError, drawingFileKind, readingFromAi,
+  DRAWING_READING_SCHEMA, DrawingReadingError, drawingFileKind, readingFromAi, shapeFrom,
 } from '../../../modules/drawing-readings/drawing-reading';
 import { DRAWING_READING_MODEL, DrawingReadingsService } from '../../../modules/drawing-readings/drawing-readings.service';
 
@@ -99,6 +99,18 @@ describe('readingFromAi', () => {
   it('refuses an answer that is not a reading at all', () => {
     expect(() => readingFromAi('a bracket')).toThrow(DrawingReadingError);
     expect(() => readingFromAi({ partName: 'x' })).toThrow(DrawingReadingError);
+  });
+});
+
+describe('a shell: a hollow part open on one side', () => {
+  it('is a form a solid can be built from, with its outer size and its wall', () => {
+    expect(shapeFrom({ kind: 'shell', lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 2.5 })).toEqual({ kind: 'shell', lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 2.5 });
+    expect(shapeFrom({ kind: 'shell', lengthMm: 250, widthMm: 120, heightMm: 90 })).toBeNull();
+    expect(shapeFrom({ kind: 'shell', lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 0 })).toBeNull();
+  });
+
+  it('is not something the reader can report: it comes from the person who says the part is hollow', () => {
+    expect(JSON.stringify(DRAWING_READING_SCHEMA)).not.toContain('shell');
   });
 });
 

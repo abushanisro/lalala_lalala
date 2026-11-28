@@ -55,6 +55,7 @@ export function shapeSummary(shape: DrawingShape | null, holes: readonly Drawing
   const holed = count === 0 ? "" : `, ${count} ${count === 1 ? "hole" : "holes"}`;
   if (shape.kind === "block") return `Block ${num(shape.lengthMm)} × ${num(shape.widthMm)} × ${num(shape.heightMm)} mm${holed}`;
   if (shape.kind === "sheet") return `Sheet ${num(shape.lengthMm)} × ${num(shape.widthMm)} mm, ${num(shape.thicknessMm)} mm thick${holed}`;
+  if (shape.kind === "shell") return `Hollow ${num(shape.lengthMm)} × ${num(shape.widthMm)} × ${num(shape.heightMm)} mm, ${num(shape.wallMm)} mm wall`;
   const length = shape.segments.reduce((sum, s) => sum + s.lengthMm, 0);
   const largest = Math.max(...shape.segments.map(s => s.diameterMm));
   return `Turned, ⌀${num(largest)} × ${num(length)} mm in ${shape.segments.length} ${shape.segments.length === 1 ? "step" : "steps"}`

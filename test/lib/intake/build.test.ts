@@ -61,6 +61,8 @@ describe("a build as a conversation", () => {
     expect(created).toHaveLength(0);
 
     expect(await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all)).toBeNull();
+    expect(openQuestion().question).toMatchObject({ need: { kind: "wall", part: "mirror.png" }, text: "Is Car side mirror cover hollow?" });   // moulded, and known only as a block
+    expect(await answerQuestion(openQuestion().id, { action: "accept", value: "2.5" }, all)).toBeNull();
     expect(openQuestion().question).toMatchObject({ need: { kind: "grade" }, choices: ["ABS, General Purpose", "ABS, High Impact", "PC/ABS Blend"] });
     expect(await answerQuestion(openQuestion().id, { action: "accept", value: "abs" }, all)).toMatch(/^Several match "abs"/);
     expect(openQuestion().question.need.kind).toBe("grade");                                         // still open after an answer that cannot be used
@@ -71,10 +73,10 @@ describe("a build as a conversation", () => {
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({
       projectName: "i want to build costing", location: "India",
-      parts: [{ name: "Car side mirror cover", processGroup: "Plastic Molding", grade: "PC/ABS Blend", shape: { kind: "block", lengthMm: 250, widthMm: 120, heightMm: 90 } }],
+      parts: [{ name: "Car side mirror cover", processGroup: "Plastic Molding", grade: "PC/ABS Blend", shape: { kind: "shell", lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 2.5 } }],
     });
     expect(kinds().slice(-2)).toEqual(["step", "result"]);
-    expect(questions().map(e => (e.answer?.action === "accept" ? e.answer.value : null))).toEqual(["Block 250 × 120 × 90 mm", "PC/ABS Blend", "India"]);
+    expect(questions().map(e => (e.answer?.action === "accept" ? e.answer.value : null))).toEqual(["Block 250 × 120 × 90 mm", "Hollow 250 × 120 × 90 mm, 2.5 mm wall", "PC/ABS Blend", "India"]);
     expect(intakeDraft.get()).toMatchObject({ build: null, working: false });
   });
 
@@ -84,6 +86,19 @@ describe("a build as a conversation", () => {
     expect(kinds()).toEqual(["user", "step", "say", "say", "step", "result"]);
     expect(thread()[3]).toMatchObject({ text: "Material for MOUNTING BRACKET: Aluminum, ANSI 6061, as the drawing says (AL 6061-T6)." });
     expect(created[0]).toMatchObject({ projectName: "MOUNTING BRACKET", location: "USA", parts: [{ grade: "Aluminum, ANSI 6061", processGroup: "Machining" }] });
+  });
+
+  it("keeps the block when the part is said to be solid, or the hollow question is skipped, and goes on to the material", async () => {
+    for (const given of [{ action: "accept", value: "Solid" }, { action: "skip" }] as const) {
+      intakeDraft.clear();
+      const { all } = deps();
+      await startBuild("", [file("mirror.png")], all);
+      await answerQuestion(openQuestion().id, { action: "accept", value: "250 x 120 x 90" }, all);
+      expect(openQuestion().question.need.kind).toBe("wall");
+      await answerQuestion(openQuestion().id, given, all);
+      expect(openQuestion().question.need.kind).toBe("grade");
+      expect(intakeDraft.get().build?.plan.parts[0]?.shape).toEqual({ kind: "block", lengthMm: 250, widthMm: 120, heightMm: 90 });
+    }
   });
 
   it("creates a part without a cost when its question is skipped, and asks nothing more about it", async () => {

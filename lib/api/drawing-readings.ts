@@ -7,7 +7,9 @@ export type ProcessFamily = "machining" | "sheet_metal" | "casting" | "forging" 
 export type DrawingShape =
   | { kind: "block"; lengthMm: number; widthMm: number; heightMm: number }
   | { kind: "turned"; segments: { diameterMm: number; lengthMm: number }[]; boreDiameterMm: number | null }
-  | { kind: "sheet"; lengthMm: number; widthMm: number; thicknessMm: number };
+  | { kind: "sheet"; lengthMm: number; widthMm: number; thicknessMm: number }
+  /** A hollow part open on one side (a cover, a cap, a housing). Not read off a drawing: the person says a part is hollow and its wall. */
+  | { kind: "shell"; lengthMm: number; widthMm: number; heightMm: number; wallMm: number };
 
 /** One hole specification and how many holes have it. depthMm null is a through hole. */
 export interface DrawingHole { diameterMm: number; depthMm: number | null; count: number; thread: string | null }

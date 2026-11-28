@@ -72,7 +72,7 @@ export async function startBuild(note: string, files: File[], deps: BuildDeps): 
       bomName: parts.length > 0 ? "Parts from drawings" : "Imported parts",
       location: deps.madeIn, annualVolume: null, batchSize: null, parts, cadFiles,
     },
-    files, reads, skipped: [],
+    files, reads, closed: [],
   });
   await advance(deps);
 }
@@ -82,7 +82,7 @@ async function advance(deps: BuildDeps): Promise<void> {
   for (;;) {
     const build = intakeDraft.get().build;
     if (!build) return;
-    const need = nextNeed(build.plan, build.skipped);
+    const need = nextNeed(build.plan, build.closed);
     if (!need) break;
     const part = build.plan.parts.find(p => p.file === need.part);
     let grades: string[] = [];
@@ -133,12 +133,14 @@ export async function answerQuestion(entryId: number, answer: Answer, deps: Buil
   const entry = thread.find(e => e.kind === "question" && e.id === entryId && e.answer === null);
   if (!build || entry?.kind !== "question") return null;
   let given = answer;
+  const { need } = entry.question;
   if (answer.action === "skip") {
-    intakeDraft.setBuild({ ...build, skipped: [...build.skipped, needKey(entry.question.need)] });
+    intakeDraft.setBuild({ ...build, closed: [...build.closed, needKey(need)] });
   } else {
     const applied = applyAnswer(build.plan, entry.question, answer.value);
     if ("error" in applied) return applied.error;
-    intakeDraft.setBuild({ ...build, plan: applied.plan });
+    // "Solid" leaves the plan as it is, so the question is closed by name or it would be asked again.
+    intakeDraft.setBuild({ ...build, plan: applied.plan, closed: need.kind === "wall" ? [...build.closed, needKey(need)] : build.closed });
     given = { action: "accept", value: applied.said };
   }
   intakeDraft.setThread(current => current.map(e => (e.kind === "question" && e.id === entryId ? { ...e, answer: given } : e)));

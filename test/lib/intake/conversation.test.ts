@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DrawingReading } from "@/lib/api/drawing-readings";
-import { applyAnswer, matchChoice, narrative, needKey, nextNeed, questionFor, sizeFrom, type Lists } from "@/lib/intake/conversation";
+import { applyAnswer, hollowProne, matchChoice, narrative, needKey, nextNeed, questionFor, sizeFrom, type Lists } from "@/lib/intake/conversation";
 import type { IntakePlan, PlanPart } from "@/lib/intake/plan";
 
 const LISTS: Lists = {
@@ -16,14 +16,24 @@ const part = (over: Partial<PlanPart> = {}): PlanPart => ({
 const plan = (parts: PlanPart[], over: Partial<IntakePlan> = {}): IntakePlan =>
   ({ projectName: "Mirror", bomName: "Parts from drawings", location: "", annualVolume: null, batchSize: null, parts, cadFiles: [], ...over });
 const block = { kind: "block", lengthMm: 250, widthMm: 120, heightMm: 90 } as const;
+const shell = { kind: "shell", lengthMm: 250, widthMm: 120, heightMm: 90, wallMm: 2.5 } as const;
 
 describe("nextNeed", () => {
-  it("asks for a part's process, then its size, then its material, then where it is made", () => {
+  it("asks for a part's process, then its size, then whether it is hollow, then its material, then where it is made", () => {
     expect(nextNeed(plan([part()]), [])).toEqual({ kind: "process", part: "mirror.png" });
     expect(nextNeed(plan([part({ processGroup: "Plastic Molding" })]), [])).toEqual({ kind: "size", part: "mirror.png" });
-    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: block })]), [])).toEqual({ kind: "grade", part: "mirror.png" });
-    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: block, grade: "ABS, General Purpose" })]), [])).toEqual({ kind: "location", part: null });
-    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: block, grade: "ABS, General Purpose" })], { location: "India" }), [])).toBeNull();
+    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: block })]), [])).toEqual({ kind: "wall", part: "mirror.png" });
+    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: shell })]), [])).toEqual({ kind: "grade", part: "mirror.png" });
+    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: shell, grade: "ABS, General Purpose" })]), [])).toEqual({ kind: "location", part: null });
+    expect(nextNeed(plan([part({ processGroup: "Plastic Molding", shape: shell, grade: "ABS, General Purpose" })], { location: "India" }), [])).toBeNull();
+  });
+
+  it("asks whether a part is hollow only when it is moulded or cast and known as a block, and only once", () => {
+    expect([null, "Machining", "Sheet Metal", "Forging"].map(hollowProne)).toEqual([false, false, false, false]);
+    expect(["Plastic Molding", "Die Casting", "Sand Casting", "Casting Investment", "Roto & Blow Molding"].map(hollowProne)).toEqual([true, true, true, true, true]);
+    expect(nextNeed(plan([part({ processGroup: "Machining", shape: block })]), [])).toEqual({ kind: "grade", part: "mirror.png" });
+    const settled = [needKey({ kind: "wall", part: "mirror.png" })];
+    expect(nextNeed(plan([part({ processGroup: "Die Casting", shape: block })]), settled)).toEqual({ kind: "grade", part: "mirror.png" });   // said to be solid: its other questions go on
   });
 
   it("asks nothing more about a part the person skipped a question for, and does not ask where when no part can be costed", () => {
@@ -74,9 +84,19 @@ describe("questionFor", () => {
     const size = questionFor({ kind: "size", part: "mirror.png" }, plan([part({ processGroup: "Plastic Molding" })]), LISTS);
     expect(size.options).toEqual([]);
     expect(size.choices).toEqual([]);
-    expect(size.hint).toMatch(/overstates a hollow part/);
+    expect(size.skip).toBe("Skip, and the part is created without a cost.");
     const where = questionFor({ kind: "location", part: null }, plan([part()]), LISTS);
     expect(where.options.map(o => o.value)).toEqual(["India", "USA", "Germany"]);
+    expect(where.skip).toBe("Skip, and the parts are created without a cost.");
+  });
+
+  it("asks whether a moulded part is hollow, offering Solid, and says a skip costs it as a block", () => {
+    const wall = questionFor({ kind: "wall", part: "mirror.png" }, plan([part({ processGroup: "Plastic Molding", shape: block })]), LISTS);
+    expect(wall.text).toBe("Is Car side mirror cover hollow?");
+    expect(wall.hint).toMatch(/Type its wall thickness in mm/);
+    expect(wall.options).toEqual([{ value: "Solid", why: "Not hollow: it is costed as the solid block." }]);
+    expect(wall.pick).toBeNull();
+    expect(wall.skip).toBe("Skip, and it is costed as a solid block.");
   });
 });
 
@@ -112,7 +132,7 @@ describe("sizeFrom", () => {
 });
 
 describe("applyAnswer", () => {
-  const q = (kind: "process" | "size" | "grade" | "location", p: IntakePlan) => questionFor({ kind, part: kind === "location" ? null : "mirror.png" }, p, LISTS);
+  const q = (kind: "process" | "size" | "wall" | "grade" | "location", p: IntakePlan) => questionFor({ kind, part: kind === "location" ? null : "mirror.png" }, p, LISTS);
 
   it("sets the process (and forgets a grade chosen for another one), the size, the grade and the place", () => {
     const start = plan([part({ grade: "Aluminum, ANSI 6061" })]);
@@ -126,6 +146,17 @@ describe("applyAnswer", () => {
     expect(graded).toMatchObject({ said: "ABS, High Impact", plan: { parts: [{ grade: "ABS, High Impact" }] } });
     if ("error" in graded) throw new Error(graded.error);
     expect(applyAnswer(graded.plan, q("location", graded.plan), "india")).toMatchObject({ said: "India", plan: { location: "India" } });
+  });
+
+  it("makes a block a shell from its wall thickness, keeps it a block when it is solid, and refuses a wall that leaves nothing hollow", () => {
+    const sized = plan([part({ processGroup: "Plastic Molding", shape: block })]);
+    expect(applyAnswer(sized, q("wall", sized), "2.5 mm")).toMatchObject({ said: "Hollow 250 × 120 × 90 mm, 2.5 mm wall", plan: { parts: [{ shape: shell }] } });
+    expect(applyAnswer(sized, q("wall", sized), "solid")).toEqual({ plan: sized, said: "Solid" });
+    // Holes the drawing gave stay with the part, so the cost's note can say they are not in the shell.
+    const holed = plan([part({ processGroup: "Plastic Molding", shape: block, holes: [{ diameterMm: 4, depthMm: null, count: 4, thread: null }] })]);
+    expect(applyAnswer(holed, q("wall", holed), "2.5")).toMatchObject({ plan: { parts: [{ shape: shell, holes: [{ count: 4 }] }] } });
+    expect(applyAnswer(sized, q("wall", sized), "60")).toEqual({ error: "A wall of 60 mm leaves nothing hollow in a part 120 mm wide and 90 mm high." });
+    expect(applyAnswer(sized, q("wall", sized), "thin")).toEqual({ error: "Type the wall thickness in mm, like 2.5, or choose Solid." });
   });
 
   it("says why an answer cannot be used, and leaves the plan as it was", () => {
