@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { IntakePlan, PlanPart } from "@/lib/intake/plan";
-import { runIntake, stepFile, type IntakeApi, type IntakeEvent } from "@/lib/intake/run";
+import { bomPath, partPath, runIntake, stepFile, type IntakeApi, type IntakeEvent, type PartOutcome } from "@/lib/intake/run";
 
 const part = (file: string, over: Partial<PlanPart> = {}): PlanPart => ({
   file, name: file.replace(".png", ""), partNumber: `PN-${file}`, quantity: 2, materialRead: "AL 6061-T6", grade: "Aluminum, ANSI 6061", processGroup: "Machining",
@@ -111,6 +111,25 @@ describe("runIntake", () => {
     expect(s.calls.at(-2)).toBe("apply I1 India auto Aluminum, ANSI 6061 vol 5000 batch 500");
     expect(s.calls.at(-1)).toBe("import B asm.zip");
     expect(result.cadImported).toBe(1);
+  });
+});
+
+describe("partPath", () => {
+  const made = (parts: PartOutcome[]) => ({ projectId: "p1", bomId: "b1", parts, cadImported: 0 });
+  const outcome = (itemId: string | null, costed: boolean): PartOutcome => ({ file: `${itemId ?? "none"}.png`, itemId, costed, detail: "" });
+
+  it("is the Manufacturing Intelligence page of the first costed part, whatever came before it", () => {
+    expect(partPath(made([outcome("i1", false), outcome("i2", true), outcome("i3", true)]))).toBe("/projects/p1/bom/b1/items/i2/manufacturing-intelligence");
+  });
+
+  it("is the first part that was created when none has a cost", () => {
+    expect(partPath(made([outcome(null, false), outcome("i2", false)]))).toBe("/projects/p1/bom/b1/items/i2/manufacturing-intelligence");
+  });
+
+  it("is nothing when no part was made here, and the BOM is where to go", () => {
+    expect(partPath(made([]))).toBeNull();
+    expect(partPath(made([outcome(null, false)]))).toBeNull();
+    expect(bomPath(made([]))).toBe("/projects/p1/bom/b1");
   });
 });
 
